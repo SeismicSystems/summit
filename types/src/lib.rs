@@ -4,7 +4,7 @@ use std::{net::SocketAddr, path::PathBuf};
 pub use block::*;
 
 use commonware_codec::DecodeExt;
-use commonware_consensus::simplex::types::Activity as CActivity;
+use commonware_consensus::simplex::types::{Activity as CActivity, View};
 
 use commonware_utils::from_hex_formatted;
 
@@ -14,7 +14,34 @@ pub type Activity = CActivity<commonware_cryptography::bls12381::Signature, Dige
 pub type PublicKey = commonware_cryptography::bls12381::PublicKey;
 pub type PrivateKey = commonware_cryptography::bls12381::PrivateKey;
 pub type Signature = commonware_cryptography::bls12381::Signature;
+
+pub mod wasm;
 pub const NAMESPACE: &[u8] = b"_SEISMIC_BFT";
+
+// Kind enum for message types
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub enum Kind {
+    Seed = 0,
+    Notarization = 1,
+    Finalization = 2,
+}
+
+impl Kind {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Kind::Seed),
+            1 => Some(Kind::Notarization),
+            2 => Some(Kind::Finalization),
+            _ => None,
+        }
+    }
+}
+/// Seed represents a threshold signature over the current view.
+#[derive(Clone, Debug, PartialEq, Hash, Eq)]
+pub struct Seed {
+    pub view: View,
+}
 
 // temporary until we have true genesis file
 pub struct GenesisCommittee {

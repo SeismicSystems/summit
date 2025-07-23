@@ -155,5 +155,6 @@ fn get_node_flags(node: usize) -> Flags {
         worker_threads: 2,
         log_level: "info".into(),
         db_prefix: format!("{node}-quarts"),
+        indexer_url: Some("http://127.0.0.1:7777".into()),
     }
 }

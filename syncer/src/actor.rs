@@ -20,8 +20,11 @@ use commonware_storage::{
 };
 use futures::{StreamExt as _, channel::mpsc};
 use governor::Quota;
+use quartz_client::Client;
 use rand::Rng;
-use seismicbft_types::{Block, Digest, Finalized, NAMESPACE, Notarized, PublicKey, Signature};
+use seismicbft_types::{
+    Block, Digest, Finalized, NAMESPACE, Notarized, PublicKey, Seed, Signature,
+};
 use tracing::{debug, warn};
 
 const REPLAY_BUFFER: usize = 8 * 1024 * 1024;
@@ -48,6 +51,8 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
     mailbox_size: usize,
     backfill_quota: Quota,
     activity_timeout: u64,
+
+    indexer: Option<Client>,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Actor<R> {
@@ -129,6 +134,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
         let (orchestrator_sender, orchestrator_receiver) = mpsc::channel(2); // buffer to send processed while moving forward
         let orchestrator = Orchestrator::new(orchestrator_sender);
 
+        let indexer = if let Some(url) = config.indexer {
+            Some(Client::new(&url, config.participants.clone()))
+        } else {
+            None
+        };
         (
             Self {
                 context,
@@ -143,6 +153,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 mailbox_size: config.mailbox_size,
                 backfill_quota: config.backfill_quota,
                 activity_timeout: config.activity_timeout,
+                indexer,
             },
             Mailbox::new(tx),
             orchestrator,
@@ -293,6 +304,22 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                     }
                     Message::Finalize {finalization} => {
                         let view = finalization.view();
+
+                        if let Some(indexer) = self.indexer.as_ref() {
+                                self.context.with_label("indexer").spawn({
+                                    let indexer = indexer.clone();
+                                    let seed = Seed{view};
+
+                                    move |_| async move {
+                                        let result = indexer.seed_upload(seed).await;
+                                        if let Err(e) = result {
+                                            warn!(?e, "failed to upload seed");
+                                            return;
+                                        }
+                                        debug!(view, "seed uploaded to indexer");
+                                    }
+                                });
+                            }
                         // Check if in buffer
                         let proposal = &finalization.proposal;
                         let mut block = buffer.get(None, proposal.payload, Some(proposal.payload)).await.into_iter().next();
@@ -311,6 +338,20 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             let digest = proposal.payload;
                             let height = block.height;
 
+                            // Upload to indexer (if available)
+                            if let Some(indexer) = self.indexer.as_ref() {
+                                self.context.with_label("indexer").spawn({
+                                    let indexer = indexer.clone();
+                                    let finalized = Finalized::new(finalization.clone(), block.clone());
+                                    move |_| async move {
+                                        let result = indexer.finalized_upload(finalized).await;
+
+                                        if let Err(e) = result {
+                                            warn!(?e, "failed to upload to finalization")
+                                        }
+                                    }
+                                });
+                            }
                             // persist the finalization
                             self.finalized.put(height, digest, finalization).await.expect("Failed to insert into finalization store");
                             self.blocks.put(height, digest,block).await.expect("failed to insert into block store");
@@ -335,6 +376,22 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                     }
                     Message::Notarize{notarization} => {
                         let view = notarization.view();
+                        if let Some(indexer) = self.indexer.as_ref() {
+                                self.context.with_label("indexer").spawn({
+                                    let indexer = indexer.clone();
+                                    let seed = Seed{view};
+
+                                    move |_| async move {
+                                        let result = indexer.seed_upload(seed).await;
+                                        if let Err(e) = result {
+                                            warn!(?e, "failed to upload seed");
+                                            return;
+                                        }
+                                        debug!(view, "seed uploaded to indexer");
+                                    }
+                                });
+                            }
+
                         // Check if in buffer
                         let proposal = &notarization.proposal;
                         let mut block =  buffer.get(None, proposal.payload, Some(proposal.payload)).await.into_iter().next();
@@ -348,6 +405,21 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             let height = block.height;
                             let digest = proposal.payload;
                             let notarization = Notarized::new(notarization, block);
+
+                            // Upload to indexer (if available)
+                            if let Some(indexer) = self.indexer.as_ref() {
+                                self.context.with_label("indexer").spawn({
+                                    let indexer = indexer.clone();
+                                    let notarized = notarization.clone();
+                                    move |_| async move {
+                                        let result = indexer.notarized_upload(notarized).await;
+
+                                        if let Err(e) = result {
+                                            warn!(?e, "failed to upload to notarization")
+                                        }
+                                    }
+                                });
+                            }
 
                             // Persist the notarization
                             match self.notarized.put(view,digest,notarization).await {

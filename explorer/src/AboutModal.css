@@ -1,0 +1,315 @@
+/* Modal Overlay - covers the entire screen */
+.about-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+        linear-gradient(135deg, rgba(0, 0, 0, 0.3) 0%, rgba(0, 0, 0, 0.4) 100%),
+        radial-gradient(circle at 30% 40%, rgba(0, 0, 0, 0.02) 0%, transparent 50%),
+        radial-gradient(circle at 70% 60%, rgba(0, 0, 0, 0.02) 0%, transparent 50%);
+    backdrop-filter: blur(20px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: 20px;
+    animation: modalFadeIn 0.3s ease-out;
+}
+
+@keyframes modalFadeIn {
+    from {
+        opacity: 0;
+        backdrop-filter: blur(0px);
+    }
+    to {
+        opacity: 1;
+        backdrop-filter: blur(20px);
+    }
+}
+
+/* Modal Container */
+.about-modal {
+    background: 
+        linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.9) 100%),
+        rgba(248, 247, 246, 0.98);
+    color: #2c2b2a;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 24px;
+    width: 100%;
+    max-width: 850px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    box-shadow: 
+        0 20px 60px rgba(0, 0, 0, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(40px);
+    animation: modalSlideIn 0.4s ease-out;
+    position: relative;
+}
+
+.about-modal::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(135deg, 
+        rgba(0, 0, 0, 0.01) 0%, 
+        rgba(0, 0, 0, 0.015) 50%, 
+        rgba(0, 0, 0, 0.01) 100%);
+    border-radius: 24px;
+    pointer-events: none;
+    z-index: -1;
+}
+
+@keyframes modalSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(30px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* Modal Header */
+.about-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 24px 32px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    background: 
+        linear-gradient(135deg, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0.6) 100%);
+    backdrop-filter: blur(20px);
+    border-radius: 24px 24px 0 0;
+}
+
+.about-modal-header h2 {
+    background: linear-gradient(45deg, #2c2b2a, #4a4948, #2c2b2a);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradientShift 3s ease-in-out infinite;
+    font-weight: 600;
+    font-size: 1.4rem;
+}
+
+
+/* Modal Content */
+.about-modal-content {
+    padding: 32px;
+    overflow-y: auto;
+    flex: 1;
+    position: relative;
+}
+
+.about-modal-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.about-modal-content::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.05);
+    border-radius: 4px;
+}
+
+.about-modal-content::-webkit-scrollbar-thumb {
+    background: linear-gradient(135deg, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.3));
+    border-radius: 4px;
+}
+
+.about-modal-content::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(135deg, rgba(0, 0, 0, 0.3), rgba(0, 0, 0, 0.4));
+}
+
+.about-modal-content section {
+    margin-bottom: 32px;
+    padding: 20px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    backdrop-filter: blur(10px);
+    transition: all 0.3s ease;
+}
+
+.about-modal-content section:hover {
+    background: rgba(255, 255, 255, 0.8);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.about-modal-content h3 {
+    font-size: 1.2rem;
+    margin-top: 0;
+    margin-bottom: 16px;
+    font-weight: 600;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    padding-bottom: 12px;
+    color: #2c2b2a;
+    position: relative;
+}
+
+.about-modal-content h3::before {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    width: 40px;
+    height: 2px;
+    background: linear-gradient(90deg, #2c2b2a, #4a4948);
+    border-radius: 2px;
+}
+
+.about-modal-content p {
+    margin: 0 0 16px;
+    line-height: 1.6;
+    font-size: 0.95rem;
+    color: rgba(44, 43, 42, 0.9);
+}
+
+.about-modal-content strong {
+    font-weight: bold;
+}
+
+.about-modal-content ul,
+ol {
+    padding-left: 20px;
+    margin: 10px 0;
+}
+
+.about-modal-content li {
+    margin-bottom: 12px;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+/* Status indicator styles */
+.status-indicator-wrapper {
+    display: flex;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.about-status-indicator {
+    width: 16px;
+    height: 16px;
+    margin-right: 8px;
+    border: 1px solid #666666;
+}
+
+.status-list li {
+    list-style-type: none;
+    padding-left: 0;
+}
+
+.status-list {
+    padding-left: 0;
+}
+
+/* Modal Footer */
+.about-modal-footer {
+    padding: 24px 32px;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    display: flex;
+    justify-content: flex-end;
+    background: 
+        linear-gradient(135deg, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0.6) 100%);
+    backdrop-filter: blur(20px);
+    border-radius: 0 0 24px 24px;
+}
+
+.code-block {
+    background-color: #222222;
+    color: #ffffff;
+    border: 1px solid #444444;
+    border-radius: 0;
+    padding: 10px;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    font-size: 0.9rem;
+    margin: 10px 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-x: auto;
+}
+
+.about-button {
+    padding: 12px 24px;
+    background: linear-gradient(135deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.9) 100%);
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 12px;
+    cursor: pointer;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: #ffffff !important;
+    -webkit-appearance: none;
+    appearance: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-fill-color: #ffffff;
+    box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.about-button::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+    transition: left 0.5s;
+}
+
+.about-button:hover::before {
+    left: 100%;
+}
+
+.about-button:hover,
+.about-button:focus,
+.about-button:active,
+.about-button:visited {
+    background: linear-gradient(135deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 1) 100%);
+    transform: translateY(-2px) scale(1.05);
+    box-shadow: 
+        0 8px 24px rgba(0, 0, 0, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff;
+    text-decoration: none;
+}
+
+
+/* Mobile optimizations */
+@media (max-width: 768px) {
+    .about-modal {
+        max-width: 95%;
+    }
+
+    .about-modal-header h2 {
+        font-size: 1rem;
+    }
+
+    .about-modal-content {
+        padding: 16px;
+    }
+
+    .about-modal-content p,
+    .about-modal-content li {
+        font-size: 0.8rem;
+    }
+}

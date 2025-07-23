@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 seismicbft-types.workspace = true
+quartz-client = {path = "../client"}
 
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true

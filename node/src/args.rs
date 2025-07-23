@@ -91,6 +91,9 @@ pub struct Flags {
         default_value_t = String::from("quartz")
     )]
     pub db_prefix: String,
+
+    #[arg(long)]
+    pub indexer_url: Option<String>,
 }
 
 impl Command {
@@ -115,6 +118,7 @@ impl Command {
             flags.key_path.clone(),
             peers.clone(),
             flags.db_prefix.clone(),
+            flags.indexer_url.clone(),
         )
         .unwrap();
 
@@ -241,6 +245,7 @@ pub fn run_node_with_runtime(
         flags.key_path.clone(),
         peers.clone(),
         flags.db_prefix.clone(),
+        flags.indexer_url.clone(),
     )
     .unwrap();
 

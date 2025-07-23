@@ -49,6 +49,8 @@ pub struct EngineConfig {
 
     pub engine_url: String,
     pub engine_jwt: String,
+
+    pub indexer_url: Option<String>,
 }
 
 impl EngineConfig {
@@ -58,6 +60,7 @@ impl EngineConfig {
         key_path: String,
         participants: Vec<PublicKey>,
         db_prefix: String,
+        indexer_url: Option<String>,
     ) -> Result<Self> {
         // read JWT from file
         let jwt_path = get_expanded_path(&engine_jwt_path)?;
@@ -86,6 +89,7 @@ impl EngineConfig {
             fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(FETCH_RATE_P2P).unwrap()),
             engine_url,
             engine_jwt,
+            indexer_url,
         })
     }
 }

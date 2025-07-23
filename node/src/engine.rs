@@ -74,6 +74,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics> Engine<E
             mailbox_size: cfg.mailbox_size,
             backfill_quota: cfg.backfill_quota,
             activity_timeout: cfg.activity_timeout,
+            indexer: cfg.indexer_url,
         };
         let (syncer, syncer_mailbox, orchestrator) =
             seismicbft_syncer::Actor::new(context.with_label("syncer"), syncer_config).await;

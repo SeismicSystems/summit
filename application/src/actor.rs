@@ -280,15 +280,12 @@ fn handle_verify(block: &Block, parent: Block) -> bool {
         return false;
     }
     if block.parent != parent.digest {
-        tracing::error!("2");
         return false;
     }
     if block.height != parent.height + 1 {
-        tracing::error!("3");
         return false;
     }
     if block.timestamp <= parent.timestamp {
-        tracing::error!("4");
         return false;
     }
     true
