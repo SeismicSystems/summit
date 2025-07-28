@@ -389,4 +389,13 @@ mod test {
 
         assert_eq!(block, decoded);
     }
+
+    #[test]
+    fn test_serialization() {
+        let block = Block::genesis([0; 32]);
+
+        let bytes = block.encode();
+
+        Block::decode(bytes).unwrap();
+    }
 }

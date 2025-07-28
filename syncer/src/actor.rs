@@ -618,3 +618,53 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
         }
     }
 }
+// #[test]
+// fn test() {
+//     use commonware_runtime::Runner;
+//     // Initialize runtime
+//     let cfg = commonware_runtime::tokio::Config::default()
+//         .with_tcp_nodelay(Some(true))
+//         .with_worker_threads(4)
+//         .with_storage_directory("./test")
+//         .with_catch_panics(false);
+//     let executor = commonware_runtime::tokio::Runner::new(cfg);
+
+//     executor.start(|context| async move {
+//         let mut block_archive = Archive::init(
+//             context.with_label("verified_archive"),
+//             archive::immutable::Config {
+//                 metadata_partition: format!("{}-block-metadata", "test"),
+//                 freezer_table_partition: format!("{}-block-table", "test"),
+//                 freezer_table_initial_size: 65_536,
+//                 freezer_table_resize_frequency: 4,
+//                 freezer_table_resize_chunk_size: 16_384,
+//                 freezer_journal_partition: format!("{}-block-journal", "test"),
+//                 freezer_journal_target_size: 1024,
+//                 freezer_journal_compression: None,
+//                 ordinal_partition: format!("{}-block-ordinal", "test"),
+//                 items_per_section: 1024,
+//                 write_buffer: 1024,
+//                 replay_buffer: 1024,
+//                 codec_config: (),
+//             },
+//         )
+//         .await
+//         .unwrap();
+
+//         let block = Block::genesis([0; 32]);
+//         println!("Start encode size: {}", block.encode_size());
+//         let field: Vec<u64> = (0..10000).collect();
+
+//         let mut blake = commonware_cryptography::Blake3::default();
+//         blake.update(&[1; 32]);
+//         let hash = blake.finalize();
+//         println!("HASH: {}", hash);
+//         block_archive.put(0, hash, block).await.unwrap();
+
+//         let ret_block = block_archive
+//             .get(Identifier::Index(0))
+//             .await
+//             .unwrap()
+//             .unwrap();
+//     });
+// }
