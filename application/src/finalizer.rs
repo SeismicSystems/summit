@@ -29,7 +29,7 @@ pub struct Finalizer<R: Storage + Metrics + Clock + Spawner + governor::clock::C
 
     height_notifier: HeightNotifier,
 
-    metadata: Metadata<R, FixedBytes<1>>,
+    metadata: Metadata<R, FixedBytes<1>, u64>,
 
     height_notify_mailbox: mpsc::Receiver<(u64, oneshot::Sender<()>)>,
 
@@ -46,25 +46,17 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Fina
         db_prefix: String,
     ) -> (Self, mpsc::Sender<(u64, oneshot::Sender<()>)>) {
         // Initialize finalizer metadata
-        let metadata = Metadata::init(
+        let metadata: Metadata<R, FixedBytes<1>, u64> = Metadata::init(
             context.with_label("finalizer_metadata"),
             metadata::Config {
                 partition: format!("{}-finalizer_metadata", db_prefix),
+                codec_config: (),
             },
         )
         .await
         .expect("Failed to initialize finalizer metadata");
 
-        let last_indexed = if let Some(bytes) = metadata.get(&FixedBytes::new(LATEST_KEY)) {
-            u64::from_be_bytes(
-                bytes
-                    .to_vec()
-                    .try_into()
-                    .expect("Malformed finalizer metadata"),
-            )
-        } else {
-            0
-        };
+        let last_indexed = *metadata.get(&FixedBytes::new(LATEST_KEY)).unwrap_or(&0);
 
         let (tx_height_notify, height_notify_mailbox) = mpsc::channel(1000);
 
@@ -123,8 +115,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Fina
 
                         *self.forkchoice.lock().expect("poisoned") = forkchoice;
 
-                        self.metadata
-                            .put(latest_key.clone(), next.to_be_bytes().to_vec());
+                        self.metadata.put(latest_key.clone(), next);
                         self.metadata
                             .sync()
                             .await

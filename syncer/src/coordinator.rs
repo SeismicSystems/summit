@@ -6,13 +6,13 @@ pub struct Coordinator<P: Array> {
     participants: Vec<P>,
 }
 
-impl<P: Array> Coordinator<P> {
+impl<P: commonware_cryptography::PublicKey> Coordinator<P> {
     pub fn new(participants: Vec<P>) -> Self {
         Self { participants }
     }
 }
 
-impl<P: Array> p2p::Coordinator for Coordinator<P> {
+impl<P: commonware_cryptography::PublicKey> p2p::Coordinator for Coordinator<P> {
     type PublicKey = P;
 
     fn peers(&self) -> &Vec<Self::PublicKey> {

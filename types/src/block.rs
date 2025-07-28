@@ -4,7 +4,7 @@ use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
 use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Error, FixedSize as _, Read, ReadExt as _, Write};
+use commonware_codec::{EncodeSize, Error, FixedSize as _, RangeCfg, Read, ReadExt as _, Write};
 use commonware_consensus::simplex::types::{Finalization, Notarization, Viewable};
 use commonware_cryptography::{
     Committable, Digestible, Hasher, Sha256, bls12381::Signature, sha256::Digest,
@@ -168,12 +168,15 @@ impl ssz::Decode for Block {
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
-        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
+        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET * 2
     }
 }
 
 impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
+        let ssz_bytes = &*self.as_ssz_bytes();
+        let bytes_len = ssz_bytes.len() as u32;
+        buf.put(&bytes_len.to_be_bytes()[..]);
         buf.put(&*self.as_ssz_bytes());
     }
 }
@@ -182,7 +185,9 @@ impl Read for Block {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(buf.remaining()).chunk()).map_err(|_| {
+        let len = buf.get_u32();
+
+        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk()).map_err(|_| {
             commonware_codec::Error::Invalid("Block", "Unable to decode bytes for block")
         })
     }
@@ -290,6 +295,32 @@ impl EncodeSize for Finalized {
     }
 }
 
+pub struct CustomStruct {
+    pub field: Vec<u64>,
+}
+
+impl EncodeSize for CustomStruct {
+    fn encode_size(&self) -> usize {
+        self.field.encode_size()
+    }
+}
+
+impl Write for CustomStruct {
+    fn write(&self, buf: &mut impl BufMut) {
+        self.field.write(buf);
+    }
+}
+
+impl Read for CustomStruct {
+    type Cfg = (RangeCfg, ());
+
+    fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
+        Ok(Self {
+            field: Vec::<u64>::read_cfg(buf, cfg).unwrap(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -386,5 +417,11 @@ mod test {
     }
 
     #[test]
-    fn test_serialization() {}
+    fn test_serialization() {
+        let block = Block::genesis([0; 32]);
+
+        let bytes = block.encode();
+
+        let ser = Block::decode(bytes).unwrap();
+    }
 }

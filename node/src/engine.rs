@@ -93,7 +93,6 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics> Engine<E
                 compression: None,
                 mailbox_size: cfg.mailbox_size,
                 namespace: cfg.namespace.clone().as_bytes().to_vec(),
-                replay_concurrency: 1,
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
                 leader_timeout: cfg.leader_timeout,

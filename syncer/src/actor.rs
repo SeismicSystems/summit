@@ -15,8 +15,11 @@ use commonware_p2p::{Receiver, Recipients, Sender, utils::requester};
 use commonware_resolver::{Resolver as _, p2p};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::{
-    archive::{self, Archive, Identifier},
-    index::translator::{EightCap, TwoCap},
+    archive::{
+        self, Archive as _, Identifier, immutable::Archive as ImmutableArchive,
+        prunable::Archive as PrunableArchive,
+    },
+    translator::TwoCap,
 };
 use futures::{StreamExt as _, channel::mpsc};
 use governor::Quota;
@@ -25,7 +28,6 @@ use summit_types::{Block, Digest, Finalized, Notarized, PublicKey, Signature};
 use tracing::{debug, warn};
 
 const REPLAY_BUFFER: usize = 8 * 1024 * 1024;
-const REPLAY_CONCURRENCY: usize = 4;
 const WRITE_BUFFER: usize = 1024 * 1024;
 
 pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock> {
@@ -33,16 +35,16 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
     mailbox: mpsc::Receiver<Message>,
     orchestrator_mailbox: mpsc::Receiver<Orchestration>,
     // Blocks verified stored by view<>digest
-    verified: Archive<TwoCap, R, Digest, Block>,
+    verified: PrunableArchive<TwoCap, R, Digest, Block>,
     // Blocks notarized stored by view<>digest
-    notarized: Archive<TwoCap, R, Digest, Notarized>,
+    notarized: PrunableArchive<TwoCap, R, Digest, Notarized>,
 
     // Finalizations stored by height
-    finalized: Archive<EightCap, R, Digest, Finalization<Signature, Digest>>,
+    finalized: ImmutableArchive<R, Digest, Finalization<Signature, Digest>>,
     // Blocks finalized stored by height
     //
     // We store this separately because we may not have the finalization for a block
-    blocks: Archive<EightCap, R, Digest, Block>,
+    blocks: ImmutableArchive<R, Digest, Block>,
     public_key: PublicKey,
     participants: Vec<PublicKey>,
     mailbox_size: usize,
@@ -56,76 +58,77 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
         let (tx, rx) = mpsc::channel(config.mailbox_size);
 
         // todo: mess with these defaults
-        let verified_archive = Archive::init(
+        let verified_archive = PrunableArchive::init(
             context.with_label("verified_archive"),
-            archive::Config {
+            archive::prunable::Config {
                 translator: TwoCap,
                 partition: format!("{}-verified-archive", config.partition_prefix),
                 compression: None,
                 codec_config: (),
-                section_mask: 0xffff_ffff_ffff_f000u64,
-                pending_writes: 0,
+                items_per_section: 1024,
                 write_buffer: WRITE_BUFFER,
-                replay_concurrency: REPLAY_CONCURRENCY,
                 replay_buffer: REPLAY_BUFFER,
             },
         )
         .await
         .expect("failed to init verified archive");
 
-        // Initialize notarized blocks
-        let notarized_archive = Archive::init(
+        let notarized_archive = PrunableArchive::init(
             context.with_label("notarized_archive"),
-            archive::Config {
-                partition: format!("{}-notarizations", config.partition_prefix),
+            archive::prunable::Config {
                 translator: TwoCap,
-                section_mask: 0xffff_ffff_ffff_f000u64,
-                pending_writes: 0,
-                replay_concurrency: REPLAY_CONCURRENCY,
+                partition: format!("{}-notarized-archive", config.partition_prefix),
                 compression: None,
                 codec_config: (),
-                replay_buffer: REPLAY_BUFFER,
+                items_per_section: 1024,
                 write_buffer: WRITE_BUFFER,
+                replay_buffer: REPLAY_BUFFER,
             },
         )
         .await
-        .expect("Failed to initialize notarized archive");
+        .expect("failed to init verified archive");
 
-        // Initialize finalizations
-        let finalized_archive = Archive::init(
+        let finalized_archive = ImmutableArchive::init(
             context.with_label("finalized_archive"),
-            archive::Config {
-                partition: format!("{}-finalizations", config.partition_prefix),
-                translator: EightCap,
-                section_mask: 0xffff_ffff_fff0_0000u64,
-                pending_writes: 0,
-                replay_concurrency: REPLAY_CONCURRENCY,
-                compression: None,
+            archive::immutable::Config {
+                metadata_partition: format!("{}-finalized-metadata", config.partition_prefix),
+                freezer_table_partition: format!("{}-finalized-table", config.partition_prefix),
+                freezer_table_initial_size: 65_536,
+                freezer_table_resize_frequency: 4,
+                freezer_table_resize_chunk_size: 16_384,
+                freezer_journal_partition: format!("{}-finalized-journal", config.partition_prefix),
+                freezer_journal_target_size: 1024,
+                freezer_journal_compression: None,
+                ordinal_partition: format!("{}-finalized-ordinal", config.partition_prefix),
+                items_per_section: 1024,
+                write_buffer: WRITE_BUFFER,
+                replay_buffer: REPLAY_BUFFER,
                 codec_config: usize::MAX,
-                replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
             },
         )
         .await
-        .expect("Failed to initialize finalized archive");
+        .expect("failed to init verified archive");
 
-        // Initialize blocks
-        let block_archive = Archive::init(
+        let block_archive = ImmutableArchive::init(
             context.with_label("block_archive"),
-            archive::Config {
-                partition: format!("{}-blocks", config.partition_prefix),
-                translator: EightCap,
-                section_mask: 0xffff_ffff_fff0_0000u64,
-                pending_writes: 0,
-                replay_concurrency: REPLAY_CONCURRENCY,
-                compression: None,
-                codec_config: (),
-                replay_buffer: REPLAY_BUFFER,
+            archive::immutable::Config {
+                metadata_partition: format!("{}-block-metadata", config.partition_prefix),
+                freezer_table_partition: format!("{}-block-table", config.partition_prefix),
+                freezer_table_initial_size: 65_536,
+                freezer_table_resize_frequency: 4,
+                freezer_table_resize_chunk_size: 16_384,
+                freezer_journal_partition: format!("{}-block-journal", config.partition_prefix),
+                freezer_journal_target_size: 1024,
+                freezer_journal_compression: None,
+                ordinal_partition: format!("{}-block-ordinal", config.partition_prefix),
+                items_per_section: 1024,
                 write_buffer: WRITE_BUFFER,
+                replay_buffer: REPLAY_BUFFER,
+                codec_config: (),
             },
         )
         .await
-        .expect("Failed to initialize finalized archive");
+        .expect("failed to init verified archive");
 
         let (orchestrator_sender, orchestrator_receiver) = mpsc::channel(2); // buffer to send processed while moving forward
         let orchestrator = Orchestrator::new(orchestrator_sender);
@@ -612,3 +615,53 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
         }
     }
 }
+// #[test]
+// fn test() {
+//     use commonware_runtime::Runner;
+//     // Initialize runtime
+//     let cfg = commonware_runtime::tokio::Config::default()
+//         .with_tcp_nodelay(Some(true))
+//         .with_worker_threads(4)
+//         .with_storage_directory("./test")
+//         .with_catch_panics(false);
+//     let executor = commonware_runtime::tokio::Runner::new(cfg);
+
+//     executor.start(|context| async move {
+//         let mut block_archive = Archive::init(
+//             context.with_label("verified_archive"),
+//             archive::immutable::Config {
+//                 metadata_partition: format!("{}-block-metadata", "test"),
+//                 freezer_table_partition: format!("{}-block-table", "test"),
+//                 freezer_table_initial_size: 65_536,
+//                 freezer_table_resize_frequency: 4,
+//                 freezer_table_resize_chunk_size: 16_384,
+//                 freezer_journal_partition: format!("{}-block-journal", "test"),
+//                 freezer_journal_target_size: 1024,
+//                 freezer_journal_compression: None,
+//                 ordinal_partition: format!("{}-block-ordinal", "test"),
+//                 items_per_section: 1024,
+//                 write_buffer: 1024,
+//                 replay_buffer: 1024,
+//                 codec_config: (),
+//             },
+//         )
+//         .await
+//         .unwrap();
+
+//         let block = Block::genesis([0; 32]);
+//         println!("Start encode size: {}", block.encode_size());
+//         let field: Vec<u64> = (0..10000).collect();
+
+//         let mut blake = commonware_cryptography::Blake3::default();
+//         blake.update(&[1; 32]);
+//         let hash = blake.finalize();
+//         println!("HASH: {}", hash);
+//         block_archive.put(0, hash, block).await.unwrap();
+
+//         let ret_block = block_archive
+//             .get(Identifier::Index(0))
+//             .await
+//             .unwrap()
+//             .unwrap();
+//     });
+// }

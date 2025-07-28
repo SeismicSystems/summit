@@ -111,15 +111,14 @@ impl Command {
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
-        let committee: Vec<(PublicKey, SocketAddr)> = genesis
+        let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
             .validators
             .iter()
             .map(|v| v.try_into().expect("Invalid validator in genesis"))
             .collect();
-
+        committee.sort();
         let engine_url = format!("http://0.0.0.0:{}", flags.engine_port);
-        let mut peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
-        peers.sort();
+        let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
 
         let config = EngineConfig::get_engine_config(
             engine_url,
@@ -187,47 +186,37 @@ impl Command {
 
             // configure network
 
-            let mut p2p_cfg = authenticated::Config::aggressive(
+            let mut p2p_cfg = authenticated::lookup::Config::aggressive(
                 config.signer.clone(),
                 genesis.namespace.as_bytes(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
                 our_ip,
-                committee,
                 genesis.max_message_size_bytes as usize,
             );
             p2p_cfg.mailbox_size = config.mailbox_size;
 
             // Start p2p
             let (mut network, mut oracle) =
-                authenticated::Network::new(context.with_label("network"), p2p_cfg);
+                authenticated::lookup::Network::new(context.with_label("network"), p2p_cfg);
 
             // Provide authorized peers
-            oracle.register(0, peers.clone()).await;
+            oracle.register(0, committee).await;
 
             // Register voter channel
             let voter_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-            let voter = network.register(VOTER_CHANNEL, voter_limit, MESSAGE_BACKLOG, None);
+            let voter = network.register(VOTER_CHANNEL, voter_limit, MESSAGE_BACKLOG);
 
             // Register resolver channel
             let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-            let resolver =
-                network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG, None);
+            let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
 
             // Register broadcast channel
             let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
-            let broadcaster = network.register(
-                BROADCASTER_CHANNEL,
-                broadcaster_limit,
-                MESSAGE_BACKLOG,
-                Some(3),
-            );
+            let broadcaster =
+                network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
 
-            let backfiller = network.register(
-                BACKFILLER_CHANNEL,
-                config.backfill_quota,
-                MESSAGE_BACKLOG,
-                Some(3),
-            );
+            let backfiller =
+                network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
             // Create network
             let p2p = network.start();
@@ -251,15 +240,15 @@ pub fn run_node_with_runtime(
 ) -> Handle<()> {
     let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
-    let committee: Vec<(PublicKey, SocketAddr)> = genesis
+    let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
         .validators
         .iter()
         .map(|v| v.try_into().expect("Invalid validator in genesis"))
         .collect();
+    committee.sort();
 
     let engine_url = format!("http://0.0.0.0:{}", flags.engine_port);
-    let mut peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
-    peers.sort();
+    let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
 
     let config = EngineConfig::get_engine_config(
         engine_url,
@@ -285,46 +274,36 @@ pub fn run_node_with_runtime(
     context.spawn(async move |context| {
         // configure network
 
-        let mut p2p_cfg = authenticated::Config::aggressive(
+        let mut p2p_cfg = authenticated::lookup::Config::aggressive(
             config.signer.clone(),
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
             our_ip,
-            committee,
             genesis.max_message_size_bytes as usize,
         );
         p2p_cfg.mailbox_size = config.mailbox_size;
 
         // Start p2p
         let (mut network, mut oracle) =
-            authenticated::Network::new(context.with_label("network"), p2p_cfg);
+            authenticated::lookup::Network::new(context.with_label("network"), p2p_cfg);
 
         // Provide authorized peers
-        oracle.register(0, peers.clone()).await;
+        oracle.register(0, committee).await;
 
         // Register voter channel
         let voter_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-        let voter = network.register(VOTER_CHANNEL, voter_limit, MESSAGE_BACKLOG, None);
+        let voter = network.register(VOTER_CHANNEL, voter_limit, MESSAGE_BACKLOG);
 
         // Register resolver channel
         let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-        let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG, None);
+        let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
 
         // Register broadcast channel
         let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
-        let broadcaster = network.register(
-            BROADCASTER_CHANNEL,
-            broadcaster_limit,
-            MESSAGE_BACKLOG,
-            Some(3),
-        );
+        let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
 
-        let backfiller = network.register(
-            BACKFILLER_CHANNEL,
-            config.backfill_quota,
-            MESSAGE_BACKLOG,
-            Some(3),
-        );
+        let backfiller =
+            network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
         // Create network
         let p2p = network.start();
