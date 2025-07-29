@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
+pub mod integration;
+
 use alloy_primitives::U256;
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use commonware_cryptography::{bls12381::PrivateKey, PrivateKeyExt};

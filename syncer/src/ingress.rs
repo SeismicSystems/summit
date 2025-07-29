@@ -203,7 +203,7 @@ impl Orchestrator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::{Mailbox, Orchestrator};
     use futures::channel::mpsc;
     use summit_types::Block;
 

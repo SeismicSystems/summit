@@ -26,9 +26,8 @@ impl<P: commonware_cryptography::PublicKey> p2p::Coordinator for Coordinator<P> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::Coordinator;
     use summit_types::PublicKey;
-    use commonware_resolver::p2p::Coordinator;
 
     #[test]
     fn test_coordinator_basic_functionality() {
@@ -36,8 +35,8 @@ mod tests {
         let participants1: Vec<PublicKey> = vec![];
         let participants2: Vec<PublicKey> = vec![];
         
-        let coord1 = super::Coordinator::new(participants1.clone());
-        let coord2 = super::Coordinator::new(participants2);
+        let coord1 = Coordinator::new(participants1.clone());
+        let coord2 = Coordinator::new(participants2);
         
         // Test that it properly implements the p2p::Coordinator trait
         assert_eq!(coord1.peers(), &participants1);

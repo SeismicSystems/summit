@@ -11,6 +11,7 @@ use summit_types::Digest;
 
 const SIZE: usize = u8::SIZE + Digest::SIZE;
 
+#[derive(Clone)]
 pub enum Value {
     Notarized(u64),
     Finalized(u64),
@@ -126,8 +127,8 @@ impl Deref for MultiIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use commonware_codec::{Encode, DecodeExt};
+    use crate::{MultiIndex, Value};
+    use commonware_codec::Encode;
 
     #[test]
     fn test_multi_index_value_serialization_consistency() {
