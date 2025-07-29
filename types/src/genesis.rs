@@ -105,18 +105,26 @@ impl Genesis {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonware_cryptography::PrivateKeyExt;
+    use commonware_cryptography::{PrivateKeyExt, Signer};
     use std::net::{IpAddr, Ipv4Addr};
 
     fn create_test_genesis() -> Genesis {
+        use commonware_cryptography::ed25519::PrivateKey;
+        use commonware_utils::hex;
+        use rand::rngs::OsRng;
+        
+        // Generate proper ed25519 public keys for testing
+        let key1 = PrivateKey::from_rng(&mut OsRng);
+        let key2 = PrivateKey::from_rng(&mut OsRng);
+        
         Genesis {
             validators: vec![
                 Validator {
-                    public_key: "976ab7efaef8a73690b9067690ac7541bc34f74b2543e8db16b5bf63aec487758ca98efdf5c9fcf1154941d8a8a1ec3d".to_string(),
+                    public_key: hex(&key1.public_key()),
                     ip_address: "127.0.0.1:26600".to_string(),
                 },
                 Validator {
-                    public_key: "a4a1b4b8a3fb2c11f4dba5c6c57743554f746d2211cd519c3c980b8d8019f8fa328b97e44e19dcc6150688da5f38fbcd".to_string(),
+                    public_key: hex(&key2.public_key()),
                     ip_address: "127.0.0.1:26610".to_string(),
                 },
             ],
@@ -128,6 +136,7 @@ mod tests {
             skip_timeout_views: 32,
             max_message_size_bytes: 104857600,
             namespace: "_SEISMIC_BFT".to_string(),
+            identity: "test_network".to_string(),
         }
     }
 
@@ -165,8 +174,13 @@ mod tests {
 
     #[test]
     fn test_validator_try_into_success() {
+        use commonware_cryptography::ed25519::PrivateKey;
+        use commonware_utils::hex;
+        use rand::rngs::OsRng;
+        
+        let key = PrivateKey::from_rng(&mut OsRng);
         let validator = Validator {
-            public_key: "976ab7efaef8a73690b9067690ac7541bc34f74b2543e8db16b5bf63aec487758ca98efdf5c9fcf1154941d8a8a1ec3d".to_string(),
+            public_key: hex(&key.public_key()),
             ip_address: "127.0.0.1:26600".to_string(),
         };
 
@@ -192,8 +206,13 @@ mod tests {
 
     #[test]
     fn test_validator_try_into_invalid_ip() {
+        use commonware_cryptography::ed25519::PrivateKey;
+        use commonware_utils::hex;
+        use rand::rngs::OsRng;
+        
+        let key = PrivateKey::from_rng(&mut OsRng);
         let validator = Validator {
-            public_key: "976ab7efaef8a73690b9067690ac7541bc34f74b2543e8db16b5bf63aec487758ca98efdf5c9fcf1154941d8a8a1ec3d".to_string(),
+            public_key: hex(&key.public_key()),
             ip_address: "invalid_ip".to_string(),
         };
 

@@ -5101,6 +5101,7 @@ dependencies = [
  "commonware-utils",
  "ethereum_ssz",
  "ethereum_ssz_derive",
+ "rand 0.8.5",
  "serde",
  "toml",
 ]

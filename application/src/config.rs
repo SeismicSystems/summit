@@ -30,6 +30,13 @@ mod tests {
     use super::*;
 
     fn create_test_config() -> ApplicationConfig {
+        use commonware_cryptography::bls12381::dkg::ops;
+        use commonware_cryptography::bls12381::primitives::variant::MinPk;
+        use rand::rngs::OsRng;
+        
+        // Generate test DKG values
+        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, 1, 1);
+        
         // Create a basic config for testing
         ApplicationConfig {
             participants: vec![], // Empty for basic testing, would be filled in real usage
@@ -38,6 +45,8 @@ mod tests {
             engine_jwt: "0x1234567890abcdef".to_string(),
             partition_prefix: "test".to_string(),
             genesis_hash: [0u8; 32],
+            polynomial,
+            share: shares[0].clone(),
         }
     }
 

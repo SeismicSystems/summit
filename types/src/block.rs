@@ -84,7 +84,7 @@ impl Block {
 }
 
 impl Viewable for Block {
-    fn view(&self) -> commonware_consensus::simplex::types::View {
+    fn view(&self) -> commonware_consensus::threshold_simplex::types::View {
         self.height
     }
 }
@@ -298,8 +298,7 @@ impl EncodeSize for Finalized {
 #[cfg(test)]
 mod test {
     use super::*;
-    use alloy_consensus::{Blob, Block as AlloyBlock, Bytes48, TxEnvelope};
-    use alloy_primitives::{Bytes as AlloyBytes, FixedBytes, U256, fixed_bytes, hex};
+    use alloy_primitives::{Bytes as AlloyBytes, U256, hex};
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
     use commonware_codec::{DecodeExt as _, Encode as _};
     use ssz::Decode;

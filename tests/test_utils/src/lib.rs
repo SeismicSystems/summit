@@ -83,6 +83,7 @@ pub fn create_test_genesis(keys: &[PrivateKey]) -> Genesis {
         skip_timeout_views: 8,
         max_message_size_bytes: 1048576, // 1MB
         namespace: "_TEST_BFT".to_string(),
+        identity: "test_network".to_string(),
     }
 }
 

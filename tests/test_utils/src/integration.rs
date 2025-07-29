@@ -230,7 +230,7 @@ impl ScenarioBuilder {
 
 #[cfg(test)]
 mod tests {
-    use crate::integration::{ConsensusHarness, ConsensusResult, ScenarioBuilder};
+    use crate::integration::{ConsensusHarness, ScenarioBuilder};
 
     #[test]
     fn test_consensus_harness_creation() {
