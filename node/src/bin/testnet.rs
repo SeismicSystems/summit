@@ -147,13 +147,14 @@ fn get_node_flags(node: usize) -> Flags {
 
     Flags {
         key_path: format!("{path}key.pem"),
+        share_path: format!("{path}share.pem"),
         store_path: format!("{path}db"),
         engine_port: 8551,
         engine_jwt_path: "testnet/jwt.hex".into(),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,
         worker_threads: 2,
-        log_level: "info".into(),
+        log_level: "debug".into(),
         db_prefix: format!("{node}-quarts"),
         genesis_path: "./example_genesis.toml".into(),
     }

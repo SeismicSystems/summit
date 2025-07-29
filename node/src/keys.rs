@@ -42,13 +42,23 @@ impl KeySubCmd {
 
     fn show_key(&self, flags: &Flags) {
         let pk =
-            read_bls_key_from_path(&flags.key_path).expect("Unable to read private key from disk");
+            read_ed_key_from_path(&flags.key_path).expect("Unable to read private key from disk");
 
         println!("Your nodes public key is : {}", pk.public_key());
     }
 }
 
-pub fn read_bls_key_from_path(key_path: &str) -> Result<PrivateKey> {
+// pub fn read_bls_key_from_path(key_path: &str) -> Result<PrivateKey> {
+//     let path = get_expanded_path(key_path)?;
+//     let encoded_pk = std::fs::read_to_string(path)?;
+
+//     let key = from_hex_formatted(&encoded_pk).context("Invalid pk format")?;
+//     let pk = PrivateKey::decode(&*key)?;
+
+//     Ok(pk)
+// }
+
+pub fn read_ed_key_from_path(key_path: &str) -> Result<PrivateKey> {
     let path = get_expanded_path(key_path)?;
     let encoded_pk = std::fs::read_to_string(path)?;
 

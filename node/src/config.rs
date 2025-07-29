@@ -1,17 +1,24 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use anyhow::Result;
-use commonware_utils::from_hex_formatted;
+use commonware_codec::{Decode as _, DecodeExt as _};
+use commonware_cryptography::bls12381::primitives::{
+    group::{self, Share},
+    poly::{self, Poly},
+    variant::MinPk,
+};
+use commonware_utils::{from_hex_formatted, quorum};
 use governor::Quota;
-use summit_types::{Genesis, PrivateKey, PublicKey};
+use summit_types::{Genesis, Identity, PrivateKey, PublicKey};
 
-use crate::{keys::read_bls_key_from_path, utils::get_expanded_path};
+use crate::{keys::read_ed_key_from_path, utils::get_expanded_path};
 
 /* DEFAULTS */
-pub const VOTER_CHANNEL: u32 = 0;
-pub const RESOLVER_CHANNEL: u32 = 1;
-pub const BROADCASTER_CHANNEL: u32 = 2;
-pub const BACKFILLER_CHANNEL: u32 = 3;
+pub const PENDING_CHANNEL: u32 = 0;
+pub const RECOVERED_CHANNEL: u32 = 1;
+pub const RESOLVER_CHANNEL: u32 = 2;
+pub const BROADCASTER_CHANNEL: u32 = 3;
+pub const BACKFILLER_CHANNEL: u32 = 4;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const FETCH_CONCURRENT: usize = 4;
@@ -46,6 +53,8 @@ pub struct EngineConfig {
     pub engine_jwt: String,
     pub namespace: String,
     pub genesis_hash: [u8; 32],
+    pub share: Share,
+    pub polynomial: Poly<Identity>,
 }
 
 impl EngineConfig {
@@ -53,6 +62,7 @@ impl EngineConfig {
         engine_url: String,
         engine_jwt_path: String,
         key_path: String,
+        poly_share_path: String,
         participants: Vec<PublicKey>,
         db_prefix: String,
         genesis: &Genesis,
@@ -61,10 +71,19 @@ impl EngineConfig {
         // read JWT from file
         let jwt_path = get_expanded_path(&engine_jwt_path)?;
         let engine_jwt = std::fs::read_to_string(jwt_path)?;
+        let share_path = get_expanded_path(&poly_share_path)?;
+        let share_hex = std::fs::read_to_string(share_path)?;
+
+        let share = from_hex_formatted(&share_hex).expect("invalid format for polynomial share");
+        let share = group::Share::decode(share.as_ref()).expect("Could not parse share");
 
         // read private key from file
-        let signer = read_bls_key_from_path(&key_path)?;
-
+        let signer = read_ed_key_from_path(&key_path)?;
+        let polynomial = from_hex_formatted(&genesis.identity).expect("Could not parse polynomial");
+        let threshold = quorum(participants.len() as u32);
+        let polynomial =
+            poly::Public::<MinPk>::decode_cfg(polynomial.as_ref(), &(threshold as usize))
+                .expect("polynomial is invalid");
         Ok(Self {
             partition_prefix: db_prefix,
             signer,
@@ -89,6 +108,8 @@ impl EngineConfig {
                 .map(|hash_bytes| hash_bytes.try_into())
                 .expect("bad eth_genesis_hash")
                 .expect("bad eth_genesis_hash"),
+            polynomial,
+            share,
         })
     }
 }

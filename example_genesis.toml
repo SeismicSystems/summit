@@ -1,25 +1,25 @@
-# Example Genesis Configuration
 eth_genesis_hash = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616"
 leader_timeout_ms = 2000
 notarization_timeout_ms = 4000
 nullify_timeout_ms = 4000
 activity_timeout_views = 256
 skip_timeout_views = 32
-max_message_size_bytes = 104857600 # 100kb
+max_message_size_bytes = 104857600
 namespace = "_SEISMIC_BFT"
+identity = "85937067a60f02a8f7512a12fe7a07f7721369b9a3b170930cb44f7ae37bb6dd4f6d1fccf7e97ea947ab80bd41faff9bb909f763811465ef05e037647dfa823f6e32045d981e8720cf0e7c649f730dfe680dc121dbe407c5348435c0528425488b7ee04aef7b76e8c69359c57c9653b754126d8be5c86192780c823bf887a30c748b40544d6427755b52a9e4f02ee190"
 
 [[validators]]
-public_key = "976ab7efaef8a73690b9067690ac7541bc34f74b2543e8db16b5bf63aec487758ca98efdf5c9fcf1154941d8a8a1ec3d"
+public_key = "1be3cb06d7cc347602421fb73838534e4b54934e28959de98906d120d0799ef2"
 ip_address = "127.0.0.1:26600"
 
 [[validators]]
-public_key = "a4a1b4b8a3fb2c11f4dba5c6c57743554f746d2211cd519c3c980b8d8019f8fa328b97e44e19dcc6150688da5f38fbcd"
+public_key = "32efa16e3cd62292db529e8f4babd27724b13b397edcf2b1dbe48f416ce40f0d"
 ip_address = "127.0.0.1:26610"
 
 [[validators]]
-public_key = "a311e2573501053c4b0dc00b64462d5d47c787d143a5b3cfe22c16a9023b89734074356ea0ce70ab71fe2042c2e426f5"
+public_key = "ce9b314ac9d55d28bedf543164120eecf737380015c977eaa78d59894bbccf52"
 ip_address = "127.0.0.1:26620"
 
 [[validators]]
-public_key = "890063e7257fb7684d7d82206b416e2eff5d7c3568debe011aaa06c4e897e92eaa3de5c3c4fc6c406ba48c0eb0348be6"
+public_key = "f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226"
 ip_address = "127.0.0.1:26630"
