@@ -1,0 +1,18 @@
+[package]
+name = "real-integration"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+test-utils = { path = "../test_utils" }
+summit = { path = "../../node" }
+anyhow.workspace = true
+std-tokio = { package = "tokio", version = "1.46.0", features = ["full"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+alloy-node-bindings = "0.4"
+reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3.0"
+tracing.workspace = true
+futures.workspace = true
+commonware-runtime = { workspace = true }

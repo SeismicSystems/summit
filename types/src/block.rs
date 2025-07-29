@@ -302,6 +302,7 @@ mod test {
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
     use commonware_codec::{DecodeExt as _, Encode as _};
     use ssz::Decode;
+    /// Test block encode/decode round-trip with transactions.
     #[test]
     fn test_encode_decode() {
         let first_transaction_raw = AlloyBytes::from_static(
@@ -354,6 +355,7 @@ mod test {
         assert_eq!(block, decoded);
     }
 
+    /// Test block encode/decode with empty transaction list.
     #[test]
     fn test_empty_tx_encode_decode() {
         let payload = ExecutionPayloadV3 {
@@ -416,6 +418,7 @@ mod test {
         }
     }
 
+    /// Test block creation via compute_digest.
     #[test]
     fn test_block_creation() {
         let parent = [42u8; 32].into();
@@ -442,6 +445,7 @@ mod test {
         assert_eq!(block.block_value, block_value);
     }
 
+    /// Test genesis block creation and properties.
     #[test]
     fn test_genesis_block() {
         let genesis_hash = [0u8; 32];
@@ -455,6 +459,7 @@ mod test {
         assert!(genesis.execution_requests.is_empty());
     }
 
+    /// Test ETH block hash extraction logic.
     #[test]
     fn test_eth_block_hash() {
         let genesis_hash = [1u8; 32];
@@ -473,6 +478,7 @@ mod test {
         assert_eq!(non_genesis.eth_block_hash(), hex!("a5ddd3f286f429458a39cafc13ffe89295a7efa8eb363cf89a1a4887dbcf272b"));
     }
 
+    /// Test ETH parent hash extraction.
     #[test]
     fn test_eth_parent_hash() {
         let block = Block::compute_digest(
@@ -486,6 +492,7 @@ mod test {
         assert_eq!(block.eth_parent_hash(), hex!("d829192799c73ef28a7332313b3c03af1f2d5da2c36f8ecfafe7a83a3bfb8d1e"));
     }
 
+    /// Test Viewable trait returns block height.
     #[test]
     fn test_viewable_trait() {
         let block = Block::compute_digest(
@@ -499,6 +506,7 @@ mod test {
         assert_eq!(block.view(), 42);
     }
 
+    /// Test Digestible trait returns block digest.
     #[test]
     fn test_digestible_trait() {
         let block = Block::compute_digest(
@@ -513,6 +521,7 @@ mod test {
         assert_eq!(block.digest(), block.digest);
     }
 
+    /// Test Committable trait returns block digest.
     #[test]
     fn test_committable_trait() {
         let block = Block::compute_digest(
@@ -526,6 +535,7 @@ mod test {
         assert_eq!(block.commitment(), block.digest);
     }
 
+    /// Test SSZ serialization round-trip consistency.
     #[test]
     fn test_ssz_encode_decode_round_trip() {
         let block = Block::compute_digest(
@@ -543,6 +553,7 @@ mod test {
         assert_eq!(block, decoded);
     }
 
+    /// Test different blocks produce different digests.
     #[test]
     fn test_block_different_digests() {
         let payload = create_test_payload();
@@ -568,6 +579,7 @@ mod test {
         assert_ne!(block1.digest, block2.digest);
     }
 
+    /// Test Notarized and Finalized wrapper types exist.
     #[test]
     fn test_notarized_and_finalized_types_exist() {
         // Just verify the types exist and can be referenced

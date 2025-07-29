@@ -140,6 +140,7 @@ mod tests {
         }
     }
 
+    /// Test loading genesis config from TOML file.
     #[test]
     fn test_loading_genesis() {
         let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
@@ -149,6 +150,7 @@ mod tests {
         assert_eq!(addresses.len(), 4);
     }
 
+    /// Test validator IP lookup by public key.
     #[test]
     fn test_validator_lookup() {
         let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
@@ -160,6 +162,7 @@ mod tests {
         }
     }
 
+    /// Test validator count function.
     #[test]
     fn test_genesis_validator_count() {
         let genesis = create_test_genesis();
@@ -172,6 +175,7 @@ mod tests {
         assert_eq!(empty_genesis.validator_count(), 0);
     }
 
+    /// Test successful validator conversion to (PublicKey, SocketAddr).
     #[test]
     fn test_validator_try_into_success() {
         use commonware_cryptography::ed25519::PrivateKey;

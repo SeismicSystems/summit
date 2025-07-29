@@ -3,43 +3,6 @@ name = "failure-tests"
 version.workspace = true
 edition.workspace = true
 
-[[test]]
-name = "byzantine_scenarios"
-path = "src/scenarios.rs"
-
 [dependencies]
-summit-types.workspace = true
-summit-syncer.workspace = true
-summit-application.workspace = true
 test-utils = { path = "../test_utils" }
-
 anyhow.workspace = true
-tracing.workspace = true
-tokio = { workspace = true, features = ["test-util", "time", "macros"] }
-futures.workspace = true
-rand.workspace = true
-
-commonware-consensus.workspace = true
-commonware-cryptography.workspace = true
-commonware-runtime.workspace = true
-commonware-macros.workspace = true
-commonware-utils.workspace = true
-commonware-storage.workspace = true
-commonware-p2p.workspace = true
-commonware-broadcast.workspace = true
-commonware-resolver.workspace = true
-
-alloy-provider.workspace = true
-alloy-rpc-types-engine.workspace = true
-alloy-transport-http.workspace = true
-alloy-rpc-client.workspace = true
-alloy-primitives.workspace = true
-
-governor.workspace = true
-tower.workspace = true
-bytes.workspace = true
-serde.workspace = true
-
-tempfile = "3.10.1"
-tracing-test = "0.2.4"
-test-log = "0.2.14"

@@ -1,14 +1,11 @@
-use std::{net::SocketAddr, time::Duration};
+use std::time::Duration;
 
 pub mod integration;
 
-use alloy_primitives::U256;
-use alloy_rpc_types_engine::ExecutionPayloadV3;
 use commonware_cryptography::{bls12381::PrivateKey, PrivateKeyExt};
 use commonware_runtime::tokio;
 use futures_timer::Delay;
-use governor::Quota;
-use summit_types::{Block, Genesis, Validator};
+use summit_types::{Genesis, Validator};
 use tempfile::TempDir;
 
 pub struct TestContext {
@@ -41,11 +38,6 @@ impl TestContext {
         self.temp_dirs.last().unwrap()
     }
 
-    pub fn with_storage_dir(&mut self, temp_dir: &TempDir) -> tokio::Config {
-        self.runtime_config
-            .clone()
-            .with_storage_directory(temp_dir.path().to_path_buf())
-    }
 }
 
 pub fn generate_test_keys(count: usize) -> Vec<PrivateKey> {
@@ -87,59 +79,10 @@ pub fn create_test_genesis(keys: &[PrivateKey]) -> Genesis {
     }
 }
 
-pub fn create_test_block(height: u64, parent_digest: [u8; 32]) -> Block {
-    let payload = create_minimal_execution_payload();
-    
-    Block::compute_digest(
-        parent_digest.into(),
-        height,
-        current_timestamp(),
-        payload,
-        vec![],
-        U256::ZERO,
-    )
-}
 
-pub fn create_minimal_execution_payload() -> ExecutionPayloadV3 {
-    ExecutionPayloadV3 {
-        payload_inner: alloy_rpc_types_engine::ExecutionPayloadV2 {
-            payload_inner: alloy_rpc_types_engine::ExecutionPayloadV1 {
-                parent_hash: [0u8; 32].into(),
-                fee_recipient: [0u8; 20].into(),
-                state_root: [0u8; 32].into(),
-                receipts_root: [0u8; 32].into(),
-                logs_bloom: [0u8; 256].into(),
-                prev_randao: [0u8; 32].into(),
-                block_number: 0,
-                gas_limit: 21000,
-                gas_used: 0,
-                timestamp: current_timestamp(),
-                extra_data: Default::default(),
-                base_fee_per_gas: U256::from(1000000000u64), // 1 gwei
-                block_hash: [0u8; 32].into(),
-                transactions: vec![],
-            },
-            withdrawals: vec![],
-        },
-        blob_gas_used: 0,
-        excess_blob_gas: 0,
-    }
-}
 
-pub fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
 
-pub fn create_test_quota(per_second: u32) -> Quota {
-    governor::Quota::per_second(std::num::NonZeroU32::new(per_second).unwrap())
-}
 
-pub fn create_socket_addr(port: u16) -> SocketAddr {
-    format!("127.0.0.1:{}", port).parse().unwrap()
-}
 
 pub async fn wait_for_condition<F>(mut condition: F, timeout: Duration) -> bool
 where
@@ -189,14 +132,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_create_test_block_increments_height() {
-        let parent = [1u8; 32];
-        let block = create_test_block(10, parent);
-        
-        assert_eq!(block.height, 10);
-        assert_eq!(block.parent.as_ref(), &parent);
-    }
 
     #[test]
     fn test_test_context_creation() {

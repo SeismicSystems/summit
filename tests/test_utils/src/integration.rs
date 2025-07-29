@@ -1,7 +1,5 @@
 use std::{collections::HashMap, time::Duration};
-use anyhow::Result;
 use tempfile::TempDir;
-use summit_types::Block;
 use commonware_cryptography::bls12381::PrivateKey;
 
 use crate::TestContext;
@@ -52,31 +50,8 @@ impl ConsensusHarness {
         }
     }
 
-    /// Take nodes offline (simulates crash failures)
-    pub fn take_nodes_offline(&mut self, node_ids: Vec<usize>) -> &mut Self {
-        for &id in &node_ids {
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.is_online = false;
-            }
-        }
-        self
-    }
 
-    /// Make nodes Byzantine (simulates malicious behavior)  
-    pub fn make_nodes_byzantine(&mut self, node_ids: Vec<usize>) -> &mut Self {
-        for &id in &node_ids {
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.is_byzantine = true;
-            }
-        }
-        self
-    }
 
-    /// Create network partition isolating specified nodes
-    pub fn partition_nodes(&mut self, isolated_nodes: Vec<usize>) -> &mut Self {
-        self.network.create_partition(isolated_nodes);
-        self
-    }
 
     /// Get count of healthy (online + non-Byzantine) nodes
     pub fn healthy_node_count(&self) -> usize {
@@ -93,65 +68,22 @@ impl ConsensusHarness {
         healthy > (2 * total) / 3
     }
 
-    /// Simulate running consensus and return whether it succeeded
-    pub async fn run_consensus(&self, rounds: usize) -> Result<ConsensusResult> {
-        if !self.can_reach_consensus() {
-            return Ok(ConsensusResult::InsufficientNodes);
-        }
-
-        // Simulate consensus rounds
-        let mut finalized_blocks: Vec<Block> = Vec::new();
-        
-        for round in 0..rounds {
-            if self.simulate_consensus_round(round).await? {
-                let block = Block::compute_digest(
-                    if round == 0 { [0u8; 32].into() } else { finalized_blocks[round - 1].digest },
-                    round as u64,
-                    self.current_timestamp(),
-                    crate::create_minimal_execution_payload(),
-                    vec![],
-                    alloy_primitives::U256::ZERO,
-                );
-                finalized_blocks.push(block);
-            } else {
-                return Ok(ConsensusResult::Timeout);
+    /// Make nodes Byzantine (simulates malicious behavior)
+    pub fn make_nodes_byzantine(&mut self, node_ids: Vec<usize>) {
+        for &id in &node_ids {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.is_byzantine = true;
             }
         }
-
-        Ok(ConsensusResult::Success { finalized_blocks })
     }
 
-    /// Simulate a single consensus round
-    async fn simulate_consensus_round(&self, round: usize) -> Result<bool> {
-        let healthy_nodes: Vec<_> = self.nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.is_online && !node.is_byzantine)
-            .collect();
-
-        // Need majority to succeed
-        let required_votes = (healthy_nodes.len() / 2) + 1;
-        
-        // Simulate proposal phase
-        let leader_id = round % healthy_nodes.len();
-        let healthy_node_ids: Vec<usize> = healthy_nodes.iter().map(|(i, _)| *i).collect();
-        if !self.network.can_communicate(leader_id, &healthy_node_ids) {
-            return Ok(false); // Leader partitioned
-        }
-
-        // Simulate voting phase with network conditions
-        let mut votes = 0;
-        for (node_id, _) in &healthy_nodes {
-            if self.network.can_communicate(leader_id, &vec![*node_id]) {
-                votes += 1;
+    /// Take nodes offline (simulates crash failures)
+    pub fn take_nodes_offline(&mut self, node_ids: Vec<usize>) {
+        for &id in &node_ids {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.is_online = false;
             }
         }
-
-        Ok(votes >= required_votes)
-    }
-
-    fn current_timestamp(&self) -> u64 {
-        crate::current_timestamp()
     }
 }
 
@@ -164,27 +96,9 @@ impl TestNetwork {
         }
     }
 
-    fn create_partition(&mut self, isolated_nodes: Vec<usize>) {
-        for &node_id in &isolated_nodes {
-            self.partitions.insert(node_id, vec![]); // Isolated nodes can't communicate
-        }
-    }
 
-    fn can_communicate(&self, from: usize, to_nodes: &[usize]) -> bool {
-        if let Some(allowed) = self.partitions.get(&from) {
-            to_nodes.iter().any(|&to| allowed.contains(&to))
-        } else {
-            true // No partition restrictions
-        }
-    }
 }
 
-#[derive(Debug)]
-pub enum ConsensusResult {
-    Success { finalized_blocks: Vec<Block> },
-    Timeout,
-    InsufficientNodes,
-}
 
 /// Builder for common test scenarios
 pub struct ScenarioBuilder;
@@ -203,13 +117,6 @@ impl ScenarioBuilder {
         harness
     }
 
-    /// Create scenario with f nodes offline (should still reach consensus)
-    pub fn with_offline_minority(f: usize) -> ConsensusHarness {
-        let mut harness = ConsensusHarness::new(3 * f + 1);
-        let offline_nodes: Vec<_> = (0..f).collect();
-        harness.take_nodes_offline(offline_nodes);
-        harness
-    }
 
     /// Create scenario where consensus should fail (too many failures)
     pub fn consensus_impossible(total_nodes: usize, failed_nodes: usize) -> ConsensusHarness {
@@ -219,13 +126,6 @@ impl ScenarioBuilder {
         harness
     }
 
-    /// Create network partition scenario
-    pub fn network_partition(total_nodes: usize, partition_size: usize) -> ConsensusHarness {
-        let mut harness = ConsensusHarness::new(total_nodes);
-        let isolated_nodes: Vec<_> = (0..partition_size).collect();
-        harness.partition_nodes(isolated_nodes);
-        harness
-    }
 }
 
 #[cfg(test)]

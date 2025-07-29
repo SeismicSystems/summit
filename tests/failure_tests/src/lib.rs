@@ -1,1 +1,1 @@
-pub mod scenarios;
+pub mod byzantine_scenarios;

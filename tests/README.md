@@ -7,6 +7,7 @@ This directory contains integration tests for the Summit consensus client organi
 - `test_utils/` - Shared test utilities and helper functions
 - `consensus_tests/` - Core consensus mechanism tests 
 - `failure_tests/` - Byzantine behavior and failure scenario tests
+- `real_integration/` - Multi-process integration tests with real node binaries
 
 ## 🧪 Test Command Reference
 
@@ -31,6 +32,10 @@ cargo test -- --test-threads=1
 ```bash
 # Run all integration tests
 cargo test -p consensus-tests
+cargo test -p failure-tests
+
+# Run real integration tests (spawns actual node processes)
+cargo test -p real-integration -- --ignored
 
 # Run specific integration test files
 cargo test --test consensus_integration
@@ -39,6 +44,7 @@ cargo test --test multi_node_tests
 # Run a specific integration test function
 cargo test -p consensus-tests test_single_node_basic_setup
 cargo test -p consensus-tests test_bft_node_count_boundary
+cargo test -p real-integration test_multi_reth_startup -- --ignored
 ```
 
 ### **Per-Crate Test Commands**
@@ -52,6 +58,7 @@ cargo test -p summit-application
 # Test infrastructure
 cargo test -p test-utils
 cargo test -p failure-tests
+cargo test -p real-integration
 
 # Node binary tests
 cargo test -p summit
@@ -120,8 +127,12 @@ cargo test -p summit-syncer # if working on consensus
 
 # 4. Integration tests after major changes
 cargo test -p consensus-tests
+cargo test -p failure-tests
 
-# 5. Debug specific failing test
+# 5. Real multi-process tests (requires node binaries)
+cargo test -p real-integration -- --ignored
+
+# 6. Debug specific failing test
 cargo test test_name -- --nocapture --test-threads=1
 ```
 
@@ -163,6 +174,43 @@ The `test_utils` crate provides:
 - `create_test_block()` - Creates valid test blocks
 - `wait_for_condition()` - Async condition waiting helper
 
+## Real Integration Tests
+
+The `real_integration/` crate contains tests that spawn actual node processes to test distributed consensus:
+
+### Key Features
+- **External Client Simulation**: Tests simulate external clients (not consensus nodes) sending transactions
+- **Multi-Process Testing**: Spawns real Reth node binaries and Summit consensus processes  
+- **Genesis File Integration**: Uses pre-funded accounts from `testnet/dev.json`
+- **Consensus Verification**: Verifies that all nodes reach agreement on block hashes and transaction inclusion
+
+### Running Real Integration Tests
+```bash
+# Run all real integration tests (requires node binaries)
+cargo test -p real-integration -- --ignored
+
+# Test external clients sending transactions to consensus network
+cargo test -p real-integration test_external_clients_to_consensus_network -- --ignored
+
+# Test that clients can send to any node and still reach consensus
+cargo test -p real-integration test_client_node_agnostic_consensus -- --ignored
+```
+
+### Prerequisites
+- Reth binary available in PATH
+- Must be run from project root directory (needs access to `testnet/dev.json`)
+- Available network ports for node communication
+- Sufficient disk space for temporary node data
+
+### External Client Testing Philosophy
+These tests simulate the real-world scenario where:
+1. **External clients** (users, applications) send transactions to consensus nodes
+2. **Consensus nodes** receive transactions via JSON-RPC and include them in blocks
+3. **All nodes** must agree on the same block content and ordering
+4. **Transaction propagation** works regardless of which node receives the transaction
+
+This accurately reflects how blockchain networks operate, where external entities interact with the consensus layer through well-defined interfaces.
+
 ## Contributing
 
 When adding new tests:
@@ -172,4 +220,5 @@ When adding new tests:
 3. Keep tests focused on single scenarios
 4. Add appropriate timeout handling for async operations
 5. Include both positive and negative test cases
-6. Update this README when adding new test categories
+6. For real integration tests, ensure external clients (not nodes) send transactions
+7. Update this README when adding new test categories

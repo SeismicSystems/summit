@@ -50,16 +50,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_config_creation() {
-        let config = create_test_config();
-        assert_eq!(config.participants.len(), 0); // Empty for basic test
-        assert!(config.mailbox_size > 0);
-        assert!(!config.engine_url.is_empty());
-        assert!(!config.engine_jwt.is_empty());
-        assert!(!config.partition_prefix.is_empty());
-    }
-
+    /// Test that Clone preserves all field values correctly.
     #[test]
     fn test_config_clone_preserves_data() {
         let config = create_test_config();

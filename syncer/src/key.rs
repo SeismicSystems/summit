@@ -130,6 +130,7 @@ mod tests {
     use crate::key::{MultiIndex, Value};
     use commonware_codec::{Encode, DecodeExt};
 
+    /// Test value types serialize to distinct byte patterns.
     #[test]
     fn test_multi_index_value_serialization_consistency() {
         // Test that different value types serialize to different byte patterns
@@ -148,6 +149,7 @@ mod tests {
         assert_eq!(digest.as_ref()[0], 2);
     }
 
+    /// Test serialization/deserialization round-trip stability.
     #[test]
     fn test_multi_index_wire_format_stability() {
         // Test that the wire format is stable across serialization/deserialization
@@ -167,6 +169,7 @@ mod tests {
         }
     }
 
+    /// Test consensus ordering: Notarized < Finalized < Digest.
     #[test]
     fn test_multi_index_ordering_semantics() {
         // Test that ordering follows consensus semantics: Notarized < Finalized < Digest
@@ -185,6 +188,7 @@ mod tests {
         assert!(digest_zero < digest_max, "Digest ordering should work lexicographically");
     }
 
+    /// Test heights use big-endian encoding for lexicographic ordering.
     #[test]
     fn test_multi_index_big_endian_height_encoding() {
         // Test that heights are encoded in big-endian for proper lexicographic ordering

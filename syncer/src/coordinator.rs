@@ -30,6 +30,7 @@ mod tests {
     use commonware_resolver::p2p::Coordinator as P2PCoordinator;
     use summit_types::PublicKey;
 
+    /// Test Coordinator creation and trait implementation.
     #[test]
     fn test_coordinator_basic_functionality() {
         // Create some basic coordinators with empty participant lists for testing
