@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use crate::registry::Registry;
 use crate::{
     Orchestration, Orchestrator,
     handler::Handler,
@@ -12,8 +13,8 @@ use commonware_consensus::threshold_simplex::types::{Finalization, Viewable as _
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_macros::select;
 use commonware_p2p::{Receiver, Recipients, Sender, utils::requester};
-use commonware_resolver::{Resolver as _, p2p};
 use commonware_resolver::p2p::Coordinator;
+use commonware_resolver::{Resolver as _, p2p};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::{
     archive::{
@@ -27,7 +28,6 @@ use governor::Quota;
 use rand::Rng;
 use summit_types::{Block, Digest, Finalized, Identity, Notarized, PublicKey};
 use tracing::{debug, warn};
-use crate::registry::Registry;
 
 const REPLAY_BUFFER: usize = 8 * 1024 * 1024;
 const WRITE_BUFFER: usize = 1024 * 1024;
