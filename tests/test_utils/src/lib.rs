@@ -103,15 +103,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::{create_test_genesis, generate_test_keys, TestContext};
 
+
+    /// Just verify we generated the right number of keys
     #[test]
     fn test_generate_test_keys_creates_unique_keys() {
         let keys = generate_test_keys(4);
         assert_eq!(keys.len(), 4);
-        
-        // Just verify we generated the right number of keys
-        // In a real implementation, we would properly compare the keys
     }
 
     #[test]
@@ -122,7 +121,6 @@ mod tests {
         assert_eq!(genesis.validator_count(), 3);
         assert_eq!(genesis.namespace, "_TEST_BFT");
         
-        // The genesis should have 3 validators
         assert_eq!(genesis.validators.len(), 3);
         
         // Each validator should have a unique port

@@ -108,6 +108,28 @@ mod tests {
     use commonware_cryptography::{PrivateKeyExt, Signer};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Test loading genesis config from TOML file.
+    #[test]
+    fn test_loading_genesis() {
+        let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        assert_eq!(genesis.validator_count(), 4);
+
+        let addresses = genesis.get_validator_addresses().unwrap();
+        assert_eq!(addresses.len(), 4);
+    }
+
+    /// Test validator IP lookup by public key.
+    #[test]
+    fn test_validator_lookup() {
+        let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        let addresses = genesis.get_validator_addresses().unwrap();
+
+        for (pub_key, expected_addr) in &addresses {
+            let found_addr = genesis.ip_of(pub_key);
+            assert_eq!(found_addr, Some(*expected_addr));
+        }
+    }
+
     fn create_test_genesis() -> Genesis {
         use commonware_cryptography::ed25519::PrivateKey;
         use commonware_utils::hex;
@@ -137,28 +159,6 @@ mod tests {
             max_message_size_bytes: 104857600,
             namespace: "_SEISMIC_BFT".to_string(),
             identity: "test_network".to_string(),
-        }
-    }
-
-    /// Test loading genesis config from TOML file.
-    #[test]
-    fn test_loading_genesis() {
-        let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        assert_eq!(genesis.validator_count(), 4);
-
-        let addresses = genesis.get_validator_addresses().unwrap();
-        assert_eq!(addresses.len(), 4);
-    }
-
-    /// Test validator IP lookup by public key.
-    #[test]
-    fn test_validator_lookup() {
-        let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        let addresses = genesis.get_validator_addresses().unwrap();
-
-        for (pub_key, expected_addr) in &addresses {
-            let found_addr = genesis.ip_of(pub_key);
-            assert_eq!(found_addr, Some(*expected_addr));
         }
     }
 

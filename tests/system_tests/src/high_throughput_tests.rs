@@ -386,7 +386,7 @@ impl HighThroughputTest {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::high_throughput_tests::HighThroughputTest;
 
     #[test]
     fn test_recipient_pool_generation() {
