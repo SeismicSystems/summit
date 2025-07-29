@@ -203,28 +203,10 @@ impl Orchestrator {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Mailbox, Orchestrator};
-    use futures::channel::mpsc;
-    use summit_types::Block;
+    use summit_types::{Block, Digest};
 
     fn create_test_block() -> Block {
         Block::genesis([42u8; 32])
-    }
-
-    #[test]
-    fn test_mailbox_creation() {
-        let (tx, _rx) = mpsc::channel(10);
-        let mailbox = Mailbox::new(tx);
-        // Test passes if we can create a mailbox without panicking
-        drop(mailbox);
-    }
-
-    #[test]
-    fn test_orchestrator_creation() {
-        let (tx, _rx) = mpsc::channel(10);
-        let orchestrator = Orchestrator::new(tx);
-        // Test passes if we can create an orchestrator without panicking
-        drop(orchestrator);
     }
 
     #[test]

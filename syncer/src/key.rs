@@ -127,8 +127,8 @@ impl Deref for MultiIndex {
 
 #[cfg(test)]
 mod tests {
-    use crate::{MultiIndex, Value};
-    use commonware_codec::Encode;
+    use crate::key::{MultiIndex, Value};
+    use commonware_codec::{Encode, DecodeExt};
 
     #[test]
     fn test_multi_index_value_serialization_consistency() {

@@ -26,7 +26,8 @@ impl<P: commonware_cryptography::PublicKey> p2p::Coordinator for Coordinator<P> 
 
 #[cfg(test)]
 mod tests {
-    use crate::Coordinator;
+    use crate::coordinator::Coordinator;
+    use commonware_resolver::p2p::Coordinator as P2PCoordinator;
     use summit_types::PublicKey;
 
     #[test]

@@ -1,12 +1,10 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 use anyhow::Result;
 use tempfile::TempDir;
-use summit_types::{Block, Genesis, PublicKey};
+use summit_types::Block;
 use commonware_cryptography::bls12381::PrivateKey;
-use commonware_runtime::tokio;
-use futures::future::try_join_all;
 
-use crate::{TestContext, wait_for_condition};
+use crate::TestContext;
 
 /// High-level integration test harness for multi-node consensus scenarios
 pub struct ConsensusHarness {
@@ -232,7 +230,7 @@ impl ScenarioBuilder {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ConsensusHarness, ConsensusResult, ScenarioBuilder};
+    use crate::integration::{ConsensusHarness, ConsensusResult, ScenarioBuilder};
 
     #[test]
     fn test_consensus_harness_creation() {
