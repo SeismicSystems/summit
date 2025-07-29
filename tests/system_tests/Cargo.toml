@@ -1,5 +1,5 @@
 [package]
-name = "real-integration"
+name = "system-tests"
 version.workspace = true
 edition.workspace = true
 

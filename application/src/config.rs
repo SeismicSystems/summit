@@ -27,12 +27,13 @@ pub struct ApplicationConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use commonware_cryptography::bls12381::dkg::ops;
+    use commonware_cryptography::bls12381::primitives::variant::MinPk;
+    use rand::rngs::OsRng;
 
+    use crate::ApplicationConfig;
+    
     fn create_test_config() -> ApplicationConfig {
-        use commonware_cryptography::bls12381::dkg::ops;
-        use commonware_cryptography::bls12381::primitives::variant::MinPk;
-        use rand::rngs::OsRng;
         
         // Generate test DKG values
         let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, 1, 1);

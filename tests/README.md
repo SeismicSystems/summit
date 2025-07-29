@@ -7,7 +7,7 @@ This directory contains integration tests for the Summit consensus client organi
 - `test_utils/` - Shared test utilities and helper functions
 - `consensus_tests/` - Core consensus mechanism tests 
 - `failure_tests/` - Byzantine behavior and failure scenario tests
-- `real_integration/` - Multi-process integration tests with real node binaries
+- `system_tests/` - Multi-process integration tests with real node binaries
 
 ## 🧪 Test Command Reference
 
@@ -35,7 +35,7 @@ cargo test -p consensus-tests
 cargo test -p failure-tests
 
 # Run real integration tests (spawns actual node processes)
-cargo test -p real-integration -- --ignored
+cargo test -p system-tests -- --ignored
 
 # Run specific integration test files
 cargo test --test consensus_integration
@@ -44,7 +44,7 @@ cargo test --test multi_node_tests
 # Run a specific integration test function
 cargo test -p consensus-tests test_single_node_basic_setup
 cargo test -p consensus-tests test_bft_node_count_boundary
-cargo test -p real-integration test_multi_reth_startup -- --ignored
+cargo test -p system-tests test_multi_reth_startup -- --ignored
 ```
 
 ### **Per-Crate Test Commands**
@@ -58,7 +58,7 @@ cargo test -p summit-application
 # Test infrastructure
 cargo test -p test-utils
 cargo test -p failure-tests
-cargo test -p real-integration
+cargo test -p system-tests
 
 # Node binary tests
 cargo test -p summit
@@ -130,7 +130,7 @@ cargo test -p consensus-tests
 cargo test -p failure-tests
 
 # 5. Real multi-process tests (requires node binaries)
-cargo test -p real-integration -- --ignored
+cargo test -p system-tests -- --ignored
 
 # 6. Debug specific failing test
 cargo test test_name -- --nocapture --test-threads=1
@@ -176,24 +176,32 @@ The `test_utils` crate provides:
 
 ## Real Integration Tests
 
-The `real_integration/` crate contains tests that spawn actual node processes to test distributed consensus:
+The `system_tests/` crate contains tests that spawn actual node processes to test distributed consensus:
 
 ### Key Features
 - **External Client Simulation**: Tests simulate external clients (not consensus nodes) sending transactions
 - **Multi-Process Testing**: Spawns real Reth node binaries and Summit consensus processes  
 - **Genesis File Integration**: Uses pre-funded accounts from `testnet/dev.json`
 - **Consensus Verification**: Verifies that all nodes reach agreement on block hashes and transaction inclusion
+- **High-Throughput Testing**: Sustained transaction load tests running 1+ minutes with 1000+ transactions
+- **Concurrent Client Testing**: Multiple clients sending transactions simultaneously to test parallelism
 
 ### Running Real Integration Tests
 ```bash
 # Run all real integration tests (requires node binaries)
-cargo test -p real-integration -- --ignored
+cargo test -p system-tests -- --ignored
 
 # Test external clients sending transactions to consensus network
-cargo test -p real-integration test_external_clients_to_consensus_network -- --ignored
+cargo test -p system-tests test_external_clients_to_consensus_network -- --ignored
 
 # Test that clients can send to any node and still reach consensus
-cargo test -p real-integration test_client_node_agnostic_consensus -- --ignored
+cargo test -p system-tests test_client_node_agnostic_consensus -- --ignored
+
+# High-throughput stress tests (run for 1+ minutes with 1000+ transactions)
+RUST_LOG=info cargo test -p system-tests sustained_high_throughput -- --ignored --nocapture
+
+# Concurrent client load tests
+RUST_LOG=info cargo test -p system-tests concurrent_client_load -- --ignored --nocapture
 ```
 
 ### Prerequisites
@@ -210,6 +218,42 @@ These tests simulate the real-world scenario where:
 4. **Transaction propagation** works regardless of which node receives the transaction
 
 This accurately reflects how blockchain networks operate, where external entities interact with the consensus layer through well-defined interfaces.
+
+### High-Throughput Stress Testing
+
+The `high_throughput_tests.rs` module provides sustained load testing capabilities:
+
+#### Features
+- **Sustained Load**: Tests run for minimum duration (60+ seconds) while sending continuous transactions
+- **Minimum Transaction Guarantees**: Ensures at least N transactions (typically 1000+) are processed
+- **Concurrent Clients**: Simulates multiple external clients sending transactions simultaneously  
+- **Transaction Verification**: Confirms transactions are included in blocks and achieve consensus
+- **Performance Metrics**: Tracks transaction rates, inclusion rates, and consensus timing
+
+#### Example Usage
+```rust
+// Create a high-throughput test with 4 nodes
+let test = HighThroughputTest::new(4).await?;
+
+// Run sustained load: 60 seconds minimum, 1000+ transactions minimum
+test.test_sustained_high_throughput(60, 1000).await?;
+
+// Test concurrent clients: 10 clients, 200 transactions each
+test.test_concurrent_client_load(10, 200).await?;
+```
+
+#### Key Test Scenarios
+1. **1-Minute Load Test**: 60 seconds, 1000+ transactions, validates basic sustained throughput
+2. **Extended Load Test**: 120+ seconds, 2000+ transactions, tests longer-term stability  
+3. **Concurrent Client Test**: Multiple clients sending transactions simultaneously
+4. **Extreme Load Test**: 300+ seconds, 5000+ transactions, stress tests system limits
+
+#### Verification Criteria
+- ✅ Test duration meets minimum requirement
+- ✅ Transaction count meets minimum threshold  
+- ✅ Transaction inclusion rate ≥ 80%
+- ✅ All nodes maintain consensus throughout test
+- ✅ Block consistency verified across all nodes
 
 ## Contributing
 
