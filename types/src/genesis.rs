@@ -35,6 +35,8 @@ pub struct Genesis {
     pub max_message_size_bytes: u64,
     /// Prefix for all signed messages to prevent replay attacks.
     pub namespace: String,
+    /// network polynomial identity
+    pub identity: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

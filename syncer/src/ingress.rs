@@ -1,13 +1,13 @@
 use commonware_consensus::{
     Reporter,
-    simplex::types::{Finalization, Notarization},
+    threshold_simplex::types::{Finalization, Notarization},
 };
-use commonware_cryptography::sha256::Digest;
+use commonware_cryptography::{bls12381::primitives::variant::MinPk, sha256::Digest};
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
 };
-use summit_types::{Activity, Block, Signature};
+use summit_types::{Activity, Block};
 use tracing::debug;
 
 pub enum Message {
@@ -27,11 +27,11 @@ pub enum Message {
     },
 
     Finalize {
-        finalization: Finalization<Signature, Digest>,
+        finalization: Finalization<MinPk, Digest>,
     },
 
     Notarize {
-        notarization: Notarization<Signature, Digest>,
+        notarization: Notarization<MinPk, Digest>,
     },
 }
 

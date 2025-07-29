@@ -91,7 +91,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 genesis_hash,
             },
             Mailbox::new(tx),
-            Supervisor::new(cfg.participants),
+            Supervisor::new(cfg.participants, cfg.polynomial, cfg.share),
         )
     }
 

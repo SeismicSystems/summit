@@ -6,7 +6,7 @@ pub mod coordinator;
 pub mod handler;
 pub mod key;
 
-use summit_types::PublicKey;
+use summit_types::{Identity, PublicKey};
 
 /// Configuration for the syncer.
 pub struct Config {
@@ -24,4 +24,6 @@ pub struct Config {
     pub activity_timeout: u64,
 
     pub namespace: String,
+
+    pub identity: Identity,
 }

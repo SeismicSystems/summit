@@ -15,8 +15,8 @@ use tracing::{Level, error};
 
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, RESOLVER_CHANNEL,
-        VOTER_CHANNEL,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
+        RECOVERED_CHANNEL, RESOLVER_CHANNEL,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -26,6 +26,7 @@ use crate::{
 //use crate::keys::KeySubCmd;
 
 pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
+pub const DEFAULT_SHARE_PATH: &str = "~/.seismic/consensus/share.pem";
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
 #[derive(Parser, Debug)]
@@ -57,6 +58,9 @@ pub struct Flags {
     /// Path to your private key or where you want it generated
     #[arg(long, default_value_t = DEFAULT_KEY_PATH.into())]
     pub key_path: String,
+    /// path to this nodes polynomial share
+    #[arg(long, default_value_t = DEFAULT_SHARE_PATH.into())]
+    pub share_path: String,
     /// Path to the folder we will keep the consensus DB
     #[arg(long, default_value_t = DEFAULT_DB_FOLDER.into())]
     pub store_path: String,
@@ -124,6 +128,7 @@ impl Command {
             engine_url,
             flags.engine_jwt_path.clone(),
             flags.key_path.clone(),
+            flags.share_path.clone(),
             peers.clone(),
             flags.db_prefix.clone(),
             &genesis,
@@ -202,9 +207,13 @@ impl Command {
             // Provide authorized peers
             oracle.register(0, committee).await;
 
-            // Register voter channel
-            let voter_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-            let voter = network.register(VOTER_CHANNEL, voter_limit, MESSAGE_BACKLOG);
+            // Register pending channel
+            let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
+            let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
+
+            // Register recovered channel
+            let recovered_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
+            let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
 
             // Register resolver channel
             let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
@@ -221,10 +230,10 @@ impl Command {
             // Create network
             let p2p = network.start();
             // create engine
-            let engine = Engine::new(context.with_label("engine"), config).await;
+            let engine = Engine::new(context.with_label("engine"), config, oracle).await;
 
             // Start engine
-            let engine = engine.start(voter, resolver, broadcaster, backfiller);
+            let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
             // Wait for any task to error
             if let Err(e) = try_join_all(vec![p2p, engine]).await {
@@ -254,6 +263,7 @@ pub fn run_node_with_runtime(
         engine_url,
         flags.engine_jwt_path.clone(),
         flags.key_path.clone(),
+        flags.share_path.clone(),
         peers.clone(),
         flags.db_prefix.clone(),
         &genesis,
@@ -290,9 +300,13 @@ pub fn run_node_with_runtime(
         // Provide authorized peers
         oracle.register(0, committee).await;
 
-        // Register voter channel
-        let voter_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-        let voter = network.register(VOTER_CHANNEL, voter_limit, MESSAGE_BACKLOG);
+        // Register pending channel
+        let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
+        let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
+
+        // Register recovered channel
+        let recovered_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
+        let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
 
         // Register resolver channel
         let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
@@ -308,10 +322,10 @@ pub fn run_node_with_runtime(
         // Create network
         let p2p = network.start();
         // create engine
-        let engine = Engine::new(context.with_label("engine"), config).await;
+        let engine = Engine::new(context.with_label("engine"), config, oracle).await;
 
         // Start engine
-        let engine = engine.start(voter, resolver, broadcaster, backfiller);
+        let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
         // Wait for any task to error
         if let Err(e) = try_join_all(vec![p2p, engine]).await {

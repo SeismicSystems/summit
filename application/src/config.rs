@@ -1,4 +1,5 @@
-use summit_types::PublicKey;
+use commonware_cryptography::bls12381::primitives::{group, poly::Poly};
+use summit_types::{Identity, PublicKey};
 
 #[derive(Clone)]
 pub struct ApplicationConfig {
@@ -18,6 +19,10 @@ pub struct ApplicationConfig {
     pub partition_prefix: String,
 
     pub genesis_hash: [u8; 32],
+
+    pub polynomial: Poly<Identity>,
+
+    pub share: group::Share,
 }
 
 #[cfg(test)]

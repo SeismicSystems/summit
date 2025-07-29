@@ -11,6 +11,7 @@ anyhow.workspace = true
 tracing.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
+commonware-codec.workspace = true
 commonware-runtime.workspace = true
 commonware-macros.workspace = true
 commonware-utils.workspace = true
