@@ -8,7 +8,8 @@ use crate::{
 };
 use commonware_broadcast::{Broadcaster as _, buffered};
 use commonware_codec::{DecodeExt as _, Encode as _};
-use commonware_consensus::simplex::types::{Finalization, Viewable as _};
+use commonware_consensus::threshold_simplex::types::{Finalization, Viewable as _};
+use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_macros::select;
 use commonware_p2p::{Receiver, Recipients, Sender, utils::requester};
 use commonware_resolver::{Resolver as _, p2p};
@@ -24,7 +25,7 @@ use commonware_storage::{
 use futures::{StreamExt as _, channel::mpsc};
 use governor::Quota;
 use rand::Rng;
-use summit_types::{Block, Digest, Finalized, Notarized, PublicKey, Signature};
+use summit_types::{Block, Digest, Finalized, Identity, Notarized, PublicKey};
 use tracing::{debug, warn};
 use crate::registry::Registry;
 
@@ -41,7 +42,7 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
     notarized: PrunableArchive<TwoCap, R, Digest, Notarized>,
 
     // Finalizations stored by height
-    finalized: ImmutableArchive<R, Digest, Finalization<Signature, Digest>>,
+    finalized: ImmutableArchive<R, Digest, Finalization<MinPk, Digest>>,
     // Blocks finalized stored by height
     //
     // We store this separately because we may not have the finalization for a block
@@ -52,6 +53,7 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
     backfill_quota: Quota,
     activity_timeout: u64,
     namespace: String,
+    identity: Identity,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Actor<R> {
@@ -104,7 +106,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 items_per_section: 1024,
                 write_buffer: WRITE_BUFFER,
                 replay_buffer: REPLAY_BUFFER,
-                codec_config: usize::MAX,
+                codec_config: (),
             },
         )
         .await
@@ -149,6 +151,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 backfill_quota: config.backfill_quota,
                 activity_timeout: config.activity_timeout,
                 namespace: config.namespace,
+                identity: config.identity,
             },
             Mailbox::new(tx),
             orchestrator,
@@ -465,7 +468,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                         continue;
                                     };
 
-                                    if !notarization.proof.verify(self.namespace.as_bytes(), &self.registry.peers()) {
+                                    if !notarization.proof.verify(self.namespace.as_bytes(), &self.identity) {
                                         let _ = response.send(false);
                                         continue;
                                     }
@@ -499,7 +502,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                         let _ = response.send(false);
                                         continue;
                                     };
-                                    if !finalization.proof.verify(self.namespace.as_bytes(), &self.registry.peers()) {
+                                    if !finalization.proof.verify(self.namespace.as_bytes(), &self.identity) {
                                         let _ = response.send(false);
                                         continue;
                                     }

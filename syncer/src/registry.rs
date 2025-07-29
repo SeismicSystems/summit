@@ -1,10 +1,16 @@
-use summit_types::PublicKey;
+use summit_types::{Identity, PublicKey};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use commonware_resolver::p2p;
-use commonware_consensus::{Supervisor as Su, simplex::types::View};
+use commonware_consensus::{Supervisor as Su, simplex::types::View, ThresholdSupervisor};
 use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
+use commonware_codec::Encode;
+use commonware_cryptography::bls12381::dkg::ops::evaluate_all;
+use commonware_cryptography::bls12381::primitives::{group, poly};
+use commonware_cryptography::bls12381::primitives::poly::Poly;
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_utils::modulo;
 
 #[derive(Default, Clone)]
 struct Participants {
@@ -20,20 +26,14 @@ pub struct Registry {
 
     // Track the latest/highest view number
     latest_view: Arc<AtomicU64>,
-}
 
-impl Default for Registry {
-    fn default() -> Self {
-        Self {
-            views: Arc::new(RwLock::new(HashMap::new())),
-            latest_view: Arc::new(AtomicU64::new(1)),
-        }
-    }
+    identity: Identity,
+    polynomial: Vec<Identity>,
+    share: group::Share,
 }
-
 
 impl Registry {
-    pub fn new(participants: Vec<PublicKey>) -> Self {
+    pub fn new(participants: Vec<PublicKey>, polynomial: Poly<Identity>, share: group::Share,) -> Self {
         let participants_map = participants
             .iter()
             .enumerate()
@@ -45,7 +45,16 @@ impl Registry {
             participants_map,
         });
 
-        let registry = Self::default();
+        let identity = *poly::public::<MinPk>(&polynomial);
+        let polynomial = evaluate_all::<MinPk>(&polynomial, participants.participants.len() as u32);
+        let registry = Self {
+            views: Arc::new(RwLock::new(HashMap::new())),
+            latest_view: Arc::new(AtomicU64::new(1)),
+            identity,
+            polynomial,
+            share,
+        };
+
         let view = registry.latest_view.load(Ordering::Relaxed);
         registry.views.write().unwrap().insert(view, participants);
         registry
@@ -128,7 +137,6 @@ impl p2p::Coordinator for Registry {
     }
 }
 
-
 impl Su for Registry {
     type Index = View;
 
@@ -168,3 +176,37 @@ impl Su for Registry {
     }
 }
 
+impl ThresholdSupervisor for Registry {
+    type Identity = Identity;
+
+    type Seed = <MinPk as Variant>::Signature;
+
+    type Polynomial = Vec<Identity>;
+
+    type Share = group::Share;
+
+    fn identity(&self) -> &Self::Identity {
+        &self.identity
+    }
+
+    fn leader(&self, _index: Self::Index, seed: Self::Seed) -> Option<Self::PublicKey> {
+        let current_latest = self.latest_view.load(Ordering::Relaxed);
+        let views = self.views.read().unwrap();
+        let view_data = views.get(&current_latest)?;
+
+        if view_data.participants.is_empty() {
+            return None;
+        }
+
+        let index = modulo(seed.encode().as_ref(), view_data.participants.len() as u64) as usize;
+        Some(view_data.participants[index].clone())
+    }
+
+    fn polynomial(&self, _index: Self::Index) -> Option<&Self::Polynomial> {
+        Some(&self.polynomial)
+    }
+
+    fn share(&self, _index: Self::Index) -> Option<&Self::Share> {
+        Some(&self.share)
+    }
+}
