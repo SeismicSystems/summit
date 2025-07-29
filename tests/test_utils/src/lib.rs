@@ -105,7 +105,6 @@ where
 mod tests {
     use crate::{create_test_genesis, generate_test_keys, TestContext};
 
-
     /// Just verify we generated the right number of keys
     #[test]
     fn test_generate_test_keys_creates_unique_keys() {
