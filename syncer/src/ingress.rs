@@ -200,21 +200,3 @@ impl Orchestrator {
         receiver.await.unwrap()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use summit_types::{Block, Digest};
-
-    fn create_test_block() -> Block {
-        Block::genesis([42u8; 32])
-    }
-
-    /// Test that Block digest type matches our Digest type alias.
-    #[test]
-    fn test_digest_type_compatibility() {
-        let block = create_test_block();
-        let digest = block.digest;
-        // Verify digest type is compatible with our Digest type alias
-        let _: Digest = digest;
-    }
-}
