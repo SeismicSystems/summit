@@ -5,8 +5,10 @@ pub use ingress::*;
 pub mod coordinator;
 pub mod handler;
 pub mod key;
+pub mod registry;
 
 use summit_types::PublicKey;
+use crate::registry::Registry;
 
 /// Configuration for the syncer.
 pub struct Config {
@@ -14,7 +16,7 @@ pub struct Config {
 
     pub public_key: PublicKey,
 
-    pub participants: Vec<PublicKey>,
+    pub registry: Registry,
 
     /// Number of messages from consensus to hold in our backlog
     /// before blocking.

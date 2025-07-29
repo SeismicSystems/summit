@@ -7,7 +7,7 @@ use futures::{channel::mpsc, future::try_join_all};
 use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use summit_application::ApplicationConfig;
-use summit_syncer::Orchestrator;
+use summit_syncer::{Orchestrator, registry::Registry};
 use summit_types::{Block, Digest, PrivateKey, PublicKey};
 use tracing::{error, warn};
 
@@ -35,17 +35,16 @@ pub struct Engine<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metr
         summit_application::Mailbox,
         summit_application::Mailbox,
         summit_syncer::Mailbox,
-        summit_application::Supervisor,
+        Registry,
     >,
 }
 
 impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics> Engine<E> {
     pub async fn new(context: E, cfg: EngineConfig) -> Self {
         // create application
-        let (application, application_mailbox, supervisor) = summit_application::Actor::new(
+        let (application, application_mailbox) = summit_application::Actor::new(
             context.with_label("application"),
             ApplicationConfig {
-                participants: cfg.participants.clone(),
                 mailbox_size: cfg.mailbox_size,
                 engine_url: cfg.engine_url,
                 engine_jwt: cfg.engine_jwt,
@@ -67,11 +66,13 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics> Engine<E
             },
         );
 
+        let registry = Registry::new(cfg.participants);
+
         // create the syncer
         let syncer_config = summit_syncer::Config {
             partition_prefix: cfg.partition_prefix.clone(),
             public_key: cfg.signer.public_key(),
-            participants: cfg.participants,
+            registry: registry.clone(),
             mailbox_size: cfg.mailbox_size,
             backfill_quota: cfg.backfill_quota,
             activity_timeout: cfg.activity_timeout,
@@ -88,7 +89,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics> Engine<E
                 automaton: application_mailbox.clone(),
                 relay: application_mailbox.clone(),
                 reporter: syncer_mailbox.clone(),
-                supervisor,
+                supervisor: registry,
                 partition: format!("{}-summit", cfg.partition_prefix),
                 compression: None,
                 mailbox_size: cfg.mailbox_size,

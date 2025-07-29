@@ -1,5 +1,5 @@
 use crate::{
-    ApplicationConfig, Supervisor,
+    ApplicationConfig,
     engine_client::EngineClient,
     finalizer::Finalizer,
     ingress::{Mailbox, Message},
@@ -60,7 +60,7 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Actor<R> {
-    pub async fn new(context: R, cfg: ApplicationConfig) -> (Self, Mailbox, Supervisor) {
+    pub async fn new(context: R, cfg: ApplicationConfig) -> (Self, Mailbox) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
 
         let genesis_hash = cfg.genesis_hash;
@@ -91,7 +91,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 genesis_hash,
             },
             Mailbox::new(tx),
-            Supervisor::new(cfg.participants),
         )
     }
 

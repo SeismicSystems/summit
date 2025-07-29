@@ -4969,6 +4969,7 @@ dependencies = [
 name = "summit-syncer"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "commonware-broadcast",
  "commonware-codec",

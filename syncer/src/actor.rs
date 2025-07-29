@@ -2,7 +2,6 @@ use std::{collections::BTreeSet, time::Duration};
 
 use crate::{
     Orchestration, Orchestrator,
-    coordinator::Coordinator,
     handler::Handler,
     ingress::{Mailbox, Message},
     key::{MultiIndex, Value},
@@ -13,6 +12,7 @@ use commonware_consensus::simplex::types::{Finalization, Viewable as _};
 use commonware_macros::select;
 use commonware_p2p::{Receiver, Recipients, Sender, utils::requester};
 use commonware_resolver::{Resolver as _, p2p};
+use commonware_resolver::p2p::Coordinator;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::{
     archive::{
@@ -26,6 +26,7 @@ use governor::Quota;
 use rand::Rng;
 use summit_types::{Block, Digest, Finalized, Notarized, PublicKey, Signature};
 use tracing::{debug, warn};
+use crate::registry::Registry;
 
 const REPLAY_BUFFER: usize = 8 * 1024 * 1024;
 const WRITE_BUFFER: usize = 1024 * 1024;
@@ -46,7 +47,7 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
     // We store this separately because we may not have the finalization for a block
     blocks: ImmutableArchive<R, Digest, Block>,
     public_key: PublicKey,
-    participants: Vec<PublicKey>,
+    registry: Registry,
     mailbox_size: usize,
     backfill_quota: Quota,
     activity_timeout: u64,
@@ -143,7 +144,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 finalized: finalized_archive,
                 blocks: block_archive,
                 public_key: config.public_key,
-                participants: config.participants,
+                registry: config.registry,
                 mailbox_size: config.mailbox_size,
                 backfill_quota: config.backfill_quota,
                 activity_timeout: config.activity_timeout,
@@ -175,14 +176,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
         ),
         mut tx_finalizer: mpsc::Sender<()>,
     ) {
-        let coordinator = Coordinator::new(self.participants.clone());
         let (handler_sender, mut handler_receiver) = mpsc::channel(self.mailbox_size);
         let handler = Handler::new(handler_sender);
 
         let (resolver_engine, mut resolver) = p2p::Engine::new(
             self.context.with_label("resolver"),
             p2p::Config {
-                coordinator,
+                coordinator: self.registry.clone(),
                 consumer: handler.clone(),
                 producer: handler,
                 mailbox_size: self.mailbox_size,
@@ -465,7 +465,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                         continue;
                                     };
 
-                                    if !notarization.proof.verify(self.namespace.as_bytes(), &self.participants) {
+                                    if !notarization.proof.verify(self.namespace.as_bytes(), &self.registry.peers()) {
                                         let _ = response.send(false);
                                         continue;
                                     }
@@ -499,7 +499,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                         let _ = response.send(false);
                                         continue;
                                     };
-                                    if !finalization.proof.verify(self.namespace.as_bytes(), &self.participants) {
+                                    if !finalization.proof.verify(self.namespace.as_bytes(), &self.registry.peers()) {
                                         let _ = response.send(false);
                                         continue;
                                     }
