@@ -1,0 +1,52 @@
+[package]
+name = "consensus-tests"
+version.workspace = true
+edition.workspace = true
+
+[[test]]
+name = "consensus_integration"
+path = "src/integration.rs"
+
+[[test]]
+name = "multi_node_tests" 
+path = "src/multi_node.rs"
+
+[dependencies]
+summit-types.workspace = true
+summit-syncer.workspace = true
+summit-application.workspace = true
+test-utils = { path = "../test_utils" }
+
+anyhow.workspace = true
+tracing.workspace = true
+tokio = { version = "1.46.0", features = ["test-util", "time", "macros", "rt", "rt-multi-thread"] }
+futures.workspace = true
+rand.workspace = true
+
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-runtime.workspace = true
+commonware-macros.workspace = true
+commonware-utils.workspace = true
+commonware-storage.workspace = true
+commonware-p2p.workspace = true
+commonware-broadcast.workspace = true
+commonware-resolver.workspace = true
+commonware-codec.workspace = true
+
+alloy-provider.workspace = true
+alloy-rpc-types-engine.workspace = true
+alloy-transport-http.workspace = true
+alloy-rpc-client.workspace = true
+alloy-primitives.workspace = true
+alloy-consensus = "1.0.12"
+
+governor.workspace = true
+tower.workspace = true
+bytes.workspace = true
+serde.workspace = true
+hex = "0.4"
+
+tempfile = "3.10.1"
+tracing-test = "0.2.4"
+test-log = "0.2.14"

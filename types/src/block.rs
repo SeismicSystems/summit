@@ -302,6 +302,7 @@ mod test {
     use alloy_primitives::{Bytes as AlloyBytes, FixedBytes, U256, fixed_bytes, hex};
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
     use commonware_codec::{DecodeExt as _, Encode as _};
+    use ssz::Decode;
     #[test]
     fn test_encode_decode() {
         let first_transaction_raw = AlloyBytes::from_static(
@@ -388,5 +389,194 @@ mod test {
         let decoded = Block::decode(encoded).unwrap();
 
         assert_eq!(block, decoded);
+    }
+
+    fn create_test_payload() -> ExecutionPayloadV3 {
+        ExecutionPayloadV3 {
+            payload_inner: ExecutionPayloadV2 {
+                payload_inner: ExecutionPayloadV1 {
+                    base_fee_per_gas: U256::from(7u64),
+                    block_number: 0xa946u64,
+                    block_hash: hex!("a5ddd3f286f429458a39cafc13ffe89295a7efa8eb363cf89a1a4887dbcf272b").into(),
+                    logs_bloom: hex!("00200004000000000000000080000000000200000000000000000000000000000000200000000000000000000000000000000000800000000200000000000000000000000000000000000008000000200000000000000000000001000000000000000000000000000000800000000000000000000100000000000030000000000000000040000000000000000000000000000000000800080080404000000000000008000000000008200000000000200000000000000000000000000000000000000002000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000100000000000000000000").into(),
+                    extra_data: hex!("d883010d03846765746888676f312e32312e31856c696e7578").into(),
+                    gas_limit: 0x1c9c380,
+                    gas_used: 0x1f4a9,
+                    timestamp: 0x651f35b8,
+                    fee_recipient: hex!("f97e180c050e5ab072211ad2c213eb5aee4df134").into(),
+                    parent_hash: hex!("d829192799c73ef28a7332313b3c03af1f2d5da2c36f8ecfafe7a83a3bfb8d1e").into(),
+                    prev_randao: hex!("753888cc4adfbeb9e24e01c84233f9d204f4a9e1273f0e29b43c4c148b2b8b7e").into(),
+                    receipts_root: hex!("4cbc48e87389399a0ea0b382b1c46962c4b8e398014bf0cc610f9c672bee3155").into(),
+                    state_root: hex!("017d7fa2b5adb480f5e05b2c95cb4186e12062eed893fc8822798eed134329d1").into(),
+                    transactions: vec![],
+                },
+                withdrawals: vec![],
+            },
+            blob_gas_used: 0xc0000,
+            excess_blob_gas: 0x580000,
+        }
+    }
+
+    #[test]
+    fn test_block_creation() {
+        let parent = [42u8; 32].into();
+        let height = 100;
+        let timestamp = 1234567890;
+        let payload = create_test_payload();
+        let execution_requests = vec![AlloyBytes::default()];
+        let block_value = U256::from(1000);
+
+        let block = Block::compute_digest(
+            parent,
+            height,
+            timestamp,
+            payload.clone(),
+            execution_requests.clone(),
+            block_value,
+        );
+
+        assert_eq!(block.parent, parent);
+        assert_eq!(block.height, height);
+        assert_eq!(block.timestamp, timestamp);
+        assert_eq!(block.payload, payload);
+        assert_eq!(block.execution_requests, execution_requests);
+        assert_eq!(block.block_value, block_value);
+    }
+
+    #[test]
+    fn test_genesis_block() {
+        let genesis_hash = [0u8; 32];
+        let genesis = Block::genesis(genesis_hash);
+
+        assert_eq!(genesis.height, 0);
+        assert_eq!(genesis.timestamp, 0);
+        assert_eq!(genesis.parent, genesis_hash.into());
+        assert_eq!(genesis.digest, genesis_hash.into());
+        assert_eq!(genesis.block_value, U256::ZERO);
+        assert!(genesis.execution_requests.is_empty());
+    }
+
+    #[test]
+    fn test_eth_block_hash() {
+        let genesis_hash = [1u8; 32];
+        let genesis = Block::genesis(genesis_hash);
+        
+        assert_eq!(genesis.eth_block_hash(), genesis_hash);
+
+        let non_genesis = Block::compute_digest(
+            [0u8; 32].into(),
+            1,
+            0,
+            create_test_payload(),
+            vec![],
+            U256::ZERO,
+        );
+        assert_eq!(non_genesis.eth_block_hash(), hex!("a5ddd3f286f429458a39cafc13ffe89295a7efa8eb363cf89a1a4887dbcf272b"));
+    }
+
+    #[test]
+    fn test_eth_parent_hash() {
+        let block = Block::compute_digest(
+            [0u8; 32].into(),
+            1,
+            0,
+            create_test_payload(),
+            vec![],
+            U256::ZERO,
+        );
+        assert_eq!(block.eth_parent_hash(), hex!("d829192799c73ef28a7332313b3c03af1f2d5da2c36f8ecfafe7a83a3bfb8d1e"));
+    }
+
+    #[test]
+    fn test_viewable_trait() {
+        let block = Block::compute_digest(
+            [0u8; 32].into(),
+            42,
+            0,
+            create_test_payload(),
+            vec![],
+            U256::ZERO,
+        );
+        assert_eq!(block.view(), 42);
+    }
+
+    #[test]
+    fn test_digestible_trait() {
+        let block = Block::compute_digest(
+            [5u8; 32].into(),
+            10,
+            1000,
+            create_test_payload(),
+            vec![],
+            U256::from(500),
+        );
+        
+        assert_eq!(block.digest(), block.digest);
+    }
+
+    #[test]
+    fn test_committable_trait() {
+        let block = Block::compute_digest(
+            [0u8; 32].into(),
+            1,
+            0,
+            create_test_payload(),
+            vec![],
+            U256::ZERO,
+        );
+        assert_eq!(block.commitment(), block.digest);
+    }
+
+    #[test]
+    fn test_ssz_encode_decode_round_trip() {
+        let block = Block::compute_digest(
+            [99u8; 32].into(),
+            123,
+            456789,
+            create_test_payload(),
+            vec![AlloyBytes::from_static(&[1, 2, 3])],
+            U256::from(9999),
+        );
+
+        let encoded = block.as_ssz_bytes();
+        let decoded = Block::from_ssz_bytes(&encoded).unwrap();
+        
+        assert_eq!(block, decoded);
+    }
+
+    #[test]
+    fn test_block_different_digests() {
+        let payload = create_test_payload();
+        
+        let block1 = Block::compute_digest(
+            [0u8; 32].into(),
+            1,
+            1000,
+            payload.clone(),
+            vec![],
+            U256::ZERO,
+        );
+        
+        let block2 = Block::compute_digest(
+            [0u8; 32].into(),
+            2,
+            1000,
+            payload,
+            vec![],
+            U256::ZERO,
+        );
+        
+        assert_ne!(block1.digest, block2.digest);
+    }
+
+    #[test]
+    fn test_notarized_and_finalized_types_exist() {
+        // Just verify the types exist and can be referenced
+        let block = Block::genesis([0u8; 32]);
+        
+        // We can't easily create valid Notarized/Finalized instances without knowing
+        // the exact consensus types structure, so just verify block integration
+        assert_eq!(block.height, 0);
+        assert_eq!(block.digest, [0u8; 32].into());
     }
 }

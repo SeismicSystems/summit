@@ -200,3 +200,38 @@ impl Orchestrator {
         receiver.await.unwrap()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::channel::mpsc;
+    use summit_types::Block;
+
+    fn create_test_block() -> Block {
+        Block::genesis([42u8; 32])
+    }
+
+    #[test]
+    fn test_mailbox_creation() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mailbox = Mailbox::new(tx);
+        // Test passes if we can create a mailbox without panicking
+        drop(mailbox);
+    }
+
+    #[test]
+    fn test_orchestrator_creation() {
+        let (tx, _rx) = mpsc::channel(10);
+        let orchestrator = Orchestrator::new(tx);
+        // Test passes if we can create an orchestrator without panicking
+        drop(orchestrator);
+    }
+
+    #[test]
+    fn test_digest_type_compatibility() {
+        let block = create_test_block();
+        let digest = block.digest;
+        // Verify digest type is compatible with our Digest type alias
+        let _: Digest = digest;
+    }
+}

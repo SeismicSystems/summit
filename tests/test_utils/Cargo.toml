@@ -1,0 +1,33 @@
+[package]
+name = "test-utils"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+summit-types.workspace = true
+summit-syncer.workspace = true
+summit-application.workspace = true
+
+anyhow.workspace = true
+tokio = { workspace = true, features = ["test-util", "time", "macros", "rt"] }
+futures.workspace = true
+rand.workspace = true
+
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+commonware-storage.workspace = true
+commonware-codec.workspace = true
+
+alloy-primitives.workspace = true
+alloy-rpc-types-engine.workspace = true
+alloy-consensus = "1.0.12"
+
+governor.workspace = true
+bytes.workspace = true
+serde.workspace = true
+hex = "0.4"
+
+tempfile = "3.10.1"
+futures-timer = "3.0"

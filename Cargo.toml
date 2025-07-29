@@ -1,5 +1,5 @@
 [workspace]
-members = [ "application", "node", "syncer", "types"]
+members = [ "application", "node", "syncer", "types", "tests/test_utils", "tests/consensus_tests", "tests/failure_tests"]
 resolver = "3"
 
 [workspace.package]
