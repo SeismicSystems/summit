@@ -8,111 +8,160 @@ This directory contains integration tests for the Summit consensus client organi
 - `consensus_tests/` - Core consensus mechanism tests 
 - `failure_tests/` - Byzantine behavior and failure scenario tests
 
-## Running Tests
+## 🧪 Test Command Reference
 
-### All Integration Tests
-
-To run all integration tests:
+### **Basic Test Commands**
 
 ```bash
-# Run all test crates
-cargo test --workspace --exclude summit-types --exclude summit-syncer --exclude summit-application --exclude node
+# Run all tests (unit + integration)
+cargo test
 
-# Or run each test crate individually
+# Run only library tests (excludes integration tests)
+cargo test --lib
+
+# Run tests with output (shows println! statements)
+cargo test -- --nocapture
+
+# Run tests in parallel (default) or single-threaded
+cargo test -- --test-threads=1
+```
+
+### **Integration Test Commands**
+
+```bash
+# Run all integration tests
 cargo test -p consensus-tests
-cargo test -p failure-tests
+
+# Run specific integration test files
+cargo test --test consensus_integration
+cargo test --test multi_node_tests
+
+# Run a specific integration test function
+cargo test -p consensus-tests test_single_node_basic_setup
+cargo test -p consensus-tests test_bft_node_count_boundary
 ```
 
-### Unit Tests Only
-
-To run only unit tests for individual crates:
+### **Per-Crate Test Commands**
 
 ```bash
-# Types crate tests
+# Core crates (your main implementation)
 cargo test -p summit-types
-
-# Syncer crate tests  
-cargo test -p summit-syncer
-
-# Application crate tests
+cargo test -p summit-syncer  
 cargo test -p summit-application
+
+# Test infrastructure
+cargo test -p test-utils
+cargo test -p failure-tests
+
+# Node binary tests
+cargo test -p summit
 ```
 
-### Specific Test Groups
-
-#### Consensus Mechanism Tests
-Tests core consensus algorithms, leader election, and view changes:
+### **Specific Test Categories**
 
 ```bash
-cargo test -p consensus-tests consensus_integration
+# Unit tests only (excludes integration tests)
+cargo test --lib -p summit-types -p summit-syncer -p summit-application
+
+# Test specific modules within a crate
+cargo test -p summit-types genesis::tests
+cargo test -p summit-types block::test
+cargo test -p summit-syncer key::tests
+
+# Test specific functions
+cargo test -p summit-types test_genesis_validator_count
+cargo test -p summit-syncer test_multi_index_ordering_semantics
 ```
 
-#### Multi-Node Network Tests
-Tests multi-node setups, network partitions, and node failures:
+### **Development & Debugging Commands**
 
 ```bash
-cargo test -p consensus-tests multi_node_tests
+# Run tests with detailed output
+cargo test -- --nocapture --test-threads=1
+
+# Show test execution time
+cargo test -- --report-time
+
+# Run only failing tests (after a failure)
+cargo test --workspace --lib
+
+# Run tests with Rust backtrace on failures
+RUST_BACKTRACE=1 cargo test
+
+# Run tests with full backtrace
+RUST_BACKTRACE=full cargo test
 ```
 
-#### Byzantine Failure Tests
-Tests Byzantine behaviors and failure scenarios:
+### **Performance & CI Commands**
 
 ```bash
-cargo test -p failure-tests byzantine_scenarios
+# Fast compilation for testing
+cargo test --profile test
+
+# Run tests without building docs
+cargo test --workspace --exclude docs
+
+# Check that tests compile without running
+cargo test --no-run
 ```
 
-### Test Configuration
-
-Tests use the existing testnet infrastructure:
-
-- Node configuration based on `testnet/` directory structure
-- Genesis configuration from `example_genesis.toml`
-- Pre-generated keys from `testnet/node*/key.pem`
-- Temporary storage directories created per test
-
-### Performance Tests
-
-Some tests may take longer to complete as they simulate real consensus scenarios:
+### **Recommended Development Workflow**
 
 ```bash
-# Run with longer timeout for consensus tests
-cargo test -p consensus-tests -- --test-threads=1 --timeout=60
+# 1. Quick unit test check (fast)
+cargo test --lib
+
+# 2. Full test suite (comprehensive)
+cargo test
+
+# 3. Focus on specific area you're working on
+cargo test -p summit-types  # if working on types
+cargo test -p summit-syncer # if working on consensus
+
+# 4. Integration tests after major changes
+cargo test -p consensus-tests
+
+# 5. Debug specific failing test
+cargo test test_name -- --nocapture --test-threads=1
 ```
 
-### Debugging Tests
+## Test Structure Overview
 
-To see detailed logging during test execution:
+Your test suite is organized as:
 
-```bash
-RUST_LOG=debug cargo test -p consensus-tests -- --nocapture
+```
+tests/
+├── test_utils/           # Shared test utilities
+├── consensus_tests/      # Integration tests
+│   ├── src/integration.rs    # Basic integration tests  
+│   └── src/multi_node.rs     # Multi-node test scenarios
+└── failure_tests/        # Failure scenario tests (placeholder)
+
+# Plus unit tests in each main crate:
+types/src/           # Block, Genesis tests
+syncer/src/          # Coordinator, Key, Ingress tests  
+application/src/     # Config tests
 ```
 
-## Test Patterns
+## Test Categories
 
-### Test Naming Convention
+### Unit Tests
+- **Types crate**: Block creation, serialization, genesis configuration
+- **Syncer crate**: Coordinator p2p implementation, key ordering, ingress messaging
+- **Application crate**: Configuration management and validation
 
-Tests follow a clear naming pattern:
-- `test_[component]_[scenario]_[expected_outcome]`
-- Example: `test_consensus_leader_election_succeeds`
-- Example: `test_network_partition_recovery_works`
-
-### Byzantine Failure Testing
-
-The failure tests include scenarios for:
-- **Network Partitions** - Nodes isolated or split into groups
-- **Silent Nodes** - Byzantine nodes that stop participating
-- **Double Voting** - Byzantine nodes that vote for multiple blocks
-- **Mixed Failures** - Combinations of different failure types
+### Integration Tests
+- **Basic setup tests**: Multi-node context creation, genesis block generation
+- **BFT boundary tests**: Testing 3f+1 node requirements for different fault tolerance levels
+- **Test infrastructure**: Temporary directory management, test isolation
 
 ### Test Utilities
-
 The `test_utils` crate provides:
 - `TestContext` - Manages test environment setup
 - `generate_test_keys()` - Creates cryptographic keys for test validators
 - `create_test_genesis()` - Generates test genesis configuration
 - `create_test_block()` - Creates valid test blocks
 - `wait_for_condition()` - Async condition waiting helper
-- Failure scenario builders for Byzantine behavior testing
 
 ## Contributing
 
