@@ -1,6 +1,6 @@
 use std::{num::NonZeroU32, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use commonware_codec::{Decode as _, DecodeExt as _};
 use commonware_cryptography::bls12381::primitives::{
     group::{self, Share},
@@ -69,16 +69,16 @@ impl EngineConfig {
     ) -> Result<Self> {
         // todo(dalton): clean this mess up
         // read JWT from file
-        let jwt_path = get_expanded_path(&engine_jwt_path)?;
-        let engine_jwt = std::fs::read_to_string(jwt_path)?;
-        let share_path = get_expanded_path(&poly_share_path)?;
-        let share_hex = std::fs::read_to_string(share_path)?;
+        let jwt_path = get_expanded_path(&engine_jwt_path).context("failed to expand jwt path")?;
+        let engine_jwt = std::fs::read_to_string(jwt_path).context("failed to load jwt")?;
+        let share_path = get_expanded_path(&poly_share_path).context("failed to expand share path")?;
+        let share_hex = std::fs::read_to_string(share_path).context("failed to load share hex")?;
 
         let share = from_hex_formatted(&share_hex).expect("invalid format for polynomial share");
         let share = group::Share::decode(share.as_ref()).expect("Could not parse share");
 
         // read private key from file
-        let signer = read_ed_key_from_path(&key_path)?;
+        let signer = read_ed_key_from_path(&key_path).context("failed to load signer key")?;
         let polynomial = from_hex_formatted(&genesis.identity).expect("Could not parse polynomial");
         let threshold = quorum(participants.len() as u32);
         let polynomial =
