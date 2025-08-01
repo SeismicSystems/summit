@@ -9,11 +9,11 @@ use crate::{
 };
 use commonware_broadcast::{Broadcaster as _, buffered};
 use commonware_codec::{DecodeExt as _, Encode as _};
-use commonware_consensus::threshold_simplex::types::{Finalization, Viewable as _};
+use commonware_consensus::Viewable;
+use commonware_consensus::threshold_simplex::types::Finalization;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_macros::select;
 use commonware_p2p::{Receiver, Recipients, Sender, utils::requester};
-use commonware_resolver::p2p::Coordinator;
 use commonware_resolver::{Resolver as _, p2p};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::{

@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{Error, FixedSize, Read, ReadExt, Write};
-use commonware_utils::Array;
+use commonware_utils::{Array, Span};
 use std::{
     cmp::{Ord, PartialOrd},
     fmt::{Debug, Display},
@@ -20,6 +20,8 @@ pub enum Value {
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(transparent)]
 pub struct MultiIndex([u8; SIZE]);
+
+impl Span for MultiIndex {}
 
 impl MultiIndex {
     pub fn new(value: Value) -> Self {

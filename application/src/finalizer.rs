@@ -7,7 +7,7 @@ use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_macros::select;
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_storage::metadata::{self, Metadata};
-use commonware_utils::{array::FixedBytes, hex};
+use commonware_utils::{hex, sequence::FixedBytes};
 use futures::{
     StreamExt,
     channel::{mpsc, oneshot},
