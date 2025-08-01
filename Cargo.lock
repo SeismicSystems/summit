@@ -142,9 +142,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-eips"
-version = "1.0.19"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "715ae25d525c567481ba2fc97000415624836d516958b9c3f189f1e267d1d90a"
+checksum = "5937e2d544e9b71000942d875cbc57965b32859a666ea543cc57aae5a06d602d"
 dependencies = [
  "alloy-eip2124",
  "alloy-eip2930",
@@ -456,9 +456,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-serde"
-version = "1.0.17"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ea08bc854235d4dff08fd57df8033285c11b8d7548b20c6da218194e7e6035f"
+checksum = "1e1722bc30feef87cc0fa824e43c9013f9639cc6c037be7be28a31361c788be2"
 dependencies = [
  "alloy-primitives",
  "serde",
@@ -4899,6 +4899,8 @@ checksum = "734676eb262c623cec13c3155096e08d1f8f29adce39ba17948b18dad1e54142"
 name = "summit"
 version = "0.0.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
  "alloy-network",
  "alloy-node-bindings",
  "alloy-primitives",
@@ -4916,6 +4918,7 @@ dependencies = [
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
+ "dashmap 6.1.0",
  "dirs",
  "ethereum_ssz",
  "eyre",
@@ -4933,6 +4936,7 @@ dependencies = [
  "reth-metrics",
  "serde",
  "serde_json",
+ "sha3",
  "summit-application",
  "summit-syncer",
  "summit-types",
