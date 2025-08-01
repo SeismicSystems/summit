@@ -5,6 +5,7 @@ use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, FixedSize as _, Read, ReadExt as _, Write};
+use commonware_consensus::Block as Bl;
 use commonware_consensus::{
     Viewable,
     threshold_simplex::types::{Finalization, Notarization},
@@ -83,6 +84,16 @@ impl Block {
             payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
             block_value: U256::ZERO,
         }
+    }
+}
+
+impl Bl for Block {
+    fn height(&self) -> u64 {
+        self.height
+    }
+
+    fn parent(&self) -> Self::Commitment {
+        self.parent
     }
 }
 

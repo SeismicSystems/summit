@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-summit-syncer.workspace = true
 summit-types.workspace = true
 
 anyhow.workspace = true
@@ -16,6 +15,7 @@ commonware-runtime.workspace = true
 commonware-macros.workspace = true
 commonware-utils.workspace = true
 commonware-storage.workspace = true
+commonware-resolver.workspace = true
 
 futures.workspace = true
 alloy-provider.workspace = true

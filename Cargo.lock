@@ -4934,7 +4934,6 @@ dependencies = [
  "serde",
  "serde_json",
  "summit-application",
- "summit-syncer",
  "summit-types",
  "tikv-jemalloc-ctl",
  "tokio",
@@ -4956,6 +4955,7 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-macros",
+ "commonware-resolver",
  "commonware-runtime",
  "commonware-storage",
  "commonware-utils",
@@ -4964,32 +4964,8 @@ dependencies = [
  "http-body-util",
  "metrics",
  "rand 0.8.5",
- "summit-syncer",
  "summit-types",
  "tower",
- "tracing",
-]
-
-[[package]]
-name = "summit-syncer"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "bytes",
- "commonware-broadcast",
- "commonware-codec",
- "commonware-consensus",
- "commonware-cryptography",
- "commonware-macros",
- "commonware-p2p",
- "commonware-resolver",
- "commonware-runtime",
- "commonware-storage",
- "commonware-utils",
- "futures",
- "governor",
- "rand 0.8.5",
- "summit-types",
  "tracing",
 ]
 

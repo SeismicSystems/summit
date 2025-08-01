@@ -71,7 +71,8 @@ impl EngineConfig {
         // read JWT from file
         let jwt_path = get_expanded_path(&engine_jwt_path).context("failed to expand jwt path")?;
         let engine_jwt = std::fs::read_to_string(jwt_path).context("failed to load jwt")?;
-        let share_path = get_expanded_path(&poly_share_path).context("failed to expand share path")?;
+        let share_path =
+            get_expanded_path(&poly_share_path).context("failed to expand share path")?;
         let share_hex = std::fs::read_to_string(share_path).context("failed to load share hex")?;
 
         let share = from_hex_formatted(&share_hex).expect("invalid format for polynomial share");

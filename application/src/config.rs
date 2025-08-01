@@ -1,4 +1,3 @@
-
 #[derive(Clone)]
 pub struct ApplicationConfig {
     /// Number of messages from consensus to hold in our backlog

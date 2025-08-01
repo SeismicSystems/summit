@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-summit-syncer.workspace = true
 summit-types.workspace = true
 summit-application.workspace = true
 

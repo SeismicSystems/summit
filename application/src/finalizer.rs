@@ -4,19 +4,20 @@ use std::{
 };
 
 use alloy_rpc_types_engine::ForkchoiceState;
+use commonware_consensus::Reporter;
 use commonware_macros::select;
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::{hex, sequence::FixedBytes};
 use futures::{
-    StreamExt,
+    SinkExt as _, StreamExt,
     channel::{mpsc, oneshot},
 };
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
 use rand::Rng;
-use summit_syncer::Orchestrator;
-use tracing::{debug, info};
+use summit_types::Block;
+use tracing::{info, warn};
 
 use crate::engine_client::EngineClient;
 
@@ -29,13 +30,13 @@ pub struct Finalizer<R: Storage + Metrics + Clock + Spawner + governor::clock::C
 
     height_notifier: HeightNotifier,
 
-    metadata: Metadata<R, FixedBytes<1>, u64>,
-
     height_notify_mailbox: mpsc::Receiver<(u64, oneshot::Sender<()>)>,
 
     engine_client: EngineClient,
 
     forkchoice: Arc<Mutex<ForkchoiceState>>,
+
+    rx_finalizer_mailbox: mpsc::Receiver<(Block, oneshot::Sender<()>)>,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Finalizer<R> {
@@ -44,7 +45,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Fina
         engine_client: EngineClient,
         forkchoice: Arc<Mutex<ForkchoiceState>>,
         db_prefix: String,
-    ) -> (Self, mpsc::Sender<(u64, oneshot::Sender<()>)>) {
+    ) -> (
+        Self,
+        FinalizerMailbox,
+        mpsc::Sender<(u64, oneshot::Sender<()>)>,
+    ) {
         // Initialize finalizer metadata
         let metadata: Metadata<R, FixedBytes<1>, u64> = Metadata::init(
             context.with_label("finalizer_metadata"),
@@ -60,88 +65,28 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Fina
 
         let (tx_height_notify, height_notify_mailbox) = mpsc::channel(1000);
 
+        let (tx_finalizer, rx_finalizer_mailbox) = mpsc::channel(1); // todo(dalton) there should only ever be one message in this channel since we block but lets verify this
+
         (
             Self {
                 context,
                 last_indexed,
                 height_notifier: HeightNotifier::new(),
-                metadata,
                 height_notify_mailbox,
                 engine_client,
                 forkchoice,
+                rx_finalizer_mailbox,
             },
+            FinalizerMailbox::new(tx_finalizer),
             tx_height_notify,
         )
     }
 
-    pub fn start(mut self, mut orchestrator: Orchestrator, mut rx_new_block: mpsc::Receiver<()>) {
+    pub fn start(mut self) {
         self.context.spawn(move |_| async move {
-            // check if the orchestrator has our next block
-            let latest_key = FixedBytes::new(LATEST_KEY);
             #[cfg(feature = "prom")]
             let mut last_committed_timestamp: Option<std::time::Instant> = None;
             loop {
-                // Check if the next block is available
-                let next = self.last_indexed + 1;
-                if let Some(block) = orchestrator.get(next).await {
-                    // check the payload
-                    let payload_status = self.engine_client.check_payload(&block).await;
-
-                    if payload_status.is_valid() {
-                        // its valid so commit the block
-                        let eth_hash = block.eth_block_hash();
-                        info!("Commiting block 0x{} for height {}", hex(&eth_hash), next);
-
-                        let forkchoice = ForkchoiceState {
-                            head_block_hash: eth_hash.into(),
-                            safe_block_hash: eth_hash.into(),
-                            finalized_block_hash: eth_hash.into(),
-                        };
-
-                        #[cfg(feature = "prom")]
-                        {
-                            let num_tx =
-                                block.payload.payload_inner.payload_inner.transactions.len();
-                            counter!("tx_committed_total").increment(num_tx as u64);
-                            counter!("blocks_committed_total").increment(1);
-                            if let Some(last_committed) = last_committed_timestamp {
-                                let block_delta = last_committed.elapsed().as_millis() as f64;
-                                histogram!("block_time_millis").record(block_delta);
-                            }
-                            last_committed_timestamp = Some(std::time::Instant::now());
-                        }
-
-                        self.engine_client.commit_hash(forkchoice).await;
-
-                        *self.forkchoice.lock().expect("poisoned") = forkchoice;
-
-                        self.metadata.put(latest_key.clone(), next);
-                        self.metadata
-                            .sync()
-                            .await
-                            .expect("Failed to sync finalizer");
-
-                        // Update the latest indexed
-                        //self.contiguous_height.set(next as i64);
-                        self.last_indexed = next;
-
-                        // notify any waiters that height changed
-                        self.height_notifier.notify_up_to(next);
-
-                        info!(height = next, "indexed finalized block");
-
-                        orchestrator.processed(next, block.digest).await;
-                        continue;
-                    }
-                }
-
-                // Try to connect to our latest handled block (may not exist finalizations for some heights)
-                if orchestrator.repair(next).await {
-                    continue;
-                }
-
-                // If nothing to do, wait for some message from someone that the finalized store was updated
-                debug!(height = next, "waiting to index finalized block");
                 select! {
                     mail = self.height_notify_mailbox.next() => {
                         let (height, sender) = mail.expect("height notify mailbox dropped");
@@ -154,8 +99,51 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Fina
                         self.height_notifier.register(height, sender);
                     },
 
-                    _ = rx_new_block.next() => {
-                        continue;
+                    msg = self.rx_finalizer_mailbox.next() => {
+                        let Some((block, notifier)) = msg else {
+                            warn!("All senders to finalizer dropped");
+                            break;
+                        };
+
+                        // check the payload
+                        let payload_status = self.engine_client.check_payload(&block).await;
+
+                        if payload_status.is_valid() {
+                            let eth_hash = block.eth_block_hash();
+                            let new_height = block.height;
+                            info!("Commiting block 0x{} for height {}", hex(&eth_hash), new_height);
+
+                            let forkchoice = ForkchoiceState {
+                                head_block_hash: eth_hash.into(),
+                                safe_block_hash: eth_hash.into(),
+                                finalized_block_hash: eth_hash.into()
+                            };
+
+                            #[cfg(feature = "prom")]
+                            {
+                                let num_tx =
+                                    block.payload.payload_inner.payload_inner.transactions.len();
+                                counter!("tx_committed_total").increment(num_tx as u64);
+                                counter!("blocks_committed_total").increment(1);
+                                if let Some(last_committed) = last_committed_timestamp {
+                                    let block_delta = last_committed.elapsed().as_millis() as f64;
+                                    histogram!("block_time_millis").record(block_delta);
+                                }
+                                last_committed_timestamp = Some(std::time::Instant::now());
+                            }
+
+                            self.engine_client.commit_hash(forkchoice).await;
+
+                            self.last_indexed = new_height;
+
+                            *self.forkchoice.lock().expect("poisoned") = forkchoice;
+
+                            self.height_notifier.notify_up_to(new_height);
+
+                            info!(new_height, "finalized block");
+                        }
+
+                        let _ = notifier.send(());
                     },
                 }
             }
@@ -191,5 +179,28 @@ impl HeightNotifier {
                 let _ = sender.send(()); // Ignore if receiver dropped
             }
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct FinalizerMailbox {
+    sender: mpsc::Sender<(Block, oneshot::Sender<()>)>,
+}
+
+impl FinalizerMailbox {
+    pub fn new(sender: mpsc::Sender<(Block, oneshot::Sender<()>)>) -> Self {
+        Self { sender }
+    }
+}
+
+impl Reporter for FinalizerMailbox {
+    type Activity = Block;
+
+    async fn report(&mut self, activity: Self::Activity) {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.sender.send((activity, tx)).await;
+
+        // wait until finalization finishes
+        let _ = rx.await;
     }
 }

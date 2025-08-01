@@ -1,4 +1,5 @@
 use commonware_broadcast::buffered;
+use commonware_consensus::marshal;
 use commonware_consensus::threshold_simplex::{self, Engine as Simplex};
 use commonware_cryptography::{
     Signer as _,
@@ -6,11 +7,12 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
-use futures::{channel::mpsc, future::try_join_all};
+use futures::future::try_join_all;
 use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use summit_application::ApplicationConfig;
-use summit_syncer::{Orchestrator, registry::Registry};
+use summit_application::finalizer::FinalizerMailbox;
+use summit_application::registry::Registry;
 use summit_types::{Block, Digest, PrivateKey, PublicKey};
 use tracing::{error, warn};
 
@@ -21,6 +23,18 @@ use crate::config::EngineConfig;
 const REPLAY_BUFFER: usize = 8 * 1024 * 1024;
 const WRITE_BUFFER: usize = 1024 * 1024;
 
+// Marshal config
+const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
+const PRUNABLE_ITEMS_PER_SECTION: u64 = 4_096;
+const IMMUTABLE_ITEMS_PER_SECTION: u64 = 262_144;
+const FREEZER_INITIAL_SIZE: u32 = 65_536; // todo(dalton): Check this default
+const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
+const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
+const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
+const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
+const MAX_REPAIR: u64 = 20;
+//
+
 pub struct Engine<
     E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
     B: Blocker<PublicKey = PublicKey>,
@@ -29,9 +43,10 @@ pub struct Engine<
     application: summit_application::Actor<E>,
     buffer: buffered::Engine<E, PublicKey, Block>,
     buffer_mailbox: buffered::Mailbox<PublicKey, Block>,
-    syncer: summit_syncer::Actor<E>,
-    orchestrator: Orchestrator,
-    syncer_mailbox: summit_syncer::Mailbox,
+    marshal: marshal::Actor<Block, E, MinPk, PublicKey, Registry>,
+    marshal_mailbox: marshal::Mailbox<MinPk, Block>,
+    finalizer_mailbox: FinalizerMailbox,
+
     simplex: Simplex<
         E,
         PrivateKey,
@@ -40,7 +55,7 @@ pub struct Engine<
         Digest,
         summit_application::Mailbox,
         summit_application::Mailbox,
-        summit_syncer::Mailbox,
+        marshal::Mailbox<MinPk, Block>,
         Registry,
     >,
 }
@@ -53,7 +68,7 @@ impl<
     pub async fn new(context: E, cfg: EngineConfig, blocker: B) -> Self {
         let identity = *public::<MinPk>(&cfg.polynomial);
         // create application
-        let (application, application_mailbox) = summit_application::Actor::new(
+        let (application, application_mailbox, finalizer_mailbox) = summit_application::Actor::new(
             context.with_label("application"),
             ApplicationConfig {
                 mailbox_size: cfg.mailbox_size,
@@ -79,19 +94,33 @@ impl<
 
         let registry = Registry::new(cfg.participants, cfg.polynomial, cfg.share);
 
-        // create the syncer
-        let syncer_config = summit_syncer::Config {
-            partition_prefix: cfg.partition_prefix.clone(),
-            public_key: cfg.signer.public_key(),
-            registry: registry.clone(),
-            mailbox_size: cfg.mailbox_size,
-            backfill_quota: cfg.backfill_quota,
-            activity_timeout: cfg.activity_timeout,
-            namespace: cfg.namespace.clone(),
-            identity,
-        };
-        let (syncer, syncer_mailbox, orchestrator) =
-            summit_syncer::Actor::new(context.with_label("syncer"), syncer_config).await;
+        let (marshal, marshal_mailbox): (_, marshal::Mailbox<MinPk, Block>) = marshal::Actor::init(
+            context.with_label("marshal"),
+            marshal::Config {
+                public_key: cfg.signer.public_key(),
+                identity,
+                coordinator: registry.clone(),
+                partition_prefix: cfg.partition_prefix.clone(),
+                mailbox_size: cfg.mailbox_size,
+                backfill_quota: cfg.backfill_quota,
+                view_retention_timeout: cfg
+                    .activity_timeout
+                    .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
+                namespace: cfg.namespace.as_bytes().to_vec(),
+                prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+                immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+                freezer_table_initial_size: FREEZER_INITIAL_SIZE,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
+                replay_buffer: REPLAY_BUFFER,
+                write_buffer: WRITE_BUFFER,
+                codec_config: (),
+                max_repair: MAX_REPAIR,
+            },
+        )
+        .await;
 
         // create simplex
         let simplex = Simplex::new(
@@ -101,7 +130,7 @@ impl<
                 crypto: cfg.signer,
                 automaton: application_mailbox.clone(),
                 relay: application_mailbox.clone(),
-                reporter: syncer_mailbox.clone(),
+                reporter: marshal_mailbox.clone(),
                 supervisor: registry,
                 partition: format!("{}-summit", cfg.partition_prefix),
                 compression: None,
@@ -126,10 +155,10 @@ impl<
             application,
             buffer,
             buffer_mailbox,
-            syncer,
-            syncer_mailbox,
-            orchestrator,
             simplex,
+            marshal,
+            marshal_mailbox,
+            finalizer_mailbox,
         }
     }
 
@@ -196,18 +225,16 @@ impl<
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let finalizer_network = mpsc::channel::<()>(1);
-        let tx_finalizer = finalizer_network.0.clone();
         // start the application
-        let app_handle =
-            self.application
-                .start(self.syncer_mailbox, self.orchestrator, finalizer_network);
+        let app_handle = self.application.start(self.marshal_mailbox);
         // start the buffer
         let buffer_handle = self.buffer.start(broadcast_network);
-        // start the syncer
-        let syncer_handle = self
-            .syncer
-            .start(self.buffer_mailbox, backfill_network, tx_finalizer);
+        // start marshal
+        let marshal_handle = self.marshal.start(
+            self.finalizer_mailbox,
+            self.buffer_mailbox,
+            backfill_network,
+        );
         // start simplex
         let simplex_handle =
             self.simplex
@@ -217,7 +244,7 @@ impl<
         if let Err(e) = try_join_all(vec![
             app_handle,
             buffer_handle,
-            syncer_handle,
+            marshal_handle,
             simplex_handle,
         ])
         .await

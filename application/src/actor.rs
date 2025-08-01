@@ -1,11 +1,13 @@
 use crate::{
     ApplicationConfig,
     engine_client::EngineClient,
-    finalizer::Finalizer,
+    finalizer::{Finalizer, FinalizerMailbox},
     ingress::{Mailbox, Message},
 };
 use alloy_rpc_types_engine::ForkchoiceState;
 use anyhow::{Result, anyhow};
+use commonware_consensus::marshal;
+use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_macros::select;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_utils::SystemTimeExt;
@@ -15,7 +17,6 @@ use futures::{
     future::{self, Either, try_join},
 };
 use rand::Rng;
-use summit_syncer::{Orchestrator, ingress::Mailbox as SyncerMailbox};
 
 use futures::task::{Context, Poll};
 use std::{
@@ -60,7 +61,7 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Actor<R> {
-    pub async fn new(context: R, cfg: ApplicationConfig) -> (Self, Mailbox) {
+    pub async fn new(context: R, cfg: ApplicationConfig) -> (Self, Mailbox, FinalizerMailbox) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
 
         let genesis_hash = cfg.genesis_hash;
@@ -71,7 +72,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
         }));
 
         let engine_client = EngineClient::new(cfg.engine_url.clone(), &cfg.engine_jwt);
-        let (finalizer, tx_height_notify) = Finalizer::new(
+        let (finalizer, finalizer_mailbox, tx_height_notify) = Finalizer::new(
             context.with_label("finalizer"),
             engine_client.clone(),
             forkchoice.clone(),
@@ -91,28 +92,16 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 genesis_hash,
             },
             Mailbox::new(tx),
+            finalizer_mailbox,
         )
     }
 
-    pub fn start(
-        mut self,
-        syncer: summit_syncer::Mailbox,
-        orchestrator: Orchestrator,
-        finalizer_network: (mpsc::Sender<()>, mpsc::Receiver<()>),
-    ) -> Handle<()> {
-        self.context.spawn_ref()(self.run(syncer, orchestrator, finalizer_network))
+    pub fn start(mut self, marshal: marshal::Mailbox<MinPk, Block>) -> Handle<()> {
+        self.context.spawn_ref()(self.run(marshal))
     }
 
-    pub async fn run(
-        mut self,
-        mut syncer: SyncerMailbox,
-        orchestrator: Orchestrator,
-        (_, rx_finalizer): (mpsc::Sender<()>, mpsc::Receiver<()>),
-    ) {
-        self.finalizer
-            .take()
-            .expect("no finalizer")
-            .start(orchestrator, rx_finalizer);
+    pub async fn run(mut self, mut marshal: marshal::Mailbox<MinPk, Block>) {
+        self.finalizer.take().expect("no finalizer").start();
 
         let rand_id: u8 = rand::random();
         while let Some(message) = self.mailbox.next().await {
@@ -130,7 +119,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                     let built = self.built_block.clone();
                     select! {
-                            res = self.handle_proposal(parent, &mut syncer) => {
+                            res = self.handle_proposal(parent, &mut marshal) => {
 
                                 match res {
                                     Ok(block) => {
@@ -168,7 +157,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         );
                     }
 
-                    syncer.broadcast(built_block).await;
+                    marshal.broadcast(built_block).await;
                 }
 
                 Message::Verify {
@@ -182,15 +171,15 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                     let parent_request = if parent.1 == self.genesis_hash.into() {
                         Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
                     } else {
-                        Either::Right(syncer.get(Some(parent.0), parent.1).await)
+                        Either::Right(marshal.subscribe(Some(parent.0), parent.1).await)
                     };
 
-                    let block_request = syncer.get(None, payload).await;
+                    let block_request = marshal.subscribe(None, payload).await;
 
                     // Wait for the blocks to be available or the request to be cancelled in a separate task (to
                     // continue processing other messages)
                     self.context.with_label("verify").spawn({
-                        let mut syncer = syncer.clone();
+                        let mut marshal = marshal.clone();
                         move |_| async move {
                             let requester = try_join(parent_request, block_request);
                             select! {
@@ -199,7 +188,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                     if handle_verify(&block, parent) {
 
                                         // persist valid block
-                                        syncer.store_verified(view, block).await;
+                                        marshal.verified(view, block).await;
 
                                         // respond
                                         let _ = response.send(true);
@@ -222,13 +211,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
     async fn handle_proposal(
         &mut self,
         parent: (u64, Digest),
-        syncer: &mut summit_syncer::Mailbox,
+        marshal: &mut marshal::Mailbox<MinPk, Block>,
     ) -> Result<Block> {
         // Get the parent block
         let parent_request = if parent.1 == self.genesis_hash.into() {
             Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
         } else {
-            Either::Right(syncer.get(Some(parent.0), parent.1).await)
+            Either::Right(marshal.subscribe(Some(parent.0), parent.1).await)
         };
 
         let parent = parent_request.await.unwrap();

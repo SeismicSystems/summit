@@ -1,5 +1,5 @@
 [workspace]
-members = [ "application", "node", "syncer", "types"]
+members = [ "application", "node", "types"]
 resolver = "3"
 
 [workspace.package]
@@ -9,7 +9,6 @@ edition = "2024"
 [workspace.dependencies]
 # Our crates
 summit-types = {path = "types"}
-summit-syncer = {path = "syncer"}
 summit-application= {path = "application"}
 
 anyhow = "1.0.98"

@@ -1,16 +1,16 @@
-use summit_types::{Identity, PublicKey};
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use commonware_resolver::p2p;
-use commonware_consensus::{Supervisor as Su, simplex::types::View, ThresholdSupervisor};
-use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 use commonware_codec::Encode;
+use commonware_consensus::{Supervisor as Su, ThresholdSupervisor, simplex::types::View};
 use commonware_cryptography::bls12381::dkg::ops::evaluate_all;
-use commonware_cryptography::bls12381::primitives::{group, poly};
 use commonware_cryptography::bls12381::primitives::poly::Poly;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::bls12381::primitives::{group, poly};
+use commonware_resolver::p2p;
 use commonware_utils::modulo;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+use summit_types::{Identity, PublicKey};
 
 #[derive(Default, Clone)]
 struct Participants {
@@ -33,7 +33,11 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(participants: Vec<PublicKey>, polynomial: Poly<Identity>, share: group::Share,) -> Self {
+    pub fn new(
+        participants: Vec<PublicKey>,
+        polynomial: Poly<Identity>,
+        share: group::Share,
+    ) -> Self {
         let participants_map = participants
             .iter()
             .enumerate()
@@ -64,16 +68,25 @@ impl Registry {
         let mut views = self.views.write().unwrap();
         let current_latest = self.latest_view.load(Ordering::Relaxed);
 
-        let mut participants = views.get(&current_latest).map(|x| x.as_ref().clone()).unwrap_or_default();
+        let mut participants = views
+            .get(&current_latest)
+            .map(|x| x.as_ref().clone())
+            .unwrap_or_default();
 
         if participants.participants_map.contains_key(&participant) {
-            return Err(anyhow::anyhow!("Public key {} already exists in current set", participant));
+            return Err(anyhow::anyhow!(
+                "Public key {} already exists in current set",
+                participant
+            ));
         }
 
         participants.participants.push(participant.clone());
-        participants.participants_map.insert(participant, (participants.participants.len() as u32) - 1);
+        participants
+            .participants_map
+            .insert(participant, (participants.participants.len() as u32) - 1);
 
-        self.latest_view.store(current_latest + 1, Ordering::Relaxed);
+        self.latest_view
+            .store(current_latest + 1, Ordering::Relaxed);
         views.insert(current_latest + 1, Box::new(participants));
         Ok(())
     }
@@ -82,10 +95,16 @@ impl Registry {
         let mut views = self.views.write().unwrap();
         let current_latest = self.latest_view.load(Ordering::Relaxed);
 
-        let mut participants = views.get(&current_latest).map(|x| x.as_ref().clone()).unwrap_or_default();
+        let mut participants = views
+            .get(&current_latest)
+            .map(|x| x.as_ref().clone())
+            .unwrap_or_default();
 
         let Some(index) = participants.participants_map.get(&participant).map(|x| *x) else {
-            return Err(anyhow::anyhow!("Public key {} doesn't exist in current set", participant));
+            return Err(anyhow::anyhow!(
+                "Public key {} doesn't exist in current set",
+                participant
+            ));
         };
 
         participants.participants.swap_remove(index as usize);
@@ -93,15 +112,17 @@ impl Registry {
 
         // re-calculate the index of the swapped public key
         if let Some(swapped_key) = participants.participants.get(index as usize) {
-            participants.participants_map.insert(swapped_key.clone(), index);
+            participants
+                .participants_map
+                .insert(swapped_key.clone(), index);
         }
 
-        self.latest_view.store(current_latest + 1, Ordering::Relaxed);
+        self.latest_view
+            .store(current_latest + 1, Ordering::Relaxed);
         views.insert(current_latest + 1, Box::new(participants));
         Ok(())
     }
 }
-
 
 impl p2p::Coordinator for Registry {
     type PublicKey = PublicKey;
