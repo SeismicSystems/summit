@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU32,
     str::FromStr as _,
 };
-
+use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated;
@@ -12,7 +12,7 @@ use futures::future::try_join_all;
 use governor::Quota;
 use summit_types::{Genesis, PublicKey};
 use tracing::{Level, error};
-
+use summit_application::engine_client::RethEngineClient;
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
@@ -124,9 +124,12 @@ impl Command {
         let engine_url = format!("http://0.0.0.0:{}", flags.engine_port);
         let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
 
+        // read JWT from file
+        let jwt_path = get_expanded_path(&flags.engine_jwt_path).expect("failed to expand jwt path");
+        let engine_jwt = std::fs::read_to_string(jwt_path).expect("failed to load jwt");
+        let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
         let config = EngineConfig::get_engine_config(
-            engine_url,
-            flags.engine_jwt_path.clone(),
+            engine_client,
             flags.key_path.clone(),
             flags.share_path.clone(),
             peers.clone(),
@@ -259,9 +262,11 @@ pub fn run_node_with_runtime(
     let engine_url = format!("http://0.0.0.0:{}", flags.engine_port);
     let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
 
+    let jwt_path = get_expanded_path(&flags.engine_jwt_path).expect("failed to expand jwt path");
+    let engine_jwt = std::fs::read_to_string(jwt_path).expect("failed to load jwt");
+    let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
     let config = EngineConfig::get_engine_config(
-        engine_url,
-        flags.engine_jwt_path.clone(),
+        engine_client,
         flags.key_path.clone(),
         flags.share_path.clone(),
         peers.clone(),

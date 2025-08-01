@@ -10,5 +10,5 @@ pub use supervisor::*;
 pub mod config;
 pub use config::*;
 
-mod engine_client;
+pub mod engine_client;
 pub mod finalizer;

@@ -30,12 +30,28 @@ use alloy_transport_http::{
 use http_body_util::Full;
 use summit_types::Block;
 
+
+pub trait EngineClient: Clone + Send + Sync + 'static {
+    fn start_building_block(
+        &self,
+        fork_choice_state: ForkchoiceState,
+        timestamp: u64,
+    ) -> impl Future<Output = Option<PayloadId>> + Send;
+
+    fn get_payload(&self, payload_id: PayloadId) -> impl Future<Output = ExecutionPayloadEnvelopeV4> + Send;
+
+    fn check_payload(&self, block: &Block) -> impl Future<Output = PayloadStatus> + Send;
+
+    fn commit_hash(&self, fork_choice_state: ForkchoiceState) -> impl Future<Output = ()> + Send;
+}
+
+
 #[derive(Clone)]
-pub struct EngineClient {
+pub struct RethEngineClient {
     provider: RootProvider,
 }
 
-impl EngineClient {
+impl RethEngineClient {
     pub fn new(engine_url: String, jwt_secret: &str) -> Self {
         let secret = JwtSecret::from_hex(jwt_secret).unwrap();
         let url = engine_url.parse().unwrap();
@@ -66,8 +82,8 @@ impl EngineClient {
     }
 }
 
-impl EngineClient {
-    pub async fn start_building_block(
+impl EngineClient for RethEngineClient {
+    async fn start_building_block(
         &self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
@@ -90,11 +106,11 @@ impl EngineClient {
         res.payload_id
     }
 
-    pub async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+    async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
         self.provider.get_payload_v4(payload_id).await.unwrap()
     }
 
-    pub async fn check_payload(&self, block: &Block) -> PayloadStatus {
+    async fn check_payload(&self, block: &Block) -> PayloadStatus {
         self.provider
             .new_payload_v4(
                 block.payload.clone(),
@@ -106,7 +122,7 @@ impl EngineClient {
             .unwrap()
     }
 
-    pub async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+    async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
         self.provider
             .fork_choice_updated_v3(fork_choice_state, None)
             .await
