@@ -4903,6 +4903,7 @@ dependencies = [
  "alloy-node-bindings",
  "alloy-primitives",
  "alloy-rpc-types",
+ "alloy-rpc-types-engine",
  "alloy-signer",
  "alloy-signer-local",
  "anyhow",

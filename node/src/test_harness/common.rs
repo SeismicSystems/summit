@@ -28,6 +28,7 @@ use std::{
 use std::{time::Duration};
 use alloy_signer::k256::elliptic_curve::rand_core::OsRng;
 use anyhow::Context;
+use crate::test_harness::mock_engine_client::MockEngineClient;
 
 async fn link_validators(
     oracle: &mut Oracle<PublicKey>,
@@ -148,13 +149,15 @@ pub fn all_online(n: u32, seed: u64, link: Link, required: u64) -> String {
             let engine_jwt = std::fs::read_to_string("../testnet/jwt.hex").context("failed to load jwt").expect("failed to read jwt");
             let genesis_hash = from_hex_formatted("0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616").expect("failed to decode genesis hash");
             let namespace = String::from("_SEISMIC_BFT");
+
+            let engine_client = MockEngineClient {};
+
             let config = EngineConfig {
+                engine_client,
                 //blocker: oracle.control(public_key.clone()),
                 partition_prefix: uid.clone(),
                 //blocks_freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
                 //finalized_freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
-                engine_url,
-                engine_jwt,
                 genesis_hash: genesis_hash.try_into().unwrap(),
                 namespace,
                 signer,
