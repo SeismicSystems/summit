@@ -158,7 +158,7 @@ pub fn all_online(n: u32, seed: u64, link: Link, required: u64) -> String {
                 partition_prefix: uid.clone(),
                 //blocks_freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
                 //finalized_freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
-                genesis_hash: genesis_hash.try_into().unwrap(),
+                genesis_hash,
                 namespace,
                 signer,
                 polynomial: polynomial.clone(),
