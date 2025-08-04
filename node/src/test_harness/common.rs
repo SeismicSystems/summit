@@ -132,7 +132,9 @@ pub fn all_online(n: u32, seed: u64, link: Link, required: u64) -> String {
         link_validators(&mut oracle, &validators, link, None).await;
 
         // Create the engine clients
-        let engine_client_network = MockEngineNetwork::new();
+        let genesis_hash = from_hex_formatted("0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616").expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash.try_into().expect("failed to convert genesis hash");
+        let engine_client_network = MockEngineNetwork::new(genesis_hash);
 
         // Derive threshold
         let (polynomial, shares) =
@@ -147,7 +149,6 @@ pub fn all_online(n: u32, seed: u64, link: Link, required: u64) -> String {
 
             // Configure engine
             let uid = format!("validator-{public_key}");
-            let genesis_hash = from_hex_formatted("0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616").expect("failed to decode genesis hash");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());

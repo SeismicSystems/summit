@@ -39,8 +39,8 @@ struct MockEngineState {
 
 impl MockEngineClient {
     /// Create a new mock engine client
-    pub fn new(client_id: String) -> Self {
-        let state = MockEngineState::new();
+    pub fn new(client_id: String, genesis_hash: [u8; 32]) -> Self {
+        let state = MockEngineState::new(genesis_hash);
         
         Self {
             client_id,
@@ -116,12 +116,12 @@ impl MockEngineClient {
 }
 
 impl MockEngineState {
-    fn new() -> Self {
+    fn new(genesis_hash: [u8; 32]) -> Self {
         let mut canonical_blocks = HashMap::new();
         let mut canonical_by_number = HashMap::new();
         
         // Create deterministic genesis block
-        let genesis_hash = FixedBytes::from([0u8; 32]);
+        let genesis_hash = FixedBytes::from(genesis_hash);
         let genesis_block = Self::create_genesis_block();
         
         canonical_blocks.insert(genesis_hash, genesis_block);
@@ -216,17 +216,18 @@ impl EngineClient for MockEngineClient {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
     ) -> Option<PayloadId> {
+
         let mut state = self.state.lock().unwrap();
-        
+
         if state.should_fail {
             return None;
         }
-        
+
         // Verify we know about the head block
         if !state.canonical_blocks.contains_key(&fork_choice_state.head_block_hash) {
             return None;
         }
-        
+
         // Generate unique payload ID
         let payload_id = {
             let mut rng = rand::thread_rng();
@@ -353,18 +354,20 @@ impl EngineClient for MockEngineClient {
 #[derive(Clone)]
 pub struct MockEngineNetwork {
     clients: Arc<Mutex<Vec<MockEngineClient>>>,
+    genesis_hash: [u8; 32],
 }
 
 impl MockEngineNetwork {
-    pub fn new() -> Self {
+    pub fn new(genesis_hash: [u8; 32]) -> Self {
         Self {
             clients: Arc::new(Mutex::new(Vec::new())),
+            genesis_hash,
         }
     }
     
     /// Create a new mock engine client
     pub fn create_client(&self, client_id: String) -> MockEngineClient {
-        let client = MockEngineClient::new(client_id);
+        let client = MockEngineClient::new(client_id, self.genesis_hash);
         
         let mut clients = self.clients.lock().unwrap();
         clients.push(client.clone());
@@ -431,16 +434,17 @@ mod tests {
     
     #[tokio::test]
     async fn test_basic_engine_client() {
-        let client = MockEngineClient::new("test".to_string());
+        let genesis_hash = [0; 32];
+        let client = MockEngineClient::new("test".to_string(), genesis_hash);
         
         // Should start at genesis
         assert_eq!(client.get_chain_height(), 0);
         
         // Build a block
         let genesis_state = ForkchoiceState {
-            head_block_hash: FixedBytes::from([0u8; 32]),
-            safe_block_hash: FixedBytes::from([0u8; 32]),
-            finalized_block_hash: FixedBytes::from([0u8; 32]),
+            head_block_hash: FixedBytes::from(genesis_hash),
+            safe_block_hash: FixedBytes::from(genesis_hash),
+            finalized_block_hash: FixedBytes::from(genesis_hash),
         };
         
         let payload_id = client.start_building_block(genesis_state, 1000).await.unwrap();
@@ -450,8 +454,8 @@ mod tests {
         // Commit the block
         let new_fork_choice = ForkchoiceState {
             head_block_hash: block.payload_inner.payload_inner.block_hash,
-            safe_block_hash: FixedBytes::from([0u8; 32]),
-            finalized_block_hash: FixedBytes::from([0u8; 32]),
+            safe_block_hash: FixedBytes::from(genesis_hash),
+            finalized_block_hash: FixedBytes::from(genesis_hash),
         };
         
         client.commit_hash(new_fork_choice).await;
@@ -462,7 +466,8 @@ mod tests {
     
     #[tokio::test]
     async fn test_multiple_clients_consensus() {
-        let network = MockEngineNetwork::new();
+        let genesis_hash = [0; 32];
+        let network = MockEngineNetwork::new(genesis_hash);
         
         // Create 3 clients
         let client1 = network.create_client("client1".to_string());
@@ -485,7 +490,8 @@ mod tests {
     
     #[tokio::test]
     async fn test_client_divergence_and_convergence() {
-        let network = MockEngineNetwork::new();
+        let genesis_hash = [0; 32];
+        let network = MockEngineNetwork::new(genesis_hash);
         
         let client1 = network.create_client("client1".to_string());
         let client2 = network.create_client("client2".to_string());
@@ -544,13 +550,14 @@ mod tests {
     
     #[tokio::test]
     async fn test_multiple_block_production() {
-        let network = MockEngineNetwork::new();
+        let genesis_hash = [0; 32];
+        let network = MockEngineNetwork::new(genesis_hash);
         
         let client1 = network.create_client("node1".to_string());
         let client2 = network.create_client("node2".to_string());
         let client3 = network.create_client("node3".to_string());
         
-        let mut current_head = FixedBytes::from([0u8; 32]);
+        let mut current_head = FixedBytes::from(genesis_hash);
         
         // Simulate 3 rounds of block production
         for round in 1..=3 {
@@ -620,7 +627,8 @@ mod tests {
     
     #[tokio::test]
     async fn test_consensus_failure_scenarios() {
-        let network = MockEngineNetwork::new();
+        let genesis_hash = [0; 32];
+        let network = MockEngineNetwork::new(genesis_hash);
         
         let client1 = network.create_client("client1".to_string());
         let client2 = network.create_client("client2".to_string());
@@ -631,9 +639,9 @@ mod tests {
         
         // Create conflicting blocks on different clients
         let genesis_state = ForkchoiceState {
-            head_block_hash: FixedBytes::from([0u8; 32]),
-            safe_block_hash: FixedBytes::from([0u8; 32]),
-            finalized_block_hash: FixedBytes::from([0u8; 32]),
+            head_block_hash: FixedBytes::from(genesis_hash),
+            safe_block_hash: FixedBytes::from(genesis_hash),
+            finalized_block_hash: FixedBytes::from(genesis_hash),
         };
         
         // Client1 builds block A
@@ -655,16 +663,16 @@ mod tests {
         // Client1 commits block A
         let fork_choice_a = ForkchoiceState {
             head_block_hash: block_a.payload_inner.payload_inner.block_hash,
-            safe_block_hash: FixedBytes::from([0u8; 32]),
-            finalized_block_hash: FixedBytes::from([0u8; 32]),
+            safe_block_hash: FixedBytes::from(genesis_hash),
+            finalized_block_hash: FixedBytes::from(genesis_hash),
         };
         client1.commit_hash(fork_choice_a).await;
         
         // Client2 commits block B  
         let fork_choice_b = ForkchoiceState {
             head_block_hash: block_b.payload_inner.payload_inner.block_hash,
-            safe_block_hash: FixedBytes::from([0u8; 32]),
-            finalized_block_hash: FixedBytes::from([0u8; 32]),
+            safe_block_hash: FixedBytes::from(genesis_hash),
+            finalized_block_hash: FixedBytes::from(genesis_hash),
         };
         client2.commit_hash(fork_choice_b).await;
         
