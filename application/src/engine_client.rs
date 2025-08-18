@@ -33,7 +33,7 @@ use http_body_util::Full;
 use serde::{Deserialize, Serialize};
 use summit_types::{Block, Digest};
 
-const STARTING_HISTORICAL_BLOCK: u64 = 23160013;
+const STARTING_HISTORICAL_BLOCK: u64 = 23136550;
 const BLOCK_DIR: &str = "./blocks";
 pub trait EngineClient: Clone + Send + Sync + 'static {
     fn start_building_block(
