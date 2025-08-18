@@ -22,7 +22,6 @@ use futures::task::{Context, Poll};
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 use summit_types::{Block, Digest};
 use tracing::{error, info, warn};
@@ -228,11 +227,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         };
 
         let parent = parent_request.await.unwrap();
+        let parent_height = parent.height;
 
         // now that we have the parent additionally await for that to be executed by the finalizer
         let (tx, rx) = oneshot::channel();
         self.tx_height_notify
-            .try_send((parent.height, tx))
+            .try_send((parent_height, tx))
             .expect("finalizer dropped");
 
         // await for notification
@@ -249,23 +249,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
         let payload_id = self
             .engine_client
-            .start_building_block(forkchoice_clone, current)
+            .start_building_block(forkchoice_clone, current, parent_height + 1)
             .await
             .ok_or(anyhow!("Unable to build payload"))?;
 
-        self.context.sleep(Duration::from_millis(50)).await;
+        let block_data = self.engine_client.get_payload(payload_id).await;
 
-        let payload_envelope = self.engine_client.get_payload(payload_id).await;
-
-        let block = Block::compute_digest(
-            parent.digest,
-            parent.height + 1,
-            current,
-            payload_envelope.envelope_inner.execution_payload,
-            payload_envelope.execution_requests.to_vec(),
-            payload_envelope.envelope_inner.block_value,
-        );
-
+        let block = block_data.to_block(parent.digest, parent_height + 1, current);
         Ok(block)
     }
 }

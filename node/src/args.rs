@@ -18,7 +18,7 @@ use std::{
     num::NonZeroU32,
     str::FromStr as _,
 };
-use summit_application::engine_client::RethEngineClient;
+use summit_application::engine_client::HistoricalEngineClient;
 use summit_types::{Genesis, PublicKey};
 use tracing::{Level, error};
 
@@ -127,7 +127,7 @@ impl Command {
         let jwt_path =
             get_expanded_path(&flags.engine_jwt_path).expect("failed to expand jwt path");
         let engine_jwt = std::fs::read_to_string(jwt_path).expect("failed to load jwt");
-        let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
+        let engine_client = HistoricalEngineClient::new(engine_url.clone(), &engine_jwt);
         let config = EngineConfig::get_engine_config(
             engine_client,
             flags.key_path.clone(),
@@ -267,7 +267,7 @@ pub fn run_node_with_runtime(
 
     let jwt_path = get_expanded_path(&flags.engine_jwt_path).expect("failed to expand jwt path");
     let engine_jwt = std::fs::read_to_string(jwt_path).expect("failed to load jwt");
-    let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
+    let engine_client = HistoricalEngineClient::new(engine_url.clone(), &engine_jwt);
     let config = EngineConfig::get_engine_config(
         engine_client,
         flags.key_path.clone(),

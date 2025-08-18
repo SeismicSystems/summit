@@ -71,7 +71,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
                     .data_dir(format!("testnet/node{x}/data/reth_db"))
                     .arg("--authrpc.jwtsecret")
-                    .arg("testnet/jwt.hex");
+                    .arg("testnet/jwt.hex")
+                    .arg("--enclave.mock-server")
+                    .arg("--enclave.endpoint-port")
+                    .arg(format!("1744{x}"));
 
                 let mut reth = reth_builder.spawn();
 

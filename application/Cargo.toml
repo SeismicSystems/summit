@@ -23,9 +23,12 @@ alloy-provider.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-transport-http.workspace = true
 alloy-rpc-client.workspace = true
+alloy-primitives.workspace = true
 governor.workspace = true
 tower.workspace = true
 rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 http-body-util = "0.1.3"
 

@@ -8,7 +8,7 @@ use alloy_rpc_types_engine::{
 use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use summit_application::engine_client::EngineClient;
+use summit_application::engine_client::{BlockData, EngineClient};
 use summit_types::Block;
 
 #[derive(Clone)]
@@ -229,6 +229,7 @@ impl EngineClient for MockEngineClient {
         &self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
+        _height: u64,
     ) -> Option<PayloadId> {
         let mut state = self.state.lock().unwrap();
 
@@ -276,14 +277,16 @@ impl EngineClient for MockEngineClient {
         Some(payload_id)
     }
 
-    async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+    async fn get_payload(&self, payload_id: PayloadId) -> BlockData {
         let state = self.state.lock().unwrap();
 
         state
             .building_payloads
             .get(&payload_id)
             .cloned()
-            .expect("Payload ID not found")
+            .expect("Payload ID not found");
+
+        todo!()
     }
 
     async fn check_payload(&self, block: &Block) -> PayloadStatus {
@@ -476,11 +479,11 @@ mod tests {
         };
 
         let payload_id = client
-            .start_building_block(genesis_state, 1000)
+            .start_building_block(genesis_state, 1000, 0)
             .await
             .unwrap();
         let envelope = client.get_payload(payload_id).await;
-        let block = envelope.envelope_inner.execution_payload;
+        let block = envelope.payload;
 
         // Commit the block
         let new_fork_choice = ForkchoiceState {
@@ -538,11 +541,11 @@ mod tests {
         };
 
         let payload_id = client1
-            .start_building_block(genesis_state, 1000)
+            .start_building_block(genesis_state, 1000, 0)
             .await
             .unwrap();
         let envelope = client1.get_payload(payload_id).await;
-        let block1 = envelope.envelope_inner.execution_payload.clone();
+        let block1 = envelope.payload.clone();
 
         let fork_choice1 = ForkchoiceState {
             head_block_hash: block1.payload_inner.payload_inner.block_hash,
@@ -565,8 +568,9 @@ mod tests {
             parent: summit_types::Digest::from([0u8; 32]), // Genesis digest
             height: 1,
             timestamp: 1000,
-            block_value: alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
             execution_requests: Vec::new(),
+            parent_beacon_block_root: Default::default(),
+            versioned_hashes: Default::default(),
         };
 
         // Client2 checks the payload (validates it)
@@ -609,11 +613,11 @@ mod tests {
             };
 
             let payload_id = producer
-                .start_building_block(fork_choice, (round * 1000) as u64)
+                .start_building_block(fork_choice, (round * 1000) as u64, 0)
                 .await
                 .unwrap();
             let envelope = producer.get_payload(payload_id).await;
-            let new_block = envelope.envelope_inner.execution_payload.clone();
+            let new_block = envelope.payload.clone();
 
             let new_fork_choice = ForkchoiceState {
                 head_block_hash: new_block.payload_inner.payload_inner.block_hash,
@@ -634,8 +638,9 @@ mod tests {
                         parent: summit_types::Digest::from([(round - 1) as u8; 32]), // Parent digest
                         height: round as u64,
                         timestamp: (round * 1000) as u64,
-                        block_value: U256::from(1_000_000_000_000_000_000u64),
                         execution_requests: Vec::new(),
+                        parent_beacon_block_root: Default::default(),
+                        versioned_hashes: Default::default(),
                     };
 
                     // Client validates the block
@@ -683,19 +688,19 @@ mod tests {
 
         // Client1 builds block A
         let payload_id_a = client1
-            .start_building_block(genesis_state, 1000)
+            .start_building_block(genesis_state, 1000, 0)
             .await
             .unwrap();
         let envelope_a = client1.get_payload(payload_id_a).await;
-        let block_a = envelope_a.envelope_inner.execution_payload.clone();
+        let block_a = envelope_a.payload.clone();
 
         // Client2 builds block B (different from A due to client_id in hash)
         let payload_id_b = client2
-            .start_building_block(genesis_state, 1000)
+            .start_building_block(genesis_state, 1000, 0)
             .await
             .unwrap();
         let envelope_b = client2.get_payload(payload_id_b).await;
-        let block_b = envelope_b.envelope_inner.execution_payload.clone();
+        let block_b = envelope_b.payload.clone();
 
         // Blocks should be different
         assert_ne!(

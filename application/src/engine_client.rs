@@ -1,3 +1,6 @@
+use std::{fs, path::PathBuf, str::FromStr as _};
+
+use alloy_primitives::{B256, FixedBytes};
 /*
 This is the Client to speak with the engine API on Reth
 
@@ -19,8 +22,7 @@ engine_newPayloadV3 : This is called to store(not commit) and validate blocks re
 */
 use alloy_provider::{RootProvider, ext::EngineApi, network::Ethereum};
 use alloy_rpc_types_engine::{
-    ExecutionPayloadEnvelopeV4, ForkchoiceState, JwtSecret, PayloadAttributes, PayloadId,
-    PayloadStatus,
+    ExecutionPayloadV3, ForkchoiceState, JwtSecret, PayloadAttributes, PayloadId, PayloadStatus,
 };
 use alloy_transport_http::{
     AuthLayer, AuthService, Http, HyperClient,
@@ -28,19 +30,20 @@ use alloy_transport_http::{
     hyper_util::{client::legacy::Client, rt::TokioExecutor},
 };
 use http_body_util::Full;
-use summit_types::Block;
+use serde::{Deserialize, Serialize};
+use summit_types::{Block, Digest};
 
+const STARTING_HISTORICAL_BLOCK: u64 = 23160013;
+const BLOCK_DIR: &str = "./blocks";
 pub trait EngineClient: Clone + Send + Sync + 'static {
     fn start_building_block(
         &self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
+        height: u64,
     ) -> impl Future<Output = Option<PayloadId>> + Send;
 
-    fn get_payload(
-        &self,
-        payload_id: PayloadId,
-    ) -> impl Future<Output = ExecutionPayloadEnvelopeV4> + Send;
+    fn get_payload(&self, payload_id: PayloadId) -> impl Future<Output = BlockData> + Send;
 
     fn check_payload(&self, block: &Block) -> impl Future<Output = PayloadStatus> + Send;
 
@@ -88,6 +91,7 @@ impl EngineClient for RethEngineClient {
         &self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
+        _height: u64,
     ) -> Option<PayloadId> {
         let payload_attributes = PayloadAttributes {
             timestamp,
@@ -107,8 +111,9 @@ impl EngineClient for RethEngineClient {
         res.payload_id
     }
 
-    async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
-        self.provider.get_payload_v4(payload_id).await.unwrap()
+    async fn get_payload(&self, _payload_id: PayloadId) -> BlockData {
+        //  self.provider.get_payload_v4(payload_id).await.unwrap()
+        todo!()
     }
 
     async fn check_payload(&self, block: &Block) -> PayloadStatus {
@@ -129,4 +134,119 @@ impl EngineClient for RethEngineClient {
             .await
             .unwrap();
     }
+}
+
+#[derive(Clone)]
+pub struct HistoricalEngineClient {
+    provider: RootProvider,
+    block_dir: PathBuf,
+}
+
+impl HistoricalEngineClient {
+    pub fn new(engine_url: String, jwt_secret: &str) -> Self {
+        let secret = JwtSecret::from_hex(jwt_secret).unwrap();
+        let url = engine_url.parse().unwrap();
+
+        // todo(dalton): bringing in Full here as a conveniance at the moment. If i dont end up using any of the benefits here we can switch to just Bytes and drop dep
+        let hyper_client = Client::builder(TokioExecutor::new()).build_http::<Full<HyperBytes>>();
+        let service = tower::ServiceBuilder::new()
+            .layer(AuthLayer::new(secret))
+            .service(hyper_client);
+
+        let layer_transport: HyperClient<
+            Full<HyperBytes>,
+            AuthService<
+                Client<
+                    alloy_transport_http::hyper_util::client::legacy::connect::HttpConnector,
+                    Full<HyperBytes>,
+                >,
+            >,
+        > = HyperClient::with_service(service);
+
+        let http_hyper = Http::with_client(layer_transport, url);
+
+        let rpc_client = alloy_rpc_client::RpcClient::new(http_hyper, true);
+
+        let provider = RootProvider::<Ethereum>::new(rpc_client);
+
+        let block_dir = PathBuf::from_str(BLOCK_DIR).unwrap();
+        Self {
+            provider,
+            block_dir,
+        }
+    }
+}
+
+impl EngineClient for HistoricalEngineClient {
+    async fn start_building_block(
+        &self,
+        _fork_choice_state: ForkchoiceState,
+        _timestamp: u64,
+        height: u64,
+    ) -> Option<PayloadId> {
+        let bytes: [u8; 8] = height.to_le_bytes();
+        Some(PayloadId::new(bytes))
+    }
+
+    async fn get_payload(&self, payload_id: PayloadId) -> BlockData {
+        let block_num = u64::from_le_bytes(payload_id.0.into()) + STARTING_HISTORICAL_BLOCK;
+        let filename = format!("block_{block_num}.json");
+        let block_json =
+            fs::read_to_string(self.block_dir.join(filename)).expect("Cant read block file");
+
+        serde_json::from_str(&block_json).expect("Invalid blockdata")
+    }
+
+    async fn check_payload(&self, block: &Block) -> PayloadStatus {
+        self.provider
+            .new_payload_v4(
+                block.payload.clone(),
+                Vec::new(),
+                [1; 32].into(),
+                block.execution_requests.clone(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+        self.provider
+            .fork_choice_updated_v3(fork_choice_state, None)
+            .await
+            .unwrap();
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BlockData {
+    pub block_number: u64,
+    pub payload: ExecutionPayloadV3,
+    pub requests: FixedBytes<32>,
+    pub parent_beacon_block_root: B256,
+    pub versioned_hashes: Vec<B256>,
+}
+
+impl BlockData {
+    pub fn to_block(self, parent: Digest, height: u64, timestamp: u64) -> Block {
+        Block::compute_digest(
+            parent,
+            height,
+            timestamp,
+            self.payload,
+            vec![self.requests.into()],
+            self.parent_beacon_block_root,
+            self.versioned_hashes,
+        )
+    }
+}
+
+#[test]
+fn test_payloadid_from_num() {
+    let num: u64 = 8;
+    let le_bytes = num.to_le_bytes();
+    let payload_id = PayloadId::new(le_bytes);
+
+    let new_num = u64::from_le_bytes(payload_id.0.into());
+
+    assert_eq!(num, new_num)
 }
