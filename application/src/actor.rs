@@ -45,7 +45,7 @@ impl<T> futures::Future for ChannelClosedFuture<'_, T> {
 }
 
 // Helper function to create the future using a mutable reference
-fn oneshot_closed_future<T>(sender: &mut oneshot::Sender<T>) -> ChannelClosedFuture<T> {
+fn oneshot_closed_future<T>(sender: &mut oneshot::Sender<T>) -> ChannelClosedFuture<'_, T> {
     ChannelClosedFuture { sender }
 }
 
