@@ -137,14 +137,19 @@ pub(crate) fn expect_keys(key_path: &str, poly_share_path: &str) -> (PrivateKey,
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        args::{DEFAULT_KEY_PATH, DEFAULT_SHARE_PATH},
-        config::expect_keys,
-    };
+    use std::path::PathBuf;
+
+    use crate::config::expect_keys;
 
     #[test]
-    fn test_expect_default_keys() {
-        expect_keys(DEFAULT_KEY_PATH, DEFAULT_SHARE_PATH);
+    fn test_expect_keys_node0() {
+        let node_crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = node_crate_dir.parent().unwrap();
+        let node_dir = repo_root.join("testnet/node0");
+        expect_keys(
+            &node_dir.join("key.pem").to_string_lossy(),
+            &node_dir.join("share.pem").to_string_lossy(),
+        );
     }
 
     #[test]
