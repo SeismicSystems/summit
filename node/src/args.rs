@@ -328,15 +328,6 @@ pub fn run_node_with_runtime(
             rx.await.expect("Genesis channel closed");
         }
 
-        // let key_path = flags.key_path.clone();
-        // let rpc_port = flags.rpc_port;
-        // let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-        //     let rpc = Rpc::new(key_path, rpc_port);
-        //     if let Err(e) = rpc.start().await {
-        //         tracing::error!("RPC server failed: {}", e);
-        //     }
-        // });
-
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
