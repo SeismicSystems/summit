@@ -18,17 +18,13 @@ engine_newPayloadV3 : This is called to store(not commit) and validate blocks re
 
 */
 use alloy_eips::eip4895::Withdrawal;
-use alloy_provider::{RootProvider, ext::EngineApi, network::Ethereum};
+use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
 use alloy_rpc_types_engine::{
-    ExecutionPayloadEnvelopeV4, ForkchoiceState, JwtSecret, PayloadAttributes, PayloadId,
-    PayloadStatus,
+    ExecutionPayloadEnvelopeV4, ForkchoiceState, PayloadAttributes, PayloadId, PayloadStatus,
 };
-use alloy_transport_http::{
-    AuthLayer, AuthService, Http, HyperClient,
-    hyper::body::Bytes as HyperBytes,
-    hyper_util::{client::legacy::Client, rt::TokioExecutor},
-};
-use http_body_util::Full;
+
+use alloy_transport_ipc::IpcConnect;
+use std::future::Future;
 use summit_types::Block;
 
 pub trait EngineClient: Clone + Send + Sync + 'static {
@@ -55,32 +51,9 @@ pub struct RethEngineClient {
 }
 
 impl RethEngineClient {
-    pub fn new(engine_url: String, jwt_secret: &str) -> Self {
-        let secret = JwtSecret::from_hex(jwt_secret).unwrap();
-        let url = engine_url.parse().unwrap();
-
-        // todo(dalton): bringing in Full here as a conveniance at the moment. If i dont end up using any of the benefits here we can switch to just Bytes and drop dep
-        let hyper_client = Client::builder(TokioExecutor::new()).build_http::<Full<HyperBytes>>();
-        let service = tower::ServiceBuilder::new()
-            .layer(AuthLayer::new(secret))
-            .service(hyper_client);
-
-        let layer_transport: HyperClient<
-            Full<HyperBytes>,
-            AuthService<
-                Client<
-                    alloy_transport_http::hyper_util::client::legacy::connect::HttpConnector,
-                    Full<HyperBytes>,
-                >,
-            >,
-        > = HyperClient::with_service(service);
-
-        let http_hyper = Http::with_client(layer_transport, url);
-
-        let rpc_client = alloy_rpc_client::RpcClient::new(http_hyper, true);
-
-        let provider = RootProvider::<Ethereum>::new(rpc_client);
-
+    pub async fn new(engine_ipc_path: String) -> Self {
+        let ipc = IpcConnect::new(engine_ipc_path);
+        let provider = ProviderBuilder::default().connect_ipc(ipc).await.unwrap();
         Self { provider }
     }
 }

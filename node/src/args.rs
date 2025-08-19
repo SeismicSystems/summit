@@ -28,6 +28,8 @@ pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
 pub const DEFAULT_SHARE_PATH: &str = "~/.seismic/consensus/share.pem";
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
+pub const DEFAULT_ENGINE_IPC_PATH: &str = "/tmp/reth_engine_api.ipc";
+
 #[derive(Parser, Debug)]
 pub struct CliArgs {
     #[command(subcommand)]
@@ -63,15 +65,9 @@ pub struct RunFlags {
     /// Path to the folder we will keep the consensus DB
     #[arg(long, default_value_t = DEFAULT_DB_FOLDER.into())]
     pub store_path: String,
-    /// Url to the engine API of the execution client
-    #[arg(long, default_value_t = 8551)]
-    pub engine_port: u16, // todo(dalton): should we make this URL instead of just port to support off server execution clients
-    /// JWT token for communicating with engine api
-    #[arg(
-        long,
-        default_value_t = String::from("~/.seismic/jwt.hex")
-    )]
-    pub engine_jwt_path: String, // todo(dalton): Lets point this at a file instead of expecting a string to keep inline with how reth handles this
+    /// Path to the engine IPC socket
+    #[arg(long, default_value_t = DEFAULT_ENGINE_IPC_PATH.into())]
+    pub engine_ipc_path: String,
     /// Port Consensus runs on
     #[arg(long, default_value_t = 18551)]
     pub port: u16,
@@ -106,6 +102,7 @@ impl Command {
     pub fn exec(&self) {
         match self {
             Command::Run { flags } => self.run_node(flags),
+            
             Command::Keys(cmd) => cmd.exec(),
         }
     }
@@ -120,14 +117,12 @@ impl Command {
             .map(|v| v.try_into().expect("Invalid validator in genesis"))
             .collect();
         committee.sort();
-        let engine_url = format!("http://0.0.0.0:{}", flags.engine_port);
         let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
 
-        // read JWT from file
-        let jwt_path =
-            get_expanded_path(&flags.engine_jwt_path).expect("failed to expand jwt path");
-        let engine_jwt = std::fs::read_to_string(jwt_path).expect("failed to load jwt");
-        let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
+        let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
+        let engine_client = futures::executor::block_on(RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()));
+        
+        // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
         let config = EngineConfig::get_engine_config(
             engine_client,
             signer,
@@ -263,12 +258,13 @@ pub fn run_node_with_runtime(
         .collect();
     committee.sort();
 
-    let engine_url = format!("http://0.0.0.0:{}", flags.engine_port);
     let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
 
-    let jwt_path = get_expanded_path(&flags.engine_jwt_path).expect("failed to expand jwt path");
-    let engine_jwt = std::fs::read_to_string(jwt_path).expect("failed to load jwt");
-    let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
+    let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
+    let engine_client = futures::executor::block_on(RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()));
+    
+    
+    // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
     let config = EngineConfig::get_engine_config(
         engine_client,
         signer,

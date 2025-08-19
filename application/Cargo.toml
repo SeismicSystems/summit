@@ -29,6 +29,7 @@ alloy-primitives.workspace = true
 governor.workspace = true
 tower.workspace = true
 rand.workspace = true
+alloy-transport-ipc.workspace = true
 
 http-body-util = "0.1.3"
 

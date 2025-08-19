@@ -35,8 +35,9 @@ alloy-rpc-types-engine = { version = "1.0.9", features = ["serde", "ssz"] }
 alloy-signer = "1.0.9"
 alloy-signer-local = "1.0.9"
 alloy-transport-http = { version = "1.0.9", features = ["hyper", "jwt-auth"] }
-alloy-provider = { version = "1.0.9", features = ["hyper", "engine-api"] }
+alloy-provider = { version = "1.0.9", features = ["hyper", "engine-api","ipc"] }
 alloy-primitives = "1.2.1"
+alloy-transport-ipc = { version = "1.0.9" }
 
 futures = "0.3.31"
 http = "1.0"
