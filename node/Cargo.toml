@@ -14,6 +14,7 @@ path = "src/bin/testnet.rs"
 [dependencies]
 summit-types.workspace = true
 summit-application.workspace = true
+summit-rpc = { path = "../rpc" }
 
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true

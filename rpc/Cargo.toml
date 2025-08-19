@@ -1,0 +1,22 @@
+[package]
+name = "summit-rpc"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rpc-server"
+path = "src/main.rs"
+
+[lib]
+name = "summit_rpc"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+axum = "0.8.4"
+summit-types = { workspace = true }
+commonware-cryptography = { workspace = true }
+commonware-utils = { workspace = true }
+commonware-codec = { workspace = true }
+dirs = "5.0.1"

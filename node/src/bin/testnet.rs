@@ -154,6 +154,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         engine_ipc_path: "/tmp/reth_engine_api.ipc".into(),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,
+        rpc_port: (3030 + (node * 10)) as u16,
         worker_threads: 2,
         log_level: "debug".into(),
         db_prefix: format!("{node}-quarts"),

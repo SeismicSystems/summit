@@ -5,6 +5,7 @@ use crate::{
     },
     engine::Engine,
     keys::KeySubCmd,
+    rpc::RPC,
     utils::get_expanded_path,
 };
 use clap::{Args, Parser, Subcommand};
@@ -76,6 +77,10 @@ pub struct RunFlags {
     #[arg(long, default_value_t = 9090)]
     pub prom_port: u16,
 
+    /// Port RPC server runs on
+    #[arg(long, default_value_t = 3030)]
+    pub rpc_port: u16,
+
     #[arg(long, default_value_t = 4)]
     pub worker_threads: usize,
 
@@ -102,48 +107,12 @@ impl Command {
     pub fn exec(&self) {
         match self {
             Command::Run { flags } => self.run_node(flags),
-            
+
             Command::Keys(cmd) => cmd.exec(),
         }
     }
 
     pub fn run_node(&self, flags: &RunFlags) {
-        let genesis =
-            Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
-
-        let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
-            .validators
-            .iter()
-            .map(|v| v.try_into().expect("Invalid validator in genesis"))
-            .collect();
-        committee.sort();
-        let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
-
-        let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
-        let engine_client = futures::executor::block_on(RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()));
-        
-        // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
-        let config = EngineConfig::get_engine_config(
-            engine_client,
-            signer,
-            share,
-            peers.clone(),
-            flags.db_prefix.clone(),
-            &genesis,
-        )
-        .unwrap();
-
-        let our_ip = committee
-            .iter()
-            .find_map(|v| {
-                if v.0 == config.signer.public_key() {
-                    Some(v.1)
-                } else {
-                    None
-                }
-            })
-            .expect("This node is not on the committee");
-
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
 
         // Initialize runtime
@@ -155,6 +124,54 @@ impl Command {
         let executor = tokio::Runner::new(cfg);
 
         executor.start(|context| async move {
+            // use the context async move to spawn a new runtime
+            let key_path = flags.key_path.clone();
+            let rpc_port = flags.rpc_port;
+            let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+                let rpc = RPC::new(key_path, rpc_port);
+                if let Err(e) = rpc.start().await {
+                    tracing::error!("RPC server failed: {}", e);
+                }
+            });
+
+            let genesis =
+                Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+
+            let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
+                .validators
+                .iter()
+                .map(|v| v.try_into().expect("Invalid validator in genesis"))
+                .collect();
+            committee.sort();
+            let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
+
+            let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
+                .expect("failed to expand engine ipc path");
+            let engine_client =
+                RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
+
+            // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
+            let config = EngineConfig::get_engine_config(
+                engine_client,
+                flags.key_path.clone(),
+                flags.share_path.clone(),
+                peers.clone(),
+                flags.db_prefix.clone(),
+                &genesis,
+            )
+            .unwrap();
+
+            let our_ip = committee
+                .iter()
+                .find_map(|v| {
+                    if v.0 == config.signer.public_key() {
+                        Some(v.1)
+                    } else {
+                        None
+                    }
+                })
+                .expect("This node is not on the committee");
+
             // Configure telemetry
             let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
             tokio::telemetry::init(
@@ -237,7 +254,7 @@ impl Command {
             let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
             // Wait for any task to error
-            if let Err(e) = try_join_all(vec![p2p, engine]).await {
+            if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
                 error!(?e, "task failed");
             }
         })
@@ -248,45 +265,55 @@ pub fn run_node_with_runtime(
     context: commonware_runtime::tokio::Context,
     flags: RunFlags,
 ) -> Handle<()> {
-    let (signer, share) = expect_keys(&flags.key_path, &flags.share_path);
-    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
-
-    let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
-        .validators
-        .iter()
-        .map(|v| v.try_into().expect("Invalid validator in genesis"))
-        .collect();
-    committee.sort();
-
-    let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
-
-    let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
-    let engine_client = futures::executor::block_on(RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()));
-    
-    
-    // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
-    let config = EngineConfig::get_engine_config(
-        engine_client,
-        signer,
-        share,
-        peers.clone(),
-        flags.db_prefix.clone(),
-        &genesis,
-    )
-    .unwrap();
-
-    let our_ip = committee
-        .iter()
-        .find_map(|v| {
-            if v.0 == config.signer.public_key() {
-                Some(v.1)
-            } else {
-                None
-            }
-        })
-        .expect("This node is not on the committee");
-
     context.spawn(async move |context| {
+        let key_path = flags.key_path.clone();
+        let rpc_port = flags.rpc_port;
+        let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+            let rpc = RPC::new(key_path, rpc_port);
+            if let Err(e) = rpc.start().await {
+                tracing::error!("RPC server failed: {}", e);
+            }
+        });
+
+        let genesis =
+            Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+
+        let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
+            .validators
+            .iter()
+            .map(|v| v.try_into().expect("Invalid validator in genesis"))
+            .collect();
+        committee.sort();
+
+        let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
+
+        let engine_ipc_path =
+            get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
+        let engine_client =
+            RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
+
+        // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
+        let config = EngineConfig::get_engine_config(
+            engine_client,
+            flags.key_path.clone(),
+            flags.share_path.clone(),
+            peers.clone(),
+            flags.db_prefix.clone(),
+            &genesis,
+        )
+        .unwrap();
+
+        let our_ip = committee
+            .iter()
+            .find_map(|v| {
+                if v.0 == config.signer.public_key() {
+                    Some(v.1)
+                } else {
+                    None
+                }
+            })
+            .expect("This node is not on the committee");
+
         // configure network
 
         let mut p2p_cfg = authenticated::lookup::Config::aggressive(
@@ -333,7 +360,7 @@ pub fn run_node_with_runtime(
         let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
         // Wait for any task to error
-        if let Err(e) = try_join_all(vec![p2p, engine]).await {
+        if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
             error!(?e, "task failed");
         }
     })
