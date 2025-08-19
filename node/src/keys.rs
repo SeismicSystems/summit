@@ -2,6 +2,7 @@ use crate::{args::Flags, utils::get_expanded_path};
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
 use commonware_codec::extensions::DecodeExt;
+use std::io::{self, Write};
 
 use commonware_cryptography::{PrivateKeyExt as _, Signer};
 use commonware_utils::from_hex_formatted;
@@ -25,9 +26,24 @@ impl KeySubCmd {
     }
 
     fn generate_keys(&self, flags: &Flags) {
-        // todo(dalton): Add key overwrite safety. Currently if there is already key this function will overwrite it with a new one
-        let path = get_expanded_path(&flags.key_path).expect("invalid path");
-        std::fs::create_dir_all(path.parent().expect("Invalide file path"))
+        let path = get_expanded_path(&flags.key_path).expect("Invalid path");
+
+        // Check if key file already exists
+        if path.exists() {
+            print!("Key file already exists at {}. Overwrite? (y/N): ", path.display());
+            io::stdout().flush().expect("Failed to flush stdout");
+            
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).expect("Failed to read input");
+            
+            let input = input.trim().to_lowercase();
+            if input != "y" && input != "yes" {
+                println!("Key generation cancelled.");
+                return;
+            }
+        }
+
+        std::fs::create_dir_all(path.parent().expect("Invalid file path"))
             .expect("Unable to create file path to generate key");
 
         let private_key = PrivateKey::from_rng(&mut rand::thread_rng());

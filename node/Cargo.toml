@@ -77,6 +77,9 @@ alloy-consensus.workspace = true
 dashmap = "6.1.0"
 sha3 = "0.10.8"
 alloy-eips = "1.0.23"
+reqwest.workspace = true
+reth-tasks = { git = "https://github.com/SeismicSystems/seismic-reth.git", branch = "seismic" }
+socket2.workspace = true
 tokio = { workspace = true, features = ["full", "rt-multi-thread", "time"] }
 
 [features]
