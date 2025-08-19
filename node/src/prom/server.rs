@@ -196,7 +196,6 @@ const fn describe_io_stats() {}
 mod tests {
     use super::*;
     use reqwest::Client;
-    use reth_tasks::TaskManager;
     use socket2::{Domain, Socket, Type};
     use std::net::{SocketAddr, TcpListener};
 
@@ -229,7 +228,14 @@ mod tests {
 
         // Check the response body
         let body = response.text().await.unwrap();
-        assert!(body.contains("reth_process_cpu_seconds_total"));
-        assert!(body.contains("reth_process_start_time_seconds"));
+        let body_contains = [
+            "seismic_bft_process_cpu_seconds_total",
+            "seismic_bft_process_start_time_seconds",
+        ];
+        for key in body_contains {
+            if !body.contains(key) {
+                panic!("Metrics body does not contain {}. Body:\n{:#?}", key, body);
+            }
+        }
     }
 }
