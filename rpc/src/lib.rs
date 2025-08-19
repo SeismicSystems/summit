@@ -1,4 +1,4 @@
-use axum::{routing::get, Router, extract::State};
+use axum::{routing::{get, post}, Router, extract::State, Json};
 use tokio::net::TcpListener;
 use commonware_codec::extensions::DecodeExt;
 use commonware_cryptography::Signer;
@@ -8,6 +8,39 @@ use summit_types::PrivateKey;
 #[derive(Clone)]
 pub struct RPCState {
     key_path: String,
+    genesis_sender: Option<std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct GenesisRequest {
+    pub genesis_data: String,
+}
+
+pub async fn send_genesis(State(state): State<RPCState>, Json(payload): Json<GenesisRequest>) -> Result<String, String> {
+    // Write genesis to file 
+    let genesis_path = dirs::home_dir()
+        .ok_or("Unable to determine home directory")?
+        .join(".seismic/consensus/genesis.toml");
+    
+    
+    if let Some(parent) = genesis_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+    
+    std::fs::write(&genesis_path, &payload.genesis_data)
+        .map_err(|e| format!("Failed to write genesis file: {}", e))?;
+    
+    // Signal that genesis is ready
+    if let Some(sender_arc) = &state.genesis_sender {
+        if let Ok(mut sender_opt) = sender_arc.lock() {
+            if let Some(sender) = sender_opt.take() {
+                let _ = sender.send(());
+                return Ok("Genesis file written and node notified".to_string());
+            }
+        }
+    }
+    
+    Ok("Genesis file written (no notification needed)".to_string())
 }
 
 pub async fn health_check() -> &'static str {
@@ -41,11 +74,13 @@ pub fn create_router(state: RPCState) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/get_public_key", get(get_public_key))
+        .route("/send_genesis", post(send_genesis))
         .with_state(state)
 }
 
-pub async fn run_server(port: u16, key_path: String) -> anyhow::Result<()> {
-    let state = RPCState { key_path };
+pub async fn run_server(port: u16, key_path: String, genesis_sender: Option<tokio::sync::oneshot::Sender<()>>) -> anyhow::Result<()> {
+    let genesis_sender = genesis_sender.map(|s| std::sync::Arc::new(std::sync::Mutex::new(Some(s))));
+    let state = RPCState { key_path, genesis_sender };
     let router = create_router(state);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
 

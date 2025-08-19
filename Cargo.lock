@@ -5180,6 +5180,7 @@ dependencies = [
  "commonware-cryptography",
  "commonware-utils",
  "dirs 5.0.1",
+ "serde",
  "summit-types",
  "tokio",
 ]

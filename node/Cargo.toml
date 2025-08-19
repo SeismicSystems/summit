@@ -30,6 +30,7 @@ clap.workspace = true
 rand.workspace = true
 tracing.workspace = true
 dirs = "6.0.0"
+tokio = { version = "1.45.1", features = ["sync"] }
 
 # testnet bin deps 
 alloy-node-bindings.workspace = true

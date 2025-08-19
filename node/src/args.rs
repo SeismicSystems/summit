@@ -5,13 +5,16 @@ use crate::{
     },
     engine::Engine,
     keys::KeySubCmd,
-    rpc::RPC,
+    rpc::Rpc,
     utils::get_expanded_path,
 };
 use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated;
+// use tokio as external_tokio;
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
+// use tokio::sync::oneshot;
+use ::tokio::sync::oneshot;
 use futures::future::try_join_all;
 use governor::Quota;
 use std::{
@@ -124,15 +127,39 @@ impl Command {
         let executor = tokio::Runner::new(cfg);
 
         executor.start(|context| async move {
+            // Check if genesis file exists
+            let genesis_path =
+                get_expanded_path(&flags.genesis_path).expect("Invalid genesis path");
+            let (tx, rx) = if !genesis_path.exists()
+                || std::fs::read_to_string(&genesis_path)
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+            {
+                let (tx, rx) = oneshot::channel::<()>();
+                (Some(tx), Some(rx))
+            } else {
+                (None, None)
+            };
+
             // use the context async move to spawn a new runtime
             let key_path = flags.key_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let rpc = RPC::new(key_path, rpc_port);
+                let mut rpc = Rpc::new(key_path, rpc_port);
+                if let Some(sender) = tx {
+                    rpc = rpc.with_genesis_sender(sender);
+                }
                 if let Err(e) = rpc.start().await {
                     tracing::error!("RPC server failed: {}", e);
                 }
             });
+
+            // Wait for genesis if needed
+            if let Some(rx) = rx {
+                println!("Waiting for genesis file to be provided via RPC...");
+                rx.await.expect("Genesis channel closed");
+            }
 
             let genesis =
                 Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
@@ -266,14 +293,47 @@ pub fn run_node_with_runtime(
     flags: RunFlags,
 ) -> Handle<()> {
     context.spawn(async move |context| {
+        // Check if genesis file exists
+        let genesis_path = get_expanded_path(&flags.genesis_path).expect("Invalid genesis path");
+        let (tx, rx) = if !genesis_path.exists()
+            || std::fs::read_to_string(&genesis_path)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            let (tx, rx) = oneshot::channel::<()>();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+        // use the context async move to spawn a new runtime
         let key_path = flags.key_path.clone();
         let rpc_port = flags.rpc_port;
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let rpc = RPC::new(key_path, rpc_port);
+            let mut rpc = Rpc::new(key_path, rpc_port);
+            if let Some(sender) = tx {
+                rpc = rpc.with_genesis_sender(sender);
+            }
             if let Err(e) = rpc.start().await {
                 tracing::error!("RPC server failed: {}", e);
             }
         });
+
+        // Wait for genesis if needed
+        if let Some(rx) = rx {
+            println!("Waiting for genesis file to be provided via RPC...");
+            rx.await.expect("Genesis channel closed");
+        }
+
+        // let key_path = flags.key_path.clone();
+        // let rpc_port = flags.rpc_port;
+        // let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+        //     let rpc = Rpc::new(key_path, rpc_port);
+        //     if let Err(e) = rpc.start().await {
+        //         tracing::error!("RPC server failed: {}", e);
+        //     }
+        // });
 
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
