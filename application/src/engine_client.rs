@@ -201,8 +201,8 @@ impl EngineClient for HistoricalEngineClient {
         self.provider
             .new_payload_v4(
                 block.payload.clone(),
-                Vec::new(),
-                [1; 32].into(),
+                block.versioned_hashes.clone(),
+                block.parent_beacon_block_root,
                 block.execution_requests.clone(),
             )
             .await

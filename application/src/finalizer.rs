@@ -188,13 +188,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         };
                         let new_height = block.height;
 
-                        if new_height == 1 {
-                            self.state_variables.put(FixedBytes::new(LATEST_KEY), new_height);
-                            self.height_notifier.notify_up_to(new_height);
-                            let _ = notifier.send(());
-                            continue;
-                        }
-
                         // check the payload
                         let payload_status = self.engine_client.check_payload(&block).await;
                         if payload_status.is_valid() {
