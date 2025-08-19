@@ -75,7 +75,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .arg("--enclave.mock-server")
                     .arg("--enclave.endpoint-port")
                     .arg(format!("1744{x}"))
-                    .arg("--auth-ipc");
+                    .arg("--auth-ipc")
+                    .arg("--auth-ipc.path")
+                    .arg(format!("/tmp/reth_engine_api{x}.ipc"));
 
                 let mut reth = reth_builder.spawn();
 
