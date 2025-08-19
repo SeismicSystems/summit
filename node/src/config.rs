@@ -2,11 +2,11 @@ use std::{num::NonZeroU32, time::Duration};
 
 use anyhow::{Context, Result};
 use commonware_codec::{Decode as _, DecodeExt as _};
-use commonware_cryptography::bls12381::primitives::{
+use commonware_cryptography::bls12381::{primitives::{
     group::{self, Share},
     poly::{self, Poly},
     variant::MinPk,
-};
+}};
 use commonware_utils::{from_hex_formatted, quorum};
 use governor::Quota;
 use summit_application::engine_client::EngineClient;
@@ -60,22 +60,13 @@ pub struct EngineConfig<C: EngineClient> {
 impl<C: EngineClient> EngineConfig<C> {
     pub fn get_engine_config(
         engine_client: C,
-        key_path: String,
-        poly_share_path: String,
+        signer: PrivateKey,
+        share: Share,
         participants: Vec<PublicKey>,
         db_prefix: String,
         genesis: &Genesis,
     ) -> Result<Self> {
-        // todo(dalton): clean this mess up
-        let share_path =
-            get_expanded_path(&poly_share_path).context("failed to expand share path")?;
-        let share_hex = std::fs::read_to_string(share_path).context("failed to load share hex")?;
-
-        let share = from_hex_formatted(&share_hex).expect("invalid format for polynomial share");
-        let share = group::Share::decode(share.as_ref()).expect("Could not parse share");
-
-        // read private key from file
-        let signer = read_ed_key_from_path(&key_path).context("failed to load signer key")?;
+        // TODO(dalton): should we validate polynomial construction after we wait to load genesis?
         let polynomial = from_hex_formatted(&genesis.identity).expect("Could not parse polynomial");
         let threshold = quorum(participants.len() as u32);
         let polynomial =
@@ -108,4 +99,35 @@ impl<C: EngineClient> EngineConfig<C> {
             share,
         })
     }
+}
+
+
+pub (crate) fn load_signer(key_path: &str) -> anyhow::Result<PrivateKey> {
+    read_ed_key_from_path(&key_path).context("failed to load signer key")
+}
+
+pub (crate) fn load_share(poly_share_path: &str) -> anyhow::Result<Share> {
+    let share_path =
+        get_expanded_path(poly_share_path).context("failed to expand share path")?;
+    let share_hex = std::fs::read_to_string(share_path).context("failed to load share hex")?;
+
+    let share_vec = from_hex_formatted(&share_hex).expect("invalid format for polynomial share");
+    let share = group::Share::decode(share_vec.as_ref()).expect("Could not parse share");
+    Ok(share)
+}
+
+pub (crate) fn expect_keys(key_path: &str, poly_share_path: &str) -> (PrivateKey, Share) {
+    let signer = match load_signer(key_path) {
+        Ok(signer) => signer,
+        Err(e) => {
+            panic!("Failed to load signer: {}", e);
+        }
+    };
+    let share = match load_share(poly_share_path) {
+        Ok(share) => share,
+        Err(e) => {
+            panic!("Failed to load share: {}", e);
+        }
+    };
+    (signer, share)
 }
