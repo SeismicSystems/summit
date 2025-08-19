@@ -261,6 +261,9 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 }
 
 fn handle_verify(block: &Block, parent: Block) -> bool {
+    if parent.height == 0 {
+        return true;
+    }
     if block.eth_parent_hash() != parent.eth_block_hash() {
         return false;
     }
