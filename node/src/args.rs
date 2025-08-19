@@ -32,28 +32,28 @@ pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 pub struct CliArgs {
     #[command(subcommand)]
     pub cmd: Command,
-
-    #[command(flatten)]
-    pub flags: Flags,
 }
 
 impl CliArgs {
     pub fn exec(&self) {
-        self.cmd.exec(&self.flags)
+        self.cmd.exec()
     }
 }
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     /// Start the validator
-    Run,
+    Run {
+        #[command(flatten)]
+        flags: RunFlags,
+    },
     /// Key management utilities
     #[command(subcommand)]
     Keys(KeySubCmd),
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct Flags {
+pub struct RunFlags {
     /// Path to your private key or where you want it generated
     #[arg(long, default_value_t = DEFAULT_KEY_PATH.into())]
     pub key_path: String,
@@ -103,15 +103,14 @@ pub struct Flags {
 }
 
 impl Command {
-    pub fn exec(&self, flags: &Flags) {
+    pub fn exec(&self) {
         match self {
-            Command::Run => self.run_node(flags),
-            Command::Keys(cmd) => cmd.exec(flags),
+            Command::Run { flags } => self.run_node(flags),
+            Command::Keys(cmd) => cmd.exec(),
         }
     }
 
-    pub fn run_node(&self, flags: &Flags) {
-        let (signer, share) = expect_keys(&flags.key_path, &flags.share_path);
+    pub fn run_node(&self, flags: &RunFlags) {
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
@@ -252,7 +251,7 @@ impl Command {
 
 pub fn run_node_with_runtime(
     context: commonware_runtime::tokio::Context,
-    flags: Flags,
+    flags: RunFlags,
 ) -> Handle<()> {
     let (signer, share) = expect_keys(&flags.key_path, &flags.share_path);
     let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
