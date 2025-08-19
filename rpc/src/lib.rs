@@ -1,4 +1,4 @@
-use axum::{routing::{get, post}, Router, extract::State, Json};
+use axum::{routing::{get, post}, Router, extract::State};
 use tokio::net::TcpListener;
 use commonware_codec::extensions::DecodeExt;
 use commonware_cryptography::Signer;
@@ -12,12 +12,8 @@ pub struct RPCState {
     genesis_sender: Option<std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>>,
 }
 
-#[derive(serde::Deserialize)]
-pub struct GenesisRequest {
-    pub genesis_data: String,
-}
 
-pub async fn send_genesis(State(state): State<RPCState>, Json(payload): Json<GenesisRequest>) -> Result<String, String> {
+pub async fn send_genesis(State(state): State<RPCState>, payload: String) -> Result<String, String> {
     // Write genesis to file 
     let genesis_path = if state.genesis_path.starts_with("~/") {
         let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))
@@ -31,7 +27,7 @@ pub async fn send_genesis(State(state): State<RPCState>, Json(payload): Json<Gen
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
     }
     
-    std::fs::write(&genesis_path, &payload.genesis_data)
+    std::fs::write(&genesis_path, &payload)
         .map_err(|e| format!("Failed to write genesis file: {}", e))?;
     
     // Signal that genesis is ready
