@@ -144,9 +144,10 @@ impl Command {
 
             // use the context async move to spawn a new runtime
             let key_path = flags.key_path.clone();
+            let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let mut rpc = Rpc::new(key_path, rpc_port);
+                let mut rpc = Rpc::new(key_path, genesis_path, rpc_port);
                 if let Some(sender) = tx {
                     rpc = rpc.with_genesis_sender(sender);
                 }
@@ -310,8 +311,9 @@ pub fn run_node_with_runtime(
         // use the context async move to spawn a new runtime
         let key_path = flags.key_path.clone();
         let rpc_port = flags.rpc_port;
+        let genesis_path = flags.genesis_path.clone();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let mut rpc = Rpc::new(key_path, rpc_port);
+            let mut rpc = Rpc::new(key_path, genesis_path, rpc_port);
             if let Some(sender) = tx {
                 rpc = rpc.with_genesis_sender(sender);
             }

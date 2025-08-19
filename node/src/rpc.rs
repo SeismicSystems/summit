@@ -3,14 +3,16 @@ use tokio::sync::oneshot;
 
 pub struct Rpc {
     key_path: String,
+    genesis_path: String,
     port: u16,
     genesis_sender: Option<oneshot::Sender<()>>,
 }
 
 impl Rpc {
-    pub fn new(key_path: String, port: u16) -> Self {
+    pub fn new(key_path: String, genesis_path: String, port: u16) -> Self {
         Self { 
             key_path, 
+            genesis_path,
             port,
             genesis_sender: None,
         }
@@ -22,6 +24,6 @@ impl Rpc {
     }
 
     pub async fn start(self) -> anyhow::Result<()> {
-        summit_rpc::run_server(self.port, self.key_path, self.genesis_sender).await
+        summit_rpc::run_server(self.port, self.key_path, self.genesis_path, self.genesis_sender).await
     }
 }

@@ -8,6 +8,7 @@ use summit_types::PrivateKey;
 #[derive(Clone)]
 pub struct RPCState {
     key_path: String,
+    genesis_path: String,
     genesis_sender: Option<std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>>,
 }
 
@@ -18,10 +19,13 @@ pub struct GenesisRequest {
 
 pub async fn send_genesis(State(state): State<RPCState>, Json(payload): Json<GenesisRequest>) -> Result<String, String> {
     // Write genesis to file 
-    let genesis_path = dirs::home_dir()
-        .ok_or("Unable to determine home directory")?
-        .join(".seismic/consensus/genesis.toml");
-    
+    let genesis_path = if state.genesis_path.starts_with("~/") {
+        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))
+        .map_err(|e| e.to_string())?;
+        home.join(&state.genesis_path[2..])
+    } else {
+        std::path::PathBuf::from(state.genesis_path)
+    };
     
     if let Some(parent) = genesis_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
@@ -78,9 +82,9 @@ pub fn create_router(state: RPCState) -> Router {
         .with_state(state)
 }
 
-pub async fn run_server(port: u16, key_path: String, genesis_sender: Option<tokio::sync::oneshot::Sender<()>>) -> anyhow::Result<()> {
+pub async fn run_server(port: u16, key_path: String, genesis_path: String, genesis_sender: Option<tokio::sync::oneshot::Sender<()>>) -> anyhow::Result<()> {
     let genesis_sender = genesis_sender.map(|s| std::sync::Arc::new(std::sync::Mutex::new(Some(s))));
-    let state = RPCState { key_path, genesis_sender };
+    let state = RPCState { key_path, genesis_path, genesis_sender };
     let router = create_router(state);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
 
