@@ -30,12 +30,17 @@ impl KeySubCmd {
 
         // Check if key file already exists
         if path.exists() {
-            print!("Key file already exists at {}. Overwrite? (y/N): ", path.display());
+            print!(
+                "Key file already exists at {}. Overwrite? (y/N): ",
+                path.display()
+            );
             io::stdout().flush().expect("Failed to flush stdout");
-            
+
             let mut input = String::new();
-            io::stdin().read_line(&mut input).expect("Failed to read input");
-            
+            io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read input");
+
             let input = input.trim().to_lowercase();
             if input != "y" && input != "yes" {
                 println!("Key generation cancelled.");
