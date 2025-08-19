@@ -34,6 +34,10 @@ alloy-rpc-types = "1.0.9"
 ethereum_ssz = "0.9.0"
 serde_json = "1.0.140"
 
+# for testing bins
+toml = "0.9.2"
+serde.workspace = true
+
 # for prom
 prometheus = { version = "0.14", optional = true }
 reth-metrics = { git = "https://github.com/SeismicSystems/seismic-reth.git", branch = "seismic", optional = true }
@@ -50,10 +54,6 @@ tikv-jemalloc-ctl = { version = "0.6", optional = true, features = ["stats"] }
 procfs = { version = "0.17.0", optional = true }
 tokio = { version = "1.45.1", features = ["full", "rt-multi-thread", "time"], optional = true }
 tower = { version = "0.5.2", optional = true }
-
-# for testing bins
-toml = "0.9.2"
-serde.workspace = true
 
 [dev-dependencies]
 commonware-macros.workspace = true
