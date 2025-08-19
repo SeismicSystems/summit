@@ -143,12 +143,14 @@ mod tests {
 
     #[test]
     fn test_expect_keys_node0() {
-        let node_crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let repo_root = node_crate_dir.parent().unwrap();
-        let node_dir = repo_root.join("testnet/node0");
+        let keys_dir = {
+            let node_crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let repo_root = node_crate_dir.parent().unwrap();
+            repo_root.join("testnet/node0")
+        };
         expect_keys(
-            &node_dir.join("key.pem").to_string_lossy(),
-            &node_dir.join("share.pem").to_string_lossy(),
+            &keys_dir.join("key.pem").to_string_lossy(),
+            &keys_dir.join("share.pem").to_string_lossy(),
         );
     }
 
