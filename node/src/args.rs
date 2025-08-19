@@ -73,7 +73,7 @@ pub struct RunFlags {
     )]
     pub engine_jwt_path: String, // todo(dalton): Lets point this at a file instead of expecting a string to keep inline with how reth handles this
     /// Port Consensus runs on
-    #[arg(long, default_value_t = 8551)]
+    #[arg(long, default_value_t = 18551)]
     pub port: u16,
 
     /// Port Consensus runs on
