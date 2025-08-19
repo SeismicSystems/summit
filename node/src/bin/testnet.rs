@@ -151,7 +151,6 @@ fn get_node_flags(node: usize) -> RunFlags {
         key_path: format!("{path}key.pem"),
         share_path: format!("{path}share.pem"),
         store_path: format!("{path}db"),
-        engine_ipc_path: "/tmp/reth_engine_api.ipc".into(),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,
         rpc_port: (3030 + (node * 10)) as u16,
@@ -159,5 +158,6 @@ fn get_node_flags(node: usize) -> RunFlags {
         log_level: "debug".into(),
         db_prefix: format!("{node}-quarts"),
         genesis_path: "./example_genesis.toml".into(),
+        engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
     }
 }
