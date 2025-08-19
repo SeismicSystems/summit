@@ -568,7 +568,7 @@ mod tests {
             parent: summit_types::Digest::from([0u8; 32]), // Genesis digest
             height: 1,
             timestamp: 1000,
-            execution_requests: Vec::new(),
+            execution_requests_hash: Default::default(),
             parent_beacon_block_root: Default::default(),
             versioned_hashes: Default::default(),
         };
@@ -638,7 +638,7 @@ mod tests {
                         parent: summit_types::Digest::from([(round - 1) as u8; 32]), // Parent digest
                         height: round as u64,
                         timestamp: (round * 1000) as u64,
-                        execution_requests: Vec::new(),
+                        execution_requests_hash: Default::default(),
                         parent_beacon_block_root: Default::default(),
                         versioned_hashes: Default::default(),
                     };

@@ -219,23 +219,23 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             *self.forkchoice.lock().expect("poisoned") = forkchoice;
 
                             // Parse execution requests
-                            for request_bytes in block.execution_requests {
-                                match ExecutionRequest::try_from(request_bytes.as_ref()) {
-                                    Ok(execution_request) => {
-                                        match execution_request {
-                                            ExecutionRequest::Deposit(deposit_request) => {
-                                                self.deposit_queue.push(deposit_request).await;
-                                            }
-                                            ExecutionRequest::Withdrawal(withdrawal_request) => {
-                                                self.withdrawal_queue.push(withdrawal_request).await;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!("Failed to parse execution request: {}", e);
-                                    }
-                                }
-                            }
+                            // for request_bytes in block.execution_requests {
+                            //     match ExecutionRequest::try_from(request_bytes.as_ref()) {
+                            //         Ok(execution_request) => {
+                            //             match execution_request {
+                            //                 ExecutionRequest::Deposit(deposit_request) => {
+                            //                     self.deposit_queue.push(deposit_request).await;
+                            //                 }
+                            //                 ExecutionRequest::Withdrawal(withdrawal_request) => {
+                            //                     self.withdrawal_queue.push(withdrawal_request).await;
+                            //                 }
+                            //             }
+                            //         }
+                            //         Err(e) => {
+                            //             warn!("Failed to parse execution request: {}", e);
+                            //         }
+                            //     }
+                            // }
 
                             // Add validators that deposited to the validator set
                             let last_indexed = *self.state_variables.get(&FixedBytes::new(LATEST_KEY)).unwrap_or(&0);

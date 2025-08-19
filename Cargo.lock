@@ -5092,6 +5092,7 @@ dependencies = [
 name = "summit-application"
 version = "0.0.0"
 dependencies = [
+ "alloy-eips",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-client",

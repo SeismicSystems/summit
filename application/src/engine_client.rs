@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf, str::FromStr as _};
 
+use alloy_eips::eip7685::RequestsOrHash;
 use alloy_primitives::{B256, FixedBytes};
 /*
 This is the Client to speak with the engine API on Reth
@@ -20,7 +21,7 @@ engine_newPayloadV3 : This is called to store(not commit) and validate blocks re
     we should attest if the block is valid. If it is valid and we reach quorom when we call engine_forkchoiceUpdatedV3 it will set this block to head
 
 */
-use alloy_provider::{RootProvider, ext::EngineApi, network::Ethereum};
+use alloy_provider::{Provider, RootProvider, ext::EngineApi, network::Ethereum};
 use alloy_rpc_types_engine::{
     ExecutionPayloadV3, ForkchoiceState, JwtSecret, PayloadAttributes, PayloadId, PayloadStatus,
 };
@@ -117,15 +118,17 @@ impl EngineClient for RethEngineClient {
     }
 
     async fn check_payload(&self, block: &Block) -> PayloadStatus {
-        self.provider
-            .new_payload_v4(
-                block.payload.clone(),
-                Vec::new(),
-                [1; 32].into(),
-                block.execution_requests.clone(),
-            )
-            .await
-            .unwrap()
+        // self.provider
+        //     .new_payload_v4(
+        //         block.payload.clone(),
+        //         Vec::new(),
+        //         [1; 32].into(),
+        //         block.execution_requests.clone(),
+        //     )
+        //     .await
+        //     .unwrap()
+
+        todo!()
     }
 
     async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
@@ -199,11 +202,14 @@ impl EngineClient for HistoricalEngineClient {
 
     async fn check_payload(&self, block: &Block) -> PayloadStatus {
         self.provider
-            .new_payload_v4(
-                block.payload.clone(),
-                block.versioned_hashes.clone(),
-                block.parent_beacon_block_root,
-                block.execution_requests.clone(),
+            .raw_request(
+                "engine_newPayloadV4".into(),
+                (
+                    block.payload.clone(),
+                    block.versioned_hashes.clone(),
+                    block.parent_beacon_block_root,
+                    RequestsOrHash::Hash(block.execution_requests_hash),
+                ),
             )
             .await
             .unwrap()
@@ -233,11 +239,22 @@ impl BlockData {
             height,
             timestamp,
             self.payload,
-            vec![self.requests.into()],
+            self.requests,
             self.parent_beacon_block_root,
             self.versioned_hashes,
         )
     }
+}
+
+#[test]
+fn test_block() {
+    let filename = format!("/home/dalton/code/summit3/blocks/block_23138550.json");
+    let block_json =
+        fs::read_to_string(PathBuf::from_str(&filename).unwrap()).expect("Cant read block file");
+
+    let block_data: BlockData = serde_json::from_str(&block_json).expect("Invalid blockdata");
+
+    let block = block_data.to_block([1; 32].into(), 1, 1);
 }
 
 #[test]

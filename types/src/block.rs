@@ -1,7 +1,7 @@
 use std::ops::Deref as _;
 
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
-use alloy_primitives::{B256, Bytes as AlloyBytes};
+use alloy_primitives::{B256, Bytes as AlloyBytes, FixedBytes};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, FixedSize as _, Read, ReadExt as _, Write};
@@ -25,7 +25,7 @@ pub struct Block {
 
     pub payload: ExecutionPayloadV3,
 
-    pub execution_requests: Vec<AlloyBytes>,
+    pub execution_requests_hash: FixedBytes<32>,
 
     pub parent_beacon_block_root: B256,
 
@@ -54,7 +54,7 @@ impl Block {
         height: u64,
         timestamp: u64,
         payload: ExecutionPayloadV3,
-        execution_requests: Vec<AlloyBytes>,
+        execution_requests_hash: FixedBytes<32>,
         parent_beacon_block_root: B256,
         versioned_hashes: Vec<B256>,
     ) -> Self {
@@ -63,7 +63,7 @@ impl Block {
         hasher.update(&height.to_be_bytes());
         hasher.update(&timestamp.to_be_bytes());
         hasher.update(&payload.as_ssz_bytes());
-        hasher.update(&execution_requests.as_ssz_bytes());
+        hasher.update(&execution_requests_hash.as_ssz_bytes());
         hasher.update(&parent_beacon_block_root.as_ssz_bytes());
         hasher.update(&versioned_hashes.as_ssz_bytes());
         let digest = hasher.finalize();
@@ -73,7 +73,7 @@ impl Block {
             height,
             timestamp,
             payload,
-            execution_requests,
+            execution_requests_hash,
             parent_beacon_block_root,
             versioned_hashes,
             digest,
@@ -82,7 +82,7 @@ impl Block {
 
     pub fn genesis(genesis_hash: [u8; 32]) -> Self {
         Self {
-            execution_requests: Default::default(),
+            execution_requests_hash: Default::default(),
             digest: genesis_hash.into(),
             parent: genesis_hash.into(),
             height: 0,
@@ -121,7 +121,7 @@ impl ssz::Encode for Block {
         let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len()
             + <u64 as ssz::Encode>::ssz_fixed_len() * 2
             + <ExecutionPayloadV3 as ssz::Encode>::ssz_fixed_len()
-            + <Vec<AlloyBytes> as ssz::Encode>::ssz_fixed_len()
+            + <FixedBytes<32> as ssz::Encode>::ssz_fixed_len()
             + <Vec<B256> as ssz::Encode>::ssz_fixed_len()
             + <B256 as ssz::Encode>::ssz_fixed_len();
 
@@ -138,7 +138,7 @@ impl ssz::Encode for Block {
         encoder.append(&self.height);
         encoder.append(&self.timestamp);
         encoder.append(&self.payload);
-        encoder.append(&self.execution_requests);
+        encoder.append(&self.execution_requests_hash);
         encoder.append(&self.parent_beacon_block_root);
         encoder.append(&self.versioned_hashes);
 
@@ -150,10 +150,10 @@ impl ssz::Encode for Block {
             + self.height.ssz_bytes_len()
             + self.timestamp.ssz_bytes_len()
             + self.payload.ssz_bytes_len()
-            + self.execution_requests.ssz_bytes_len()
+            + self.execution_requests_hash.ssz_bytes_len()
             + self.parent_beacon_block_root.ssz_bytes_len()
             + self.versioned_hashes.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET * 2
+            + ssz::BYTES_PER_LENGTH_OFFSET
     }
 }
 
@@ -168,7 +168,7 @@ impl ssz::Decode for Block {
         builder.register_type::<u64>()?;
         builder.register_type::<u64>()?;
         builder.register_type::<ExecutionPayloadV3>()?;
-        builder.register_type::<Vec<AlloyBytes>>()?;
+        builder.register_type::<FixedBytes<32>>()?;
         builder.register_type::<B256>()?;
         builder.register_type::<Vec<B256>>()?;
 
@@ -178,7 +178,7 @@ impl ssz::Decode for Block {
         let height = decoder.decode_next()?;
         let timestamp = decoder.decode_next()?;
         let payload = decoder.decode_next()?;
-        let execution_requests = decoder.decode_next()?;
+        let execution_requests_hash = decoder.decode_next()?;
         let parent_beacon_block_root = decoder.decode_next()?;
         let versioned_hashes = decoder.decode_next()?;
 
@@ -187,7 +187,7 @@ impl ssz::Decode for Block {
             height,
             timestamp,
             payload,
-            execution_requests,
+            execution_requests_hash,
             parent_beacon_block_root,
             versioned_hashes,
         );
@@ -376,7 +376,7 @@ mod test {
             27,
             2727,
             payload,
-            vec![Default::default()],
+            FixedBytes([12; 32]),
             parent_beacon_block_root,
             versioned_hashes,
         );

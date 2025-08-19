@@ -231,8 +231,9 @@ async fn fetch_and_serialize_block(
         .copied()
         .collect::<Vec<_>>();
 
+    println!("{}", block.header.hash_slow());
     let (payload, sidecar) = ExecutionPayload::from_block_slow(&block);
-
+    
     Ok(BlockData {
         block_number,
         payload: payload.as_v3().unwrap().clone(),
