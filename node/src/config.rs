@@ -2,11 +2,11 @@ use std::{num::NonZeroU32, time::Duration};
 
 use anyhow::{Context, Result};
 use commonware_codec::{Decode as _, DecodeExt as _};
-use commonware_cryptography::bls12381::{primitives::{
+use commonware_cryptography::bls12381::primitives::{
     group::{self, Share},
     poly::{self, Poly},
     variant::MinPk,
-}};
+};
 use commonware_utils::{from_hex_formatted, quorum};
 use governor::Quota;
 use summit_application::engine_client::EngineClient;
@@ -101,14 +101,12 @@ impl<C: EngineClient> EngineConfig<C> {
     }
 }
 
-
-pub (crate) fn load_signer(key_path: &str) -> anyhow::Result<PrivateKey> {
+pub(crate) fn load_signer(key_path: &str) -> anyhow::Result<PrivateKey> {
     read_ed_key_from_path(&key_path).context("failed to load signer key")
 }
 
-pub (crate) fn load_share(poly_share_path: &str) -> anyhow::Result<Share> {
-    let share_path =
-        get_expanded_path(poly_share_path).context("failed to expand share path")?;
+pub(crate) fn load_share(poly_share_path: &str) -> anyhow::Result<Share> {
+    let share_path = get_expanded_path(poly_share_path).context("failed to expand share path")?;
     let share_hex = std::fs::read_to_string(share_path).context("failed to load share hex")?;
 
     let share_vec = from_hex_formatted(&share_hex).expect("invalid format for polynomial share");
@@ -116,7 +114,7 @@ pub (crate) fn load_share(poly_share_path: &str) -> anyhow::Result<Share> {
     Ok(share)
 }
 
-pub (crate) fn expect_keys(key_path: &str, poly_share_path: &str) -> (PrivateKey, Share) {
+pub(crate) fn expect_keys(key_path: &str, poly_share_path: &str) -> (PrivateKey, Share) {
     let signer = match load_signer(key_path) {
         Ok(signer) => signer,
         Err(e) => {

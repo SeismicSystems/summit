@@ -1,6 +1,7 @@
 use crate::{
     config::{
-        expect_keys, load_share, load_signer, EngineConfig, BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, MESSAGE_BACKLOG, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
+        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_keys, load_share, load_signer,
     },
     engine::Engine,
     keys::KeySubCmd,
