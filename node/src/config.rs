@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn empty_keys_msg() {
+    fn test_missing_keys_msg() {
         expect_keys("does-not-exist.pem", "does-not-exist");
     }
 }
