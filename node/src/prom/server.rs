@@ -211,9 +211,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_metrics_endpoint() {
-        // let tasks = TaskManager::current();
-        // let executor = tasks.executor();
-
         let hooks = Hooks::builder().build();
 
         let listen_addr = get_random_available_addr();
