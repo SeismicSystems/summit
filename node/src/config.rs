@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn test_missing_keys_msg() {
+    fn test_expect_keys_error_msg() {
         expect_keys("missing-signer.pem", "missing-share.pem");
     }
 }
