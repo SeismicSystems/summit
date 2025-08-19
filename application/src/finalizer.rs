@@ -8,8 +8,11 @@ use crate::engine_client::EngineClient;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::Reporter;
 use commonware_macros::select;
+use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_storage::metadata::{Config, Metadata};
+use commonware_storage::translator::TwoCap;
+use commonware_utils::{NZU64, NZUsize};
 use commonware_utils::{hex, sequence::FixedBytes};
 use futures::{
     SinkExt as _, StreamExt,
@@ -24,6 +27,8 @@ use summit_utils::persistent_queue::{Config as PersistentQueueConfig, Persistent
 use tracing::{info, warn};
 
 const LATEST_KEY: [u8; 1] = [0u8];
+const PAGE_SIZE: usize = 77;
+const PAGE_CACHE_SIZE: usize = 9;
 
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -77,8 +82,15 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         mpsc::Sender<(u64, oneshot::Sender<()>)>,
     ) {
         let deposit_queue_cfg = PersistentQueueConfig {
-            partition: format!("{db_prefix}-finalizer_deposit_queue"),
-            codec_config: (),
+            log_journal_partition: format!("{db_prefix}-finalizer_deposit_queue-log"),
+            log_write_buffer: NZUsize!(64 * 1024),
+            log_compression: None,
+            log_codec_config: (),
+            log_items_per_section: NZU64!(4),
+            locations_journal_partition: format!("{db_prefix}-finalizer_deposit_queue-locations"),
+            locations_items_per_blob: NZU64!(4),
+            translator: TwoCap,
+            buffer_pool: PoolRef::new(NZUsize!(PAGE_SIZE), NZUsize!(PAGE_CACHE_SIZE)),
         };
         let deposit_queue = PersistentQueue::<R, DepositRequest>::new(
             context.with_label("finalizer_deposit_queue"),
@@ -87,11 +99,20 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         .await;
 
         let withdrawal_queue_cfg = PersistentQueueConfig {
-            partition: format!("{db_prefix}-finalizer_deposit_queue"),
-            codec_config: (),
+            log_journal_partition: format!("{db_prefix}-finalizer_withdrawal_queue-log"),
+            log_write_buffer: NZUsize!(64 * 1024),
+            log_compression: None,
+            log_codec_config: (),
+            log_items_per_section: NZU64!(4),
+            locations_journal_partition: format!(
+                "{db_prefix}-finalizer_withdrawal_queue-locations"
+            ),
+            locations_items_per_blob: NZU64!(4),
+            translator: TwoCap,
+            buffer_pool: PoolRef::new(NZUsize!(PAGE_SIZE), NZUsize!(PAGE_CACHE_SIZE)),
         };
         let withdrawal_queue = PersistentQueue::<R, WithdrawalRequest>::new(
-            context.with_label("finalizer_deposit_queue"),
+            context.with_label("finalizer_withdrawal_queue"),
             withdrawal_queue_cfg,
         )
         .await;
@@ -203,10 +224,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                     Ok(execution_request) => {
                                         match execution_request {
                                             ExecutionRequest::Deposit(deposit_request) => {
-                                                self.deposit_queue.push(deposit_request);
+                                                self.deposit_queue.push(deposit_request).await;
                                             }
                                             ExecutionRequest::Withdrawal(withdrawal_request) => {
-                                                self.withdrawal_queue.push(withdrawal_request);
+                                                self.withdrawal_queue.push(withdrawal_request).await;
                                             }
                                         }
                                     }
@@ -220,7 +241,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             let last_indexed = *self.state_variables.get(&FixedBytes::new(LATEST_KEY)).unwrap_or(&0);
                             if last_indexed % self.validator_onboarding_interval == 0 {
                                 for _ in 0..self.validator_onboarding_limit_per_block {
-                                    if let Some(request) = self.deposit_queue.peek() {
+                                    if let Some(request) = self.deposit_queue.peek().await {
                                         let mut validator_balance = 0;
                                         if let Some(account) = self.accounts.get_mut(&FixedBytes::new(request.bls_pubkey)) {
                                             // Since we only remove the request from the queue after processing it,
@@ -244,7 +265,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         }
 
                                         // Only remove the request from the queue after we processed and stored it
-                                        let _ = self.deposit_queue.pop();
+                                        let _ = self.deposit_queue.pop().await;
                                     }
 
                                 }

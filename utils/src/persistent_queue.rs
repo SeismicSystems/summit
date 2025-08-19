@@ -1,187 +1,286 @@
-use commonware_codec::Codec;
+use bytes::{Buf, BufMut};
+use commonware_codec::{Codec, EncodeSize, Error, Read, Write};
 use commonware_runtime::{Clock, Metrics, Storage};
-use commonware_storage::metadata::{self, Metadata};
+use commonware_storage::store::{self, Store};
+use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
+pub use store::Config;
 
-pub use metadata::Config;
+const HEAD_KEY: [u8; 8] = 0u64.to_be_bytes();
+const TAIL_KEY: [u8; 8] = 1u64.to_be_bytes();
 
-const HEAD_KEY: [u8; 1] = [0; 1];
-const TAIL_KEY: [u8; 1] = [1; 1];
-
-pub struct PersistentQueue<E: Clock + Storage + Metrics, V: Codec> {
-    // Store head/tail pointers
-    pointers: Metadata<E, FixedBytes<1>, FixedBytes<8>>,
-    // Store actual queue values with keys (sequence numbers)
-    values: Metadata<E, FixedBytes<8>, V>,
+pub struct PersistentQueue<E: Clock + Storage + Metrics, V: Codec + Read<Cfg = ()>> {
+    // Single store for both pointers and values
+    store: Store<E, FixedBytes<8>, Value<V>, TwoCap>,
 }
 
-impl<E: Clock + Storage + Metrics, V: Codec> PersistentQueue<E, V> {
-    pub async fn new(context: E, cfg: Config<V::Cfg>) -> Self {
-        let mut pointers: Metadata<E, FixedBytes<1>, FixedBytes<8>> = Metadata::init(
-            context.with_label("pointers"),
-            Config {
-                partition: format!("{}-pointers", cfg.partition),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("failed to initialize pointers metadata");
+impl<E: Clock + Storage + Metrics, V: Codec + Read<Cfg = ()>> PersistentQueue<E, V> {
+    // Helper methods to extract pointer values
+    async fn get_head_value(&self) -> u64 {
+        let head_key = FixedBytes::new(HEAD_KEY);
+        let head_pointer = self
+            .store
+            .get(&head_key)
+            .await
+            .expect("failed to get head")
+            .expect("head should be initialized");
 
-        pointers.put(
-            FixedBytes::new(HEAD_KEY),
-            FixedBytes::new(0u64.to_be_bytes()),
-        );
-        pointers.put(
-            FixedBytes::new(TAIL_KEY),
-            FixedBytes::new(0u64.to_be_bytes()),
-        );
-
-        let values: Metadata<E, FixedBytes<8>, V> = Metadata::init(
-            context,
-            Config {
-                partition: format!("{}-values", cfg.partition),
-                codec_config: cfg.codec_config,
-            },
-        )
-        .await
-        .expect("failed to initialize finalizer values metadata");
-
-        Self { pointers, values }
+        if let Value::Pointer(ptr) = head_pointer {
+            u64::from_be_bytes(ptr.as_ref().try_into().expect("8 bytes"))
+        } else {
+            panic!("head should be a pointer");
+        }
     }
 
-    pub fn push(&mut self, value: V) {
-        let tail_key = self
-            .pointers
-            .get(&FixedBytes::new(TAIL_KEY))
-            .expect("value is set on init");
-        let tail_value = u64::from_be_bytes(tail_key.as_ref().try_into().expect("8 bytes"));
+    async fn get_tail_value(&self) -> u64 {
+        let tail_key = FixedBytes::new(TAIL_KEY);
+        let tail_pointer = self
+            .store
+            .get(&tail_key)
+            .await
+            .expect("failed to get tail")
+            .expect("tail should be initialized");
+
+        if let Value::Pointer(ptr) = tail_pointer {
+            u64::from_be_bytes(ptr.as_ref().try_into().expect("8 bytes"))
+        } else {
+            panic!("tail should be a pointer");
+        }
+    }
+
+    async fn update_head_pointer(&mut self, value: u64) {
+        let head_key = FixedBytes::new(HEAD_KEY);
+        self.store
+            .update(
+                head_key,
+                Value::Pointer(FixedBytes::new(value.to_be_bytes())),
+            )
+            .await
+            .expect("failed to update head pointer");
+    }
+
+    async fn update_tail_pointer(&mut self, value: u64) {
+        let tail_key = FixedBytes::new(TAIL_KEY);
+        self.store
+            .update(
+                tail_key,
+                Value::Pointer(FixedBytes::new(value.to_be_bytes())),
+            )
+            .await
+            .expect("failed to update tail pointer");
+    }
+
+    pub async fn new(context: E, cfg: Config<TwoCap, ()>) -> Self {
+        let mut store = Store::<_, FixedBytes<8>, Value<V>, TwoCap>::init(context, cfg)
+            .await
+            .expect("failed to initialize store");
+
+        // Initialize head and tail pointers if they don't exist
+        let head_key = FixedBytes::new(HEAD_KEY);
+        let tail_key = FixedBytes::new(TAIL_KEY);
+
+        if store
+            .get(&head_key)
+            .await
+            .expect("failed to get head")
+            .is_none()
+        {
+            store
+                .update(
+                    head_key,
+                    Value::Pointer(FixedBytes::new(2u64.to_be_bytes())),
+                )
+                .await
+                .expect("failed to initialize head pointer");
+        }
+
+        if store
+            .get(&tail_key)
+            .await
+            .expect("failed to get tail")
+            .is_none()
+        {
+            store
+                .update(
+                    tail_key,
+                    Value::Pointer(FixedBytes::new(2u64.to_be_bytes())),
+                )
+                .await
+                .expect("failed to initialize tail pointer");
+        }
+
+        Self { store }
+    }
+
+    pub async fn push(&mut self, value: V) {
+        let tail_value = self.get_tail_value().await;
 
         // Store the value at the tail position
-        self.values.put(tail_key.clone(), value);
+        let value_key = FixedBytes::new(tail_value.to_be_bytes());
+        self.store
+            .update(value_key, Value::Value(value))
+            .await
+            .expect("failed to store value");
 
         // Increment tail pointer
-        let new_tail = tail_value + 1;
-        self.pointers.put(
-            FixedBytes::new(TAIL_KEY),
-            FixedBytes::new(new_tail.to_be_bytes()),
-        );
+        self.update_tail_pointer(tail_value + 1).await;
+
+        self.store.commit().await.expect("failed to commit changes");
     }
 
-    pub fn pop(&mut self) -> Option<V> {
-        let head_key = self
-            .pointers
-            .get(&FixedBytes::new(HEAD_KEY))
-            .expect("value is set on init");
-        let tail_key = self
-            .pointers
-            .get(&FixedBytes::new(TAIL_KEY))
-            .expect("value is set on init");
-
-        let head_value = u64::from_be_bytes(head_key.as_ref().try_into().expect("8 bytes"));
-        let tail_value = u64::from_be_bytes(tail_key.as_ref().try_into().expect("8 bytes"));
+    pub async fn pop(&mut self) -> Option<V> {
+        let head_value = self.get_head_value().await;
+        let tail_value = self.get_tail_value().await;
 
         // Check if queue is empty
         if head_value == tail_value {
             return None;
         }
 
-        if let Some(value) = self.values.remove(head_key) {
-            //increment head pointer
+        let value_key = FixedBytes::new(head_value.to_be_bytes());
+        if let Some(Value::Value(value)) = self
+            .store
+            .get(&value_key)
+            .await
+            .expect("failed to get value")
+        {
+            // Remove the value from storage
+            self.store
+                .delete(value_key)
+                .await
+                .expect("failed to delete value");
+
+            // Increment head pointer
             let new_head = head_value + 1;
 
-            // If queue becomes empty after this pop, reset pointers to 0
+            // If queue becomes empty after this pop, reset pointers to 2
             if new_head == tail_value {
-                self.pointers.put(
-                    FixedBytes::new(HEAD_KEY),
-                    FixedBytes::new(0u64.to_be_bytes()),
-                );
-                self.pointers.put(
-                    FixedBytes::new(TAIL_KEY),
-                    FixedBytes::new(0u64.to_be_bytes()),
-                );
+                self.update_head_pointer(2).await;
+                self.update_tail_pointer(2).await;
             } else {
-                self.pointers.put(
-                    FixedBytes::new(HEAD_KEY),
-                    FixedBytes::new(new_head.to_be_bytes()),
-                );
+                self.update_head_pointer(new_head).await;
             }
 
+            self.store.commit().await.expect("failed to commit changes");
             Some(value)
         } else {
             None
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        let head_key = self
-            .pointers
-            .get(&FixedBytes::new(HEAD_KEY))
-            .expect("value is set on init");
-        let tail_key = self
-            .pointers
-            .get(&FixedBytes::new(TAIL_KEY))
-            .expect("value is set on init");
-
-        let head_value = u64::from_be_bytes(head_key.as_ref().try_into().expect("8 bytes"));
-        let tail_value = u64::from_be_bytes(tail_key.as_ref().try_into().expect("8 bytes"));
-
+    pub async fn is_empty(&self) -> bool {
+        let head_value = self.get_head_value().await;
+        let tail_value = self.get_tail_value().await;
         head_value == tail_value
     }
 
-    pub fn len(&self) -> usize {
-        let head_key = self
-            .pointers
-            .get(&FixedBytes::new(HEAD_KEY))
-            .expect("value is set on init");
-        let tail_key = self
-            .pointers
-            .get(&FixedBytes::new(TAIL_KEY))
-            .expect("value is set on init");
-
-        let head_value = u64::from_be_bytes(head_key.as_ref().try_into().expect("8 bytes"));
-        let tail_value = u64::from_be_bytes(tail_key.as_ref().try_into().expect("8 bytes"));
-
+    pub async fn len(&self) -> usize {
+        let head_value = self.get_head_value().await;
+        let tail_value = self.get_tail_value().await;
         (tail_value - head_value) as usize
     }
 
-    pub fn peek(&self) -> Option<&V> {
-        let head_key = self
-            .pointers
-            .get(&FixedBytes::new(HEAD_KEY))
-            .expect("value is set on init");
-        let tail_key = self
-            .pointers
-            .get(&FixedBytes::new(TAIL_KEY))
-            .expect("value is set on init");
-
-        let head_value = u64::from_be_bytes(head_key.as_ref().try_into().expect("8 bytes"));
-        let tail_value = u64::from_be_bytes(tail_key.as_ref().try_into().expect("8 bytes"));
+    pub async fn peek(&self) -> Option<V>
+    where
+        V: Clone,
+    {
+        let head_value = self.get_head_value().await;
+        let tail_value = self.get_tail_value().await;
 
         // Check if queue is empty
         if head_value == tail_value {
             return None;
         }
 
-        // Use get() instead of remove() to peek without removing
-        self.values.get(head_key)
+        // Use get() to peek without removing
+        let value_key = FixedBytes::new(head_value.to_be_bytes());
+        if let Some(Value::Value(value)) = self
+            .store
+            .get(&value_key)
+            .await
+            .expect("failed to get value")
+        {
+            Some(value.clone())
+        } else {
+            None
+        }
+    }
+}
+
+enum Value<V: Codec> {
+    Pointer(FixedBytes<8>),
+    Value(V),
+}
+
+impl<V> EncodeSize for Value<V>
+where
+    V: Codec,
+{
+    fn encode_size(&self) -> usize {
+        1 + match self {
+            // +1 for the type tag byte
+            Self::Pointer(fb) => fb.encode_size(),
+            Self::Value(v) => v.encode_size(),
+        }
+    }
+}
+
+impl<V> Read for Value<V>
+where
+    V: Codec + Read<Cfg = ()>,
+{
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let value_type = buf.get_u8();
+        match value_type {
+            0x00 => Ok(Self::Pointer(FixedBytes::<8>::read_cfg(buf, &())?)),
+            0x01 => Ok(Self::Value(V::read_cfg(buf, &())?)),
+            byte => Err(Error::InvalidVarint(byte as usize)),
+        }
+    }
+}
+
+impl<V> Write for Value<V>
+where
+    V: Codec,
+{
+    fn write(&self, buf: &mut impl BufMut) {
+        match self {
+            Self::Pointer(fb) => {
+                buf.put_u8(0x00);
+                fb.write(buf);
+            }
+            Self::Value(v) => {
+                buf.put_u8(0x01);
+                v.write(buf);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonware_runtime::{
-        Runner as _,
-        deterministic::{Context, Runner},
-    };
+    use commonware_runtime::{Runner as _, deterministic::Runner};
 
-    async fn create_test_queue_with_context(
+    async fn create_test_queue_with_context<E: Clock + Storage + Metrics>(
         partition: &str,
-        context: Context,
-    ) -> PersistentQueue<Context, u32> {
+        context: E,
+    ) -> PersistentQueue<E, u32> {
+        use commonware_runtime::buffer::PoolRef;
+        use commonware_utils::{NZU64, NZUsize};
+
         let config = Config {
-            partition: partition.to_string(),
-            codec_config: (),
+            log_journal_partition: format!("{}-log", partition),
+            log_write_buffer: NZUsize!(64 * 1024),
+            log_compression: None,
+            log_codec_config: (),
+            log_items_per_section: NZU64!(4),
+            locations_journal_partition: format!("{}-locations", partition),
+            locations_items_per_blob: NZU64!(4),
+            translator: TwoCap,
+            buffer_pool: PoolRef::new(NZUsize!(77), NZUsize!(9)),
         };
         PersistentQueue::new(context, config).await
     }
@@ -193,8 +292,8 @@ mod tests {
         executor.start(|context| async move {
             let queue = create_test_queue_with_context("test_new", context).await;
 
-            assert!(queue.is_empty());
-            assert_eq!(queue.len(), 0);
+            assert!(queue.is_empty().await);
+            assert_eq!(queue.len().await, 0);
         });
     }
 
@@ -205,10 +304,10 @@ mod tests {
         executor.start(|context| async move {
             let mut queue = create_test_queue_with_context("test_push_single", context).await;
 
-            queue.push(42);
+            queue.push(42).await;
 
-            assert!(!queue.is_empty());
-            assert_eq!(queue.len(), 1);
+            assert!(!queue.is_empty().await);
+            assert_eq!(queue.len().await, 1);
         });
     }
 
@@ -219,12 +318,12 @@ mod tests {
         executor.start(|context| async move {
             let mut queue = create_test_queue_with_context("test_push_pop_single", context).await;
 
-            queue.push(42);
-            let popped = queue.pop();
+            queue.push(42).await;
+            let popped = queue.pop().await;
 
             assert_eq!(popped, Some(42));
-            assert!(queue.is_empty());
-            assert_eq!(queue.len(), 0);
+            assert!(queue.is_empty().await);
+            assert_eq!(queue.len().await, 0);
         });
     }
 
@@ -236,22 +335,22 @@ mod tests {
             let mut queue = create_test_queue_with_context("test_push_pop_multiple", context).await;
 
             // Push multiple items
-            queue.push(1);
-            queue.push(2);
-            queue.push(3);
+            queue.push(1).await;
+            queue.push(2).await;
+            queue.push(3).await;
 
-            assert_eq!(queue.len(), 3);
+            assert_eq!(queue.len().await, 3);
 
             // Pop them in FIFO order
-            assert_eq!(queue.pop(), Some(1));
-            assert_eq!(queue.len(), 2);
+            assert_eq!(queue.pop().await, Some(1));
+            assert_eq!(queue.len().await, 2);
 
-            assert_eq!(queue.pop(), Some(2));
-            assert_eq!(queue.len(), 1);
+            assert_eq!(queue.pop().await, Some(2));
+            assert_eq!(queue.len().await, 1);
 
-            assert_eq!(queue.pop(), Some(3));
-            assert_eq!(queue.len(), 0);
-            assert!(queue.is_empty());
+            assert_eq!(queue.pop().await, Some(3));
+            assert_eq!(queue.len().await, 0);
+            assert!(queue.is_empty().await);
         });
     }
 
@@ -263,12 +362,12 @@ mod tests {
             let mut queue = create_test_queue_with_context("test_pop_empty", context).await;
 
             // Pop from empty queue should return None
-            let popped = queue.pop();
+            let popped = queue.pop().await;
             assert_eq!(popped, None);
 
             // Queue should still be empty
-            assert!(queue.is_empty());
-            assert_eq!(queue.len(), 0);
+            assert!(queue.is_empty().await);
+            assert_eq!(queue.len().await, 0);
         });
     }
 
@@ -280,23 +379,23 @@ mod tests {
             let mut queue = create_test_queue_with_context("test_pointer_reset", context).await;
 
             // Push some items to advance pointers
-            queue.push(10);
-            queue.push(20);
-            queue.push(30);
+            queue.push(10).await;
+            queue.push(20).await;
+            queue.push(30).await;
 
-            // Pop all items - this should reset pointers to 0
-            assert_eq!(queue.pop(), Some(10));
-            assert_eq!(queue.pop(), Some(20));
-            assert_eq!(queue.pop(), Some(30)); // This should trigger pointer reset
+            // Pop all items - this should reset pointers to 2
+            assert_eq!(queue.pop().await, Some(10));
+            assert_eq!(queue.pop().await, Some(20));
+            assert_eq!(queue.pop().await, Some(30)); // This should trigger pointer reset
 
             // Queue should be empty
-            assert!(queue.is_empty());
-            assert_eq!(queue.len(), 0);
+            assert!(queue.is_empty().await);
+            assert_eq!(queue.len().await, 0);
 
-            // Push new item should start from 0 again
-            queue.push(40);
-            assert_eq!(queue.len(), 1);
-            assert_eq!(queue.pop(), Some(40));
+            // Push new item should start from 2 again
+            queue.push(40).await;
+            assert_eq!(queue.len().await, 1);
+            assert_eq!(queue.pop().await, Some(40));
         });
     }
 
@@ -308,9 +407,9 @@ mod tests {
             let queue = create_test_queue_with_context("test_peek_empty", context).await;
 
             // Peek empty queue should return None
-            assert_eq!(queue.peek(), None);
-            assert!(queue.is_empty());
-            assert_eq!(queue.len(), 0);
+            assert_eq!(queue.peek().await, None);
+            assert!(queue.is_empty().await);
+            assert_eq!(queue.len().await, 0);
         });
     }
 
@@ -321,18 +420,18 @@ mod tests {
         executor.start(|context| async move {
             let mut queue = create_test_queue_with_context("test_peek_single", context).await;
 
-            queue.push(42);
+            queue.push(42).await;
 
             // Peek should return the item
-            assert_eq!(queue.peek(), Some(&42));
+            assert_eq!(queue.peek().await, Some(42));
             // Queue should remain unchanged
-            assert!(!queue.is_empty());
-            assert_eq!(queue.len(), 1);
+            assert!(!queue.is_empty().await);
+            assert_eq!(queue.len().await, 1);
 
             // Multiple peeks should return same value
-            assert_eq!(queue.peek(), Some(&42));
-            assert_eq!(queue.peek(), Some(&42));
-            assert_eq!(queue.len(), 1);
+            assert_eq!(queue.peek().await, Some(42));
+            assert_eq!(queue.peek().await, Some(42));
+            assert_eq!(queue.len().await, 1);
         });
     }
 
@@ -343,18 +442,18 @@ mod tests {
         executor.start(|context| async move {
             let mut queue = create_test_queue_with_context("test_peek_multiple", context).await;
 
-            queue.push(1);
-            queue.push(2);
-            queue.push(3);
+            queue.push(1).await;
+            queue.push(2).await;
+            queue.push(3).await;
 
             // Peek should return first item (FIFO)
-            assert_eq!(queue.peek(), Some(&1));
-            assert_eq!(queue.len(), 3);
+            assert_eq!(queue.peek().await, Some(1));
+            assert_eq!(queue.len().await, 3);
 
             // Multiple peeks should return same value
-            assert_eq!(queue.peek(), Some(&1));
-            assert_eq!(queue.peek(), Some(&1));
-            assert_eq!(queue.len(), 3);
+            assert_eq!(queue.peek().await, Some(1));
+            assert_eq!(queue.peek().await, Some(1));
+            assert_eq!(queue.len().await, 3);
         });
     }
 
@@ -366,21 +465,21 @@ mod tests {
             let mut queue =
                 create_test_queue_with_context("test_peek_pop_consistency", context).await;
 
-            queue.push(100);
-            queue.push(200);
+            queue.push(100).await;
+            queue.push(200).await;
 
             // Peek and pop should return same value
-            assert_eq!(queue.peek(), Some(&100));
-            assert_eq!(queue.pop(), Some(100));
+            assert_eq!(queue.peek().await, Some(100));
+            assert_eq!(queue.pop().await, Some(100));
 
             // Next peek should return next item
-            assert_eq!(queue.peek(), Some(&200));
-            assert_eq!(queue.pop(), Some(200));
+            assert_eq!(queue.peek().await, Some(200));
+            assert_eq!(queue.pop().await, Some(200));
 
             // Queue should be empty
-            assert_eq!(queue.peek(), None);
-            assert_eq!(queue.pop(), None);
-            assert!(queue.is_empty());
+            assert_eq!(queue.peek().await, None);
+            assert_eq!(queue.pop().await, None);
+            assert!(queue.is_empty().await);
         });
     }
 
@@ -392,28 +491,98 @@ mod tests {
             let mut queue = create_test_queue_with_context("test_peek_after_ops", context).await;
 
             // Initial peek on empty queue
-            assert_eq!(queue.peek(), None);
+            assert_eq!(queue.peek().await, None);
 
             // Push and peek
-            queue.push(10);
-            assert_eq!(queue.peek(), Some(&10));
+            queue.push(10).await;
+            assert_eq!(queue.peek().await, Some(10));
 
             // Pop and peek (should be None)
-            assert_eq!(queue.pop(), Some(10));
-            assert_eq!(queue.peek(), None);
+            assert_eq!(queue.pop().await, Some(10));
+            assert_eq!(queue.peek().await, None);
 
             // Push multiple, peek first
-            queue.push(20);
-            queue.push(30);
-            assert_eq!(queue.peek(), Some(&20));
+            queue.push(20).await;
+            queue.push(30).await;
+            assert_eq!(queue.peek().await, Some(20));
 
             // Pop first, peek should show next
-            assert_eq!(queue.pop(), Some(20));
-            assert_eq!(queue.peek(), Some(&30));
+            assert_eq!(queue.pop().await, Some(20));
+            assert_eq!(queue.peek().await, Some(30));
 
             // Pop last, peek should be None
-            assert_eq!(queue.pop(), Some(30));
-            assert_eq!(queue.peek(), None);
+            assert_eq!(queue.pop().await, Some(30));
+            assert_eq!(queue.peek().await, None);
         });
+    }
+
+    #[test]
+    fn test_persistence_across_recreations() {
+        use commonware_runtime::tokio;
+        use std::{env, fs};
+
+        let db_path = env::temp_dir().join("persistent_queue_test_unique");
+
+        // Clean up any existing data
+        if db_path.exists() {
+            fs::remove_dir_all(&db_path).ok();
+        }
+
+        // First phase: Create queue, add data, and close
+        {
+            let cfg = tokio::Config::default().with_storage_directory(db_path.clone());
+            let executor = tokio::Runner::new(cfg);
+
+            executor.start(|context| async move {
+                let mut queue =
+                    create_test_queue_with_context("test_persistence_unique", context).await;
+
+                // Add some test data
+                queue.push(100).await;
+                queue.push(200).await;
+                queue.push(300).await;
+
+                // Verify data is there
+                assert_eq!(queue.len().await, 3);
+                assert_eq!(queue.peek().await, Some(100));
+                assert!(!queue.is_empty().await);
+
+                // Pop one item to change the head pointer
+                assert_eq!(queue.pop().await, Some(100));
+                assert_eq!(queue.len().await, 2);
+            });
+        } // Database closes here when executor drops
+
+        // Second phase: Recreate queue with same path and verify data persists
+        {
+            let cfg = tokio::Config::default().with_storage_directory(db_path.clone());
+            let executor = tokio::Runner::new(cfg);
+
+            executor.start(|context| async move {
+                let mut queue =
+                    create_test_queue_with_context("test_persistence_unique", context).await;
+
+                // Verify persisted data is still there
+                assert_eq!(queue.len().await, 2);
+                assert!(!queue.is_empty().await);
+                assert_eq!(queue.peek().await, Some(200));
+
+                // Pop remaining items to verify queue state
+                assert_eq!(queue.pop().await, Some(200));
+                assert_eq!(queue.pop().await, Some(300));
+                assert!(queue.is_empty().await);
+                assert_eq!(queue.len().await, 0);
+
+                // Add new data to verify queue still works
+                queue.push(999).await;
+                assert_eq!(queue.peek().await, Some(999));
+                assert_eq!(queue.len().await, 1);
+            });
+        }
+
+        // Clean up test data
+        if db_path.exists() {
+            fs::remove_dir_all(&db_path).ok();
+        }
     }
 }
