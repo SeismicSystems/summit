@@ -115,17 +115,33 @@ pub(crate) fn load_share(poly_share_path: &str) -> anyhow::Result<Share> {
 }
 
 pub(crate) fn expect_keys(key_path: &str, poly_share_path: &str) -> (PrivateKey, Share) {
-    let signer = match load_signer(key_path) {
-        Ok(signer) => signer,
-        Err(e) => {
-            panic!("Failed to load signer: {}", e);
+    let signer_res = load_signer(key_path);
+    let share_res = load_share(poly_share_path);
+    let (signer, share) = match (signer_res, share_res) {
+        (Ok(signer), Ok(share)) => (signer, share),
+        (Err(signer_err), Ok(_)) => {
+            panic!("\nSigner error: {}\n", signer_err);
         }
-    };
-    let share = match load_share(poly_share_path) {
-        Ok(share) => share,
-        Err(e) => {
-            panic!("Failed to load share: {}", e);
+        (Ok(_), Err(share_err)) => {
+            panic!("\nShare error: {}\n", share_err);
+        }
+        (Err(signer_err), Err(share_err)) => {
+            panic!(
+                "\nFailed to load signer and share keys\nSigner error: {}\nShare  error: {}\n",
+                signer_err, share_err
+            );
         }
     };
     (signer, share)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::expect_keys;
+
+    #[test]
+    #[should_panic]
+    fn empty_keys_msg() {
+        expect_keys("does-not-exist.pem", "does-not-exist");
+    }
 }
