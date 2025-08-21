@@ -5,17 +5,15 @@ use crate::{
     },
     engine::Engine,
     keys::KeySubCmd,
-    rpc::Rpc,
     utils::get_expanded_path,
 };
 use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated;
-// use tokio as external_tokio;
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
-// use tokio::sync::oneshot;
-use ::tokio::sync::oneshot;
-use futures::future::try_join_all;
+use summit_rpc::start_rpc_server;
+
+use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -25,8 +23,6 @@ use std::{
 use summit_application::engine_client::RethEngineClient;
 use summit_types::{Genesis, PublicKey};
 use tracing::{Level, error};
-
-//use crate::keys::KeySubCmd;
 
 pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
 pub const DEFAULT_SHARE_PATH: &str = "~/.seismic/consensus/share.pem";
@@ -130,37 +126,36 @@ impl Command {
             // Check if genesis file exists
             let genesis_path =
                 get_expanded_path(&flags.genesis_path).expect("Invalid genesis path");
-            let (tx, rx) = if !genesis_path.exists()
-                || std::fs::read_to_string(&genesis_path)
+
+            let has_genesis = genesis_path.exists()
+                || !std::fs::read_to_string(&genesis_path)
                     .unwrap_or_default()
                     .trim()
-                    .is_empty()
-            {
-                let (tx, rx) = oneshot::channel::<()>();
-                (Some(tx), Some(rx))
-            } else {
-                (None, None)
-            };
+                    .is_empty();
+
+            let (genesis_tx, genesis_rx) = oneshot::channel();
 
             // use the context async move to spawn a new runtime
             let key_path = flags.key_path.clone();
             let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let mut rpc = Rpc::new(key_path, genesis_path, rpc_port);
-                if let Some(sender) = tx {
-                    rpc = rpc.with_genesis_sender(sender);
-                }
-                if let Err(e) = rpc.start().await {
+                let genesis_sender = if has_genesis {
+                    // already has a genesis so immiedietly notify
+                    let _ = genesis_tx.send(());
+                    None
+                } else {
+                    Some(genesis_tx)
+                };
+                if let Err(e) =
+                    start_rpc_server(genesis_sender, key_path, genesis_path, rpc_port).await
+                {
                     tracing::error!("RPC server failed: {}", e);
                 }
             });
 
             // Wait for genesis if needed
-            if let Some(rx) = rx {
-                println!("Waiting for genesis file to be provided via RPC...");
-                rx.await.expect("Genesis channel closed");
-            }
+            let _ = genesis_rx.await;
 
             let genesis =
                 Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
@@ -296,37 +291,34 @@ pub fn run_node_with_runtime(
     context.spawn(async move |context| {
         // Check if genesis file exists
         let genesis_path = get_expanded_path(&flags.genesis_path).expect("Invalid genesis path");
-        let (tx, rx) = if !genesis_path.exists()
-            || std::fs::read_to_string(&genesis_path)
+        let has_genesis = genesis_path.exists()
+            || !std::fs::read_to_string(&genesis_path)
                 .unwrap_or_default()
                 .trim()
-                .is_empty()
-        {
-            let (tx, rx) = oneshot::channel::<()>();
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
+                .is_empty();
+
+        let (genesis_tx, genesis_rx) = oneshot::channel();
 
         // use the context async move to spawn a new runtime
         let key_path = flags.key_path.clone();
         let rpc_port = flags.rpc_port;
         let genesis_path = flags.genesis_path.clone();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let mut rpc = Rpc::new(key_path, genesis_path, rpc_port);
-            if let Some(sender) = tx {
-                rpc = rpc.with_genesis_sender(sender);
-            }
-            if let Err(e) = rpc.start().await {
+            let genesis_sender = if has_genesis {
+                // already has a genesis so immiedietly notify
+                let _ = genesis_tx.send(());
+                None
+            } else {
+                Some(genesis_tx)
+            };
+            if let Err(e) = start_rpc_server(genesis_sender, key_path, genesis_path, rpc_port).await
+            {
                 tracing::error!("RPC server failed: {}", e);
             }
         });
 
         // Wait for genesis if needed
-        if let Some(rx) = rx {
-            println!("Waiting for genesis file to be provided via RPC...");
-            rx.await.expect("Genesis channel closed");
-        }
+        let _ = genesis_rx.await;
 
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");

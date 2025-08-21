@@ -1,7 +1,6 @@
 pub mod args;
 pub mod config;
 pub mod engine;
-pub mod rpc;
 mod keys;
 #[cfg(test)]
 mod test_harness;

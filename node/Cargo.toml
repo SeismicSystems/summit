@@ -26,10 +26,11 @@ commonware-utils.workspace = true
 
 anyhow.workspace = true
 eyre = { workspace = true, optional = true }
-clap.workspace = true
 rand.workspace = true
 tracing.workspace = true
-dirs = "6.0.0"
+clap.workspace = true
+dirs.workspace = true
+
 tokio = { version = "1.45.1", features = ["sync"] }
 
 # testnet bin deps 
@@ -57,11 +58,6 @@ metrics-exporter-prometheus = { version = "0.16.0", default-features = false, op
 metrics-process = { version = "2.1.0", optional = true }
 metrics-util = { default-features = false, version = "0.19.0", optional = true }
 jsonrpsee-server = { version = "0.25.1", optional = true }
-tokio = { workspace = true, optional = true, features = [
-    "full",
-    "rt-multi-thread",
-    "time",
-] }
 tower = { version = "0.5.2", optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -96,7 +92,6 @@ prom = [
   "http",
   "eyre",
   "procfs",
-  "tokio",
   "tower",
 ]
 jemalloc = ["dep:tikv-jemalloc-ctl"]

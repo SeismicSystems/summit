@@ -1,0 +1,16 @@
+[package]
+name = "summit-utils"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+commonware-utils.workspace = true
+commonware-codec.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["rt", "macros"] }
