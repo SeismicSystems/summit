@@ -34,6 +34,7 @@ use tracing::{info, warn};
 
 const PAGE_SIZE: usize = 77;
 const PAGE_CACHE_SIZE: usize = 9;
+const REGISTRY_CHANGE_VIEW_DELTA: u64 = 3;
 
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -319,7 +320,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         if !account_exists && validator_balance >= self.validator_minimum_stake {
                                             // If the node shuts down, before the account changes are committed,
                                             // then everything should work normally, because the registry is not persisted to disk
-                                            if let Err(e) = self.registry.add_participant(request.ed25519_pubkey.clone(), last_indexed + 1) {
+                                            if let Err(e) = self.registry.add_participant(request.ed25519_pubkey.clone(), block.view + 2) {
                                                 // This only happens if the key already exists
                                                 warn!("failed to add validator: {}", e);
                                             }
@@ -359,7 +360,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         // An argument can be made from removing the validator account from the DB here.
                                         if account.balance == 0 {
                                             account.status = ValidatorStatus::Inactive;
-                                            if let Err(e) = self.registry.remove_participant(&account.ed25519_pubkey, last_indexed + 1) {
+                                            if let Err(e) = self.registry.remove_participant(&account.ed25519_pubkey, block.view + REGISTRY_CHANGE_VIEW_DELTA) {
                                                 warn!("failed to remove validator: {}", e);
                                             }
                                         }
@@ -376,6 +377,16 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         }
 
                         // This will commit all changes to the state db
+                        #[cfg(debug_assertions)]
+                        {
+                            let gauge: Gauge = Gauge::default();
+                            gauge.set(new_height as i64);
+                            ctx.register(
+                                "height",
+                                "chain height",
+                                gauge
+                            );
+                        }
                         self.state.set_latest_height(new_height).await;
                         self.height_notifier.notify_up_to(new_height);
                         let _ = notifier.send(());

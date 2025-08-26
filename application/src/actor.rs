@@ -18,6 +18,7 @@ use futures::{
 };
 use rand::Rng;
 
+use commonware_consensus::threshold_simplex::types::View;
 use futures::task::{Context, Poll};
 use std::{
     pin::Pin,
@@ -133,7 +134,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                     let built = self.built_block.clone();
                     select! {
-                            res = self.handle_proposal(parent, &mut marshal) => {
+                            res = self.handle_proposal(parent, &mut marshal, view) => {
                                 match res {
                                     Ok(block) => {
                                         // store block
@@ -226,6 +227,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         &mut self,
         parent: (u64, Digest),
         marshal: &mut marshal::Mailbox<MinPk, Block>,
+        view: View,
     ) -> Result<Block> {
         // Get the parent block
         let parent_request = if parent.1 == self.genesis_hash.into() {
@@ -282,6 +284,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             payload_envelope.envelope_inner.execution_payload,
             payload_envelope.execution_requests.to_vec(),
             payload_envelope.envelope_inner.block_value,
+            view,
         );
 
         Ok(block)

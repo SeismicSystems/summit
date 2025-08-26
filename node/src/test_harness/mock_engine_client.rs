@@ -690,6 +690,7 @@ mod tests {
             timestamp: 1000,
             block_value: alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
             execution_requests: Vec::new(),
+            view: 1,
         };
 
         // Client2 checks the payload (validates it)
@@ -759,6 +760,7 @@ mod tests {
                         timestamp: (round * 1000) as u64,
                         block_value: U256::from(1_000_000_000_000_000_000u64),
                         execution_requests: Vec::new(),
+                        view: 1,
                     };
 
                     // Client validates the block
@@ -847,6 +849,7 @@ mod tests {
             timestamp: 1000,
             block_value: alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
             execution_requests: Vec::new(),
+            view: 1,
         };
 
         client2.check_payload(&block_for_validation).await;

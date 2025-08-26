@@ -23,9 +23,13 @@ pub struct Block {
 
     pub timestamp: u64,
 
+    // consensus view from threshold simplex when this block was created
+    pub view: u64,
+
     pub payload: ExecutionPayloadV3,
 
     pub execution_requests: Vec<AlloyBytes>,
+
     pub block_value: U256,
 
     // precomputed digest of this block
@@ -53,6 +57,7 @@ impl Block {
         payload: ExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
         block_value: U256,
+        view: u64,
     ) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(&parent);
@@ -61,6 +66,7 @@ impl Block {
         hasher.update(&payload.as_ssz_bytes());
         hasher.update(&execution_requests.as_ssz_bytes());
         hasher.update(&block_value.as_ssz_bytes());
+        hasher.update(&view.to_be_bytes());
         let digest = hasher.finalize();
 
         Self {
@@ -70,6 +76,7 @@ impl Block {
             payload,
             execution_requests,
             block_value,
+            view,
             digest,
         }
     }
@@ -83,6 +90,7 @@ impl Block {
             timestamp: 0,
             payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
             block_value: U256::ZERO,
+            view: 1,
         }
     }
 }
@@ -112,7 +120,7 @@ impl ssz::Encode for Block {
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
         let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len()
-            + <u64 as ssz::Encode>::ssz_fixed_len() * 2
+            + <u64 as ssz::Encode>::ssz_fixed_len() * 3
             + <ExecutionPayloadV3 as ssz::Encode>::ssz_fixed_len()
             + <Vec<AlloyBytes> as ssz::Encode>::ssz_fixed_len()
             + <U256 as ssz::Encode>::ssz_fixed_len();
@@ -129,6 +137,7 @@ impl ssz::Encode for Block {
         encoder.append(&fixed_sized_digest);
         encoder.append(&self.height);
         encoder.append(&self.timestamp);
+        encoder.append(&self.view);
         encoder.append(&self.payload);
         encoder.append(&self.execution_requests);
         encoder.append(&self.block_value);
@@ -140,6 +149,7 @@ impl ssz::Encode for Block {
         Digest::SIZE
             + self.height.ssz_bytes_len()
             + self.timestamp.ssz_bytes_len()
+            + self.view.ssz_bytes_len()
             + self.payload.ssz_bytes_len()
             + self.execution_requests.ssz_bytes_len()
             + ssz::BYTES_PER_LENGTH_OFFSET
@@ -157,6 +167,7 @@ impl ssz::Decode for Block {
         builder.register_type::<[u8; 32]>()?;
         builder.register_type::<u64>()?;
         builder.register_type::<u64>()?;
+        builder.register_type::<u64>()?;
         builder.register_type::<ExecutionPayloadV3>()?;
         builder.register_type::<Vec<AlloyBytes>>()?;
         builder.register_type::<U256>()?;
@@ -166,6 +177,7 @@ impl ssz::Decode for Block {
         let parent: [u8; 32] = decoder.decode_next()?;
         let height = decoder.decode_next()?;
         let timestamp = decoder.decode_next()?;
+        let view = decoder.decode_next()?;
         let payload = decoder.decode_next()?;
         let execution_requests = decoder.decode_next()?;
         let block_value = decoder.decode_next()?;
@@ -177,6 +189,7 @@ impl ssz::Decode for Block {
             payload,
             execution_requests,
             block_value,
+            view,
         );
         Ok(block)
     }
@@ -360,6 +373,7 @@ mod test {
             payload,
             vec![Default::default()],
             U256::ZERO,
+            42,
         );
 
         let encoded = block.encode();
@@ -395,8 +409,15 @@ mod test {
             excess_blob_gas: 0x580000,
         };
 
-        let block =
-            Block::compute_digest([27u8; 32].into(), 27, 2727, payload, Vec::new(), U256::ZERO);
+        let block = Block::compute_digest(
+            [27u8; 32].into(),
+            27,
+            2727,
+            payload,
+            Vec::new(),
+            U256::ZERO,
+            42,
+        );
 
         let encoded = block.encode();
 

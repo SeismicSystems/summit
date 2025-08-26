@@ -21,7 +21,7 @@ use summit_types::execution_request::ExecutionRequest;
 use crate::engine::VALIDATOR_WITHDRAWAL_PERIOD;
 
 #[test_traced("INFO")]
-fn test_deposit_request() {
+fn test_deposit_request_single() {
     // Adds a deposit request to the block at height 5, and then checks
     // the internal validator state to make sure that the validator balance, public keys,
     // and withdrawal credentials were added correctly.
@@ -80,7 +80,7 @@ fn test_deposit_request() {
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
-        let stop_height = deposit_block_height + 1;
+        let stop_height = deposit_block_height + 5;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests);
 
@@ -261,7 +261,7 @@ fn test_deposit_request_top_up() {
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
         let withdrawal_block_height = 10;
-        let stop_height = withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD;
+        let stop_height = withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + 5;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -312,7 +312,8 @@ fn test_deposit_request_top_up() {
         }
 
         // Poll metrics
-        let mut num_nodes_finished = 0;
+        let mut num_nodes_height_reached = 0;
+        let mut num_nodes_processed_requests = 0;
         loop {
             let metrics = context.encode();
 
@@ -335,6 +336,13 @@ fn test_deposit_request_top_up() {
                     assert_eq!(value, 0);
                 }
 
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        num_nodes_height_reached += 1;
+                    }
+                }
+
                 if metric.ends_with("validator_balance") {
                     let balance = value.parse::<u64>().unwrap();
                     if balance == test_deposit1.amount {
@@ -352,14 +360,14 @@ fn test_deposit_request_top_up() {
                         assert_eq!(bls_pubkey_hex, pubkey_hex);
                         // The amount from both deposits should be added to the validator balance
                         assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
-                        num_nodes_finished += 1;
-                        if num_nodes_finished == n {
-                            success = true;
-                            break;
-                        }
+                        num_nodes_processed_requests += 1;
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
+                }
+                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                    success = true;
+                    break;
                 }
             }
             if success {
@@ -454,7 +462,7 @@ fn test_deposit_and_withdrawal_request() {
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
         let withdrawal_block_height = 7;
-        let stop_height = deposit_block_height + 1;
+        let stop_height = deposit_block_height + 10;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -505,7 +513,8 @@ fn test_deposit_and_withdrawal_request() {
         }
 
         // Poll metrics
-        let mut num_nodes_finished = 0;
+        let mut num_nodes_height_reached = 0;
+        let mut num_nodes_processed_requests = 0;
         loop {
             let metrics = context.encode();
 
@@ -528,6 +537,13 @@ fn test_deposit_and_withdrawal_request() {
                     assert_eq!(value, 0);
                 }
 
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        num_nodes_height_reached += 1;
+                    }
+                }
+
                 if metric.ends_with("withdrawal_validator_balance") {
                     let balance = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
@@ -541,14 +557,14 @@ fn test_deposit_and_withdrawal_request() {
                         let bls_pubkey_hex = hex::encode(test_deposit.bls_pubkey);
                         assert_eq!(bls_pubkey_hex, pubkey_hex);
                         assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
-                        num_nodes_finished += 1;
-                        if num_nodes_finished == n {
-                            success = true;
-                            break;
-                        }
+                        num_nodes_processed_requests += 1;
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
+                }
+                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                    success = true;
+                    break;
                 }
             }
             if success {
