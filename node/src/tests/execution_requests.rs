@@ -383,9 +383,11 @@ fn test_deposit_request_top_up() {
 
 #[test_traced("INFO")]
 fn test_deposit_and_withdrawal_request() {
-    // Adds a deposit request to the block at height 5, and then checks
-    // the internal validator state to make sure that the validator balance, public keys,
-    // and withdrawal credentials were added correctly.
+    // Adds a deposit request to the block at height 5, and then adds a withdrawal request
+    // to the block at height 7.
+    // It is verified that the validator balance is correctly decremented after the withdrawal,
+    // and that the withdrawal request that is send to the execution layer matches the
+    // withdrawal request (execution request) that was initially added to block 7.
     let n = 10;
     let link = Link {
         latency: 80.0,
