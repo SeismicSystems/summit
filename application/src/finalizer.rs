@@ -259,6 +259,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 for _ in 0..self.validator_onboarding_limit_per_block {
                                     if let Some(request) = self.state.pop_deposit().await {
                                         let mut validator_balance = 0;
+                                        let mut account_exists = false;
                                         if let Some(mut account) = self.state.get_account(&request.bls_pubkey).await {
                                             if request.index > account.last_deposit_index {
                                                 account.balance += request.amount;
@@ -271,6 +272,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                 account.last_deposit_index = request.index;
                                                 validator_balance = account.balance;
                                                 self.state.set_account(&request.bls_pubkey, account).await;
+                                                account_exists = true;
                                             }
                                         } else {
                                             // Validate the withdrawal credentials format
@@ -314,7 +316,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                 gauge
                                             );
                                         }
-                                        if validator_balance >= self.validator_minimum_stake {
+                                        if !account_exists && validator_balance >= self.validator_minimum_stake {
                                             // If the node shuts down, before the account changes are committed,
                                             // then everything should work normally, because the registry is not persisted to disk
                                             if let Err(e) = self.registry.add_participant(request.ed25519_pubkey.clone(), last_indexed) {
