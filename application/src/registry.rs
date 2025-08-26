@@ -165,15 +165,8 @@ impl Su for Registry {
     fn leader(&self, index: Self::Index) -> Option<Self::PublicKey> {
         let views = self.views.read().unwrap();
 
-        let (latest_view, view_data) = views.last_key_value()?;
-        let view_data = if *latest_view < index {
-            // if `index` is larger than the latest view, use the latest view
-            view_data
-        } else {
-            // otherwise we get the smallest view that is larger or equal to `ìndex`
-            let (_max_view, view_data) = views.range(index..).next()?;
-            view_data
-        };
+        // Find the largest view that is <= the requested view
+        let (_max_view, view_data) = views.range(..=index).next_back()?;
 
         if view_data.participants.is_empty() {
             return None;
@@ -187,19 +180,13 @@ impl Su for Registry {
         // SAFETY: Same safety reasoning as peers() method above
         let views = self.views.read().unwrap();
 
-        let (latest_view, view_data) = views.last_key_value()?;
-        let view_data = if *latest_view < index {
-            // if `index` is larger than the latest view, use the latest view
-            view_data
-        } else {
-            // otherwise we get the smallest view that is larger or equal to `ìndex`
-            let (_max_view, view_data) = views.range(index..).next()?;
-            view_data
-        };
+        // Find the largest view that is <= the requested view
+        let (_max_view, view_data) = views.range(..=index).next_back()?;
 
         if view_data.participants.is_empty() {
             return None;
         }
+
         let ptr = &view_data.participants as *const Vec<PublicKey>;
         drop(views);
         Some(unsafe { &*ptr })
@@ -208,15 +195,8 @@ impl Su for Registry {
     fn is_participant(&self, index: Self::Index, candidate: &Self::PublicKey) -> Option<u32> {
         let views = self.views.read().unwrap();
 
-        let (latest_view, view_data) = views.last_key_value()?;
-        let view_data = if *latest_view < index {
-            // if `index` is larger than the latest view, use the latest view
-            view_data
-        } else {
-            // otherwise we get the smallest view that is larger or equal to `ìndex`
-            let (_max_view, view_data) = views.range(index..).next()?;
-            view_data
-        };
+        // Find the largest view that is <= the requested view
+        let (_max_view, view_data) = views.range(..=index).next_back()?;
         view_data.participants_map.get(candidate).cloned()
     }
 }
@@ -237,15 +217,8 @@ impl ThresholdSupervisor for Registry {
     fn leader(&self, index: Self::Index, seed: Self::Seed) -> Option<Self::PublicKey> {
         let views = self.views.read().unwrap();
 
-        let (latest_view, view_data) = views.last_key_value()?;
-        let view_data = if *latest_view < index {
-            // if `index` is larger than the latest view, use the latest view
-            view_data
-        } else {
-            // otherwise we get the smallest view that is larger or equal to `ìndex`
-            let (_max_view, view_data) = views.range(index..).next()?;
-            view_data
-        };
+        // Find the largest view that is <= the requested view
+        let (_max_view, view_data) = views.range(..=index).next_back()?;
 
         if view_data.participants.is_empty() {
             return None;
@@ -431,20 +404,25 @@ mod tests {
         // View 0 should have original participants
         assert_eq!(registry.participants(0).unwrap(), original_participants);
 
-        // Add participant to create view 1
+        // Add participant to create view 3
         let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
         registry
-            .add_participant(new_participant.clone(), 1)
+            .add_participant(new_participant.clone(), 3)
             .unwrap();
 
-        // View 1 should have updated participants
-        let view_1_participants = registry.participants(1).unwrap();
-        assert_eq!(view_1_participants.len(), 4);
-        assert!(view_1_participants.contains(&new_participant));
+        // Views 0, 1, 2 should still use original participants (largest view <= requested)
+        assert_eq!(registry.participants(0).unwrap(), original_participants);
+        assert_eq!(registry.participants(1).unwrap(), original_participants);
+        assert_eq!(registry.participants(2).unwrap(), original_participants);
 
-        // Future views should use latest available view
-        assert_eq!(registry.participants(2), registry.participants(1));
-        assert_eq!(registry.participants(100), registry.participants(1));
+        // View 3 and beyond should have updated participants
+        let view_3_participants = registry.participants(3).unwrap();
+        assert_eq!(view_3_participants.len(), 4);
+        assert!(view_3_participants.contains(&new_participant));
+
+        // Future views should use latest available view (view 3)
+        assert_eq!(registry.participants(4), registry.participants(3));
+        assert_eq!(registry.participants(100), registry.participants(3));
     }
 
     #[test]
@@ -462,7 +440,7 @@ mod tests {
         let non_participant = summit_types::PrivateKey::from_seed(999).public_key();
         assert_eq!(registry.is_participant(0, &non_participant), None);
 
-        // Test with view that has no participants yet
+        // Test with view that uses latest available participants
         assert_eq!(registry.is_participant(100, &participants[0]), Some(0));
     }
 
@@ -600,17 +578,22 @@ mod tests {
         let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
         let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
 
-        registry.add_participant(participant_a.clone(), 1).unwrap();
-        registry.add_participant(participant_b.clone(), 2).unwrap();
+        registry.add_participant(participant_a.clone(), 3).unwrap();
+        registry.add_participant(participant_b.clone(), 7).unwrap();
 
-        // Test participants for each view
-        assert_eq!(registry.participants(0).unwrap().len(), 2);
-        assert_eq!(registry.participants(1).unwrap().len(), 3);
-        assert_eq!(registry.participants(2).unwrap().len(), 4);
+        // Test participants for each view (largest view <= requested)
+        assert_eq!(registry.participants(0).unwrap().len(), 2); // view 0
+        assert_eq!(registry.participants(1).unwrap().len(), 2); // view 0
+        assert_eq!(registry.participants(2).unwrap().len(), 2); // view 0
+        assert_eq!(registry.participants(3).unwrap().len(), 3); // view 3
+        assert_eq!(registry.participants(4).unwrap().len(), 3); // view 3
+        assert_eq!(registry.participants(5).unwrap().len(), 3); // view 3
+        assert_eq!(registry.participants(6).unwrap().len(), 3); // view 3
+        assert_eq!(registry.participants(7).unwrap().len(), 4); // view 7
 
         // Test that future views use the latest available view
-        assert_eq!(registry.participants(3), registry.participants(2));
-        assert_eq!(registry.participants(100), registry.participants(2));
+        assert_eq!(registry.participants(8), registry.participants(7));
+        assert_eq!(registry.participants(100), registry.participants(7));
     }
 
     #[test]
@@ -700,5 +683,182 @@ mod tests {
         assert_eq!(leader, Some(participants[0].clone()));
 
         assert_eq!(registry.is_participant(0, &participants[0]), Some(0));
+    }
+
+    #[test]
+    fn test_view_selection_logic() {
+        let registry = create_test_registry(2);
+
+        // Add participants to sparse views: 0, 3, 7
+        let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
+        let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
+
+        registry.add_participant(participant_a.clone(), 3).unwrap();
+        registry.add_participant(participant_b.clone(), 7).unwrap();
+
+        // Test that we get the largest view <= requested view
+        // Views available: 0 (2 participants), 3 (3 participants), 7 (4 participants)
+
+        // Requests for views 0-2 should return view 0
+        assert_eq!(registry.participants(0).unwrap().len(), 2);
+        assert_eq!(registry.participants(1).unwrap().len(), 2);
+        assert_eq!(registry.participants(2).unwrap().len(), 2);
+
+        // Requests for views 3-6 should return view 3
+        assert_eq!(registry.participants(3).unwrap().len(), 3);
+        assert_eq!(registry.participants(4).unwrap().len(), 3);
+        assert_eq!(registry.participants(5).unwrap().len(), 3);
+        assert_eq!(registry.participants(6).unwrap().len(), 3);
+
+        // Requests for view 7+ should return view 7
+        assert_eq!(registry.participants(7).unwrap().len(), 4);
+        assert_eq!(registry.participants(8).unwrap().len(), 4);
+        assert_eq!(registry.participants(100).unwrap().len(), 4);
+
+        // Verify participants contain expected members
+        assert!(registry.participants(3).unwrap().contains(&participant_a));
+        assert!(!registry.participants(3).unwrap().contains(&participant_b));
+
+        assert!(registry.participants(7).unwrap().contains(&participant_a));
+        assert!(registry.participants(7).unwrap().contains(&participant_b));
+    }
+
+    #[test]
+    fn test_leader_selection_across_views() {
+        let registry = create_test_registry(4);
+
+        // Add participant at view 2
+        let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
+        registry
+            .add_participant(new_participant.clone(), 2)
+            .unwrap();
+
+        // Leader for view 0-1 should use 4-participant set from view 0
+        let leader_0 = Su::leader(&registry, 0);
+        let leader_1 = Su::leader(&registry, 1);
+        let participants_view_0 = registry.participants(0).unwrap();
+
+        assert_eq!(leader_0, Some(participants_view_0[0].clone()));
+        assert_eq!(
+            leader_1,
+            Some(participants_view_0[1 % participants_view_0.len()].clone())
+        );
+
+        // Leader for view 2+ should use 5-participant set from view 2
+        let leader_2 = Su::leader(&registry, 2);
+        let leader_3 = Su::leader(&registry, 3);
+        let participants_view_2 = registry.participants(2).unwrap();
+
+        assert_eq!(
+            leader_2,
+            Some(participants_view_2[2 % participants_view_2.len()].clone())
+        );
+        assert_eq!(
+            leader_3,
+            Some(participants_view_2[3 % participants_view_2.len()].clone())
+        );
+    }
+
+    #[test]
+    fn test_is_participant_across_views() {
+        let registry = create_test_registry(2);
+        let original_participants = registry.participants(0).unwrap().clone();
+
+        // Add participant at view 3
+        let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
+        registry
+            .add_participant(new_participant.clone(), 3)
+            .unwrap();
+
+        // Original participants should be found in all views
+        assert_eq!(
+            registry.is_participant(0, &original_participants[0]),
+            Some(0)
+        );
+        assert_eq!(
+            registry.is_participant(1, &original_participants[0]),
+            Some(0)
+        );
+        assert_eq!(
+            registry.is_participant(2, &original_participants[0]),
+            Some(0)
+        );
+        assert_eq!(
+            registry.is_participant(3, &original_participants[0]),
+            Some(0)
+        );
+        assert_eq!(
+            registry.is_participant(10, &original_participants[0]),
+            Some(0)
+        );
+
+        // New participant should only be found from view 3 onwards
+        assert_eq!(registry.is_participant(0, &new_participant), None);
+        assert_eq!(registry.is_participant(1, &new_participant), None);
+        assert_eq!(registry.is_participant(2, &new_participant), None);
+        assert_eq!(registry.is_participant(3, &new_participant), Some(2));
+        assert_eq!(registry.is_participant(10, &new_participant), Some(2));
+    }
+
+    #[test]
+    fn test_peer_set_id_reflects_latest_view() {
+        let registry = create_test_registry(2);
+
+        // Initially should be view 0
+        assert_eq!(registry.peer_set_id(), 0);
+
+        // Add participants to different views
+        let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
+        let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
+
+        registry.add_participant(participant_a, 5).unwrap();
+        assert_eq!(registry.peer_set_id(), 5);
+
+        registry.add_participant(participant_b, 10).unwrap();
+        assert_eq!(registry.peer_set_id(), 10);
+    }
+
+    #[test]
+    fn test_remove_participant_view_selection() {
+        let mut registry = create_test_registry(3);
+        let original_participants = registry.participants(0).unwrap().clone();
+        let participant_to_remove = original_participants[1].clone();
+
+        // Remove participant at view 2
+        registry
+            .remove_participant(&participant_to_remove, 2)
+            .unwrap();
+
+        // Views 0-1 should still have original participants
+        assert_eq!(registry.participants(0).unwrap().len(), 3);
+        assert_eq!(registry.participants(1).unwrap().len(), 3);
+        assert!(
+            registry
+                .participants(0)
+                .unwrap()
+                .contains(&participant_to_remove)
+        );
+        assert!(
+            registry
+                .participants(1)
+                .unwrap()
+                .contains(&participant_to_remove)
+        );
+
+        // View 2+ should have participant removed
+        assert_eq!(registry.participants(2).unwrap().len(), 2);
+        assert_eq!(registry.participants(10).unwrap().len(), 2);
+        assert!(
+            !registry
+                .participants(2)
+                .unwrap()
+                .contains(&participant_to_remove)
+        );
+        assert!(
+            !registry
+                .participants(10)
+                .unwrap()
+                .contains(&participant_to_remove)
+        );
     }
 }
