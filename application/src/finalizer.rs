@@ -239,6 +239,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                         withdrawal_request.amount = remaining_balance;
                                                         account.status = ValidatorStatus::SubmittedExitRequest;
                                                     }
+
                                                     account.pending_withdrawal_amount += withdrawal_request.amount;
                                                     self.state.set_account(&withdrawal_request.validator_pubkey, account).await;
                                                     self.state.push_withdrawal_request(withdrawal_request.clone(), new_height + self.validator_withdrawal_period).await;
@@ -307,13 +308,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                             let gauge: Gauge = Gauge::default();
                                             gauge.set(validator_balance as i64);
                                             ctx.register(
-                                                format!("<creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_validator_balance",
+                                                format!("<creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_deposit_validator_balance",
                                                 hex::encode(request.withdrawal_credentials), request.ed25519_pubkey, hex::encode(request.bls_pubkey)),
                                                 "Validator balance",
                                                 gauge
                                             );
                                         }
-                                        if validator_balance > self.validator_minimum_stake {
+                                        if validator_balance >= self.validator_minimum_stake {
                                             // If the node shuts down, before the account changes are committed,
                                             // then everything should work normally, because the registry is not persisted to disk
                                             if let Err(e) = self.registry.add_participant(request.ed25519_pubkey.clone(), last_indexed) {
@@ -339,6 +340,18 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         // adding the pending withdrawal to the queue
                                         account.balance = account.balance.saturating_sub(withdrawal.amount);
                                         account.pending_withdrawal_amount = account.pending_withdrawal_amount.saturating_sub(withdrawal.amount);
+
+                                        #[cfg(debug_assertions)]
+                                        {
+                                            let gauge: Gauge = Gauge::default();
+                                            gauge.set(account.balance as i64);
+                                            ctx.register(
+                                                format!("<creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_withdrawal_validator_balance",
+                                                hex::encode(account.withdrawal_credentials), account.ed25519_pubkey, hex::encode(pending_withdrawal.bls_pubkey)),
+                                                "Validator balance",
+                                                gauge
+                                            );
+                                        }
 
                                         // If the remaining balance is 0, mark the validator as inactive.
                                         // An argument can be made from removing the validator account from the DB here.

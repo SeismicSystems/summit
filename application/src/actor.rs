@@ -248,7 +248,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         // Request pending withdrawals
         let (tx, rx) = oneshot::channel();
         self.tx_pending_withdrawal
-            .try_send((parent.height, tx))
+            .try_send((parent.height + 1, tx))
             .expect("finalizer dropped");
 
         // await response

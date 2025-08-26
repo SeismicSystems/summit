@@ -9,7 +9,7 @@ use commonware_cryptography::{
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
-use alloy_primitives::Bytes;
+use alloy_primitives::{Address, Bytes};
 use alloy_signer::k256::elliptic_curve::rand_core::OsRng;
 use commonware_codec::{DecodeExt, Write};
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
@@ -25,7 +25,7 @@ use std::{
     num::NonZeroU32,
 };
 use summit_application::engine_client::EngineClient;
-use summit_types::execution_request::{DepositRequest, ExecutionRequest};
+use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
 use summit_types::{Identity, PrivateKey, PublicKey};
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
@@ -316,6 +316,27 @@ pub fn create_deposit_requests(n: usize) -> Vec<DepositRequest> {
     }
 
     deposits
+}
+
+/// Create a single WithdrawalRequest for testing
+///
+/// # Arguments
+/// * `source_address` - The address that initiated the withdrawal
+/// * `validator_pubkey` - The validator BLS public key
+/// * `amount` - The withdrawal amount in gwei
+///
+/// # Returns
+/// * `WithdrawalRequest` - A withdrawal request with the specified data
+pub fn create_withdrawal_request(
+    source_address: Address,
+    validator_pubkey: [u8; 48],
+    amount: u64,
+) -> WithdrawalRequest {
+    WithdrawalRequest {
+        source_address,
+        validator_pubkey,
+        amount,
+    }
 }
 
 /// Convert a list of ExecutionRequests to Requests
