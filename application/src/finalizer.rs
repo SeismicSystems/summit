@@ -320,7 +320,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         if !account_exists && validator_balance >= self.validator_minimum_stake {
                                             // If the node shuts down, before the account changes are committed,
                                             // then everything should work normally, because the registry is not persisted to disk
-                                            if let Err(e) = self.registry.add_participant(request.ed25519_pubkey.clone(), block.view + 2) {
+                                            if let Err(e) = self.registry.add_participant(request.ed25519_pubkey.clone(), block.view + REGISTRY_CHANGE_VIEW_DELTA) {
                                                 // This only happens if the key already exists
                                                 warn!("failed to add validator: {}", e);
                                             }
