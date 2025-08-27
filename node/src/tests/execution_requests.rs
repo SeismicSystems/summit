@@ -71,7 +71,7 @@ fn test_deposit_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit = common::create_deposit_request(0, VALIDATOR_MINIMUM_STAKE);
+        let test_deposit = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE);
 
         // Convert to ExecutionRequest and then to Requests
         let execution_requests = vec![ExecutionRequest::Deposit(test_deposit.clone())];
@@ -79,7 +79,7 @@ fn test_deposit_request_single() {
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
-        let stop_height = deposit_block_height + 5;
+        let stop_height = deposit_block_height + 7;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests);
 
@@ -129,7 +129,8 @@ fn test_deposit_request_single() {
         }
 
         // Poll metrics
-        let mut num_nodes_finished = 0;
+        let mut num_nodes_processed_requests = 0;
+        let mut num_nodes_height_reached = 0;
         loop {
             let metrics = context.encode();
 
@@ -152,6 +153,13 @@ fn test_deposit_request_single() {
                     assert_eq!(value, 0);
                 }
 
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        num_nodes_height_reached += 1;
+                    }
+                }
+
                 if metric.ends_with("validator_balance") {
                     let value = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
@@ -165,14 +173,14 @@ fn test_deposit_request_single() {
                         let bls_pubkey_hex = hex::encode(test_deposit.bls_pubkey);
                         assert_eq!(bls_pubkey_hex, pubkey_hex);
                         assert_eq!(value, test_deposit.amount);
-                        num_nodes_finished += 1;
-                        if num_nodes_finished == n {
-                            success = true;
-                            break;
-                        }
+                        num_nodes_processed_requests += 1;
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
+                }
+                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                    success = true;
+                    break;
                 }
             }
             if success {
@@ -244,7 +252,7 @@ fn test_deposit_request_top_up() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit1 = common::create_deposit_request(0, VALIDATOR_MINIMUM_STAKE);
+        let test_deposit1 = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE);
         let mut test_deposit2 = test_deposit1.clone();
         test_deposit2.amount = 10_000_000_000;
         test_deposit2.index += 1;
@@ -388,7 +396,7 @@ fn test_deposit_request_top_up() {
 }
 
 #[test_traced("INFO")]
-fn test_deposit_and_withdrawal_request() {
+fn test_deposit_and_withdrawal_request_single() {
     // Adds a deposit request to the block at height 5, and then adds a withdrawal request
     // to the block at height 7.
     // It is verified that the validator balance is correctly decremented after the withdrawal,
@@ -440,7 +448,7 @@ fn test_deposit_and_withdrawal_request() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit = common::create_deposit_request(0, VALIDATOR_MINIMUM_STAKE);
+        let test_deposit = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE);
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
@@ -645,7 +653,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit = common::create_deposit_request(0, VALIDATOR_MINIMUM_STAKE);
+        let test_deposit = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE);
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal1 = common::create_withdrawal_request(
@@ -859,7 +867,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit = common::create_deposit_request(0, VALIDATOR_MINIMUM_STAKE / 2);
+        let test_deposit = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE / 2);
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
@@ -1073,7 +1081,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
         let mut deposit_reqs = HashMap::new();
         let mut withdrawal_reqs = HashMap::new();
         for i in 0..deposit_reqs.len() {
-            let test_deposit = common::create_deposit_request(i as u64, VALIDATOR_MINIMUM_STAKE);
+            let test_deposit =
+                common::create_deposit_request(n as u64 + i as u64, VALIDATOR_MINIMUM_STAKE);
 
             let withdrawal_address =
                 Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);

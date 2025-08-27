@@ -11,7 +11,7 @@ use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, Bytes};
 use alloy_signer::k256::elliptic_curve::rand_core::OsRng;
-use commonware_codec::{DecodeExt, Write};
+use commonware_codec::Write;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
@@ -287,10 +287,9 @@ pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
     }
 
     // Create deterministic but seed-based keys
-    let mut ed25519_seed = [0u8; 32];
-    for j in 0..32 {
-        ed25519_seed[j] = ((seed + j as u64 + 1) % 256) as u8;
-    }
+    // Generate a valid ED25519 private key using the seed
+    let ed25519_private_key = PrivateKey::from_seed(seed);
+    let ed25519_pubkey = ed25519_private_key.public_key();
 
     let mut bls_pubkey = [0u8; 48];
     for j in 0..48 {
@@ -303,7 +302,7 @@ pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
     }
 
     DepositRequest {
-        ed25519_pubkey: PublicKey::decode(&ed25519_seed[..]).expect("valid ed25519 key"),
+        ed25519_pubkey,
         bls_pubkey,
         withdrawal_credentials,
         amount,
