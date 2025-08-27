@@ -269,53 +269,43 @@ pub fn parse_metric_substring(metric: &str, tag: &str) -> Option<String> {
     Some(metric[substring_start..end].to_string())
 }
 
-/// Create a list of n DepositRequests for testing
+/// Create a single DepositRequest for testing
 ///
 /// # Arguments
-/// * `n` - The number of deposit requests to create
+/// * `amount` - The deposit amount in gwei
 ///
 /// # Returns
-/// * `Vec<DepositRequest>` - A vector containing n deposit requests with valid test data
-pub fn create_deposit_requests(n: usize) -> Vec<DepositRequest> {
-    let mut deposits = Vec::new();
-
-    for i in 0..n {
-        // Create valid Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20-byte address
-        let mut withdrawal_credentials = [0u8; 32];
-        withdrawal_credentials[0] = 0x01; // Eth1 withdrawal prefix
-        // Use a deterministic address pattern for the last 20 bytes
-        for j in 0..20 {
-            withdrawal_credentials[12 + j] = ((i + j) % 256) as u8;
-        }
-
-        // Create deterministic but valid keys for each deposit
-        let mut ed25519_seed = [1u8; 32];
-        ed25519_seed[0] = (i % 256) as u8;
-        ed25519_seed[1] = ((i / 256) % 256) as u8;
-
-        let mut bls_pubkey = [0u8; 48];
-        for j in 0..48 {
-            bls_pubkey[j] = ((i + j + 1) % 256) as u8;
-        }
-
-        let mut signature = [0u8; 96];
-        for j in 0..96 {
-            signature[j] = ((i + j + 2) % 256) as u8;
-        }
-
-        let deposit = DepositRequest {
-            ed25519_pubkey: PublicKey::decode(&ed25519_seed[..]).expect("valid ed25519 key"),
-            bls_pubkey,
-            withdrawal_credentials,
-            amount: 32_000_000_000,
-            signature,
-            index: i as u64 + 1,
-        };
-
-        deposits.push(deposit);
+/// * `DepositRequest` - A single deposit request with valid test data
+pub fn create_deposit_request(amount: u64) -> DepositRequest {
+    // Create valid Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20-byte address
+    let mut withdrawal_credentials = [0u8; 32];
+    withdrawal_credentials[0] = 0x01; // Eth1 withdrawal prefix
+    // Use a deterministic address pattern for the last 20 bytes
+    for j in 0..20 {
+        withdrawal_credentials[12 + j] = (j % 256) as u8;
     }
 
-    deposits
+    // Create deterministic but valid keys
+    let ed25519_seed = [1u8; 32];
+    
+    let mut bls_pubkey = [0u8; 48];
+    for j in 0..48 {
+        bls_pubkey[j] = ((j + 1) % 256) as u8;
+    }
+
+    let mut signature = [0u8; 96];
+    for j in 0..96 {
+        signature[j] = ((j + 2) % 256) as u8;
+    }
+
+    DepositRequest {
+        ed25519_pubkey: PublicKey::decode(&ed25519_seed[..]).expect("valid ed25519 key"),
+        bls_pubkey,
+        withdrawal_credentials,
+        amount,
+        signature,
+        index: 1,
+    }
 }
 
 /// Create a single WithdrawalRequest for testing

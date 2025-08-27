@@ -1,4 +1,4 @@
-use crate::engine::Engine;
+use crate::engine::{Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
 use crate::test_harness::common::get_default_engine_config;
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -71,8 +71,7 @@ fn test_deposit_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let deposit_requests = common::create_deposit_requests(1);
-        let test_deposit = deposit_requests[0].clone();
+        let test_deposit = common::create_deposit_request(VALIDATOR_MINIMUM_STAKE);
 
         // Convert to ExecutionRequest and then to Requests
         let execution_requests = vec![ExecutionRequest::Deposit(test_deposit.clone())];
@@ -245,8 +244,7 @@ fn test_deposit_request_top_up() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let deposit_requests = common::create_deposit_requests(1);
-        let test_deposit1 = deposit_requests[0].clone();
+        let test_deposit1 = common::create_deposit_request(VALIDATOR_MINIMUM_STAKE);
         let mut test_deposit2 = test_deposit1.clone();
         test_deposit2.amount = 10_000_000_000;
         test_deposit2.index += 1;
@@ -442,8 +440,7 @@ fn test_deposit_and_withdrawal_request() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let deposit_requests = common::create_deposit_requests(1);
-        let test_deposit = deposit_requests[0].clone();
+        let test_deposit = common::create_deposit_request(VALIDATOR_MINIMUM_STAKE);
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
@@ -582,6 +579,221 @@ fn test_deposit_and_withdrawal_request() {
             .expect("missing withdrawal");
         assert_eq!(withdrawals[0].amount, test_withdrawal.amount);
         assert_eq!(withdrawals[0].address, test_withdrawal.source_address);
+
+        // Check that all nodes have the same canonical chain
+        assert!(
+            engine_client_network
+                .verify_consensus(Some(stop_height))
+                .is_ok()
+        );
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
+fn test_partial_withdrawal_balance_below_minimum_stake() {
+    // Adds a deposit request to the block at height 5, and then adds a withdrawal request
+    // to the block at height 7.
+    // The withdrawal request will take the validator below the minimum stake, which means that
+    // the entire remaining balance should be withdrawn.
+    // We also add another withdraw request at height 8, which should be ignored, since there
+    // is no balance left.
+    let n = 10;
+    let link = Link {
+        latency: 80.0,
+        jitter: 10.0,
+        success_rate: 0.98,
+    };
+    // Create context
+    let threshold = quorum(n);
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        // Create simulated network
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+            },
+        );
+
+        // Start network
+        network.start();
+
+        // Register participants
+        let mut signers = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let signer = PrivateKey::from_seed(i as u64);
+            let pk = signer.public_key();
+            signers.push(signer);
+            validators.push(pk);
+        }
+        validators.sort();
+        signers.sort_by_key(|s| s.public_key());
+        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+
+        // Link all validators
+        common::link_validators(&mut oracle, &validators, link, None).await;
+
+        // Create the engine clients
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Create a single deposit request using the helper
+        let test_deposit = common::create_deposit_request(VALIDATOR_MINIMUM_STAKE);
+
+        let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
+        let test_withdrawal1 = common::create_withdrawal_request(
+            withdrawal_address,
+            test_deposit.bls_pubkey,
+            test_deposit.amount / 2,
+        );
+        let mut test_withdrawal2 = test_withdrawal1.clone();
+        test_withdrawal2.amount -= test_withdrawal1.amount / 2;
+
+        // Convert to ExecutionRequest and then to Requests
+        let execution_requests1 = vec![ExecutionRequest::Deposit(test_deposit.clone())];
+        let requests1 = common::execution_requests_to_requests(execution_requests1);
+
+        let execution_requests2 = vec![ExecutionRequest::Withdrawal(test_withdrawal1.clone())];
+        let requests2 = common::execution_requests_to_requests(execution_requests2);
+
+        let execution_requests3 = vec![ExecutionRequest::Withdrawal(test_withdrawal1.clone())];
+        let requests3 = common::execution_requests_to_requests(execution_requests3);
+
+        // Create execution requests map (add deposit to block 5)
+        let deposit_block_height = 5;
+        let withdrawal_block_height = 7;
+        let stop_height = deposit_block_height + 10;
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(deposit_block_height, requests1);
+        execution_requests_map.insert(withdrawal_block_height, requests2);
+        execution_requests_map.insert(withdrawal_block_height + 1, requests3);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .build();
+
+        // Derive threshold
+        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
+
+        // Create instances
+        let mut public_keys = HashSet::new();
+        for (idx, signer) in signers.into_iter().enumerate() {
+            // Create signer context
+            let public_key = signer.public_key();
+            public_keys.insert(public_key.clone());
+
+            // Configure engine
+            let uid = format!("validator-{public_key}");
+            let namespace = String::from("_SEISMIC_BFT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                signer,
+                polynomial.clone(),
+                shares[idx].clone(),
+                validators.clone(),
+            );
+            let engine = Engine::new(
+                context.with_label(&uid),
+                config,
+                oracle.control(public_key.clone()),
+            )
+                .await;
+
+            // Get networking
+            let (pending, recovered, resolver, broadcast, backfill) =
+                registrations.remove(&public_key).unwrap();
+
+            // Start engine
+            engine.start(pending, recovered, resolver, broadcast, backfill);
+        }
+
+        // Poll metrics
+        let mut num_nodes_height_reached = 0;
+        let mut num_nodes_processed_requests = 0;
+        loop {
+            let metrics = context.encode();
+
+            // Iterate over all lines
+            let mut success = false;
+            for line in metrics.lines() {
+                // Ensure it is a metrics line
+                if !line.starts_with("validator-") {
+                    continue;
+                }
+
+                // Split metric and value
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                // If ends with peers_blocked, ensure it is zero
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        num_nodes_height_reached += 1;
+                    }
+                }
+
+                if metric.ends_with("withdrawal_validator_balance") {
+                    let balance = value.parse::<u64>().unwrap();
+                    // Parse the pubkey from the metric name using helper function
+                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "bls_key") {
+                        let ed_pubkey_hex = common::parse_metric_substring(metric, "ed_key")
+                            .expect("ed key missing");
+                        let creds =
+                            common::parse_metric_substring(metric, "creds").expect("creds missing");
+                        assert_eq!(creds, hex::encode(test_withdrawal1.source_address));
+                        assert_eq!(ed_pubkey_hex, test_deposit.ed25519_pubkey.to_string());
+                        let bls_pubkey_hex = hex::encode(test_deposit.bls_pubkey);
+                        assert_eq!(bls_pubkey_hex, pubkey_hex);
+                        assert_eq!(balance, 0);
+                        num_nodes_processed_requests += 1;
+                    } else {
+                        println!("{}: {} (failed to parse pubkey)", metric, value);
+                    }
+                }
+                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            // Still waiting for all validators to complete
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        // Make sure that test_withdrawal2 was ignored, only test_withdraw1 should be submitted
+        // to the execution layer.
+        assert_eq!(withdrawals.len(), 1);
+        let withdrawals = withdrawals
+            .get(&(withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD))
+            .expect("missing withdrawal");
+        // Even though the first withdrawal was only 50% of the deposited amount,
+        // since it put the validator under the minimum stake limit, the entire balance was withdrawn.
+        assert_eq!(withdrawals[0].amount, test_deposit.amount);
+        assert_eq!(withdrawals[0].address, test_withdrawal1.source_address);
 
         // Check that all nodes have the same canonical chain
         assert!(
