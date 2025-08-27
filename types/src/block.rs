@@ -109,7 +109,7 @@ impl Viewable for Block {
     type View = u64;
 
     fn view(&self) -> commonware_consensus::simplex::types::View {
-        self.height
+        self.view
     }
 }
 
