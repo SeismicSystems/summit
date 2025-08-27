@@ -48,7 +48,7 @@ const VALIDATOR_ONBOARDING_INTERVAL: u64 = 1;
 #[cfg(not(debug_assertions))]
 const VALIDATOR_ONBOARDING_INTERVAL: u64 = 10;
 const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 3;
-const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000; // in gwei
+pub const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000; // in gwei
 
 #[cfg(debug_assertions)]
 pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 5;
