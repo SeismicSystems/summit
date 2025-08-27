@@ -307,21 +307,22 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                             validator_balance = request.amount;
 
                                         }
+                                        if !account_exists && validator_balance >= self.validator_minimum_stake {
+                                            // If the node shuts down, before the account changes are committed,
+                                            // then everything should work normally, because the registry is not persisted to disk
+                                            add_validators.push(request.ed25519_pubkey.clone());
+                                        }
                                         #[cfg(debug_assertions)]
                                         {
                                             let gauge: Gauge = Gauge::default();
                                             gauge.set(validator_balance as i64);
                                             ctx.register(
-                                                format!("<creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_deposit_validator_balance",
+                                                format!("<registry>{}</registry><creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_deposit_validator_balance",
+                                                !account_exists && validator_balance >= self.validator_minimum_stake,
                                                 hex::encode(request.withdrawal_credentials), request.ed25519_pubkey, hex::encode(request.bls_pubkey)),
                                                 "Validator balance",
                                                 gauge
                                             );
-                                        }
-                                        if !account_exists && validator_balance >= self.validator_minimum_stake {
-                                            // If the node shuts down, before the account changes are committed,
-                                            // then everything should work normally, because the registry is not persisted to disk
-                                            add_validators.push(request.ed25519_pubkey.clone());
                                         }
                                     }
                                 }
