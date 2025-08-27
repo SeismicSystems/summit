@@ -255,6 +255,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             }
 
                             // Add validators that deposited to the validator set
+                            let mut add_validators = Vec::new();
                             let last_indexed = self.state.get_latest_height().await;
                             if last_indexed % self.validator_onboarding_interval == 0 {
                                 for _ in 0..self.validator_onboarding_limit_per_block {
@@ -320,16 +321,14 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         if !account_exists && validator_balance >= self.validator_minimum_stake {
                                             // If the node shuts down, before the account changes are committed,
                                             // then everything should work normally, because the registry is not persisted to disk
-                                            if let Err(e) = self.registry.add_participant(request.ed25519_pubkey.clone(), block.view + REGISTRY_CHANGE_VIEW_DELTA) {
-                                                // This only happens if the key already exists
-                                                warn!("failed to add validator: {}", e);
-                                            }
+                                            add_validators.push(request.ed25519_pubkey.clone());
                                         }
                                     }
                                 }
                             }
 
                             // Remove pending withdrawals that are included in the committed block
+                            let mut remove_validators = Vec::new();
                             for withdrawal in block.payload.payload_inner.withdrawals {
                                 let pending_withdrawal = self.state.pop_withdrawal().await;
                                 // TODO(matthias): these checks should never fail. we have to make sure that these withdrawals are
@@ -360,14 +359,18 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         // An argument can be made from removing the validator account from the DB here.
                                         if account.balance == 0 {
                                             account.status = ValidatorStatus::Inactive;
-                                            if let Err(e) = self.registry.remove_participant(&account.ed25519_pubkey, block.view + REGISTRY_CHANGE_VIEW_DELTA) {
-                                                warn!("failed to remove validator: {}", e);
-                                            }
+                                            remove_validators.push(account.ed25519_pubkey.clone());
                                         }
 
                                         self.state.set_account(&pending_withdrawal.bls_pubkey, account).await;
                                     }
                                 }
+                            }
+
+                            // We collect two lists, one for validators we want to add, and the other for validators we want to remove.
+                            // This is done so that the registry is updated atomically.
+                            if !add_validators.is_empty() || !remove_validators.is_empty() {
+                                self.registry.update_registry(block.view + REGISTRY_CHANGE_VIEW_DELTA, add_validators, remove_validators);
                             }
 
                             // TODO(matthias): verify what happens if the binary shuts down before storing the deposits to disk.

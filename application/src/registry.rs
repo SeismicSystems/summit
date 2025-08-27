@@ -1,4 +1,3 @@
-use anyhow::Result;
 use commonware_codec::Encode;
 use commonware_consensus::{Supervisor as Su, ThresholdSupervisor, simplex::types::View};
 use commonware_cryptography::bls12381::dkg::ops::evaluate_all;
@@ -10,6 +9,7 @@ use commonware_utils::modulo;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use summit_types::{Identity, PublicKey};
+use tracing::warn;
 
 #[derive(Default, Clone, Debug)]
 struct Participants {
@@ -58,7 +58,8 @@ impl Registry {
         registry
     }
 
-    pub fn add_participant(&self, participant: PublicKey, index: View) -> Result<()> {
+    pub fn update_registry(&self, index: View, add: Vec<PublicKey>, remove: Vec<PublicKey>) {
+        tracing::error!("update registry view {index}");
         let mut views = self.views.write().unwrap();
 
         let mut participants = if let Some((latest_view, view_data)) = views.last_key_value() {
@@ -69,42 +70,27 @@ impl Registry {
             Box::new(Participants::default())
         };
 
-        if participants.participants_map.contains_key(&participant) {
-            return Err(anyhow::anyhow!(
-                "Public key {} already exists in current set",
-                participant
-            ));
+        for participant in add {
+            if participants.participants_map.contains_key(&participant) {
+                warn!("Public key {} already exists in current set", participant);
+                continue;
+            }
+            participants.participants.push(participant.clone());
+            participants
+                .participants_map
+                .insert(participant, (participants.participants.len() as u32) - 1);
         }
 
-        participants.participants.push(participant.clone());
-        participants
-            .participants_map
-            .insert(participant, (participants.participants.len() as u32) - 1);
-
-        views.insert(index, participants);
-
-        Ok(())
-    }
-
-    pub fn remove_participant(&mut self, participant: &PublicKey, index: View) -> Result<()> {
-        let mut views = self.views.write().unwrap();
-        if let Some(current_view) = views.last_entry() {
-            // TODO(matthias): is it possible that `index` is smaller or equal to the latest view?
-            assert!(*current_view.key() < index);
-            let mut participants = current_view.get().clone();
-
-            let Some(participant_index) = participants.participants_map.get(participant).copied()
+        for participant in remove {
+            let Some(participant_index) = participants.participants_map.get(&participant).copied()
             else {
-                return Err(anyhow::anyhow!(
-                    "Public key {} doesn't exist in current set",
-                    participant
-                ));
+                warn!("Public key {} doesn't exist in current set", participant);
+                continue;
             };
-
             participants
                 .participants
                 .swap_remove(participant_index as usize);
-            participants.participants_map.remove(participant);
+            participants.participants_map.remove(&participant);
 
             // re-calculate the index of the swapped public key
             if let Some(swapped_key) = participants.participants.get(participant_index as usize) {
@@ -112,10 +98,8 @@ impl Registry {
                     .participants_map
                     .insert(swapped_key.clone(), participant_index);
             }
-
-            views.insert(index, participants);
         }
-        Ok(())
+        views.insert(index, participants);
     }
 }
 
@@ -306,13 +290,12 @@ mod tests {
     }
 
     #[test]
-    fn test_add_participant() {
+    fn test_update_registry_add_participant() {
         let registry = create_test_registry(2);
         let new_participant = summit_types::PrivateKey::from_seed(99).public_key();
 
         // Add participant to view 1
-        let result = registry.add_participant(new_participant.clone(), 1);
-        assert!(result.is_ok());
+        registry.update_registry(1, vec![new_participant.clone()], vec![]);
 
         // Verify participant was added
         let view_1_participants = registry.participants(1);
@@ -326,24 +309,26 @@ mod tests {
     }
 
     #[test]
-    fn test_add_duplicate_participant() {
+    fn test_update_registry_add_duplicate_participant() {
         let registry = create_test_registry(2);
         let existing_participant = registry.participants(0).unwrap()[0].clone();
 
-        // Try to add existing participant to same view
-        let result = registry.add_participant(existing_participant, 1);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("already exists"));
+        // Try to add existing participant - should log warning but not fail
+        registry.update_registry(1, vec![existing_participant.clone()], vec![]);
+
+        // Verify participant count didn't increase (duplicate was ignored)
+        let view_1_participants = registry.participants(1);
+        assert_eq!(view_1_participants.unwrap().len(), 2);
+        assert!(view_1_participants.unwrap().contains(&existing_participant));
     }
 
     #[test]
-    fn test_remove_participant() {
-        let mut registry = create_test_registry(3);
+    fn test_update_registry_remove_participant() {
+        let registry = create_test_registry(3);
         let participant_to_remove = registry.participants(0).unwrap()[1].clone();
 
         // Remove participant from view 1
-        let result = registry.remove_participant(&participant_to_remove.clone(), 1);
-        assert!(result.is_ok());
+        registry.update_registry(1, vec![], vec![participant_to_remove.clone()]);
 
         // Verify participant was removed
         let view_1_participants = registry.participants(1);
@@ -360,14 +345,16 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_nonexistent_participant() {
-        let mut registry = create_test_registry(2);
+    fn test_update_registry_remove_nonexistent_participant() {
+        let registry = create_test_registry(2);
         let nonexistent_participant = summit_types::PrivateKey::from_seed(999).public_key();
 
-        // Try to remove non-existent participant
-        let result = registry.remove_participant(&nonexistent_participant, 1);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("doesn't exist"));
+        // Try to remove non-existent participant - should log warning but not fail
+        registry.update_registry(1, vec![], vec![nonexistent_participant]);
+
+        // Verify participant count didn't change (remove was ignored)
+        let view_1_participants = registry.participants(1);
+        assert_eq!(view_1_participants.unwrap().len(), 2);
     }
 
     // Supervisor trait implementation tests
@@ -406,9 +393,7 @@ mod tests {
 
         // Add participant to create view 3
         let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
-        registry
-            .add_participant(new_participant.clone(), 3)
-            .unwrap();
+        registry.update_registry(3, vec![new_participant.clone()], vec![]);
 
         // Views 0, 1, 2 should still use original participants (largest view <= requested)
         assert_eq!(registry.participants(0).unwrap(), original_participants);
@@ -543,7 +528,7 @@ mod tests {
 
         // Add participant to create view 1
         let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
-        registry.add_participant(new_participant, 1).unwrap();
+        registry.update_registry(1, vec![new_participant], vec![]);
 
         // Peer set ID should now be 1
         assert_eq!(registry.peer_set_id(), 1);
@@ -559,9 +544,7 @@ mod tests {
 
         // Add participant
         let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
-        registry
-            .add_participant(new_participant.clone(), 1)
-            .unwrap();
+        registry.update_registry(1, vec![new_participant.clone()], vec![]);
 
         // Peers should now reflect the latest view
         let updated_peers = registry.peers();
@@ -578,8 +561,8 @@ mod tests {
         let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
         let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
 
-        registry.add_participant(participant_a.clone(), 3).unwrap();
-        registry.add_participant(participant_b.clone(), 7).unwrap();
+        registry.update_registry(3, vec![participant_a.clone()], vec![]);
+        registry.update_registry(7, vec![participant_b.clone()], vec![]);
 
         // Test participants for each view (largest view <= requested)
         assert_eq!(registry.participants(0).unwrap().len(), 2); // view 0
@@ -603,9 +586,7 @@ mod tests {
 
         // Add participant to view 1
         let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
-        registry
-            .add_participant(new_participant.clone(), 1)
-            .unwrap();
+        registry.update_registry(1, vec![new_participant.clone()], vec![]);
 
         // Original view should remain unchanged
         assert_eq!(registry.participants(0).unwrap(), &original_participants);
@@ -693,8 +674,8 @@ mod tests {
         let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
         let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
 
-        registry.add_participant(participant_a.clone(), 3).unwrap();
-        registry.add_participant(participant_b.clone(), 7).unwrap();
+        registry.update_registry(3, vec![participant_a.clone()], vec![]);
+        registry.update_registry(7, vec![participant_b.clone()], vec![]);
 
         // Test that we get the largest view <= requested view
         // Views available: 0 (2 participants), 3 (3 participants), 7 (4 participants)
@@ -729,9 +710,7 @@ mod tests {
 
         // Add participant at view 2
         let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
-        registry
-            .add_participant(new_participant.clone(), 2)
-            .unwrap();
+        registry.update_registry(2, vec![new_participant.clone()], vec![]);
 
         // Leader for view 0-1 should use 4-participant set from view 0
         let leader_0 = Su::leader(&registry, 0);
@@ -766,9 +745,7 @@ mod tests {
 
         // Add participant at view 3
         let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
-        registry
-            .add_participant(new_participant.clone(), 3)
-            .unwrap();
+        registry.update_registry(3, vec![new_participant.clone()], vec![]);
 
         // Original participants should be found in all views
         assert_eq!(
@@ -811,23 +788,21 @@ mod tests {
         let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
         let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
 
-        registry.add_participant(participant_a, 5).unwrap();
+        registry.update_registry(5, vec![participant_a], vec![]);
         assert_eq!(registry.peer_set_id(), 5);
 
-        registry.add_participant(participant_b, 10).unwrap();
+        registry.update_registry(10, vec![participant_b], vec![]);
         assert_eq!(registry.peer_set_id(), 10);
     }
 
     #[test]
     fn test_remove_participant_view_selection() {
-        let mut registry = create_test_registry(3);
+        let registry = create_test_registry(3);
         let original_participants = registry.participants(0).unwrap().clone();
         let participant_to_remove = original_participants[1].clone();
 
         // Remove participant at view 2
-        registry
-            .remove_participant(&participant_to_remove, 2)
-            .unwrap();
+        registry.update_registry(2, vec![], vec![participant_to_remove.clone()]);
 
         // Views 0-1 should still have original participants
         assert_eq!(registry.participants(0).unwrap().len(), 3);
@@ -860,5 +835,35 @@ mod tests {
                 .unwrap()
                 .contains(&participant_to_remove)
         );
+    }
+
+    #[test]
+    fn test_update_registry_add_and_remove_combined() {
+        let registry = create_test_registry(3);
+        let original_participants = registry.participants(0).unwrap().clone();
+
+        // Create new participants to add and remove existing ones
+        let new_participant_a = summit_types::PrivateKey::from_seed(200).public_key();
+        let new_participant_b = summit_types::PrivateKey::from_seed(201).public_key();
+        let participant_to_remove = original_participants[0].clone();
+
+        // Add two participants and remove one in a single operation
+        registry.update_registry(
+            1,
+            vec![new_participant_a.clone(), new_participant_b.clone()],
+            vec![participant_to_remove.clone()],
+        );
+
+        // Verify the result
+        let view_1_participants = registry.participants(1).unwrap();
+        assert_eq!(view_1_participants.len(), 4); // 3 - 1 + 2 = 4
+        assert!(view_1_participants.contains(&new_participant_a));
+        assert!(view_1_participants.contains(&new_participant_b));
+        assert!(!view_1_participants.contains(&participant_to_remove));
+
+        // Original view should remain unchanged
+        let view_0_participants = registry.participants(0).unwrap();
+        assert_eq!(view_0_participants.len(), 3);
+        assert!(view_0_participants.contains(&participant_to_remove));
     }
 }
