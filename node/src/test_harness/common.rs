@@ -272,30 +272,34 @@ pub fn parse_metric_substring(metric: &str, tag: &str) -> Option<String> {
 /// Create a single DepositRequest for testing
 ///
 /// # Arguments
+/// * `seed` - The seed value used to generate deterministic but unique keys
 /// * `amount` - The deposit amount in gwei
 ///
 /// # Returns
 /// * `DepositRequest` - A single deposit request with valid test data
-pub fn create_deposit_request(amount: u64) -> DepositRequest {
+pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
     // Create valid Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20-byte address
     let mut withdrawal_credentials = [0u8; 32];
     withdrawal_credentials[0] = 0x01; // Eth1 withdrawal prefix
-    // Use a deterministic address pattern for the last 20 bytes
+    // Use seed-based address pattern for the last 20 bytes
     for j in 0..20 {
-        withdrawal_credentials[12 + j] = (j % 256) as u8;
+        withdrawal_credentials[12 + j] = ((seed + j as u64) % 256) as u8;
     }
 
-    // Create deterministic but valid keys
-    let ed25519_seed = [1u8; 32];
-    
+    // Create deterministic but seed-based keys
+    let mut ed25519_seed = [0u8; 32];
+    for j in 0..32 {
+        ed25519_seed[j] = ((seed + j as u64 + 1) % 256) as u8;
+    }
+
     let mut bls_pubkey = [0u8; 48];
     for j in 0..48 {
-        bls_pubkey[j] = ((j + 1) % 256) as u8;
+        bls_pubkey[j] = ((seed + j as u64 + 33) % 256) as u8;
     }
 
     let mut signature = [0u8; 96];
     for j in 0..96 {
-        signature[j] = ((j + 2) % 256) as u8;
+        signature[j] = ((seed + j as u64 + 81) % 256) as u8;
     }
 
     DepositRequest {
@@ -304,7 +308,7 @@ pub fn create_deposit_request(amount: u64) -> DepositRequest {
         withdrawal_credentials,
         amount,
         signature,
-        index: 1,
+        index: seed,
     }
 }
 
