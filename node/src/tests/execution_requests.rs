@@ -259,9 +259,19 @@ fn test_deposit_request_top_up() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
+<<<<<<< HEAD
         let deposit_block_height = 5;
         let withdrawal_block_height = 10;
         let stop_height = withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + 5;
+||||||| parent of 4859a65 (test: e2e test for withdrawals)
+        let deposit_block_height1 = 5;
+        let deposit_block_height2 = 10;
+        let stop_height = deposit_block_height2;
+=======
+        let deposit_block_height = 5;
+        let withdrawal_block_height = 10;
+        let stop_height = withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD;
+>>>>>>> 4859a65 (test: e2e test for withdrawals)
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -502,7 +512,7 @@ fn test_deposit_and_withdrawal_request() {
                 config,
                 oracle.control(public_key.clone()),
             )
-            .await;
+                .await;
 
             // Get networking
             let (pending, recovered, resolver, broadcast, backfill) =
@@ -593,3 +603,4 @@ fn test_deposit_and_withdrawal_request() {
         context.auditor().state()
     })
 }
+
