@@ -36,9 +36,9 @@ pub async fn start_rpc_server(
 
     let server = RpcRoutes::mount(state);
 
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
 
-    println!("RPC Server listening on http://0.0.0.0:{}", port);
+    println!("RPC Server listening on http://0.0.0.0:{port}");
 
     axum::serve(listener, server).await?;
 

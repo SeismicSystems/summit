@@ -113,6 +113,7 @@ impl Command {
 
     pub fn run_node(&self, flags: &RunFlags) {
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
+        let (signer, share) = expect_keys(&flags.key_path, &flags.share_path);
 
         // Initialize runtime
         let cfg = tokio::Config::default()
@@ -176,8 +177,8 @@ impl Command {
             // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
             let config = EngineConfig::get_engine_config(
                 engine_client,
-                flags.key_path.clone(),
-                flags.share_path.clone(),
+                signer,
+                share,
                 peers.clone(),
                 flags.db_prefix.clone(),
                 &genesis,
@@ -289,6 +290,7 @@ pub fn run_node_with_runtime(
     flags: RunFlags,
 ) -> Handle<()> {
     context.spawn(async move |context| {
+        let (signer, share) = expect_keys(&flags.key_path, &flags.share_path);
         // Check if genesis file exists
         let genesis_path = get_expanded_path(&flags.genesis_path).expect("Invalid genesis path");
         let has_genesis = genesis_path.exists()
@@ -340,8 +342,8 @@ pub fn run_node_with_runtime(
         // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
         let config = EngineConfig::get_engine_config(
             engine_client,
-            flags.key_path.clone(),
-            flags.share_path.clone(),
+            signer,
+            share,
             peers.clone(),
             flags.db_prefix.clone(),
             &genesis,

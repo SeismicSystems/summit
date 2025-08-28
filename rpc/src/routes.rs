@@ -42,8 +42,7 @@ impl RpcRoutes {
         let encoded_pk =
             std::fs::read_to_string(path).map_err(|_| "Failed to read Private key file")?;
 
-        let key =
-            from_hex_formatted(&encoded_pk).ok_or_else(|| "Invalid hex format for private key")?;
+        let key = from_hex_formatted(&encoded_pk).ok_or("Invalid hex format for private key")?;
         let pk = PrivateKey::decode(&*key).map_err(|_| "unable to decode private key")?;
 
         Ok(pk)
@@ -59,11 +58,11 @@ impl RpcRoutes {
 
         if let Some(parent) = genesis_path.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
+                .map_err(|e| format!("Failed to create directory: {e}"))?;
         }
 
         std::fs::write(&genesis_path, &body)
-            .map_err(|e| format!("Failed to write genesis file: {}", e))?;
+            .map_err(|e| format!("Failed to write genesis file: {e}"))?;
 
         // Signal that genesis is ready
         if let Some(sender) = state.genesis_sender.lock().expect("poisoned").take() {

@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 //     }
                 // });
 
-                let auth_port = reth.auth_port().unwrap();
+                let _auth_port = reth.auth_port().unwrap();
 
                 println!("Node {} rpc address: {}", x, reth.http_port());
 

@@ -1,5 +1,3 @@
-pub mod persistent_queue;
-
 use anyhow::{Context, Result};
 use dirs::home_dir;
 use std::{path::PathBuf, str::FromStr};
