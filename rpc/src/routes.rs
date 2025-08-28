@@ -8,8 +8,7 @@ use axum::{
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::Signer;
 use commonware_utils::from_hex_formatted;
-use summit_types::PrivateKey;
-use summit_utils::get_expanded_path;
+use summit_types::{PrivateKey, utils::get_expanded_path};
 
 use crate::RpcState;
 

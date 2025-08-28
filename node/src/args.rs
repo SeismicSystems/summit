@@ -5,7 +5,6 @@ use crate::{
     },
     engine::Engine,
     keys::KeySubCmd,
-    utils::get_expanded_path,
 };
 use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
@@ -21,7 +20,7 @@ use std::{
     str::FromStr as _,
 };
 use summit_application::engine_client::RethEngineClient;
-use summit_types::{Genesis, PublicKey};
+use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
 pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";

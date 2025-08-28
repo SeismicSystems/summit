@@ -6,7 +6,6 @@ mod keys;
 mod test_harness;
 #[cfg(test)]
 mod tests;
-mod utils;
 
 #[cfg(feature = "prom")]
 mod prom;

@@ -10,9 +10,9 @@ use commonware_cryptography::bls12381::primitives::{
 use commonware_utils::{from_hex_formatted, quorum};
 use governor::Quota;
 use summit_application::engine_client::EngineClient;
-use summit_types::{Genesis, Identity, PrivateKey, PublicKey};
+use summit_types::{Genesis, Identity, PrivateKey, PublicKey, utils::get_expanded_path};
 
-use crate::{keys::read_ed_key_from_path, utils::get_expanded_path};
+use crate::keys::read_ed_key_from_path;
 
 /* DEFAULTS */
 pub const PENDING_CHANNEL: u32 = 0;

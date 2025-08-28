@@ -2,6 +2,7 @@ pub mod account;
 mod block;
 pub mod execution_request;
 pub mod genesis;
+pub mod utils;
 pub mod withdrawal;
 
 pub use block::*;

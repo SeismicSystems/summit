@@ -1,4 +1,4 @@
-use crate::{args::DEFAULT_KEY_PATH, utils::get_expanded_path};
+use crate::args::DEFAULT_KEY_PATH;
 use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};
 use commonware_codec::extensions::DecodeExt;
@@ -6,7 +6,7 @@ use std::io::{self, Write};
 
 use commonware_cryptography::{PrivateKeyExt as _, Signer};
 use commonware_utils::from_hex_formatted;
-use summit_types::PrivateKey;
+use summit_types::{PrivateKey, utils::get_expanded_path};
 
 #[derive(Subcommand, PartialEq, Eq, Debug, Clone)]
 pub enum KeySubCmd {

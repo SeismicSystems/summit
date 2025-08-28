@@ -5183,7 +5183,6 @@ dependencies = [
  "futures",
  "serde",
  "summit-types",
- "summit-utils",
  "tokio",
  "tracing",
 ]
@@ -5196,29 +5195,17 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rpc-types-engine",
+ "anyhow",
  "bytes",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-utils",
+ "dirs 6.0.0",
  "ethereum_ssz",
  "ethereum_ssz_derive",
  "serde",
  "toml",
-]
-
-[[package]]
-name = "summit-utils"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "bytes",
- "commonware-codec",
- "commonware-runtime",
- "commonware-storage",
- "commonware-utils",
- "dirs 6.0.0",
- "tokio",
 ]
 
 [[package]]

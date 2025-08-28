@@ -8,8 +8,6 @@ name = "summit_rpc"
 path = "src/lib.rs"
 
 [dependencies]
-summit-utils.workspace = true
-
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 futures.workspace = true
