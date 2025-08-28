@@ -502,7 +502,7 @@ fn test_deposit_and_withdrawal_request() {
                 config,
                 oracle.control(public_key.clone()),
             )
-                .await;
+            .await;
 
             // Get networking
             let (pending, recovered, resolver, broadcast, backfill) =
@@ -593,4 +593,3 @@ fn test_deposit_and_withdrawal_request() {
         context.auditor().state()
     })
 }
-
