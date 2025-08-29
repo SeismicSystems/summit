@@ -22,6 +22,7 @@ use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV4, ForkchoiceState, PayloadAttributes, PayloadId, PayloadStatus,
 };
+use tracing::{error, warn};
 
 use alloy_transport_ipc::IpcConnect;
 use std::future::Future;
@@ -79,6 +80,13 @@ impl EngineClient for RethEngineClient {
             .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
             .await
             .unwrap();
+
+        if res.is_invalid() {
+            error!("invalid returned for forkchoice state {fork_choice_state:?}: {res:?}");
+        }
+        if res.is_syncing() {
+            warn!("syncing returned for forkchoice state {fork_choice_state:?}: {res:?}");
+        }
 
         res.payload_id
     }
