@@ -4,6 +4,7 @@ pub mod execution_request;
 pub mod genesis;
 pub mod utils;
 pub mod withdrawal;
+mod consensus_state;
 
 pub use block::*;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
