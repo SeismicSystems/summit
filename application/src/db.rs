@@ -7,8 +7,12 @@ use commonware_utils::sequence::FixedBytes;
 pub use store::Config;
 use summit_types::consensus_state::ConsensusState;
 
-// Key prefix for consensus state blobs
+// Key prefixes for different data types
+const STATE_PREFIX: u8 = 0x01;
 const CONSENSUS_STATE_PREFIX: u8 = 0x05;
+
+// State variable keys
+const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
 
 pub struct FinalizerState<E: Clock + Storage + Metrics> {
     store: Store<E, FixedBytes<64>, Value, TwoCap>,
@@ -23,11 +27,41 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
         Self { store }
     }
 
+    fn pad_key(key: &[u8]) -> FixedBytes<64> {
+        let mut padded = [0u8; 64];
+        let len = key.len().min(64);
+        padded[..len].copy_from_slice(&key[..len]);
+        FixedBytes::new(padded)
+    }
+
     fn make_consensus_state_key(height: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = CONSENSUS_STATE_PREFIX;
         key[1..9].copy_from_slice(&height.to_be_bytes());
         FixedBytes::new(key)
+    }
+
+    // State variable operations
+    async fn get_latest_consensus_state_height(&self) -> u64 {
+        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
+        if let Some(Value::U64(height)) = self
+            .store
+            .get(&key)
+            .await
+            .expect("failed to get latest consensus state height")
+        {
+            height
+        } else {
+            0
+        }
+    }
+
+    async fn set_latest_consensus_state_height(&mut self, height: u64) {
+        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
+        self.store
+            .update(key, Value::U64(height))
+            .await
+            .expect("failed to set latest consensus state height");
     }
 
     // ConsensusState blob operations
@@ -37,6 +71,13 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .update(key, Value::ConsensusState(state.clone()))
             .await
             .expect("failed to store consensus state");
+
+        // Update the latest height tracker
+        let current_latest = self.get_latest_consensus_state_height().await;
+        if height > current_latest {
+            self.set_latest_consensus_state_height(height).await;
+        }
+
         self.store
             .commit()
             .await
@@ -58,24 +99,31 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     }
 
     pub async fn get_latest_consensus_state(&self) -> Option<ConsensusState> {
-        // TODO(matthias): temporary solution
-        for height in (0..=100000u64).rev() {
-            if let Some(state) = self.get_consensus_state(height).await {
-                return Some(state);
-            }
+        // Check if we have a latest height tracker
+        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
+        if let Some(Value::U64(latest_height)) = self
+            .store
+            .get(&key)
+            .await
+            .expect("failed to get latest consensus state height")
+        {
+            self.get_consensus_state(latest_height).await
+        } else {
+            None
         }
-        None
     }
 }
 
 #[derive(Clone)]
 enum Value {
+    U64(u64),
     ConsensusState(ConsensusState),
 }
 
 impl EncodeSize for Value {
     fn encode_size(&self) -> usize {
         1 + match self {
+            Self::U64(_) => 8,
             Self::ConsensusState(state) => state.encode_size(),
         }
     }
@@ -87,6 +135,7 @@ impl Read for Value {
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
         let value_type = buf.get_u8();
         match value_type {
+            0x01 => Ok(Self::U64(buf.get_u64())),
             0x05 => Ok(Self::ConsensusState(ConsensusState::read_cfg(buf, &())?)),
             byte => Err(Error::InvalidVarint(byte as usize)),
         }
@@ -96,6 +145,10 @@ impl Read for Value {
 impl Write for Value {
     fn write(&self, buf: &mut impl BufMut) {
         match self {
+            Self::U64(val) => {
+                buf.put_u8(0x01);
+                buf.put_u64(*val);
+            }
             Self::ConsensusState(state) => {
                 buf.put_u8(0x05);
                 state.write(buf);
