@@ -391,7 +391,16 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 gauge
                             );
                         }
+
+                        #[cfg(feature = "prom")]
+                        let now = std::time::Instant::now();
                         self.state.set_latest_height(new_height).await;
+                        #[cfg(feature = "prom")]
+                        {
+                            let save_duration = now.elapsed().as_micros() as f64;
+                                histogram!("save_consensus_to_disk_micros").record(save_duration);
+                        }
+
                         self.height_notifier.notify_up_to(new_height);
                         let _ = notifier.send(());
                     },
