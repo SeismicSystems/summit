@@ -27,4 +27,7 @@ pub struct ApplicationConfig<C: EngineClient> {
     pub validator_withdrawal_period: u64,
 
     pub validator_max_withdrawals_per_block: usize,
+
+    /// How often to checkpoint the ConsensusState to persistent storage (in blocks)
+    pub checkpoint_interval: u64,
 }

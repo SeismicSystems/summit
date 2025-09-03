@@ -40,7 +40,7 @@ const MAX_REPAIR: u64 = 20;
 const BUFFER_POOL_PAGE_SIZE: NonZero<usize> = NZUsize!(4_096); // 4KB
 const BUFFER_POOL_CAPACITY: NonZero<usize> = NZUsize!(8_192); // 32MB
 //
-
+const CHECKPOINT_INTERVAL: u64 = 100;
 // Onboarding config (set arbitrarily for now)
 
 #[cfg(debug_assertions)]
@@ -106,6 +106,7 @@ impl<
                 validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
                 validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
+                checkpoint_interval: CHECKPOINT_INTERVAL,
             },
         )
         .await;

@@ -28,6 +28,7 @@ use std::{
 };
 use summit_types::Block;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
+use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::withdrawal::PendingWithdrawal;
 use tracing::{info, warn};
@@ -56,7 +57,9 @@ pub struct Finalizer<
 
     rx_finalizer_mailbox: mpsc::Receiver<(Block, oneshot::Sender<()>)>,
 
-    state: FinalizerState<R>,
+    db: FinalizerState<R>,
+
+    state: ConsensusState,
 
     validator_onboarding_interval: u64,
 
@@ -67,6 +70,8 @@ pub struct Finalizer<
     validator_withdrawal_period: u64, // in blocks
 
     validator_max_withdrawals_per_block: usize,
+
+    checkpoint_interval: u64,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
@@ -84,6 +89,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         validator_minimum_stake: u64,
         validator_withdrawal_period: u64,
         validator_max_withdrawals_per_block: usize,
+        checkpoint_interval: u64,
     ) -> (
         Self,
         FinalizerMailbox,
@@ -101,30 +107,39 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             translator: TwoCap,
             buffer_pool: PoolRef::new(NZUsize!(PAGE_SIZE), NZUsize!(PAGE_CACHE_SIZE)),
         };
-        let state = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
+        let db = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
 
         let (tx_height_notify, height_notify_mailbox) = mpsc::channel(1000);
         let (tx_pending_withdrawal, pending_withdrawal_mailbox) = mpsc::channel(1000);
 
         let (tx_finalizer, rx_finalizer_mailbox) = mpsc::channel(1); // todo(dalton) there should only ever be one message in this channel since we block but lets verify this
 
+        let mut finalizer = Self {
+            context,
+            height_notifier: HeightNotifier::new(),
+            height_notify_mailbox,
+            pending_withdrawal_mailbox,
+            engine_client,
+            registry,
+            forkchoice,
+            rx_finalizer_mailbox,
+            db,
+            state: ConsensusState::default(),
+            validator_onboarding_interval,
+            validator_onboarding_limit_per_block,
+            validator_minimum_stake,
+            validator_withdrawal_period,
+            validator_max_withdrawals_per_block,
+            checkpoint_interval,
+        };
+
+        // Try to load the latest ConsensusState from database
+        if let Some(loaded_state) = finalizer.db.get_latest_consensus_state().await {
+            finalizer.state = loaded_state;
+        }
+
         (
-            Self {
-                context,
-                height_notifier: HeightNotifier::new(),
-                height_notify_mailbox,
-                pending_withdrawal_mailbox,
-                engine_client,
-                registry,
-                forkchoice,
-                rx_finalizer_mailbox,
-                state,
-                validator_onboarding_interval,
-                validator_onboarding_limit_per_block,
-                validator_minimum_stake,
-                validator_withdrawal_period,
-                validator_max_withdrawals_per_block,
-            },
+            finalizer,
             FinalizerMailbox::new(tx_finalizer),
             tx_height_notify,
             tx_pending_withdrawal,
@@ -132,7 +147,9 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     }
 
     pub fn start(mut self) {
-        self.context.spawn(move |ctx| async move {
+        self.context.spawn(move |
+            #[cfg_attr(not(debug_assertions), allow(unused_variables))] ctx
+            | async move {
             #[cfg(feature = "prom")]
             let mut last_committed_timestamp: Option<std::time::Instant> = None;
             loop {
@@ -140,7 +157,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     mail = self.height_notify_mailbox.next() => {
                         let (height, sender) = mail.expect("height notify mailbox dropped");
 
-                        let last_indexed = self.state.get_latest_height().await;
+                        let last_indexed = self.state.get_latest_height();
                         if last_indexed >= height {
                             let _ = sender.send(());
                             continue;
@@ -155,8 +172,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         // TODO(matthias): the height notify should take care of the synchronization, but verify this
                         // Get ready withdrawals at the current height
                         let ready_withdrawals = self.state
-                            .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block)
-                            .await;
+                            .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
                         let _ = sender.send(ready_withdrawals);
                     },
 
@@ -173,8 +189,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         // Verify withdrawal requests that were included in the block
                         // Make sure that the included withdrawals match the expected withdrawals
                         let pending_withdrawals = self.state
-                            .get_next_ready_withdrawals(new_height, self.validator_max_withdrawals_per_block)
-                            .await;
+                            .get_next_ready_withdrawals(new_height, self.validator_max_withdrawals_per_block);
                         let expected_withdrawals: Vec<Withdrawal> =
                             pending_withdrawals.into_iter().map(|w| w.inner).collect();
 
@@ -212,11 +227,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                     Ok(execution_request) => {
                                         match execution_request {
                                             ExecutionRequest::Deposit(deposit_request) => {
-                                                self.state.push_deposit(deposit_request).await;
+                                                self.state.push_deposit(deposit_request);
                                             }
                                             ExecutionRequest::Withdrawal(mut withdrawal_request) => {
                                                 // Only add the withdrawal request if the validator exists and has sufficient balance
-                                                if let Some(mut account) = self.state.get_account(&withdrawal_request.validator_pubkey).await {
+                                                if let Some(mut account) = self.state.get_account(&withdrawal_request.validator_pubkey).cloned() {
                                                     // Check that the validator is active and hasn't submitted an exit request
                                                     if matches!(account.status, ValidatorStatus::Inactive | ValidatorStatus::SubmittedExitRequest) {
                                                         continue; // Skip this withdrawal request
@@ -242,8 +257,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                     }
 
                                                     account.pending_withdrawal_amount += withdrawal_request.amount;
-                                                    self.state.set_account(&withdrawal_request.validator_pubkey, account).await;
-                                                    self.state.push_withdrawal_request(withdrawal_request.clone(), new_height + self.validator_withdrawal_period).await;
+                                                    self.state.set_account(withdrawal_request.validator_pubkey, account);
+                                                    self.state.push_withdrawal_request(withdrawal_request.clone(), new_height + self.validator_withdrawal_period);
                                                 }
                                             }
                                         }
@@ -256,13 +271,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                             // Add validators that deposited to the validator set
                             let mut add_validators = Vec::new();
-                            let last_indexed = self.state.get_latest_height().await;
+                            let last_indexed = self.state.get_latest_height();
                             if last_indexed % self.validator_onboarding_interval == 0 {
                                 for _ in 0..self.validator_onboarding_limit_per_block {
-                                    if let Some(request) = self.state.pop_deposit().await {
+                                    if let Some(request) = self.state.pop_deposit() {
                                         let mut validator_balance = 0;
                                         let mut account_exists = false;
-                                        if let Some(mut account) = self.state.get_account(&request.bls_pubkey).await {
+                                        if let Some(mut account) = self.state.get_account(&request.bls_pubkey).cloned() {
                                             if request.index > account.last_deposit_index {
                                                 account.balance += request.amount;
                                                 account.last_deposit_index = request.index;
@@ -273,7 +288,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                 }
                                                 account.last_deposit_index = request.index;
                                                 validator_balance = account.balance;
-                                                self.state.set_account(&request.bls_pubkey, account).await;
+                                                self.state.set_account(request.bls_pubkey, account);
                                                 account_exists = true;
                                             }
                                         } else {
@@ -303,7 +318,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                 status: ValidatorStatus::Active,
                                                 last_deposit_index: request.index,
                                             };
-                                            self.state.set_account(&request.bls_pubkey, new_account).await;
+                                            self.state.set_account(request.bls_pubkey, new_account);
                                             validator_balance = request.amount;
 
                                         }
@@ -331,40 +346,40 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             // Remove pending withdrawals that are included in the committed block
                             let mut remove_validators = Vec::new();
                             for withdrawal in block.payload.payload_inner.withdrawals {
-                                let pending_withdrawal = self.state.pop_withdrawal().await;
+                                let pending_withdrawal = self.state.pop_withdrawal();
                                 // TODO(matthias): these checks should never fail. we have to make sure that these withdrawals are
                                 // verified when the block is verified. it is too late when the block is committed.
                                 let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
                                 assert_eq!(pending_withdrawal.inner, withdrawal);
 
-                                if let Some(mut account) = self.state.get_account(&pending_withdrawal.bls_pubkey).await {
-                                    if account.balance >= withdrawal.amount {
-                                        // This check should never fail, because we checked the balance when
-                                        // adding the pending withdrawal to the queue
-                                        account.balance = account.balance.saturating_sub(withdrawal.amount);
-                                        account.pending_withdrawal_amount = account.pending_withdrawal_amount.saturating_sub(withdrawal.amount);
+                                if let Some(mut account) = self.state.get_account(&pending_withdrawal.bls_pubkey).cloned()
+                                    && account.balance >= withdrawal.amount
+                                {
+                                    // This check should never fail, because we checked the balance when
+                                    // adding the pending withdrawal to the queue
+                                    account.balance = account.balance.saturating_sub(withdrawal.amount);
+                                    account.pending_withdrawal_amount = account.pending_withdrawal_amount.saturating_sub(withdrawal.amount);
 
-                                        #[cfg(debug_assertions)]
-                                        {
-                                            let gauge: Gauge = Gauge::default();
-                                            gauge.set(account.balance as i64);
-                                            ctx.register(
-                                                format!("<creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_withdrawal_validator_balance",
-                                                hex::encode(account.withdrawal_credentials), account.ed25519_pubkey, hex::encode(pending_withdrawal.bls_pubkey)),
-                                                "Validator balance",
-                                                gauge
-                                            );
-                                        }
-
-                                        // If the remaining balance is 0, mark the validator as inactive.
-                                        // An argument can be made from removing the validator account from the DB here.
-                                        if account.balance == 0 {
-                                            account.status = ValidatorStatus::Inactive;
-                                            remove_validators.push(account.ed25519_pubkey.clone());
-                                        }
-
-                                        self.state.set_account(&pending_withdrawal.bls_pubkey, account).await;
+                                    #[cfg(debug_assertions)]
+                                    {
+                                        let gauge: Gauge = Gauge::default();
+                                        gauge.set(account.balance as i64);
+                                        ctx.register(
+                                            format!("<creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_withdrawal_validator_balance",
+                                            hex::encode(account.withdrawal_credentials), account.ed25519_pubkey, hex::encode(pending_withdrawal.bls_pubkey)),
+                                            "Validator balance",
+                                            gauge
+                                        );
                                     }
+
+                                    // If the remaining balance is 0, mark the validator as inactive.
+                                    // An argument can be made from removing the validator account from the DB here.
+                                    if account.balance == 0 {
+                                        account.status = ValidatorStatus::Inactive;
+                                        remove_validators.push(account.ed25519_pubkey.clone());
+                                    }
+
+                                    self.state.set_account(pending_withdrawal.bls_pubkey, account);
                                 }
                             }
 
@@ -391,7 +406,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 gauge
                             );
                         }
-                        self.state.set_latest_height(new_height).await;
+                        self.state.set_latest_height(new_height);
+
+                        // Periodically persist state to database as a blob
+                        if new_height % self.checkpoint_interval == 0 {
+                            self.db.store_consensus_state(new_height, &self.state).await;
+                        }
                         self.height_notifier.notify_up_to(new_height);
                         let _ = notifier.send(());
                     },

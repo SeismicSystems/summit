@@ -1,30 +1,18 @@
+use crate::account::ValidatorAccount;
+use crate::execution_request::{DepositRequest, WithdrawalRequest};
+use crate::withdrawal::PendingWithdrawal;
 use alloy_eips::eip4895::Withdrawal;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
 use std::collections::{HashMap, VecDeque};
-use crate::account::ValidatorAccount;
-use crate::execution_request::{DepositRequest, WithdrawalRequest};
-use crate::withdrawal::PendingWithdrawal;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ConsensusState {
     pub latest_height: u64,
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
     pub withdrawal_queue: VecDeque<PendingWithdrawal>,
     pub validator_accounts: HashMap<[u8; 48], ValidatorAccount>,
-}
-
-impl Default for ConsensusState {
-    fn default() -> Self {
-        Self {
-            latest_height: 0,
-            next_withdrawal_index: 0,
-            deposit_queue: VecDeque::new(),
-            withdrawal_queue: VecDeque::new(),
-            validator_accounts: HashMap::new(),
-        }
-    }
 }
 
 impl ConsensusState {
@@ -70,11 +58,7 @@ impl ConsensusState {
     }
 
     // Withdrawal queue operations
-    pub fn push_withdrawal_request(
-        &mut self,
-        request: WithdrawalRequest,
-        withdrawal_height: u64,
-    ) {
+    pub fn push_withdrawal_request(&mut self, request: WithdrawalRequest, withdrawal_height: u64) {
         let withdrawal_index = self.get_and_increment_withdrawal_index();
 
         let pending_withdrawal = PendingWithdrawal {
@@ -105,11 +89,7 @@ impl ConsensusState {
 
     /// Get the next K pending withdrawals that are ready for processing at the given block height.
     /// Only returns withdrawals where withdrawal_height <= block_height.
-    pub fn get_next_ready_withdrawals(
-        &self,
-        block_height: u64,
-        k: usize,
-    ) -> Vec<PendingWithdrawal>
+    pub fn get_next_ready_withdrawals(&self, block_height: u64, k: usize) -> Vec<PendingWithdrawal>
     where
         PendingWithdrawal: Clone,
     {
@@ -199,13 +179,13 @@ impl Write for ConsensusState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_eips::eip4895::Withdrawal;
-    use alloy_primitives::Address;
-    use commonware_codec::{DecodeExt, Encode};
+    use crate::PublicKey;
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
     use crate::withdrawal::PendingWithdrawal;
-    use crate::PublicKey;
+    use alloy_eips::eip4895::Withdrawal;
+    use alloy_primitives::Address;
+    use commonware_codec::{DecodeExt, Encode};
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
         let mut withdrawal_credentials = [0u8; 32];
@@ -224,7 +204,11 @@ mod tests {
         }
     }
 
-    fn create_test_withdrawal(index: u64, amount: u64, withdrawal_height: u64) -> PendingWithdrawal {
+    fn create_test_withdrawal(
+        index: u64,
+        amount: u64,
+        withdrawal_height: u64,
+    ) -> PendingWithdrawal {
         PendingWithdrawal {
             inner: Withdrawal {
                 index,
@@ -256,16 +240,28 @@ mod tests {
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
-        assert_eq!(decoded_state.next_withdrawal_index, original_state.next_withdrawal_index);
-        assert_eq!(decoded_state.deposit_queue.len(), original_state.deposit_queue.len());
-        assert_eq!(decoded_state.withdrawal_queue.len(), original_state.withdrawal_queue.len());
-        assert_eq!(decoded_state.validator_accounts.len(), original_state.validator_accounts.len());
+        assert_eq!(
+            decoded_state.next_withdrawal_index,
+            original_state.next_withdrawal_index
+        );
+        assert_eq!(
+            decoded_state.deposit_queue.len(),
+            original_state.deposit_queue.len()
+        );
+        assert_eq!(
+            decoded_state.withdrawal_queue.len(),
+            original_state.withdrawal_queue.len()
+        );
+        assert_eq!(
+            decoded_state.validator_accounts.len(),
+            original_state.validator_accounts.len()
+        );
     }
 
     #[test]
     fn test_serialization_deserialization_populated() {
         let mut original_state = ConsensusState::new();
-        
+
         original_state.set_latest_height(42);
         original_state.next_withdrawal_index = 5;
 
@@ -290,8 +286,11 @@ mod tests {
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
-        assert_eq!(decoded_state.next_withdrawal_index, original_state.next_withdrawal_index);
-        
+        assert_eq!(
+            decoded_state.next_withdrawal_index,
+            original_state.next_withdrawal_index
+        );
+
         assert_eq!(decoded_state.deposit_queue.len(), 2);
         assert_eq!(decoded_state.deposit_queue[0].index, 1);
         assert_eq!(decoded_state.deposit_queue[0].amount, 32000000000);
@@ -318,7 +317,7 @@ mod tests {
     #[test]
     fn test_encode_size_accuracy() {
         let mut state = ConsensusState::new();
-        
+
         state.set_latest_height(42);
         state.next_withdrawal_index = 5;
 
