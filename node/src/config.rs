@@ -117,14 +117,14 @@ pub(crate) fn load_share(poly_share_path: &str) -> anyhow::Result<Share> {
 pub(crate) fn expect_signer(key_path: &str) -> PrivateKey {
     match load_signer(key_path) {
         Ok(signer) => signer,
-        Err(e) => panic!("\nSigner error @ path {key_path}: {e}\n"),
+        Err(e) => panic!("Signer error @ path {key_path}: {e}\n"),
     }
 }
 
 pub(crate) fn expect_share(poly_share_path: &str) -> Share {
     match load_share(poly_share_path) {
         Ok(share) => share,
-        Err(e) => panic!("\nShare error @ path {poly_share_path}: {e}\n"),
+        Err(e) => panic!("Share error @ path {poly_share_path}: {e}\n"),
     }
 }
 
