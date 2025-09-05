@@ -154,13 +154,8 @@ impl Command {
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
                 let share_sender = Command::check_sender(share_path, share_tx);
                 let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                if let Err(e) = start_rpc_server(
-                    key_path,
-                    share_sender,
-                    genesis_sender,
-                    rpc_port,
-                )
-                .await
+                if let Err(e) =
+                    start_rpc_server(key_path, share_sender, genesis_sender, rpc_port).await
                 {
                     tracing::error!("RPC server failed: {}", e);
                 }
@@ -316,13 +311,7 @@ pub fn run_node_with_runtime(
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
             let share_sender = Command::check_sender(share_path, share_tx);
             let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-            if let Err(e) = start_rpc_server(
-                key_path,
-                share_sender,
-                genesis_sender,
-                rpc_port,
-            )
-            .await
+            if let Err(e) = start_rpc_server(key_path, share_sender, genesis_sender, rpc_port).await
             {
                 tracing::error!("RPC server failed: {}", e);
             }
