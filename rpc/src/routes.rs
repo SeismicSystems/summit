@@ -10,7 +10,7 @@ use commonware_cryptography::Signer;
 use commonware_utils::from_hex_formatted;
 use summit_types::{PrivateKey, utils::get_expanded_path};
 
-use crate::RpcState;
+use crate::{PathSender, RpcState};
 
 pub(crate) struct RpcRoutes;
 
@@ -23,6 +23,7 @@ impl RpcRoutes {
             .route("/health", get(Self::handle_health_check))
             .route("/get_public_key", get(Self::handle_get_pub_key))
             .route("/send_genesis", post(Self::handle_send_genesis))
+            .route("/send_share", post(Self::handle_send_share))
             .with_state(state)
     }
 
@@ -51,24 +52,38 @@ impl RpcRoutes {
         State(state): State<Arc<RpcState>>,
         body: String,
     ) -> Result<String, String> {
-        // Write genesis to file
-        let genesis_path =
-            get_expanded_path(&state.genesis_path).map_err(|_| "invalid genesis path")?;
+        Self::handle_send_file(&state.genesis, body, "genesis")
+    }
 
-        if let Some(parent) = genesis_path.parent() {
+    /// NOTE: this is a temporary function until we move to aggregate BLS
+    async fn handle_send_share(
+        State(state): State<Arc<RpcState>>,
+        body: String,
+    ) -> Result<String, String> {
+        Self::handle_send_file(&state.share, body, "share")
+    }
+
+    fn handle_send_file(
+        PathSender { path, sender }: &PathSender,
+        body: String,
+        kind: &'static str,
+    ) -> Result<String, String> {
+        let path_buf = get_expanded_path(path).map_err(|_| format!("invalid {kind} path"))?;
+
+        if let Some(parent) = path_buf.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create directory: {e}"))?;
         }
 
-        std::fs::write(&genesis_path, &body)
-            .map_err(|e| format!("Failed to write genesis file: {e}"))?;
+        std::fs::write(&path_buf, &body)
+            .map_err(|e| format!("Failed to write {kind} file: {e}"))?;
 
-        // Signal that genesis is ready
-        if let Some(sender) = state.genesis_sender.lock().expect("poisoned").take() {
+        // Signal that file is ready
+        if let Some(sender) = sender.lock().expect("poisoned").take() {
             let _ = sender.send(());
-            Ok("Genesis file written and node notified".to_string())
+            Ok(format!("{kind} file written and node notified"))
         } else {
-            Ok("Genesis file written (no notification needed)".to_string())
+            Ok(format!("{kind} file written (no notification needed)"))
         }
     }
 }

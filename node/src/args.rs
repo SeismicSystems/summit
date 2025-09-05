@@ -1,7 +1,7 @@
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_keys,
+        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_keys, expect_share, expect_signer,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated;
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
-use summit_rpc::start_rpc_server;
+use summit_rpc::{PathSender, start_rpc_server};
 
 use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
@@ -110,9 +110,28 @@ impl Command {
         }
     }
 
+    fn has_file(path: &str) -> bool {
+        let path_buf = get_expanded_path(path).expect("Invalid genesis path");
+        path_buf.exists()
+            || !std::fs::read_to_string(&path_buf)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+    }
+
+    fn check_sender(has_file: bool, tx: oneshot::Sender<()>) -> Option<oneshot::Sender<()>> {
+        match has_file {
+            true => {
+                let _ = tx.send(());
+                None
+            }
+            false => Some(tx),
+        }
+    }
+
     pub fn run_node(&self, flags: &RunFlags) {
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
-        let (signer, share) = expect_keys(&flags.key_path, &flags.share_path);
+        let signer = expect_signer(&flags.key_path);
 
         // Initialize runtime
         let cfg = tokio::Config::default()
@@ -124,39 +143,38 @@ impl Command {
 
         executor.start(|context| async move {
             // Check if genesis file exists
-            let genesis_path =
-                get_expanded_path(&flags.genesis_path).expect("Invalid genesis path");
 
-            let has_genesis = genesis_path.exists()
-                || !std::fs::read_to_string(&genesis_path)
-                    .unwrap_or_default()
-                    .trim()
-                    .is_empty();
+            let has_share = Command::has_file(&flags.share_path);
+            let has_genesis = Command::has_file(&flags.genesis_path);
 
+            let (share_tx, share_rx) = oneshot::channel();
             let (genesis_tx, genesis_rx) = oneshot::channel();
 
             // use the context async move to spawn a new runtime
             let key_path = flags.key_path.clone();
+            let share_path = flags.share_path.clone();
             let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let genesis_sender = if has_genesis {
-                    // already has a genesis so immiedietly notify
-                    let _ = genesis_tx.send(());
-                    None
-                } else {
-                    Some(genesis_tx)
-                };
-                if let Err(e) =
-                    start_rpc_server(genesis_sender, key_path, genesis_path, rpc_port).await
+                let share_sender = Command::check_sender(has_share, share_tx);
+                let genesis_sender = Command::check_sender(has_genesis, genesis_tx);
+                if let Err(e) = start_rpc_server(
+                    key_path,
+                    PathSender::new(share_path, share_sender),
+                    PathSender::new(genesis_path, genesis_sender),
+                    rpc_port,
+                )
+                .await
                 {
                     tracing::error!("RPC server failed: {}", e);
                 }
             });
 
+            let _ = share_rx.await;
+            let share = expect_share(&flags.share_path);
+
             // Wait for genesis if needed
             let _ = genesis_rx.await;
-
             let genesis =
                 Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
@@ -289,34 +307,36 @@ pub fn run_node_with_runtime(
     flags: RunFlags,
 ) -> Handle<()> {
     context.spawn(async move |context| {
-        let (signer, share) = expect_keys(&flags.key_path, &flags.share_path);
-        // Check if genesis file exists
-        let genesis_path = get_expanded_path(&flags.genesis_path).expect("Invalid genesis path");
-        let has_genesis = genesis_path.exists()
-            || !std::fs::read_to_string(&genesis_path)
-                .unwrap_or_default()
-                .trim()
-                .is_empty();
+        let signer = expect_signer(&flags.key_path);
 
+        let has_share = Command::has_file(&flags.share_path);
+        let has_genesis = Command::has_file(&flags.genesis_path);
+
+        let (share_tx, share_rx) = oneshot::channel();
         let (genesis_tx, genesis_rx) = oneshot::channel();
 
         // use the context async move to spawn a new runtime
         let key_path = flags.key_path.clone();
+        let share_path = flags.share_path.clone();
         let rpc_port = flags.rpc_port;
         let genesis_path = flags.genesis_path.clone();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let genesis_sender = if has_genesis {
-                // already has a genesis so immiedietly notify
-                let _ = genesis_tx.send(());
-                None
-            } else {
-                Some(genesis_tx)
-            };
-            if let Err(e) = start_rpc_server(genesis_sender, key_path, genesis_path, rpc_port).await
+            let share_sender = Command::check_sender(has_share, share_tx);
+            let genesis_sender = Command::check_sender(has_genesis, genesis_tx);
+            if let Err(e) = start_rpc_server(
+                key_path,
+                PathSender::new(share_path, share_sender),
+                PathSender::new(genesis_path, genesis_sender),
+                rpc_port,
+            )
+            .await
             {
                 tracing::error!("RPC server failed: {}", e);
             }
         });
+
+        let _ = share_rx.await;
+        let share = expect_share(&flags.share_path);
 
         // Wait for genesis if needed
         let _ = genesis_rx.await;

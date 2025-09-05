@@ -6,33 +6,43 @@ use tokio::net::TcpListener;
 
 use crate::routes::RpcRoutes;
 
+pub struct PathSender {
+    path: String,
+    sender: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl PathSender {
+    pub fn new(path: String, sender: Option<oneshot::Sender<()>>) -> PathSender {
+        PathSender {
+            path: path,
+            sender: Mutex::new(sender),
+        }
+    }
+}
+
 pub struct RpcState {
     key_path: String,
-    genesis_path: String,
-    genesis_sender: Mutex<Option<oneshot::Sender<()>>>,
+    share: PathSender,
+    genesis: PathSender,
 }
 
 impl RpcState {
-    pub fn new(
-        key_path: String,
-        genesis_path: String,
-        genesis_sender: Mutex<Option<oneshot::Sender<()>>>,
-    ) -> Self {
+    pub fn new(key_path: String, share: PathSender, genesis: PathSender) -> Self {
         Self {
             key_path,
-            genesis_path,
-            genesis_sender,
+            share,
+            genesis,
         }
     }
 }
 
 pub async fn start_rpc_server(
-    genesis_sender: Option<oneshot::Sender<()>>,
     key_path: String,
-    genesis_path: String,
+    share: PathSender,
+    genesis: PathSender,
     port: u16,
 ) -> anyhow::Result<()> {
-    let state = RpcState::new(key_path, genesis_path, Mutex::new(genesis_sender));
+    let state = RpcState::new(key_path, share, genesis);
 
     let server = RpcRoutes::mount(state);
 
