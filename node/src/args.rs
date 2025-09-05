@@ -111,7 +111,7 @@ impl Command {
     }
 
     fn has_file(path: &str) -> bool {
-        let path_buf = get_expanded_path(path).expect("Invalid genesis path");
+        let path_buf = get_expanded_path(path).expect("Invalid filepath");
         path_buf.exists()
             || !std::fs::read_to_string(&path_buf)
                 .unwrap_or_default()
