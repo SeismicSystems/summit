@@ -28,6 +28,22 @@ pub struct KeyFlags {
     /// Path to your private key or where you want it generated
     #[arg(long, default_value_t = DEFAULT_KEY_PATH.into())]
     pub key_path: String,
+    #[arg(short = 'n', long, conflicts_with = "yes_overwrite")]
+    pub no_overwrite: bool,
+    #[arg(short = 'y', long, conflicts_with = "no_overwrite")]
+    pub yes_overwrite: bool,
+}
+
+impl KeyFlags {
+    fn overwrite(&self) -> Option<bool> {
+        if self.no_overwrite {
+            return Some(false);
+        }
+        if self.yes_overwrite {
+            return Some(true);
+        }
+        None
+    }
 }
 
 impl KeySubCmd {
@@ -43,21 +59,32 @@ impl KeySubCmd {
 
         // Check if key file already exists
         if path.exists() {
-            print!(
-                "Key file already exists at {}. Overwrite? (y/N): ",
-                path.display()
-            );
-            io::stdout().flush().expect("Failed to flush stdout");
+            match flags.overwrite() {
+                Some(true) => {
+                    println!("Overwriting existing key at {}", path.display());
+                }
+                Some(false) => {
+                    println!("Key already exists at {}", path.display());
+                    return;
+                }
+                None => {
+                    print!(
+                        "Key file already exists at {}. Overwrite? (y/N): ",
+                        path.display()
+                    );
+                    io::stdout().flush().expect("Failed to flush stdout");
 
-            let mut input = String::new();
-            io::stdin()
-                .read_line(&mut input)
-                .expect("Failed to read input");
+                    let mut input = String::new();
+                    io::stdin()
+                        .read_line(&mut input)
+                        .expect("Failed to read input");
 
-            let input = input.trim().to_lowercase();
-            if input != "y" && input != "yes" {
-                println!("Key generation cancelled.");
-                return;
+                    let input = input.trim().to_lowercase();
+                    if input != "y" && input != "yes" {
+                        println!("Key generation cancelled.");
+                        return;
+                    }
+                }
             }
         }
 
