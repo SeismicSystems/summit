@@ -119,14 +119,15 @@ impl Command {
                 .is_empty()
     }
 
-    fn check_sender(path: &str, tx: oneshot::Sender<()>) -> Option<oneshot::Sender<()>> {
-        match Self::has_file(path) {
+    fn check_sender(path: String, tx: oneshot::Sender<()>) -> PathSender {
+        let sender = match Self::has_file(&path) {
             true => {
                 let _ = tx.send(());
                 None
             }
             false => Some(tx),
-        }
+        };
+        PathSender::new(path, sender)
     }
 
     pub fn run_node(&self, flags: &RunFlags) {
@@ -151,12 +152,12 @@ impl Command {
             let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let share_sender = Command::check_sender(&share_path, share_tx);
-                let genesis_sender = Command::check_sender(&genesis_path, genesis_tx);
+                let share_sender = Command::check_sender(share_path, share_tx);
+                let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
                 if let Err(e) = start_rpc_server(
                     key_path,
-                    PathSender::new(share_path, share_sender),
-                    PathSender::new(genesis_path, genesis_sender),
+                    share_sender,
+                    genesis_sender,
                     rpc_port,
                 )
                 .await
@@ -313,12 +314,12 @@ pub fn run_node_with_runtime(
         let rpc_port = flags.rpc_port;
         let genesis_path = flags.genesis_path.clone();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let share_sender = Command::check_sender(&share_path, share_tx);
-            let genesis_sender = Command::check_sender(&genesis_path, genesis_tx);
+            let share_sender = Command::check_sender(share_path, share_tx);
+            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
             if let Err(e) = start_rpc_server(
                 key_path,
-                PathSender::new(share_path, share_sender),
-                PathSender::new(genesis_path, genesis_sender),
+                share_sender,
+                genesis_sender,
                 rpc_port,
             )
             .await
