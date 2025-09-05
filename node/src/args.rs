@@ -119,8 +119,8 @@ impl Command {
                 .is_empty()
     }
 
-    fn check_sender(has_file: bool, tx: oneshot::Sender<()>) -> Option<oneshot::Sender<()>> {
-        match has_file {
+    fn check_sender(path: &str, tx: oneshot::Sender<()>) -> Option<oneshot::Sender<()>> {
+        match Self::has_file(path) {
             true => {
                 let _ = tx.send(());
                 None
@@ -142,11 +142,6 @@ impl Command {
         let executor = tokio::Runner::new(cfg);
 
         executor.start(|context| async move {
-            // Check if genesis file exists
-
-            let has_share = Command::has_file(&flags.share_path);
-            let has_genesis = Command::has_file(&flags.genesis_path);
-
             let (share_tx, share_rx) = oneshot::channel();
             let (genesis_tx, genesis_rx) = oneshot::channel();
 
@@ -156,8 +151,8 @@ impl Command {
             let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let share_sender = Command::check_sender(has_share, share_tx);
-                let genesis_sender = Command::check_sender(has_genesis, genesis_tx);
+                let share_sender = Command::check_sender(&share_path, share_tx);
+                let genesis_sender = Command::check_sender(&genesis_path, genesis_tx);
                 if let Err(e) = start_rpc_server(
                     key_path,
                     PathSender::new(share_path, share_sender),
@@ -309,9 +304,6 @@ pub fn run_node_with_runtime(
     context.spawn(async move |context| {
         let signer = expect_signer(&flags.key_path);
 
-        let has_share = Command::has_file(&flags.share_path);
-        let has_genesis = Command::has_file(&flags.genesis_path);
-
         let (share_tx, share_rx) = oneshot::channel();
         let (genesis_tx, genesis_rx) = oneshot::channel();
 
@@ -321,8 +313,8 @@ pub fn run_node_with_runtime(
         let rpc_port = flags.rpc_port;
         let genesis_path = flags.genesis_path.clone();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let share_sender = Command::check_sender(has_share, share_tx);
-            let genesis_sender = Command::check_sender(has_genesis, genesis_tx);
+            let share_sender = Command::check_sender(&share_path, share_tx);
+            let genesis_sender = Command::check_sender(&genesis_path, genesis_tx);
             if let Err(e) = start_rpc_server(
                 key_path,
                 PathSender::new(share_path, share_sender),
