@@ -1,14 +1,8 @@
-use commonware_codec::Encode;
-use commonware_consensus::{Supervisor as Su, ThresholdSupervisor, simplex::types::View};
-use commonware_cryptography::bls12381::dkg::ops::evaluate_all;
-use commonware_cryptography::bls12381::primitives::poly::Poly;
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
-use commonware_cryptography::bls12381::primitives::{group, poly};
+use commonware_consensus::{Supervisor as Su, simplex::types::View};
 use commonware_resolver::p2p;
-use commonware_utils::modulo;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-use summit_types::{Identity, PublicKey};
+use summit_types::PublicKey;
 use tracing::warn;
 
 #[derive(Default, Clone, Debug)]
@@ -22,18 +16,10 @@ pub struct Registry {
     // Map from View -> immutable participant data
     // Once a view is added, it never changes
     views: Arc<RwLock<BTreeMap<View, Box<Participants>>>>,
-
-    identity: Identity,
-    polynomial: Vec<Identity>,
-    share: group::Share,
 }
 
 impl Registry {
-    pub fn new(
-        participants: Vec<PublicKey>,
-        polynomial: Poly<Identity>,
-        share: group::Share,
-    ) -> Self {
+    pub fn new(participants: Vec<PublicKey>) -> Self {
         let participants_map = participants
             .iter()
             .enumerate()
@@ -44,14 +30,8 @@ impl Registry {
             participants,
             participants_map,
         });
-
-        let identity = *poly::public::<MinPk>(&polynomial);
-        let polynomial = evaluate_all::<MinPk>(&polynomial, participants.participants.len() as u32);
         let registry = Self {
             views: Arc::new(RwLock::new(BTreeMap::new())),
-            identity,
-            polynomial,
-            share,
         };
 
         registry.views.write().unwrap().insert(0, participants);
@@ -185,55 +165,12 @@ impl Su for Registry {
     }
 }
 
-impl ThresholdSupervisor for Registry {
-    type Identity = Identity;
-
-    type Seed = <MinPk as Variant>::Signature;
-
-    type Polynomial = Vec<Identity>;
-
-    type Share = group::Share;
-
-    fn identity(&self) -> &Self::Identity {
-        &self.identity
-    }
-
-    fn leader(&self, index: Self::Index, seed: Self::Seed) -> Option<Self::PublicKey> {
-        let views = self.views.read().unwrap();
-
-        // Find the largest view that is <= the requested view
-        let (_max_view, view_data) = views.range(..=index).next_back()?;
-
-        if view_data.participants.is_empty() {
-            return None;
-        }
-
-        let index = modulo(seed.encode().as_ref(), view_data.participants.len() as u64) as usize;
-        Some(view_data.participants[index].clone())
-    }
-
-    fn polynomial(&self, _index: Self::Index) -> Option<&Self::Polynomial> {
-        Some(&self.polynomial)
-    }
-
-    fn share(&self, _index: Self::Index) -> Option<&Self::Share> {
-        Some(&self.share)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonware_consensus::{Supervisor as Su, ThresholdSupervisor};
-    use commonware_cryptography::{
-        PrivateKeyExt, Signer,
-        bls12381::{
-            dkg::ops,
-            primitives::{poly, variant::MinPk},
-        },
-    };
+    use commonware_consensus::Supervisor as Su;
+    use commonware_cryptography::{PrivateKeyExt, Signer};
     use commonware_resolver::p2p::Coordinator;
-    use rand::rngs::OsRng;
 
     /// Helper function to create deterministic test public keys
     fn create_test_pubkeys(count: usize) -> Vec<PublicKey> {
@@ -248,14 +185,7 @@ mod tests {
     /// Helper function to create a test registry with specified number of participants
     fn create_test_registry(participant_count: usize) -> Registry {
         let participants = create_test_pubkeys(participant_count);
-        let threshold = std::cmp::max(1, (participant_count * 2) / 3 + 1);
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(
-            &mut OsRng,
-            None,
-            participant_count as u32,
-            threshold as u32,
-        );
-        Registry::new(participants, polynomial, shares[0].clone())
+        Registry::new(participants)
     }
 
     #[test]
@@ -264,15 +194,7 @@ mod tests {
         let participants = create_test_pubkeys(participant_count);
         let expected_participants = participants.clone();
 
-        let threshold = std::cmp::max(1, (participant_count * 2) / 3 + 1);
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(
-            &mut OsRng,
-            None,
-            participant_count as u32,
-            threshold as u32,
-        );
-
-        let registry = Registry::new(participants, polynomial.clone(), shares[0].clone());
+        let registry = Registry::new(participants);
 
         // Test that participants are correctly stored in view 0
         let view_0_participants = registry.participants(0);
@@ -282,11 +204,6 @@ mod tests {
         // Test that registry is not empty
         assert!(!registry.participants(0).unwrap().is_empty());
         assert_eq!(registry.participants(0).unwrap().len(), participant_count);
-
-        // Test identity is set
-        let identity = registry.identity();
-        let expected_identity = *poly::public::<MinPk>(&polynomial);
-        assert_eq!(*identity, expected_identity);
     }
 
     #[test]
@@ -375,8 +292,7 @@ mod tests {
     #[test]
     fn test_supervisor_leader_empty_participants() {
         let participants = Vec::new();
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, 1, 1);
-        let registry = Registry::new(participants, polynomial, shares[0].clone());
+        let registry = Registry::new(participants);
 
         // Should return None for empty participant set
         let leader = Su::leader(&registry, 0);
@@ -432,80 +348,11 @@ mod tests {
     #[test]
     fn test_supervisor_participants_none() {
         let participants = Vec::new();
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, 1, 1);
-        let registry = Registry::new(participants, polynomial, shares[0].clone());
+        let registry = Registry::new(participants);
 
         // Should return None for views with no participants
         assert!(registry.participants(0).is_none());
         assert!(registry.participants(1).is_none());
-    }
-
-    // ThresholdSupervisor trait implementation tests
-    #[test]
-    fn test_threshold_supervisor_identity() {
-        let participants = create_test_pubkeys(3);
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, 3, 2);
-        let expected_identity = *poly::public::<MinPk>(&polynomial);
-
-        let registry = Registry::new(participants, polynomial, shares[0].clone());
-
-        assert_eq!(*registry.identity(), expected_identity);
-    }
-
-    #[test]
-    fn test_threshold_supervisor_randomized_leader_selection() {
-        // Note: This test is simplified since creating BLS signatures requires more complex setup
-        // We'll test that the method exists and works with a basic setup
-        let registry = create_test_registry(5);
-        let participants = registry.participants(0).unwrap();
-
-        // For now, we'll just verify that the ThresholdSupervisor trait is implemented
-        // and that identity, polynomial, and share methods work
-        let _identity = registry.identity(); // Just verify it returns
-        assert!(registry.polynomial(0).is_some());
-        assert!(registry.share(0).is_some());
-
-        // Verify participants are available for leader selection
-        assert_eq!(participants.len(), 5);
-    }
-
-    #[test]
-    fn test_threshold_supervisor_empty_participants_methods() {
-        let participants = Vec::new();
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, 1, 1);
-        let registry = Registry::new(participants, polynomial, shares[0].clone());
-
-        // Test that methods work even with empty participants
-        let _identity = registry.identity(); // Just verify it returns
-        assert!(registry.polynomial(0).is_some());
-        assert!(registry.share(0).is_some());
-    }
-
-    #[test]
-    fn test_threshold_supervisor_polynomial_access() {
-        let registry = create_test_registry(3);
-
-        // Polynomial should always be available
-        let polynomial = registry.polynomial(0);
-        assert!(polynomial.is_some());
-        assert!(!polynomial.unwrap().is_empty());
-
-        // Should be the same for different views
-        assert_eq!(registry.polynomial(0), registry.polynomial(1));
-        assert_eq!(registry.polynomial(0), registry.polynomial(100));
-    }
-
-    #[test]
-    fn test_threshold_supervisor_share_access() {
-        let registry = create_test_registry(3);
-
-        // Share should always be available
-        let share = registry.share(0);
-        assert!(share.is_some());
-
-        // Should be the same for different views
-        assert_eq!(registry.share(0), registry.share(1));
-        assert_eq!(registry.share(0), registry.share(100));
     }
 
     // p2p::Coordinator trait implementation tests

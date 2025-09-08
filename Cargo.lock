@@ -5551,6 +5551,7 @@ dependencies = [
  "socket2 0.6.0",
  "summit-application",
  "summit-rpc",
+ "summit-syncer",
  "summit-types",
  "tikv-jemalloc-ctl",
  "tokio",
@@ -5587,6 +5588,7 @@ dependencies = [
  "metrics",
  "prometheus-client",
  "rand 0.8.5",
+ "summit-syncer",
  "summit-types",
  "tower",
  "tracing",
@@ -5606,6 +5608,28 @@ dependencies = [
  "serde",
  "summit-types",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "summit-syncer"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "commonware-broadcast",
+ "commonware-codec",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-macros",
+ "commonware-p2p",
+ "commonware-resolver",
+ "commonware-runtime",
+ "commonware-storage",
+ "commonware-utils",
+ "futures",
+ "governor",
+ "rand 0.8.5",
+ "summit-types",
  "tracing",
 ]
 
