@@ -4,6 +4,7 @@ use commonware_codec::Encode;
 use commonware_cryptography::sha256::Digest;
 use commonware_cryptography::{Hasher, Sha256};
 
+#[allow(unused)]
 pub struct Checkpoint {
     pub height: u64, // just for convenience, the height is included in the checkpoint data
     pub digest: Digest,
