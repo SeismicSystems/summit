@@ -1,5 +1,5 @@
 [workspace]
-members = [ "application", "node", "rpc", "types"]
+members = [ "application", "node", "rpc", "types", "syncer"]
 resolver = "3"
 
 [workspace.package]
@@ -10,6 +10,7 @@ edition = "2024"
 # Our crates
 summit-types = { path = "types" }
 summit-application = { path = "application" }
+summit-syncer = {path = "syncer"}
 
 commonware-consensus = "0.0.58"
 commonware-cryptography = "0.0.58"

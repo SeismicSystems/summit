@@ -1,7 +1,7 @@
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_share, expect_signer,
+        RESOLVER_CHANNEL, expect_share, expect_signer,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -282,10 +282,6 @@ impl Command {
             let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
             let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
-            // Register recovered channel
-            let recovered_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-            let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
-
             // Register resolver channel
             let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
             let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
@@ -301,10 +297,10 @@ impl Command {
             // Create network
             let p2p = network.start();
             // create engine
-            let engine = Engine::new(context.with_label("engine"), config, oracle).await;
+            let engine = Engine::new(context.with_label("engine"), config).await;
 
             // Start engine
-            let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+            let engine = engine.start(pending, resolver, broadcaster, backfiller);
 
             // Wait for any task to error
             if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
@@ -405,10 +401,6 @@ pub fn run_node_with_runtime(
         let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
         let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
-        // Register recovered channel
-        let recovered_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-        let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
-
         // Register resolver channel
         let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
         let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
@@ -423,10 +415,10 @@ pub fn run_node_with_runtime(
         // Create network
         let p2p = network.start();
         // create engine
-        let engine = Engine::new(context.with_label("engine"), config, oracle).await;
+        let engine = Engine::new(context.with_label("engine"), config).await;
 
         // Start engine
-        let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+        let engine = engine.start(pending, resolver, broadcaster, backfiller);
 
         // Wait for any task to error
         if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {

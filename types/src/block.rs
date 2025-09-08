@@ -8,12 +8,12 @@ use commonware_codec::{EncodeSize, Error, FixedSize as _, Read, ReadExt as _, Wr
 use commonware_consensus::Block as Bl;
 use commonware_consensus::{
     Viewable,
-    threshold_simplex::types::{Finalization, Notarization},
+    simplex::types::{Finalization, Notarization},
 };
-use commonware_cryptography::{
-    Committable, Digestible, Hasher, Sha256, bls12381::primitives::variant::MinPk, sha256::Digest,
-};
+use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
+
+use crate::Signature;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
@@ -240,12 +240,12 @@ impl Committable for Block {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notarized {
-    pub proof: Notarization<MinPk, Digest>,
+    pub proof: Notarization<Signature, Digest>,
     pub block: Block,
 }
 
 impl Notarized {
-    pub fn new(proof: Notarization<MinPk, Digest>, block: Block) -> Self {
+    pub fn new(proof: Notarization<Signature, Digest>, block: Block) -> Self {
         Self { proof, block }
     }
 }
@@ -261,7 +261,7 @@ impl Read for Notarized {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Notarization::<MinPk, Digest>::read_cfg(buf, &())?; // todo: get a test on this to make sure buf.remaining is safe
+        let proof = Notarization::<Signature, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -283,12 +283,12 @@ impl EncodeSize for Notarized {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finalized {
-    pub proof: Finalization<MinPk, Digest>,
+    pub proof: Finalization<Signature, Digest>,
     pub block: Block,
 }
 
 impl Finalized {
-    pub fn new(proof: Finalization<MinPk, Digest>, block: Block) -> Self {
+    pub fn new(proof: Finalization<Signature, Digest>, block: Block) -> Self {
         Self { proof, block }
     }
 }
@@ -304,7 +304,7 @@ impl Read for Finalized {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Finalization::<MinPk, Digest>::read_cfg(buf, &())?;
+        let proof = Finalization::<Signature, Digest>::read_cfg(buf, &buf.remaining())?;
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block

@@ -1,6 +1,6 @@
 use commonware_consensus::{
     Automaton, Relay,
-    threshold_simplex::types::{Context, View},
+    simplex::types::{Context, View},
 };
 use commonware_cryptography::sha256::Digest;
 use futures::{

@@ -6,8 +6,6 @@ use crate::{
 };
 use alloy_rpc_types_engine::ForkchoiceState;
 use anyhow::{Result, anyhow};
-use commonware_consensus::marshal;
-use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_macros::select;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_utils::SystemTimeExt;
@@ -18,16 +16,18 @@ use futures::{
 };
 use rand::Rng;
 
-use commonware_consensus::threshold_simplex::types::View;
+use commonware_consensus::simplex::types::View;
 use futures::task::{Context, Poll};
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tracing::{error, info, warn};
+
+use summit_syncer::ingress::Mailbox as SyncerMailbox;
 use summit_types::withdrawal::PendingWithdrawal;
 use summit_types::{Block, Digest};
-use tracing::{error, info, warn};
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
 struct ChannelClosedFuture<'a, T> {
@@ -112,11 +112,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         )
     }
 
-    pub fn start(mut self, marshal: marshal::Mailbox<MinPk, Block>) -> Handle<()> {
-        self.context.spawn_ref()(self.run(marshal))
+    pub fn start(mut self, syncer: SyncerMailbox) -> Handle<()> {
+        self.context.spawn_ref()(self.run(syncer))
     }
 
-    pub async fn run(mut self, mut marshal: marshal::Mailbox<MinPk, Block>) {
+    pub async fn run(mut self, mut syncer: SyncerMailbox) {
         self.finalizer.take().expect("no finalizer").start();
 
         let rand_id: u8 = rand::random();
@@ -135,7 +135,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                     let built = self.built_block.clone();
                     select! {
-                            res = self.handle_proposal(parent, &mut marshal, view) => {
+                            res = self.handle_proposal(parent, &mut syncer, view) => {
                                 match res {
                                     Ok(block) => {
                                         // store block
@@ -172,7 +172,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         );
                     }
 
-                    marshal.broadcast(built_block).await;
+                    syncer.broadcast(built_block).await;
                 }
 
                 Message::Verify {
@@ -186,15 +186,15 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     let parent_request = if parent.1 == self.genesis_hash.into() {
                         Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
                     } else {
-                        Either::Right(marshal.subscribe(Some(parent.0), parent.1).await)
+                        Either::Right(syncer.get(Some(parent.0), parent.1).await)
                     };
 
-                    let block_request = marshal.subscribe(None, payload).await;
+                    let block_request = syncer.get(None, payload).await;
 
                     // Wait for the blocks to be available or the request to be cancelled in a separate task (to
                     // continue processing other messages)
                     self.context.with_label("verify").spawn({
-                        let mut marshal = marshal.clone();
+                        let mut syncer = syncer.clone();
                         move |_| async move {
                             let requester = try_join(parent_request, block_request);
                             select! {
@@ -204,7 +204,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                     if handle_verify(&block, parent) {
 
                                         // persist valid block
-                                        marshal.verified(view, block).await;
+                                        syncer.store_verified(view, block).await;
 
                                         // respond
                                         let _ = response.send(true);
@@ -227,14 +227,14 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     async fn handle_proposal(
         &mut self,
         parent: (u64, Digest),
-        marshal: &mut marshal::Mailbox<MinPk, Block>,
+        syncer: &mut summit_syncer::Mailbox,
         view: View,
     ) -> Result<Block> {
         // Get the parent block
         let parent_request = if parent.1 == self.genesis_hash.into() {
             Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
         } else {
-            Either::Right(marshal.subscribe(Some(parent.0), parent.1).await)
+            Either::Right(syncer.get(Some(parent.0), parent.1).await)
         };
 
         let parent = parent_request.await.unwrap();

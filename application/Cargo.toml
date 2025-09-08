@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 summit-types.workspace = true
-
+summit-syncer.workspace = true
 bytes.workspace = true
 
 anyhow.workspace = true
