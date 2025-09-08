@@ -11,6 +11,10 @@ path = "src/bin/dkg_testnet.rs"
 name = "testnet"
 path = "src/bin/testnet.rs"
 
+[[bin]]
+name = "genesis"
+path = "src/bin/genesis.rs"
+
 [dependencies]
 summit-types.workspace = true
 summit-application.workspace = true
