@@ -6,6 +6,7 @@ use alloy_primitives::Address;
 #[cfg(debug_assertions)]
 use alloy_primitives::hex;
 use alloy_rpc_types_engine::ForkchoiceState;
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::Reporter;
 use commonware_macros::select;
 use commonware_runtime::buffer::PoolRef;
@@ -26,11 +27,11 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
-use summit_types::Block;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::withdrawal::PendingWithdrawal;
+use summit_types::{Block, PublicKey};
 use tracing::{info, warn};
 
 const PAGE_SIZE: usize = 77;
@@ -277,7 +278,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                     if let Some(request) = self.state.pop_deposit() {
                                         let mut validator_balance = 0;
                                         let mut account_exists = false;
-                                        if let Some(mut account) = self.state.get_account(&request.bls_pubkey).cloned() {
+                                        if let Some(mut account) = self.state.get_account(request.pubkey.as_ref().try_into().unwrap()).cloned() {
                                             if request.index > account.last_deposit_index {
                                                 account.balance += request.amount;
                                                 account.last_deposit_index = request.index;
@@ -288,7 +289,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                 }
                                                 account.last_deposit_index = request.index;
                                                 validator_balance = account.balance;
-                                                self.state.set_account(request.bls_pubkey, account);
+                                                self.state.set_account(request.pubkey.as_ref().try_into().unwrap(), account);
                                                 account_exists = true;
                                             }
                                         } else {
@@ -311,21 +312,20 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                                             // Create new ValidatorAccount from DepositRequest
                                             let new_account = ValidatorAccount {
-                                                ed25519_pubkey: request.ed25519_pubkey.clone(),
                                                 withdrawal_credentials: Address::from_slice(&request.withdrawal_credentials[12..32]), // Take last 20 bytes
                                                 balance: request.amount,
                                                 pending_withdrawal_amount: 0,
                                                 status: ValidatorStatus::Active,
                                                 last_deposit_index: request.index,
                                             };
-                                            self.state.set_account(request.bls_pubkey, new_account);
+                                            self.state.set_account(request.pubkey.as_ref().try_into().unwrap(), new_account);
                                             validator_balance = request.amount;
 
                                         }
                                         if !account_exists && validator_balance >= self.validator_minimum_stake {
                                             // If the node shuts down, before the account changes are committed,
                                             // then everything should work normally, because the registry is not persisted to disk
-                                            add_validators.push(request.ed25519_pubkey.clone());
+                                            add_validators.push(request.pubkey.clone());
                                         }
                                         #[cfg(debug_assertions)]
                                         {
@@ -334,7 +334,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                             ctx.register(
                                                 format!("<registry>{}</registry><creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_deposit_validator_balance",
                                                 !account_exists && validator_balance >= self.validator_minimum_stake,
-                                                hex::encode(request.withdrawal_credentials), request.ed25519_pubkey, hex::encode(request.bls_pubkey)),
+                                                hex::encode(request.withdrawal_credentials), request.pubkey, hex::encode(&request.pubkey)),
                                                 "Validator balance",
                                                 gauge
                                             );
@@ -352,7 +352,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
                                 assert_eq!(pending_withdrawal.inner, withdrawal);
 
-                                if let Some(mut account) = self.state.get_account(&pending_withdrawal.bls_pubkey).cloned()
+                                if let Some(mut account) = self.state.get_account(&pending_withdrawal.pubkey).cloned()
                                     && account.balance >= withdrawal.amount
                                 {
                                     // This check should never fail, because we checked the balance when
@@ -365,8 +365,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         let gauge: Gauge = Gauge::default();
                                         gauge.set(account.balance as i64);
                                         ctx.register(
-                                            format!("<creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_withdrawal_validator_balance",
-                                            hex::encode(account.withdrawal_credentials), account.ed25519_pubkey, hex::encode(pending_withdrawal.bls_pubkey)),
+                                            format!("<creds>{}</creds><ed_key>{:?}</ed_key><bls_key>{:?}</bls_key>_withdrawal_validator_balance",
+                                            hex::encode(account.withdrawal_credentials), pending_withdrawal.pubkey, hex::encode(pending_withdrawal.pubkey)),
                                             "Validator balance",
                                             gauge
                                         );
@@ -376,10 +376,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                     // An argument can be made from removing the validator account from the DB here.
                                     if account.balance == 0 {
                                         account.status = ValidatorStatus::Inactive;
-                                        remove_validators.push(account.ed25519_pubkey.clone());
+                                        remove_validators.push(PublicKey::decode(&pending_withdrawal.pubkey[..]).unwrap()); // todo(dalton) remove unwrap
                                     }
 
-                                    self.state.set_account(pending_withdrawal.bls_pubkey, account);
+                                    self.state.set_account(pending_withdrawal.pubkey, account);
                                 }
                             }
 

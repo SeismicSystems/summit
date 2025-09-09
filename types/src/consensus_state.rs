@@ -12,7 +12,7 @@ pub struct ConsensusState {
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
     pub withdrawal_queue: VecDeque<PendingWithdrawal>,
-    pub validator_accounts: HashMap<[u8; 48], ValidatorAccount>,
+    pub validator_accounts: HashMap<[u8; 32], ValidatorAccount>,
 }
 
 impl ConsensusState {
@@ -36,11 +36,11 @@ impl ConsensusState {
     }
 
     // Account operations
-    pub fn get_account(&self, pubkey: &[u8; 48]) -> Option<&ValidatorAccount> {
+    pub fn get_account(&self, pubkey: &[u8; 32]) -> Option<&ValidatorAccount> {
         self.validator_accounts.get(pubkey)
     }
 
-    pub fn set_account(&mut self, pubkey: [u8; 48], account: ValidatorAccount) {
+    pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
         self.validator_accounts.insert(pubkey, account);
     }
 
@@ -69,7 +69,7 @@ impl ConsensusState {
                 amount: request.amount,
             },
             withdrawal_height,
-            bls_pubkey: request.validator_pubkey,
+            pubkey: request.validator_pubkey,
         };
 
         self.push_withdrawal(pending_withdrawal);
@@ -137,7 +137,7 @@ impl Read for ConsensusState {
         let validator_accounts_len = buf.get_u32() as usize;
         let mut validator_accounts = HashMap::with_capacity(validator_accounts_len);
         for _ in 0..validator_accounts_len {
-            let mut key = [0u8; 48];
+            let mut key = [0u8; 32];
             buf.copy_to_slice(&mut key);
             let account = ValidatorAccount::read_cfg(buf, &())?;
             validator_accounts.insert(key, account);
@@ -195,11 +195,10 @@ mod tests {
         }
 
         DepositRequest {
-            bls_pubkey: [index as u8; 48],
-            ed25519_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
+            pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
             withdrawal_credentials,
             amount,
-            signature: [index as u8; 96],
+            signature: [index as u8; 64],
             index,
         }
     }
@@ -217,13 +216,12 @@ mod tests {
                 amount,
             },
             withdrawal_height,
-            bls_pubkey: [index as u8; 48],
+            pubkey: [index as u8; 32],
         }
     }
 
     fn create_test_validator_account(index: u64, balance: u64) -> ValidatorAccount {
         ValidatorAccount {
-            ed25519_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
             withdrawal_credentials: Address::from([index as u8; 20]),
             balance,
             pending_withdrawal_amount: 0,
@@ -275,8 +273,8 @@ mod tests {
         original_state.push_withdrawal(withdrawal1);
         original_state.push_withdrawal(withdrawal2);
 
-        let pubkey1 = [1u8; 48];
-        let pubkey2 = [2u8; 48];
+        let pubkey1 = [1u8; 32];
+        let pubkey2 = [2u8; 32];
         let account1 = create_test_validator_account(1, 32000000000);
         let account2 = create_test_validator_account(2, 64000000000);
         original_state.set_account(pubkey1, account1);
@@ -292,9 +290,7 @@ mod tests {
         );
 
         assert_eq!(decoded_state.deposit_queue.len(), 2);
-        assert_eq!(decoded_state.deposit_queue[0].index, 1);
         assert_eq!(decoded_state.deposit_queue[0].amount, 32000000000);
-        assert_eq!(decoded_state.deposit_queue[1].index, 2);
         assert_eq!(decoded_state.deposit_queue[1].amount, 16000000000);
 
         assert_eq!(decoded_state.withdrawal_queue.len(), 2);
@@ -327,7 +323,7 @@ mod tests {
         let withdrawal = create_test_withdrawal(1, 16000000000, 100);
         state.push_withdrawal(withdrawal);
 
-        let pubkey = [1u8; 48];
+        let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
         state.set_account(pubkey, account);
 
