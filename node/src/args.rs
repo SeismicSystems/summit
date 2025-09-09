@@ -157,7 +157,7 @@ impl Command {
                 if let Err(e) =
                     start_rpc_server(key_path, share_sender, genesis_sender, rpc_port).await
                 {
-                    tracing::error!("RPC server failed: {}", e);
+                    error!("RPC server failed: {}", e);
                 }
             });
 

@@ -91,6 +91,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 cfg.validator_minimum_stake,
                 cfg.validator_withdrawal_period,
                 cfg.validator_max_withdrawals_per_block,
+                cfg.checkpoint_interval,
             )
             .await;
 
