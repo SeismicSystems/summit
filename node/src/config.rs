@@ -2,13 +2,14 @@ use std::{num::NonZeroU32, time::Duration};
 
 use anyhow::{Context, Result};
 use commonware_codec::{Decode as _, DecodeExt as _};
-use commonware_cryptography::bls12381::primitives::{
+use commonware_cryptography::{bls12381::primitives::{
     group::{self, Share},
     poly::{self, Poly},
     variant::MinPk,
-};
-use commonware_utils::{from_hex_formatted, quorum};
+}};
+use commonware_utils::{from_hex, from_hex_formatted, quorum};
 use governor::Quota;
+use serde::{Deserialize, Serialize};
 use summit_application::engine_client::EngineClient;
 use summit_types::{Genesis, Identity, PrivateKey, PublicKey, utils::get_expanded_path};
 
@@ -148,6 +149,44 @@ pub(crate) fn expect_keys(key_path: &str, poly_share_path: &str) -> (PrivateKey,
     };
     (signer, share)
 }
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GenesisConfig {
+    eth_genesis_hash: String,
+    leader_timeout_ms: u64,
+    notarization_timeout_ms: u64,
+    nullify_timeout_ms: u64,
+    activity_timeout_views: u64,
+    skip_timeout_views: u64,
+    max_message_size_bytes: u64,
+    namespace: String,
+    pub identity: String,
+    pub validators: Vec<Validator>,
+}
+
+impl GenesisConfig {
+    pub fn load(path: &str) -> Result<GenesisConfig, Box<dyn std::error::Error>> {
+        let genesis_content = std::fs::read_to_string(path)?;
+        let genesis_config: GenesisConfig = toml::from_str(&genesis_content)?;
+        Ok(genesis_config)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Validator {
+    pub public_key: String,
+    pub ip_address: String,
+}
+
+impl Validator {
+    pub fn ed25519_pubkey(&self) -> PublicKey {
+        let pubkey_bytes = from_hex(&self.public_key).unwrap();
+        let pubkey = PublicKey::decode(&pubkey_bytes[..]).unwrap();
+        pubkey
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

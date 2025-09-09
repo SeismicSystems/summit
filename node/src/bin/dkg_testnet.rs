@@ -10,35 +10,15 @@ use commonware_cryptography::{
 };
 use commonware_utils::{hex, quorum};
 use rand::rngs::OsRng;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use summit::config::GenesisConfig;
 
 #[derive(Parser, Debug)]
 struct Args {
     /// Number of nodes you want to do dkg with
     #[arg(long, default_value_t = 4)]
     nodes: u32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct GenesisConfig {
-    eth_genesis_hash: String,
-    leader_timeout_ms: u64,
-    notarization_timeout_ms: u64,
-    nullify_timeout_ms: u64,
-    activity_timeout_views: u64,
-    skip_timeout_views: u64,
-    max_message_size_bytes: u64,
-    namespace: String,
-    identity: String,
-    validators: Vec<Validator>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Validator {
-    public_key: String,
-    ip_address: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,8 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Read the genesis config
     let genesis_path = "./example_genesis.toml";
-    let genesis_content = fs::read_to_string(genesis_path)?;
-    let mut genesis_config: GenesisConfig = toml::from_str(&genesis_content)?;
+    let mut genesis_config = GenesisConfig::load(genesis_path)?;
 
     // Update the identity with the hex of the polynomial
     genesis_config.identity = hex(&polynomial.encode());
