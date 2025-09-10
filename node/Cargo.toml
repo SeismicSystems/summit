@@ -16,6 +16,11 @@ name = "block-fetcher"
 path = "src/bin/block_fetcher.rs"
 required-features = ["prom"]
 
+[[bin]]
+name = "execute-blocks"
+path = "src/bin/execute_blocks.rs"
+required-features = ["prom"]
+
 [dependencies]
 summit-types.workspace = true
 summit-application.workspace = true
