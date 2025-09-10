@@ -14,7 +14,7 @@ pub struct PathSender {
 impl PathSender {
     pub fn new(path: String, sender: Option<oneshot::Sender<()>>) -> PathSender {
         PathSender {
-            path: path,
+            path,
             sender: Mutex::new(sender),
         }
     }

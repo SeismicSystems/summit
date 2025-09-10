@@ -23,22 +23,29 @@ struct BlockData {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BlockIndex {
-    blocks: HashMap<u64, String>, // block_number -> filename
+    block_num_to_filename: HashMap<u64, String>,
+    hash_to_block_num: HashMap<B256, u64>,
 }
 
 impl BlockIndex {
     fn new() -> Self {
         Self {
-            blocks: HashMap::new(),
+            block_num_to_filename: HashMap::new(),
+            hash_to_block_num: HashMap::new(),
         }
     }
 
-    fn add_block(&mut self, block_number: u64, filename: String) {
-        self.blocks.insert(block_number, filename);
+    fn add_block(&mut self, block_number: u64, block_hash: B256, filename: String) {
+        self.block_num_to_filename.insert(block_number, filename);
+        self.hash_to_block_num.insert(block_hash, block_number);
     }
 
     fn get_block_file(&self, block_number: u64) -> Option<&String> {
-        self.blocks.get(&block_number)
+        self.block_num_to_filename.get(&block_number)
+    }
+
+    fn get_block_number(&self, block_hash: &B256) -> Option<u64> {
+        self.hash_to_block_num.get(block_hash).copied()
     }
 
     fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
@@ -115,6 +122,32 @@ async fn main() -> Result<()> {
     let batch_size: usize = matches.get_one::<String>("batch-size").unwrap().parse()?;
     let delay_ms: u64 = matches.get_one::<String>("delay-ms").unwrap().parse()?;
 
+
+    //let index_path = output_dir.join("index.json");
+    //let mut block_index = BlockIndex::load_from_file(&index_path)?;
+
+    //let mut block_index_new = BlockIndexNew::new();
+    //println!("Loading blocks {}", block_index.blocks.len());
+    //let mut i = 0;
+    //for (block_num, filename) in block_index.blocks.iter() {
+    //    let filename = format!("block_{}.json", block_num);
+    //    let file_path = output_dir.join(&filename);
+    //    let json_data = fs::read_to_string(&file_path)
+    //        .map_err(|e| anyhow::anyhow!("Failed to read block file {}: {}", file_path.display(), e))?;
+    //    let block_data: BlockData = serde_json::from_str(&json_data)
+    //        .map_err(|e| anyhow::anyhow!("Failed to parse block data: {}", e))?;
+
+    //    let hash = block_data.payload.payload_inner.payload_inner.block_hash;
+    //    block_index_new.add_block(*block_num, hash, filename);
+
+    //    if i % 1000 == 0 {
+    //        println!("{i}");
+    //    }
+    //    i += 1;
+    //}
+    //let index_path_new = output_dir.join("index_new.json");
+    //block_index_new.save_to_file(&index_path_new).unwrap();
+
     if start_block > end_block {
         return Err(anyhow!(
             "Start block must be less than or equal to end block"
@@ -169,12 +202,14 @@ async fn main() -> Result<()> {
                     let filename = format!("block_{}.json", block_num);
                     let file_path = output_dir.join(&filename);
 
+                    let block_hash = block_data.payload.payload_inner.payload_inner.block_hash;
+
                     // Save block data to file
                     let json = serde_json::to_string_pretty(&block_data)?;
                     fs::write(&file_path, json)?;
 
                     // Update index
-                    block_index.add_block(block_num, filename);
+                    block_index.add_block(block_num, block_hash, filename);
 
                     processed += 1;
                     info!("Saved block {} ({}/{})", block_num, processed, total_blocks);
