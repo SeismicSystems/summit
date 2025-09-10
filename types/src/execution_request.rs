@@ -13,10 +13,8 @@ pub enum ExecutionRequest {
     Withdrawal(WithdrawalRequest),
 }
 
-impl TryFrom<&[u8]> for ExecutionRequest {
-    type Error = &'static str;
-
-    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+impl ExecutionRequest {
+    pub fn try_from_eth_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.is_empty() {
             return Err("ExecutionRequest cannot be empty");
         }
@@ -26,12 +24,12 @@ impl TryFrom<&[u8]> for ExecutionRequest {
         match bytes[0] {
             0x00 => {
                 // Deposit request - parse without the leading type byte
-                let deposit = DepositRequest::try_from(&bytes[1..])?;
+                let deposit = DepositRequest::try_from_eth_bytes(&bytes[1..])?;
                 Ok(ExecutionRequest::Deposit(deposit))
             }
             0x01 => {
                 // Withdrawal request - parse without the leading type byte
-                let withdrawal = WithdrawalRequest::try_from(&bytes[1..])?;
+                let withdrawal = WithdrawalRequest::try_from_eth_bytes(&bytes[1..])?;
                 Ok(ExecutionRequest::Withdrawal(withdrawal))
             }
             _request_type => Err("Unknown execution request type"),
@@ -46,10 +44,10 @@ pub struct WithdrawalRequest {
     pub amount: u64,                // Amount in gwei
 }
 
-impl TryFrom<&[u8]> for WithdrawalRequest {
-    type Error = &'static str;
-
-    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+impl WithdrawalRequest {
+    /// This function is used to parse WithdrawalRequest type off of an Eth block. This is different than from_bytes because the ethereum event assumes BLS
+    /// key so the pubkey field has an extra 16 bytes. The pub key is left padded and put in this field instead
+    pub fn try_from_eth_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         // EIP-7002: Withdrawal request data is exactly 76 bytes (without leading type byte)
         // Format: source_address(20) + validator_pubkey(48) + amount(8) = 76 bytes
 
@@ -92,10 +90,10 @@ pub struct DepositRequest {
     pub index: u64,
 }
 
-impl TryFrom<&[u8]> for DepositRequest {
-    type Error = &'static str;
-
-    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+impl DepositRequest {
+    /// This function is used to parse DepositRequest type off of an Eth block. This is different than from_bytes because the ethereum event assumes BLS
+    /// signature so the signature field has an extra 32 bytes and the public key has an extra 16 bytes. The ed signature and public key are left padded and put in this field instead
+    pub fn try_from_eth_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         // EIP-6110: Deposit request data is exactly 144 bytes (without leading type byte)
         // Format: ed25519_pubkey(48) + withdrawal_credentials(32) + amount(8) + signature(96) + index(8) = 192 bytes
 
@@ -425,30 +423,24 @@ mod tests {
         }
     }
 
-    // Todo check with mathias on if this is a good test
-    // #[test]
-    // fn test_roundtrip_compatibility_with_try_from() {
-    //     // Test that our Codec implementation is compatible with existing TryFrom<&[u8]>
-    //     let deposit = DepositRequest {
-    //         pubkey: PublicKey::decode(&[11u8; 32][..]).unwrap(),
-    //         withdrawal_credentials: [13u8; 32],
-    //         amount: 64000000000u64,
-    //         signature: [14u8; 64],
-    //         index: 999u64,
-    //     };
-    //     let exec_request = ExecutionRequest::Deposit(deposit);
+    #[test]
+    fn test_roundtrip_compatibility_with_try_from() {
+        // Test that our Codec implementation is compatible with existing TryFrom<&[u8]>
+        let deposit = DepositRequest {
+            pubkey: PublicKey::decode(&[11u8; 32][..]).unwrap(),
+            withdrawal_credentials: [13u8; 32],
+            amount: 64000000000u64,
+            signature: [14u8; 64],
+            index: 999u64,
+        };
+        let exec_request = ExecutionRequest::Deposit(deposit);
 
-    //     // Encode with Codec
-    //     let mut buf = BytesMut::new();
-    //     exec_request.write(&mut buf);
+        // Encode with Codec
+        let mut buf = BytesMut::new();
+        exec_request.write(&mut buf);
 
-    //     // Decode with TryFrom
-    //     let decoded_try_from = ExecutionRequest::try_from(buf.as_ref()).unwrap();
-    //     assert_eq!(decoded_try_from, exec_request);
-
-    //     // Decode with Codec
-    //     let decoded_codec = ExecutionRequest::read(&mut buf.as_ref()).unwrap();
-    //     assert_eq!(decoded_codec, exec_request);
-    //     assert_eq!(decoded_try_from, decoded_codec);
-    // }
+        // Decode with Codec
+        let decoded_codec = ExecutionRequest::read(&mut buf.as_ref()).unwrap();
+        assert_eq!(decoded_codec, exec_request);
+    }
 }

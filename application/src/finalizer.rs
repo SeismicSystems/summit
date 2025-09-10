@@ -224,7 +224,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                             // Parse execution requests
                             for request_bytes in block.execution_requests {
-                                match ExecutionRequest::try_from(request_bytes.as_ref()) {
+                                match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
                                     Ok(execution_request) => {
                                         match execution_request {
                                             ExecutionRequest::Deposit(deposit_request) => {
