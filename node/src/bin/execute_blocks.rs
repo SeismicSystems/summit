@@ -3,26 +3,27 @@ use anyhow::Result;
 use std::{fs, path::PathBuf, str::FromStr as _, sync::Mutex};
 
 use alloy_eips::eip4895::Withdrawal;
+use alloy_eips::eip7685::Requests;
 use alloy_primitives::{B256, FixedBytes, U256};
 use alloy_provider::{RootProvider, Provider, ext::EngineApi};
 use op_alloy_network::Optimism;
-use alloy_rpc_types_engine::{
-    ExecutionPayloadV3, ForkchoiceState, JwtSecret, PayloadId, PayloadStatus,
-};
-use op_alloy_rpc_types_engine::OpExecutionPayloadEnvelopeV4;
+use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3, ForkchoiceState, JwtSecret, PayloadId, PayloadStatus};
 use alloy_transport_http::{
     AuthLayer, AuthService, Http, HyperClient,
     hyper::body::Bytes as HyperBytes,
     hyper_util::{client::legacy::Client, rt::TokioExecutor},
 };
+use commonware_utils::from_hex_formatted;
 use http_body_util::Full;
 use serde::{Deserialize, Serialize};
 use summit_types::{Block, Digest};
 use tower::ServiceBuilder;
+use summit_application::engine_client::EngineClient;
 use summit_types::utils::benchmarking::BlockIndex;
 
 const STARTING_HISTORICAL_BLOCK: u64 = 0;
 const BLOCK_DIR: &str = "/home/matthias/Documents/base-blocks";
+const GENESIS_HASH: &str = "0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -34,46 +35,43 @@ async fn main() -> Result<()> {
     let client = HistoricalEngineClient::new(engine_url.to_string(), jwt_secret);
 
     // Load and commit blocks to Reth
+    let genesis_hash: [u8; 32] = from_hex_formatted(GENESIS_HASH).unwrap().try_into().unwrap();
+
+    let mut forkchoice = ForkchoiceState { head_block_hash: genesis_hash.into(), safe_block_hash: genesis_hash.into(), finalized_block_hash: genesis_hash.into() };
     for _ in 0..50000 {
-        match client.load_next_block() {
-            Ok(block_data) => {
-                let block_number = block_data.block_number;
-                let block_hash = block_data.payload.payload_inner.payload_inner.block_hash;
-                let parent_hash = block_data.payload.payload_inner.payload_inner.parent_hash;
-                let timestamp = block_data.payload.payload_inner.payload_inner.timestamp;
-                
+        match client.start_building_block(forkchoice.clone(), 0, vec![]).await {
+            Some(payload_id) => {
+                let payload = client.get_payload(payload_id).await;
+
+                let block_number = payload.execution_payload.payload_inner.payload_inner.block_number;
+                let block_hash = payload.execution_payload.payload_inner.payload_inner.block_hash;
+                let parent_hash = payload.execution_payload.payload_inner.payload_inner.parent_hash;
+
                 println!("Processing block {}: hash={:?}", block_number, block_hash);
 
                 // Convert block data to Summit Block for check_payload
-                let genesis_hash = [0xf7, 0x12, 0xaa, 0x92, 0x41, 0xcc, 0x24, 0x36, 0x9b, 0x14, 0x3c, 0xf6, 0xdc, 0xe8, 0x5f, 0x09, 0x02, 0xa9, 0x73, 0x1e, 0x70, 0xd6, 0x68, 0x18, 0xa3, 0xa5, 0x84, 0x5b, 0x29, 0x6c, 0x73, 0xdd];
+                //let genesis_hash = [0xf7, 0x12, 0xaa, 0x92, 0x41, 0xcc, 0x24, 0x36, 0x9b, 0x14, 0x3c, 0xf6, 0xdc, 0xe8, 0x5f, 0x09, 0x02, 0xa9, 0x73, 0x1e, 0x70, 0xd6, 0x68, 0x18, 0xa3, 0xa5, 0x84, 0x5b, 0x29, 0x6c, 0x73, 0xdd];
                 let parent_digest: Digest = if block_number == 0 { 
                     genesis_hash.into() 
                 } else { 
                     (*parent_hash).into() 
                 };
-                let summit_block = block_data.to_block(
-                    parent_digest,
-                    block_number,
-                    timestamp,
-                    block_number, // use block number as view
-                );
+
+                // use block number as view
+                let summit_block = execution_payload_envelope_to_block(payload, parent_digest, block_number);
 
                 // Check payload with Reth
                 let payload_status = client.check_payload(&summit_block).await;
                 println!("  Payload status: {:?}", payload_status);
 
-                // Commit the block hash to Reth
-                let fork_choice_state = ForkchoiceState {
-                    head_block_hash: block_hash,
-                    safe_block_hash: parent_hash,
-                    finalized_block_hash: parent_hash,
-                };
+                forkchoice = ForkchoiceState { head_block_hash: block_hash, safe_block_hash: block_hash, finalized_block_hash: block_hash };
 
-                client.commit_hash(fork_choice_state).await;
+                client.commit_hash(forkchoice).await;
                 println!("  Committed block {} to Reth", block_number);
             }
-            Err(e) => {
-                eprintln!("Failed to load block: {}", e);
+            None => {
+                // this also happens when there are no more blocks
+                eprintln!("failed to load block");
                 break;
             }
         }
@@ -148,7 +146,7 @@ impl HistoricalEngineClient {
     }
 }
 
-impl HistoricalEngineClient {
+impl EngineClient for HistoricalEngineClient {
     // Custom implementation without the EngineClient trait
     async fn start_building_block(
         &self,
@@ -158,6 +156,7 @@ impl HistoricalEngineClient {
     ) -> Option<PayloadId> {
         let block_num = self.block_index.get_block_number(&fork_choice_state.head_block_hash)?;
         let next_block_num = block_num + 1;
+        println!("next_block_num={}", next_block_num);
         if self.block_index.get_block_file(next_block_num).is_some() {
             let bytes: [u8; 8] = next_block_num.to_le_bytes();
             Some(PayloadId::new(bytes))
@@ -166,25 +165,30 @@ impl HistoricalEngineClient {
         }
     }
 
-    async fn get_payload(&self, _payload_id: PayloadId) -> OpExecutionPayloadEnvelopeV4 {
-        // Load the next historical block
-        let block_data = self.load_next_block().expect("Failed to load next block");
-        
-        // Convert ExecutionPayloadV3 to OpExecutionPayloadV4 
-        // OpExecutionPayloadV4 extends the regular ExecutionPayloadV3 with withdrawals_root
-        let op_payload_v4 = op_alloy_rpc_types_engine::OpExecutionPayloadV4 {
-            payload_inner: block_data.payload, // Use the ExecutionPayloadV3 directly
-            withdrawals_root: B256::ZERO, // Calculate from withdrawals if needed
-        };
+    async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+        //let block_num = u64::from_le_bytes(payload_id.0.into()) + STARTING_HISTORICAL_BLOCK;
+        let block_num = u64::from_le_bytes(payload_id.0.into());
+        let filename = format!("block_{block_num}.json");
 
-        // Convert to OpExecutionPayloadEnvelopeV4 with correct structure
-        OpExecutionPayloadEnvelopeV4 {
-            execution_payload: op_payload_v4,
-            block_value: U256::ZERO, // Historical blocks don't have block value
-            blobs_bundle: Default::default(), // No blobs in historical blocks
-            should_override_builder: false,
-            parent_beacon_block_root: block_data.parent_beacon_block_root,
-            execution_requests: Vec::new(), // No execution requests for historical blocks
+        let file_path = self.block_dir.join(&filename);
+
+        let json_data = fs::read_to_string(&file_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read block file {}: {}", file_path.display(), e)).expect("failed to read block file");
+
+        let block_data: BlockData = serde_json::from_str(&json_data)
+            .map_err(|e| anyhow::anyhow!("Failed to parse block data: {}", e)).expect("failed to parse block data");
+
+        // TODO(matthias): we throw away the execution requests and some other data here
+
+        // Convert to ExecutionPayloadEnvelopeV4 with correct structure
+        ExecutionPayloadEnvelopeV4 {
+            envelope_inner: ExecutionPayloadEnvelopeV3 {
+                execution_payload: block_data.payload,
+                block_value: U256::ZERO, // Historical blocks don't have block value
+                blobs_bundle: Default::default(), // No blobs in historical blocks
+                should_override_builder: false,
+            },
+            execution_requests: Requests::default(),
         }
     }
 
@@ -282,4 +286,24 @@ impl BlockData {
             view,
         )
     }
+}
+
+
+fn execution_payload_envelope_to_block(payload: ExecutionPayloadEnvelopeV4, parent: Digest, view: u64) -> Block {
+    let execution_payload = payload.envelope_inner.execution_payload;
+    let height = execution_payload.payload_inner.payload_inner.block_number;
+    let timestamp = execution_payload.payload_inner.payload_inner.timestamp;
+
+    // Convert execution requests from the envelope
+    let execution_requests = payload.execution_requests.into_iter().collect::<Vec<_>>();
+
+    Block::compute_digest(
+        parent,
+        height,
+        timestamp,
+        execution_payload,
+        execution_requests,
+        payload.envelope_inner.block_value,
+        view,
+    )
 }
