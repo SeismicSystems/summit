@@ -22,3 +22,8 @@ serde.workspace = true
 toml.workspace = true
 
 bytes.workspace = true
+
+serde_json = { workspace = true, optional = true }
+
+[features]
+prom = ["serde_json"]

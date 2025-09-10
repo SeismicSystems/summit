@@ -145,12 +145,11 @@ impl HistoricalEngineClient {
     // Custom implementation without the EngineClient trait
     async fn start_building_block(
         &self,
-        _fork_choice_state: ForkchoiceState,
+        fork_choice_state: ForkchoiceState,
         _timestamp: u64,
         _withdrawals: Vec<Withdrawal>,
     ) -> Option<PayloadId> {
-        // For historical blocks, we always have a "built" block ready
-        // Return a dummy payload ID
+        
         Some(PayloadId::new([1u8; 8]))
     }
 
