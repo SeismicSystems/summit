@@ -1,10 +1,6 @@
 use anyhow::{Context, Result};
 use dirs::home_dir;
-use std::{fs, path::PathBuf, str::FromStr};
-use std::collections::HashMap;
-use std::path::Path;
-use alloy_primitives::B256;
-use serde::{Deserialize, Serialize};
+use std::{path::PathBuf, str::FromStr};
 
 pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
     let path_buf = PathBuf::from_str(path).context("unable to parse path")?;
@@ -27,10 +23,11 @@ pub mod benchmarking {
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
+    use std::default::Default;
     use alloy_primitives::B256;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct BlockIndex {
         block_num_to_filename: HashMap<u64, String>,
         hash_to_block_num: HashMap<B256, u64>,
@@ -39,8 +36,8 @@ pub mod benchmarking {
     impl BlockIndex {
         pub fn new() -> Self {
             Self {
-                block_num_to_filename: HashMap::new(),
-                hash_to_block_num: HashMap::new(),
+                block_num_to_filename: Default::default(),
+                hash_to_block_num: Default::default(),
             }
         }
 
@@ -59,14 +56,19 @@ pub mod benchmarking {
 
         pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
             let json = serde_json::to_string_pretty(self)?;
-            fs::write(path, json)?;
+            let mut temp_file = path.as_ref().to_path_buf();
+            temp_file.set_extension("temp");
+            fs::write(&temp_file, json)?;
+            fs::rename(&temp_file, path)?;
             Ok(())
         }
 
         pub fn load_from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
             if path.as_ref().exists() {
                 let json = fs::read_to_string(path)?;
-                Ok(serde_json::from_str(&json)?)
+                let block_index: Self = serde_json::from_str(&json)?;
+                assert_eq!(block_index.hash_to_block_num.len(), block_index.block_num_to_filename.len());
+                Ok(block_index)
             } else {
                 Ok(Self::new())
             }

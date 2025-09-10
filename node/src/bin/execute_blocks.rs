@@ -19,6 +19,7 @@ use http_body_util::Full;
 use serde::{Deserialize, Serialize};
 use summit_types::{Block, Digest};
 use tower::ServiceBuilder;
+use summit_types::utils::benchmarking::BlockIndex;
 
 const STARTING_HISTORICAL_BLOCK: u64 = 0;
 const BLOCK_DIR: &str = "/tmp/blocks";
@@ -86,6 +87,7 @@ pub struct HistoricalEngineClient {
     provider: RootProvider<Optimism>,
     block_dir: PathBuf,
     current_block: std::sync::Arc<Mutex<u64>>,
+    block_index: BlockIndex,
 }
 
 impl HistoricalEngineClient {
@@ -149,7 +151,7 @@ impl HistoricalEngineClient {
         _timestamp: u64,
         _withdrawals: Vec<Withdrawal>,
     ) -> Option<PayloadId> {
-        
+
         Some(PayloadId::new([1u8; 8]))
     }
 

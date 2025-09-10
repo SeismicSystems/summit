@@ -5,9 +5,8 @@ use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV3};
 use clap::{Arg, Command};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use alloy_network::AnyRpcBlock;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
@@ -93,6 +92,44 @@ async fn main() -> Result<()> {
     let index_path = output_dir.join("index.json");
     let mut block_index = BlockIndex::load_from_file(&index_path)?;
 
+    //let mut block_index = BlockIndex::new();
+    //match fs::read_dir(&output_dir) {
+    //    Ok(entries) => {
+    //        let mut i = 0;
+    //        for entry in entries {
+    //            match entry {
+    //                Ok(entry) => {
+    //                    if entry.path().ends_with("index.json") {
+    //                        continue;
+    //                    }
+    //                    if entry.path().ends_with("index_bak.json") {
+    //                        continue;
+    //                    }
+
+    //                    let json_data = fs::read_to_string(&entry.path())
+    //                        .map_err(|e| anyhow::anyhow!("Failed to read block file {}: {}", entry.path().display(), e))?;
+    //                    let block_data: BlockData = serde_json::from_str(&json_data)
+    //                        .map_err(|e| anyhow::anyhow!("Failed to parse block data for block {}: {}", entry.path().display(), e))?;
+
+    //                    let filename = entry.path().file_name().unwrap().to_str().unwrap().to_ascii_lowercase();
+    //                    let hash = block_data.payload.payload_inner.payload_inner.block_hash;
+    //                    let block_num = block_data.block_number;
+
+    //                    block_index.add_block(block_num, hash, filename);
+
+    //                    if i % 1000 == 0 {
+    //                        println!("{i}");
+    //                    }
+    //                    i += 1;
+    //                },
+    //                Err(e) => eprintln!("Error: {}", e),
+    //            }
+    //        }
+    //    }
+    //    Err(e) => eprintln!("Error: {}", e),
+    //}
+    //block_index.save_to_file(&index_path)?;
+
     info!("Connecting to RPC at {}", rpc_url);
     let client = ClientBuilder::default().http(rpc_url.parse()?);
     let provider = RootProvider::<AnyNetwork>::new(client);
@@ -138,7 +175,10 @@ async fn main() -> Result<()> {
 
                     // Save block data to file
                     let json = serde_json::to_string_pretty(&block_data)?;
-                    fs::write(&file_path, json)?;
+
+                    let temp_file = output_dir.join("block.temp");
+                    fs::write(&temp_file, json)?;
+                    fs::rename(&temp_file, file_path)?;
 
                     // Update index
                     block_index.add_block(block_num, block_hash, filename);
