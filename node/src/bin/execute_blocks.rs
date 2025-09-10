@@ -22,7 +22,7 @@ use tower::ServiceBuilder;
 use summit_types::utils::benchmarking::BlockIndex;
 
 const STARTING_HISTORICAL_BLOCK: u64 = 0;
-const BLOCK_DIR: &str = "/tmp/blocks";
+const BLOCK_DIR: &str = "/home/matthias/Documents/base-blocks";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -118,10 +118,15 @@ impl HistoricalEngineClient {
         let provider = RootProvider::<Optimism>::new(rpc_client);
 
         let block_dir = PathBuf::from_str(BLOCK_DIR).unwrap();
+
+        let index_path = block_dir.join("index.json");
+        let block_index = BlockIndex::load_from_file(&index_path).expect("failed to load block index");
+
         Self {
             provider,
             block_dir,
             current_block: std::sync::Arc::new(Mutex::new(STARTING_HISTORICAL_BLOCK)),
+            block_index,
         }
     }
 
@@ -151,8 +156,14 @@ impl HistoricalEngineClient {
         _timestamp: u64,
         _withdrawals: Vec<Withdrawal>,
     ) -> Option<PayloadId> {
-
-        Some(PayloadId::new([1u8; 8]))
+        let block_num = self.block_index.get_block_number(&fork_choice_state.head_block_hash)?;
+        let next_block_num = block_num + 1;
+        if self.block_index.get_block_file(next_block_num).is_some() {
+            let bytes: [u8; 8] = next_block_num.to_le_bytes();
+            Some(PayloadId::new(bytes))
+        } else {
+            None
+        }
     }
 
     async fn get_payload(&self, _payload_id: PayloadId) -> OpExecutionPayloadEnvelopeV4 {
