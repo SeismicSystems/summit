@@ -43,10 +43,8 @@ fn test_deposit_request_single() {
                 max_size: 1024 * 1024,
             },
         );
-
         // Start network
         network.start();
-
         // Register participants
         let mut signers = Vec::new();
         let mut validators = Vec::new();
@@ -62,7 +60,6 @@ fn test_deposit_request_single() {
 
         // Link all validators
         common::link_validators(&mut oracle, &validators, link, None).await;
-
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -113,21 +110,15 @@ fn test_deposit_request_single() {
                 shares[idx].clone(),
                 validators.clone(),
             );
-            let engine = Engine::new(
-                context.with_label(&uid),
-                config,
-                oracle.control(public_key.clone()),
-            )
-            .await;
+            let engine = Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
-            let (pending, recovered, resolver, broadcast, backfill) =
+            let (pending, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, resolver, broadcast, backfill);
         }
-
         // Poll metrics
         let mut num_nodes_processed_requests = 0;
         let mut num_nodes_height_reached = 0;
@@ -163,15 +154,11 @@ fn test_deposit_request_single() {
                 if metric.ends_with("validator_balance") {
                     let value = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "bls_key") {
-                        let ed_pubkey_hex = common::parse_metric_substring(metric, "ed_key")
-                            .expect("ed key missing");
+                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_deposit.withdrawal_credentials));
-                        assert_eq!(ed_pubkey_hex, test_deposit.ed25519_pubkey.to_string());
-                        let bls_pubkey_hex = hex::encode(test_deposit.bls_pubkey);
-                        assert_eq!(bls_pubkey_hex, pubkey_hex);
+                        assert_eq!(pubkey_hex, test_deposit.pubkey.to_string());
                         assert_eq!(value, test_deposit.amount);
                         num_nodes_processed_requests += 1;
                     } else {
@@ -199,7 +186,7 @@ fn test_deposit_request_single() {
         );
 
         context.auditor().state()
-    })
+    });
 }
 
 #[test_traced("INFO")]
@@ -302,19 +289,14 @@ fn test_deposit_request_top_up() {
                 shares[idx].clone(),
                 validators.clone(),
             );
-            let engine = Engine::new(
-                context.with_label(&uid),
-                config,
-                oracle.control(public_key.clone()),
-            )
-            .await;
+            let engine = Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
-            let (pending, recovered, resolver, broadcast, backfill) =
+            let (pending, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, resolver, broadcast, backfill);
         }
 
         // Poll metrics
@@ -355,15 +337,11 @@ fn test_deposit_request_top_up() {
                         continue;
                     }
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "bls_key") {
-                        let ed_pubkey_hex = common::parse_metric_substring(metric, "ed_key")
-                            .expect("ed key missing");
+                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_deposit1.withdrawal_credentials));
-                        assert_eq!(ed_pubkey_hex, test_deposit1.ed25519_pubkey.to_string());
-                        let bls_pubkey_hex = hex::encode(test_deposit1.bls_pubkey);
-                        assert_eq!(bls_pubkey_hex, pubkey_hex);
+                        assert_eq!(ed_pubkey_hex, test_deposit1.pubkey.to_string());
                         // The amount from both deposits should be added to the validator balance
                         assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
                         num_nodes_processed_requests += 1;
@@ -453,7 +431,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.bls_pubkey,
+            test_deposit.pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount,
         );
 
@@ -502,19 +480,14 @@ fn test_deposit_and_withdrawal_request_single() {
                 shares[idx].clone(),
                 validators.clone(),
             );
-            let engine = Engine::new(
-                context.with_label(&uid),
-                config,
-                oracle.control(public_key.clone()),
-            )
-            .await;
+            let engine = Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
-            let (pending, recovered, resolver, broadcast, backfill) =
+            let (pending, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, resolver, broadcast, backfill);
         }
 
         // Poll metrics
@@ -552,15 +525,11 @@ fn test_deposit_and_withdrawal_request_single() {
                 if metric.ends_with("withdrawal_validator_balance") {
                     let balance = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "bls_key") {
-                        let ed_pubkey_hex = common::parse_metric_substring(metric, "ed_key")
-                            .expect("ed key missing");
+                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_withdrawal.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.ed25519_pubkey.to_string());
-                        let bls_pubkey_hex = hex::encode(test_deposit.bls_pubkey);
-                        assert_eq!(bls_pubkey_hex, pubkey_hex);
+                        assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
                         assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
                         num_nodes_processed_requests += 1;
                     } else {
@@ -658,7 +627,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal1 = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.bls_pubkey,
+            test_deposit.pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount / 2,
         );
         let mut test_withdrawal2 = test_withdrawal1.clone();
@@ -713,19 +682,14 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 shares[idx].clone(),
                 validators.clone(),
             );
-            let engine = Engine::new(
-                context.with_label(&uid),
-                config,
-                oracle.control(public_key.clone()),
-            )
-            .await;
+            let engine = Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
-            let (pending, recovered, resolver, broadcast, backfill) =
+            let (pending, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, resolver, broadcast, backfill);
         }
 
         // Poll metrics
@@ -763,15 +727,11 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 if metric.ends_with("withdrawal_validator_balance") {
                     let balance = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "bls_key") {
-                        let ed_pubkey_hex = common::parse_metric_substring(metric, "ed_key")
-                            .expect("ed key missing");
+                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pub") {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_withdrawal1.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.ed25519_pubkey.to_string());
-                        let bls_pubkey_hex = hex::encode(test_deposit.bls_pubkey);
-                        assert_eq!(bls_pubkey_hex, pubkey_hex);
+                        assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
                         assert_eq!(balance, 0);
                         num_nodes_processed_requests += 1;
                     } else {
@@ -872,7 +832,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.bls_pubkey,
+            test_deposit.pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount,
         );
 
@@ -921,19 +881,14 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 shares[idx].clone(),
                 validators.clone(),
             );
-            let engine = Engine::new(
-                context.with_label(&uid),
-                config,
-                oracle.control(public_key.clone()),
-            )
-            .await;
+            let engine = Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
-            let (pending, recovered, resolver, broadcast, backfill) =
+            let (pending, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, resolver, broadcast, backfill);
         }
 
         // Poll metrics
@@ -980,15 +935,11 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 if metric.ends_with("withdrawal_validator_balance") {
                     let balance = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "bls_key") {
-                        let ed_pubkey_hex = common::parse_metric_substring(metric, "ed_key")
-                            .expect("ed key missing");
+                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_withdrawal.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.ed25519_pubkey.to_string());
-                        let bls_pubkey_hex = hex::encode(test_deposit.bls_pubkey);
-                        assert_eq!(bls_pubkey_hex, pubkey_hex);
+                        assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
                         assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
                         num_nodes_processed_requests += 1;
                     } else {
@@ -1088,10 +1039,10 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
             let test_withdrawal = common::create_withdrawal_request(
                 withdrawal_address,
-                test_deposit.bls_pubkey,
+                test_deposit.pubkey.as_ref().try_into().unwrap(),
                 test_deposit.amount,
             );
-            deposit_reqs.insert(hex::encode(test_deposit.bls_pubkey), test_deposit);
+            deposit_reqs.insert(hex::encode(test_deposit.pubkey.clone()), test_deposit);
             withdrawal_reqs.insert(
                 hex::encode(test_withdrawal.validator_pubkey),
                 test_withdrawal,
@@ -1149,19 +1100,14 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 shares[idx].clone(),
                 validators.clone(),
             );
-            let engine = Engine::new(
-                context.with_label(&uid),
-                config,
-                oracle.control(public_key.clone()),
-            )
-            .await;
+            let engine = Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
-            let (pending, recovered, resolver, broadcast, backfill) =
+            let (pending, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, resolver, broadcast, backfill);
         }
 
         // Poll metrics
@@ -1197,19 +1143,15 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
                 if metric.ends_with("deposit_validator_balance") {
                     let balance = value.parse::<u64>().unwrap();
-                    let bls_key_hex =
-                        common::parse_metric_substring(metric, "bls_key").expect("bls key missing");
-
-                    let deposit_req = deposit_reqs.get(&bls_key_hex).unwrap();
-
                     let ed_pubkey_hex =
-                        common::parse_metric_substring(metric, "ed_key").expect("ed key missing");
+                        common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
+
+                    let deposit_req = deposit_reqs.get(&ed_pubkey_hex).unwrap();
+
                     let creds =
                         common::parse_metric_substring(metric, "creds").expect("creds missing");
                     assert_eq!(creds, hex::encode(deposit_req.withdrawal_credentials));
-                    assert_eq!(ed_pubkey_hex, deposit_req.ed25519_pubkey.to_string());
-                    let bls_pubkey_hex = hex::encode(deposit_req.bls_pubkey);
-                    assert_eq!(bls_pubkey_hex, bls_key_hex);
+                    assert_eq!(ed_pubkey_hex, deposit_req.pubkey.to_string());
                     assert_eq!(balance, deposit_req.amount);
                 }
 
@@ -1225,8 +1167,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
                     let balance = value.parse::<u64>().unwrap();
                     assert_eq!(creds, hex::encode(withdrawal_req.source_address));
-                    assert_eq!(ed_pubkey_hex, deposit_req.ed25519_pubkey.to_string());
-                    assert_eq!(bls_key_hex, hex::encode(withdrawal_req.validator_pubkey));
+                    assert_eq!(ed_pubkey_hex, deposit_req.pubkey.to_string());
                     assert_eq!(balance, deposit_req.amount - withdrawal_req.amount);
                 }
                 if num_nodes_height_reached >= n {

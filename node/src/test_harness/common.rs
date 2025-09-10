@@ -69,26 +69,22 @@ pub async fn register_validators(
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
-        (Sender<PublicKey>, Receiver<PublicKey>),
     ),
 > {
     let mut registrations = HashMap::new();
     for validator in validators.iter() {
         let (pending_sender, pending_receiver) =
             oracle.register(validator.clone(), 0).await.unwrap();
-        let (recovered_sender, recovered_receiver) =
-            oracle.register(validator.clone(), 1).await.unwrap();
         let (resolver_sender, resolver_receiver) =
-            oracle.register(validator.clone(), 2).await.unwrap();
+            oracle.register(validator.clone(), 1).await.unwrap();
         let (broadcast_sender, broadcast_receiver) =
-            oracle.register(validator.clone(), 3).await.unwrap();
+            oracle.register(validator.clone(), 2).await.unwrap();
         let (backfill_sender, backfill_receiver) =
-            oracle.register(validator.clone(), 4).await.unwrap();
+            oracle.register(validator.clone(), 3).await.unwrap();
         registrations.insert(
             validator.clone(),
             (
                 (pending_sender, pending_receiver),
-                (recovered_sender, recovered_receiver),
                 (resolver_sender, resolver_receiver),
                 (broadcast_sender, broadcast_receiver),
                 (backfill_sender, backfill_receiver),
@@ -171,19 +167,14 @@ pub fn run_until_height(
                 validators.clone(),
             );
 
-            let engine = Engine::new(
-                context.with_label(&uid),
-                config,
-                oracle.control(public_key.clone()),
-            )
-            .await;
+            let engine = Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
-            let (pending, recovered, resolver, broadcast, backfill) =
+            let (pending, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, resolver, broadcast, backfill);
         }
 
         // Poll metrics
@@ -289,21 +280,15 @@ pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
     // Create deterministic but seed-based keys
     // Generate a valid ED25519 private key using the seed
     let ed25519_private_key = PrivateKey::from_seed(seed);
-    let ed25519_pubkey = ed25519_private_key.public_key();
+    let pubkey = ed25519_private_key.public_key();
 
-    let mut bls_pubkey = [0u8; 48];
-    for j in 0..48 {
-        bls_pubkey[j] = ((seed + j as u64 + 33) % 256) as u8;
-    }
-
-    let mut signature = [0u8; 96];
-    for j in 0..96 {
+    let mut signature = [0u8; 64];
+    for j in 0..64 {
         signature[j] = ((seed + j as u64 + 81) % 256) as u8;
     }
 
     DepositRequest {
-        ed25519_pubkey,
-        bls_pubkey,
+        pubkey,
         withdrawal_credentials,
         amount,
         signature,
@@ -322,7 +307,7 @@ pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
 /// * `WithdrawalRequest` - A withdrawal request with the specified data
 pub fn create_withdrawal_request(
     source_address: Address,
-    validator_pubkey: [u8; 48],
+    validator_pubkey: [u8; 32],
     amount: u64,
 ) -> WithdrawalRequest {
     WithdrawalRequest {

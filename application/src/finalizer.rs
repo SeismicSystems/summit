@@ -332,9 +332,9 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                             let gauge: Gauge = Gauge::default();
                                             gauge.set(validator_balance as i64);
                                             ctx.register(
-                                                format!("<registry>{}</registry><creds>{}</creds><ed_key>{}</ed_key><bls_key>{}</bls_key>_deposit_validator_balance",
+                                                format!("<registry>{}</registry><creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
                                                 !account_exists && validator_balance >= self.validator_minimum_stake,
-                                                hex::encode(request.withdrawal_credentials), request.pubkey, hex::encode(&request.pubkey)),
+                                                hex::encode(request.withdrawal_credentials), request.pubkey),
                                                 "Validator balance",
                                                 gauge
                                             );
@@ -365,8 +365,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         let gauge: Gauge = Gauge::default();
                                         gauge.set(account.balance as i64);
                                         ctx.register(
-                                            format!("<creds>{}</creds><ed_key>{:?}</ed_key><bls_key>{:?}</bls_key>_withdrawal_validator_balance",
-                                            hex::encode(account.withdrawal_credentials), pending_withdrawal.pubkey, hex::encode(pending_withdrawal.pubkey)),
+                                            format!("<creds>{}</creds><pubkey>{:?}</pubkey>_withdrawal_validator_balance",
+                                            hex::encode(account.withdrawal_credentials), pending_withdrawal.pubkey),
                                             "Validator balance",
                                             gauge
                                         );

@@ -16,10 +16,9 @@ use crate::keys::read_ed_key_from_path;
 
 /* DEFAULTS */
 pub const PENDING_CHANNEL: u32 = 0;
-pub const RECOVERED_CHANNEL: u32 = 1;
-pub const RESOLVER_CHANNEL: u32 = 2;
-pub const BROADCASTER_CHANNEL: u32 = 3;
-pub const BACKFILLER_CHANNEL: u32 = 4;
+pub const RESOLVER_CHANNEL: u32 = 1;
+pub const BROADCASTER_CHANNEL: u32 = 2;
+pub const BACKFILLER_CHANNEL: u32 = 3;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const FETCH_CONCURRENT: usize = 4;
