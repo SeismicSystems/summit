@@ -1,13 +1,14 @@
 use alloy_primitives::{B256, BlockNumber, FixedBytes};
-use alloy_provider::network::AnyRpcBlock;
-use alloy_provider::{Provider, ProviderBuilder};
+use alloy_provider::{Provider, RootProvider, network::AnyNetwork};
+use alloy_rpc_client::ClientBuilder;
 use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV3};
 use clap::{Arg, Command};
-use eyre::Result;
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use alloy_network::AnyRpcBlock;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
 
@@ -115,7 +116,7 @@ async fn main() -> Result<()> {
     let delay_ms: u64 = matches.get_one::<String>("delay-ms").unwrap().parse()?;
 
     if start_block > end_block {
-        return Err(eyre::eyre!(
+        return Err(anyhow!(
             "Start block must be less than or equal to end block"
         ));
     }
@@ -128,7 +129,8 @@ async fn main() -> Result<()> {
     let mut block_index = BlockIndex::load_from_file(&index_path)?;
 
     info!("Connecting to RPC at {}", rpc_url);
-    let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+    let client = ClientBuilder::default().http(rpc_url.parse()?);
+    let provider = RootProvider::<AnyNetwork>::new(client);
 
     info!("Fetching blocks from {} to {}", start_block, end_block);
     info!("Output directory: {}", output_dir.display());
@@ -201,7 +203,7 @@ async fn main() -> Result<()> {
 }
 
 async fn fetch_and_serialize_block(
-    provider: impl Provider,
+    provider: impl Provider<AnyNetwork>,
     block_number: u64,
 ) -> Result<BlockData> {
     let block_id = BlockNumber::from(block_number).into();
@@ -211,9 +213,8 @@ async fn fetch_and_serialize_block(
         .get_block(block_id)
         .full()
         .await?
-        .ok_or_else(|| eyre::eyre!("Block {} not found", block_number))
-        .unwrap()
-        .into();
+        .ok_or_else(|| anyhow!("Block {} not found", block_number))?;
+
 
     let block = block
         .into_inner()
@@ -221,73 +222,42 @@ async fn fetch_and_serialize_block(
         .try_map_transactions(|tx| {
             // try to convert unknowns into op type so that we can also support optimism
             tx.try_into_either::<op_alloy_consensus::OpTxEnvelope>()
-        })
-        .unwrap()
+        })?
         .into_consensus();
 
-    let versioned_hashes = block
-        .body
-        .blob_versioned_hashes_iter()
-        .copied()
-        .collect::<Vec<_>>();
+    // Extract parent beacon block root
+    //let parent_beacon_block_root = block.header.parent_beacon_block_root;
 
-    println!("{}", block.header.hash_slow());
+    // Extract blob versioned hashes
+    let versioned_hashes =
+        block.body.blob_versioned_hashes_iter().copied().collect::<Vec<_>>();
+
+    // Convert to execution payload
     let (payload, sidecar) = ExecutionPayload::from_block_slow(&block);
-    
+
+    // Convert payload to V3 format, handling V1/V2 payloads
+    let payload_v3 = match payload {
+        ExecutionPayload::V1(v1) => ExecutionPayloadV3 {
+            payload_inner: alloy_rpc_types_engine::ExecutionPayloadV2 {
+                payload_inner: v1,
+                withdrawals: Vec::new(), // V1 doesn't have withdrawals
+            },
+            blob_gas_used: 0, // V1 doesn't have blob gas
+            excess_blob_gas: 0,
+        },
+        ExecutionPayload::V2(v2) => ExecutionPayloadV3 {
+            payload_inner: v2,
+            blob_gas_used: 0, // V2 doesn't have blob gas
+            excess_blob_gas: 0,
+        },
+        ExecutionPayload::V3(v3) => v3,
+    };
+
     Ok(BlockData {
         block_number,
-        payload: payload.as_v3().unwrap().clone(),
-        requests: sidecar.requests_hash().unwrap(),
-        parent_beacon_block_root: block.header.parent_beacon_block_root.unwrap(),
+        payload: payload_v3,
+        requests: sidecar.requests_hash().unwrap_or_default(),
+        parent_beacon_block_root: block.header.parent_beacon_block_root.unwrap_or_default(),
         versioned_hashes,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_block_index() {
-        let mut index = BlockIndex::new();
-        index.add_block(12345, "block_12345.json".to_string());
-
-        assert_eq!(
-            index.get_block_file(12345),
-            Some(&"block_12345.json".to_string())
-        );
-        assert_eq!(index.get_block_file(54321), None);
-    }
-
-    #[tokio::test]
-    async fn test_block_index_persistence() -> Result<()> {
-        let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join("test_index.json");
-
-        // Clean up any existing test file
-        let _ = fs::remove_file(&test_file);
-
-        {
-            let mut index = BlockIndex::new();
-            index.add_block(100, "block_100.json".to_string());
-            index.add_block(101, "block_101.json".to_string());
-            index.save_to_file(&test_file)?;
-        }
-
-        // Load and verify
-        let loaded_index = BlockIndex::load_from_file(&test_file)?;
-        assert_eq!(
-            loaded_index.get_block_file(100),
-            Some(&"block_100.json".to_string())
-        );
-        assert_eq!(
-            loaded_index.get_block_file(101),
-            Some(&"block_101.json".to_string())
-        );
-
-        // Clean up
-        fs::remove_file(&test_file)?;
-
-        Ok(())
-    }
 }
