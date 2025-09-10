@@ -11,6 +11,11 @@ path = "src/bin/dkg_testnet.rs"
 name = "testnet"
 path = "src/bin/testnet.rs"
 
+[[bin]]
+name = "block-fetcher"
+path = "src/bin/block_fetcher.rs"
+required-features = ["prom"]
+
 [dependencies]
 summit-types.workspace = true
 summit-application.workspace = true
