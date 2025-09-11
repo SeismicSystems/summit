@@ -31,17 +31,10 @@ async fn main() -> Result<()> {
                 .default_value(GENESIS_HASH),
         )
         .arg(
-            Arg::new("engine-port")
-                .long("engine-port")
-                .value_name("PORT")
-                .help("Engine API port")
-                .default_value("8551"),
-        )
-        .arg(
-            Arg::new("jwt-secret")
-                .long("jwt-secret")
-                .value_name("SECRET")
-                .help("JWT secret for engine API authentication")
+            Arg::new("engine-ipc-path")
+                .long("engine-ipc-path")
+                .value_name("PATH")
+                .help("Engine API IPC socket path")
                 .required(true),
         )
         .arg(
@@ -55,13 +48,10 @@ async fn main() -> Result<()> {
 
     let block_dir = PathBuf::from(matches.get_one::<String>("block-dir").unwrap());
     let genesis_hash_str = matches.get_one::<String>("genesis-hash").unwrap();
-    let engine_port: u16 = matches.get_one::<String>("engine-port").unwrap().parse()?;
-    let jwt_secret = matches.get_one::<String>("jwt-secret").unwrap();
+    let engine_ipc_path = matches.get_one::<String>("engine-ipc-path").unwrap().to_string();
     let num_blocks: u64 = matches.get_one::<String>("num-blocks").unwrap().parse()?;
 
-    let engine_url = format!("http://localhost:{}", engine_port);
-
-    let client = HistoricalEngineClient::new(engine_url, jwt_secret, block_dir);
+    let client = HistoricalEngineClient::new(engine_ipc_path, block_dir).await;
 
     // Load and commit blocks to Reth
     let genesis_hash: [u8; 32] = from_hex_formatted(genesis_hash_str)

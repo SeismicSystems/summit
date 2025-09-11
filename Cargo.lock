@@ -610,13 +610,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2379d998f46d422ec8ef2b61603bc28cda931e5e267aea1ebe71f62da61d101"
 dependencies = [
  "alloy-json-rpc",
- "alloy-rpc-types-engine",
  "alloy-transport",
  "http-body-util",
  "hyper",
  "hyper-tls",
  "hyper-util",
- "jsonwebtoken",
  "reqwest",
  "serde_json",
  "tower",
@@ -4559,7 +4557,7 @@ dependencies = [
 [[package]]
 name = "reth-metrics"
 version = "1.4.3"
-source = "git+https://github.com/SeismicSystems/seismic-reth.git?branch=seismic#2072d1c68c3b8b32caa0491a9c982dedbfd1dc46"
+source = "git+https://github.com/SeismicSystems/seismic-reth.git?branch=seismic#6ca2308a728a6fd8d44f13b1397737d6f018597c"
 dependencies = [
  "metrics",
  "metrics-derive",
@@ -4568,7 +4566,7 @@ dependencies = [
 [[package]]
 name = "reth-tasks"
 version = "1.4.3"
-source = "git+https://github.com/SeismicSystems/seismic-reth.git?branch=seismic#2072d1c68c3b8b32caa0491a9c982dedbfd1dc46"
+source = "git+https://github.com/SeismicSystems/seismic-reth.git?branch=seismic#6ca2308a728a6fd8d44f13b1397737d6f018597c"
 dependencies = [
  "auto_impl",
  "dyn-clone",
@@ -5323,9 +5321,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-provider",
- "alloy-rpc-client",
  "alloy-rpc-types-engine",
- "alloy-transport-http",
  "alloy-transport-ipc",
  "anyhow",
  "bytes",
@@ -5339,7 +5335,6 @@ dependencies = [
  "commonware-utils",
  "futures",
  "governor",
- "http-body-util",
  "metrics",
  "op-alloy-network",
  "op-alloy-rpc-types-engine",
@@ -5348,7 +5343,6 @@ dependencies = [
  "serde",
  "serde_json",
  "summit-types",
- "tower",
  "tracing",
 ]
 

@@ -121,24 +121,18 @@ pub mod benchmarking {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
     use alloy_primitives::{B256, FixedBytes, U256};
-    use alloy_provider::{Provider, RootProvider, ext::EngineApi};
+    use alloy_provider::{Provider, RootProvider, ext::EngineApi, ProviderBuilder};
     use alloy_rpc_types_engine::{
         ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3,
-        ForkchoiceState, JwtSecret, PayloadId, PayloadStatus,
+        ForkchoiceState, PayloadId, PayloadStatus,
     };
-    use alloy_transport_http::{
-        AuthLayer, AuthService, Http, HyperClient,
-        hyper::body::Bytes as HyperBytes,
-        hyper_util::{client::legacy::Client, rt::TokioExecutor},
-    };
-    use http_body_util::Full;
+    use alloy_transport_ipc::IpcConnect;
     use op_alloy_network::Optimism;
     use serde::{Deserialize, Serialize};
     use std::fs;
     use std::path::PathBuf;
     use summit_types::utils::benchmarking::BlockIndex;
     use summit_types::{Block, Digest};
-    use tower::ServiceBuilder;
 
     #[derive(Clone)]
     pub struct HistoricalEngineClient {
@@ -148,32 +142,9 @@ pub mod benchmarking {
     }
 
     impl HistoricalEngineClient {
-        pub fn new(engine_url: String, jwt_secret: &str, block_dir: PathBuf) -> Self {
-            let secret = JwtSecret::from_hex(jwt_secret).unwrap();
-            let url = engine_url.parse().unwrap();
-
-            // todo(dalton): bringing in Full here as a convenience at the moment. If i dont end up using any of the benefits here we can switch to just Bytes and drop dep
-            let hyper_client =
-                Client::builder(TokioExecutor::new()).build_http::<Full<HyperBytes>>();
-            let service = ServiceBuilder::new()
-                .layer(AuthLayer::new(secret))
-                .service(hyper_client);
-
-            let layer_transport: HyperClient<
-                Full<HyperBytes>,
-                AuthService<
-                    Client<
-                        alloy_transport_http::hyper_util::client::legacy::connect::HttpConnector,
-                        Full<HyperBytes>,
-                    >,
-                >,
-            > = HyperClient::with_service(service);
-
-            let http_hyper = Http::with_client(layer_transport, url);
-
-            let rpc_client = alloy_rpc_client::RpcClient::new(http_hyper, true);
-
-            let provider = RootProvider::<Optimism>::new(rpc_client);
+        pub async fn new(engine_ipc_path: String, block_dir: PathBuf) -> Self {
+            let ipc = IpcConnect::new(engine_ipc_path);
+            let provider: RootProvider<Optimism> = ProviderBuilder::default().connect_ipc(ipc).await.unwrap();
 
             let index_path = block_dir.join("index.json");
             let block_index =

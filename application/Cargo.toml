@@ -22,16 +22,11 @@ commonware-resolver.workspace = true
 futures.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-types-engine.workspace = true
-alloy-transport-http.workspace = true
-alloy-rpc-client.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 governor.workspace = true
-tower.workspace = true
 rand.workspace = true
 alloy-transport-ipc.workspace = true
-
-http-body-util = "0.1.3"
 
 # Only used for tests, but it cannot be in dep-dependencies, because
 # the test flag is only active in application for tests that are run inside of application.
