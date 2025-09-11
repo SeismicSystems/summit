@@ -121,7 +121,7 @@ pub mod benchmarking {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
     use alloy_primitives::{B256, FixedBytes, U256};
-    use alloy_provider::{Provider, RootProvider, ext::EngineApi, ProviderBuilder};
+    use alloy_provider::{Provider, ProviderBuilder, RootProvider, ext::EngineApi};
     use alloy_rpc_types_engine::{
         ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3,
         ForkchoiceState, PayloadId, PayloadStatus,
@@ -144,7 +144,8 @@ pub mod benchmarking {
     impl HistoricalEngineClient {
         pub async fn new(engine_ipc_path: String, block_dir: PathBuf) -> Self {
             let ipc = IpcConnect::new(engine_ipc_path);
-            let provider: RootProvider<Optimism> = ProviderBuilder::default().connect_ipc(ipc).await.unwrap();
+            let provider: RootProvider<Optimism> =
+                ProviderBuilder::default().connect_ipc(ipc).await.unwrap();
 
             let index_path = block_dir.join("index.json");
             let block_index =

@@ -48,7 +48,10 @@ async fn main() -> Result<()> {
 
     let block_dir = PathBuf::from(matches.get_one::<String>("block-dir").unwrap());
     let genesis_hash_str = matches.get_one::<String>("genesis-hash").unwrap();
-    let engine_ipc_path = matches.get_one::<String>("engine-ipc-path").unwrap().to_string();
+    let engine_ipc_path = matches
+        .get_one::<String>("engine-ipc-path")
+        .unwrap()
+        .to_string();
     let num_blocks: u64 = matches.get_one::<String>("num-blocks").unwrap().parse()?;
 
     let client = HistoricalEngineClient::new(engine_ipc_path, block_dir).await;

@@ -20,6 +20,8 @@ use std::{
     str::FromStr as _,
 };
 use summit_application::engine_client::RethEngineClient;
+#[cfg(feature = "bench")]
+use summit_application::engine_client::benchmarking::HistoricalEngineClient;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
@@ -67,6 +69,10 @@ pub struct RunFlags {
     /// Path to the engine IPC socket
     #[arg(long, default_value_t = DEFAULT_ENGINE_IPC_PATH.into())]
     pub engine_ipc_path: String,
+    /// Path to the directory containing historical blocks for benchmarking
+    #[cfg(feature = "bench")]
+    #[arg(long)]
+    pub bench_block_dir: Option<String>,
     /// Port Consensus runs on
     #[arg(long, default_value_t = 18551)]
     pub port: u16,
@@ -179,6 +185,21 @@ impl Command {
 
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
                 .expect("failed to expand engine ipc path");
+
+            #[cfg(feature = "bench")]
+            let engine_client = {
+                let block_dir = flags
+                    .bench_block_dir
+                    .as_ref()
+                    .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+                    .expect("bench_block_dir is required when using bench feature");
+                HistoricalEngineClient::new(
+                    engine_ipc_path.to_string_lossy().to_string(),
+                    block_dir,
+                )
+                .await
+            };
+            #[cfg(not(feature = "bench"))]
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
