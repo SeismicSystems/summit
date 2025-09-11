@@ -27,7 +27,7 @@ pub mod benchmarking {
     use std::fs;
     use std::path::Path;
 
-    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[derive(Clone, Debug, Serialize, Deserialize, Default)]
     pub struct BlockIndex {
         block_num_to_filename: HashMap<u64, String>,
         hash_to_block_num: HashMap<B256, u64>,
@@ -35,10 +35,7 @@ pub mod benchmarking {
 
     impl BlockIndex {
         pub fn new() -> Self {
-            Self {
-                block_num_to_filename: Default::default(),
-                hash_to_block_num: Default::default(),
-            }
+            Self::default()
         }
 
         pub fn add_block(&mut self, block_number: u64, block_hash: B256, filename: String) {

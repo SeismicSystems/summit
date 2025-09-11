@@ -68,10 +68,7 @@ async fn main() -> Result<()> {
         finalized_block_hash: genesis_hash.into(),
     };
     for _ in 0..num_blocks {
-        match client
-            .start_building_block(forkchoice.clone(), 0, vec![])
-            .await
-        {
+        match client.start_building_block(forkchoice, 0, vec![]).await {
             Some(payload_id) => {
                 let payload = client.get_payload(payload_id).await;
 
