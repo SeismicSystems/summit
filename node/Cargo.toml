@@ -91,6 +91,7 @@ reqwest.workspace = true
 reth-tasks = { git = "https://github.com/SeismicSystems/seismic-reth.git", branch = "seismic" }
 socket2.workspace = true
 tokio = { workspace = true, features = ["full", "rt-multi-thread", "time"] }
+alloy-signer.workspace = true
 
 [features]
 prom = [
