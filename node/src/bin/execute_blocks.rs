@@ -1,26 +1,70 @@
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV4, ForkchoiceState};
 use anyhow::Result;
+use clap::{Arg, Command};
 use commonware_utils::from_hex_formatted;
 use std::path::PathBuf;
 use summit_application::engine_client::EngineClient;
 use summit_application::engine_client::benchmarking::HistoricalEngineClient;
 use summit_types::{Block, Digest};
 
-const BLOCK_DIR: &str = "/home/matthias/Documents/base-blocks";
 const GENESIS_HASH: &str = "0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd";
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let engine_url = "http://localhost:8551";
-    let jwt_secret = "a0e59655e8a3017d0d7db047f1d138fbde22afd2a7e5345bd41fda618850539a";
+    let matches = Command::new("Execute Blocks")
+        .version("1.0")
+        .about("Executes historical blocks through op-reth engine API")
+        .arg(
+            Arg::new("block-dir")
+                .long("block-dir")
+                .value_name("PATH")
+                .help("Directory containing block files")
+                .required(true),
+        )
+        .arg(
+            Arg::new("genesis-hash")
+                .long("genesis-hash")
+                .value_name("HASH")
+                .help("Genesis block hash")
+                .default_value(GENESIS_HASH),
+        )
+        .arg(
+            Arg::new("engine-port")
+                .long("engine-port")
+                .value_name("PORT")
+                .help("Engine API port")
+                .default_value("8551"),
+        )
+        .arg(
+            Arg::new("jwt-secret")
+                .long("jwt-secret")
+                .value_name("SECRET")
+                .help("JWT secret for engine API authentication")
+                .required(true),
+        )
+        .arg(
+            Arg::new("num-blocks")
+                .long("num-blocks")
+                .value_name("COUNT")
+                .help("Number of blocks to process")
+                .default_value("50000"),
+        )
+        .get_matches();
 
-    let client =
-        HistoricalEngineClient::new(engine_url.to_string(), jwt_secret, PathBuf::from(BLOCK_DIR));
+    let block_dir = PathBuf::from(matches.get_one::<String>("block-dir").unwrap());
+    let genesis_hash_str = matches.get_one::<String>("genesis-hash").unwrap();
+    let engine_port: u16 = matches.get_one::<String>("engine-port").unwrap().parse()?;
+    let jwt_secret = matches.get_one::<String>("jwt-secret").unwrap();
+    let num_blocks: u64 = matches.get_one::<String>("num-blocks").unwrap().parse()?;
+
+    let engine_url = format!("http://localhost:{}", engine_port);
+
+    let client = HistoricalEngineClient::new(engine_url, jwt_secret, block_dir);
 
     // Load and commit blocks to Reth
-    let genesis_hash: [u8; 32] = from_hex_formatted(GENESIS_HASH)
+    let genesis_hash: [u8; 32] = from_hex_formatted(genesis_hash_str)
         .unwrap()
         .try_into()
         .unwrap();
@@ -30,7 +74,7 @@ async fn main() -> Result<()> {
         safe_block_hash: genesis_hash.into(),
         finalized_block_hash: genesis_hash.into(),
     };
-    for _ in 0..50000 {
+    for _ in 0..num_blocks {
         match client
             .start_building_block(forkchoice.clone(), 0, vec![])
             .await
