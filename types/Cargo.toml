@@ -26,4 +26,4 @@ bytes.workspace = true
 serde_json = { workspace = true, optional = true }
 
 [features]
-prom = ["serde_json"]
+bench = ["serde_json"]

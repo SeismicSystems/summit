@@ -14,12 +14,12 @@ path = "src/bin/testnet.rs"
 [[bin]]
 name = "block-fetcher"
 path = "src/bin/block_fetcher.rs"
-required-features = ["prom"]
+required-features = ["bench"]
 
 [[bin]]
 name = "execute-blocks"
 path = "src/bin/execute_blocks.rs"
-required-features = ["prom"]
+required-features = ["bench"]
 
 [dependencies]
 summit-types.workspace = true
@@ -45,29 +45,15 @@ tokio = { version = "1.45.1", features = ["sync"] }
 
 # testnet bin deps 
 alloy-node-bindings.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
 alloy-network = { workspace = true }
 alloy-primitives.workspace = true
-alloy-rpc-types = { workspace = true }
 alloy-provider = { version = "1.0.30", features = ["reqwest-rustls-tls"] }
-alloy-transport-http.workspace = true
 alloy-rpc-client.workspace = true
-alloy-consensus.workspace = true
 alloy-rpc-types-engine = { version = "1.0.9", features = ["serde"] }
-op-alloy-rpc-types-engine = "0.19.1"
-op-alloy = { version = "0.19.1", features = ["provider"] }
 op-alloy-consensus = { version = "0.19.1", default-features = false, features = ["alloy-compat"] }
 tracing-subscriber = "0.3.19"
-op-alloy-network = "0.19.1"
-alloy-rlp = "0.3.12"
-
-alloy = { version = "1", features = ["full"] }
-http-body-util = "0.1.3"
-alloy-eips.workspace = true
 
 
-ethereum_ssz.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -120,3 +106,4 @@ prom = [
   "procfs",
 ]
 jemalloc = ["dep:tikv-jemalloc-ctl"]
+bench = []

@@ -1,16 +1,16 @@
+use alloy_network::AnyRpcBlock;
 use alloy_primitives::{B256, BlockNumber, FixedBytes};
 use alloy_provider::{Provider, RootProvider, network::AnyNetwork};
 use alloy_rpc_client::ClientBuilder;
 use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV3};
+use anyhow::{Result, anyhow};
 use clap::{Arg, Command};
-use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use alloy_network::AnyRpcBlock;
+use summit_types::utils::benchmarking::BlockIndex;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
-use summit_types::utils::benchmarking::BlockIndex;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BlockData {
@@ -222,7 +222,6 @@ async fn fetch_and_serialize_block(
         .await?
         .ok_or_else(|| anyhow!("Block {} not found", block_number))?;
 
-
     let block = block
         .into_inner()
         .map_header(|header| header.map(|h| h.into_header_with_defaults()))
@@ -236,8 +235,11 @@ async fn fetch_and_serialize_block(
     //let parent_beacon_block_root = block.header.parent_beacon_block_root;
 
     // Extract blob versioned hashes
-    let versioned_hashes =
-        block.body.blob_versioned_hashes_iter().copied().collect::<Vec<_>>();
+    let versioned_hashes = block
+        .body
+        .blob_versioned_hashes_iter()
+        .copied()
+        .collect::<Vec<_>>();
 
     // Convert to execution payload
     let (payload, sidecar) = ExecutionPayload::from_block_slow(&block);

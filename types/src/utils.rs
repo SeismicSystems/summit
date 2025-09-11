@@ -18,14 +18,14 @@ pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
     Ok(path_buf)
 }
 
-#[cfg(feature = "prom")]
+#[cfg(feature = "bench")]
 pub mod benchmarking {
-    use std::collections::HashMap;
-    use std::fs;
-    use std::path::Path;
-    use std::default::Default;
     use alloy_primitives::B256;
     use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use std::default::Default;
+    use std::fs;
+    use std::path::Path;
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct BlockIndex {
@@ -67,7 +67,10 @@ pub mod benchmarking {
             if path.as_ref().exists() {
                 let json = fs::read_to_string(path)?;
                 let block_index: Self = serde_json::from_str(&json)?;
-                assert_eq!(block_index.hash_to_block_num.len(), block_index.block_num_to_filename.len());
+                assert_eq!(
+                    block_index.hash_to_block_num.len(),
+                    block_index.block_num_to_filename.len()
+                );
                 Ok(block_index)
             } else {
                 Ok(Self::new())
@@ -75,4 +78,3 @@ pub mod benchmarking {
         }
     }
 }
-
