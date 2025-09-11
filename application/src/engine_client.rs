@@ -160,7 +160,6 @@ pub mod benchmarking {
     }
 
     impl EngineClient for HistoricalEngineClient {
-        // Custom implementation without the EngineClient trait
         async fn start_building_block(
             &self,
             fork_choice_state: ForkchoiceState,
@@ -181,7 +180,6 @@ pub mod benchmarking {
         }
 
         async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
-            //let block_num = u64::from_le_bytes(payload_id.0.into()) + STARTING_HISTORICAL_BLOCK;
             let block_num = u64::from_le_bytes(payload_id.0.into());
             let filename = format!("block_{block_num}.json");
 
