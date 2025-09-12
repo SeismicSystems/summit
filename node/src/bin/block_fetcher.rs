@@ -4,13 +4,44 @@ use alloy_provider::{Provider, RootProvider, network::AnyNetwork};
 use alloy_rpc_client::ClientBuilder;
 use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV3};
 use anyhow::{Result, anyhow};
-use clap::{Arg, Command};
+use clap::{Arg, Command, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use summit_types::utils::benchmarking::BlockIndex;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Fetch blocks from RPC endpoint
+    Fetch {
+        /// RPC endpoint URL
+        #[arg(long)]
+        rpc_url: String,
+        /// Starting block number
+        #[arg(long)]
+        start_block: u64,
+        /// Ending block number
+        #[arg(long)]
+        end_block: u64,
+        /// Output directory for block files
+        #[arg(long, default_value = "./blocks")]
+        output_dir: String,
+        /// Number of blocks to process in parallel
+        #[arg(long, default_value = "10")]
+        batch_size: usize,
+        /// Delay between batches in milliseconds
+        #[arg(long, default_value = "100")]
+        delay_ms: u64,
+    },
+    /// Verify the block index
+    Verify {
+        /// Directory containing block files
+        #[arg(long)]
+        block_dir: String,
+    },
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BlockData {
@@ -25,66 +56,87 @@ struct BlockData {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let matches = Command::new("Block Fetcher")
+    let cli = Command::new("Block Fetcher")
         .version("1.0")
-        .about("Fetches historical Ethereum blocks from RPC and saves them to disk")
-        .arg(
-            Arg::new("rpc-url")
-                .long("rpc-url")
-                .value_name("URL")
-                .help("RPC endpoint URL")
-                .required(true),
+        .about("Fetches historical blocks and creates zip archives")
+        .subcommand_required(true)
+        .subcommand(
+            Command::new("fetch")
+                .about("Fetch blocks from RPC endpoint")
+                .arg(Arg::new("rpc-url").long("rpc-url").required(true))
+                .arg(Arg::new("start-block").long("start-block").required(true))
+                .arg(Arg::new("end-block").long("end-block").required(true))
+                .arg(
+                    Arg::new("output-dir")
+                        .long("output-dir")
+                        .default_value("./blocks"),
+                )
+                .arg(
+                    Arg::new("batch-size")
+                        .long("batch-size")
+                        .default_value("10"),
+                )
+                .arg(Arg::new("delay-ms").long("delay-ms").default_value("100")),
         )
-        .arg(
-            Arg::new("start-block")
-                .long("start-block")
-                .value_name("NUMBER")
-                .help("Starting block number")
-                .required(true),
-        )
-        .arg(
-            Arg::new("end-block")
-                .long("end-block")
-                .value_name("NUMBER")
-                .help("Ending block number")
-                .required(true),
-        )
-        .arg(
-            Arg::new("output-dir")
-                .long("output-dir")
-                .value_name("PATH")
-                .help("Output directory for block files")
-                .default_value("./blocks"),
-        )
-        .arg(
-            Arg::new("batch-size")
-                .long("batch-size")
-                .value_name("SIZE")
-                .help("Number of blocks to process in parallel")
-                .default_value("10"),
-        )
-        .arg(
-            Arg::new("delay-ms")
-                .long("delay-ms")
-                .value_name("MS")
-                .help("Delay between batches in milliseconds")
-                .default_value("100"),
-        )
-        .get_matches();
+        .subcommand(
+            Command::new("verify")
+                .about("Build a zip file from block directory")
+                .arg(Arg::new("block-dir").long("block-dir").required(true)),
+        );
 
-    let rpc_url = matches.get_one::<String>("rpc-url").unwrap();
-    let start_block: u64 = matches.get_one::<String>("start-block").unwrap().parse()?;
-    let end_block: u64 = matches.get_one::<String>("end-block").unwrap().parse()?;
-    let output_dir = PathBuf::from(matches.get_one::<String>("output-dir").unwrap());
-    let batch_size: usize = matches.get_one::<String>("batch-size").unwrap().parse()?;
-    let delay_ms: u64 = matches.get_one::<String>("delay-ms").unwrap().parse()?;
+    let matches = cli.get_matches();
 
-    if start_block > end_block {
-        return Err(anyhow!(
-            "Start block must be less than or equal to end block"
-        ));
+    match matches.subcommand() {
+        Some(("fetch", sub_matches)) => {
+            let rpc_url = sub_matches.get_one::<String>("rpc-url").unwrap();
+            let start_block: u64 = sub_matches
+                .get_one::<String>("start-block")
+                .unwrap()
+                .parse()?;
+            let end_block: u64 = sub_matches
+                .get_one::<String>("end-block")
+                .unwrap()
+                .parse()?;
+            let output_dir = PathBuf::from(sub_matches.get_one::<String>("output-dir").unwrap());
+            let batch_size: usize = sub_matches
+                .get_one::<String>("batch-size")
+                .unwrap()
+                .parse()?;
+            let delay_ms: u64 = sub_matches.get_one::<String>("delay-ms").unwrap().parse()?;
+
+            if start_block > end_block {
+                return Err(anyhow!(
+                    "Start block must be less than or equal to end block"
+                ));
+            }
+
+            fetch_blocks(
+                rpc_url,
+                start_block,
+                end_block,
+                output_dir,
+                batch_size,
+                delay_ms,
+            )
+            .await
+        }
+        Some(("verify", sub_matches)) => {
+            let block_dir = sub_matches.get_one::<String>("block-dir").unwrap();
+
+            verify(block_dir).await
+        }
+        _ => unreachable!(),
     }
+}
 
+async fn fetch_blocks(
+    rpc_url: &str,
+    start_block: u64,
+    end_block: u64,
+    output_dir: PathBuf,
+    batch_size: usize,
+    delay_ms: u64,
+) -> Result<()> {
     // Create output directory
     fs::create_dir_all(&output_dir)?;
 
@@ -231,4 +283,12 @@ async fn fetch_and_serialize_block(
         parent_beacon_block_root: block.header.parent_beacon_block_root.unwrap_or_default(),
         versioned_hashes,
     })
+}
+
+async fn verify(block_dir: &str) -> Result<()> {
+    let block_dir = PathBuf::from(block_dir);
+
+    let index_path = block_dir.join("index.json");
+    let block_index = BlockIndex::load_from_file(&index_path)?;
+    block_index.verify(&block_dir)
 }

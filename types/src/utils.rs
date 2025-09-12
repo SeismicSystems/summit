@@ -21,6 +21,7 @@ pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
 #[cfg(feature = "bench")]
 pub mod benchmarking {
     use alloy_primitives::B256;
+    use anyhow::{anyhow, bail};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::default::Default;
@@ -71,6 +72,52 @@ pub mod benchmarking {
                 Ok(block_index)
             } else {
                 Ok(Self::new())
+            }
+        }
+
+        pub fn verify(&self, block_dir: &Path) -> anyhow::Result<()> {
+            if self.block_num_to_filename.len() != self.hash_to_block_num.len() {
+                bail!(
+                    "block_num_to_filename ({}) and hash_to_block_num ({}) length do not match",
+                    self.block_num_to_filename.len(),
+                    self.hash_to_block_num.len()
+                );
+            }
+            let max_block = *self
+                .block_num_to_filename
+                .keys()
+                .max()
+                .ok_or(anyhow!("no blocks in index"))?;
+            for block_num in 0..=max_block {
+                let filename = self
+                    .get_block_file(block_num)
+                    .ok_or(anyhow!("missing block {} in block index", block_num))?;
+                let file_path = block_dir.join(filename);
+                if !file_path.exists() {
+                    bail!(anyhow!("missing block file for block {}", block_num));
+                }
+            }
+            Ok(())
+        }
+
+        pub fn create_sub_index(&self, max_block: u64) -> Self {
+            let mut block_num_to_filename = HashMap::new();
+            let mut hash_to_block_num = HashMap::new();
+            for (block_number, filename) in self.block_num_to_filename.iter() {
+                if block_number > &max_block {
+                    break;
+                }
+                block_num_to_filename.insert(*block_number, filename.clone());
+            }
+            for (block_hash, block_number) in self.hash_to_block_num.iter() {
+                if block_number > &max_block {
+                    break;
+                }
+                hash_to_block_num.insert(*block_hash, *block_number);
+            }
+            Self {
+                block_num_to_filename,
+                hash_to_block_num,
             }
         }
     }
