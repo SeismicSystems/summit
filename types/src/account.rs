@@ -45,7 +45,7 @@ impl TryFrom<&[u8]> for ValidatorAccount {
         // Format: withdrawal_credentials(20) + balance(8) + pending_withdrawal_amount(8) + status(1) + last_deposit_index(8) = 77 bytes
 
         if bytes.len() != 45 {
-            return Err("ValidatorAccount must be exactly 77 bytes");
+            return Err("ValidatorAccount must be exactly 45 bytes");
         }
 
         // Extract withdrawal_credentials (20 bytes)
@@ -204,7 +204,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "ValidatorAccount must be exactly 77 bytes"
+            "ValidatorAccount must be exactly 45 bytes"
         );
     }
 
@@ -215,7 +215,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "ValidatorAccount must be exactly 77 bytes"
+            "ValidatorAccount must be exactly 45 bytes"
         );
     }
 

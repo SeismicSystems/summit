@@ -18,7 +18,7 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
         // Format: index(8) + validator_index(8) + address(20) + amount(8) + withdrawal_height(8) + bls_pubkey(32) = 84 bytes
 
         if bytes.len() != 84 {
-            return Err("PendingWithdrawal must be exactly 100 bytes");
+            return Err("PendingWithdrawal must be exactly 84 bytes");
         }
 
         // Extract index (8 bytes, little-endian u64)
@@ -201,7 +201,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 100 bytes"
+            "PendingWithdrawal must be exactly 84 bytes"
         );
     }
 
@@ -212,7 +212,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 100 bytes"
+            "PendingWithdrawal must be exactly 84 bytes"
         );
     }
 
