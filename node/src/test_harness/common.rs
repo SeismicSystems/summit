@@ -202,7 +202,7 @@ pub fn run_until_height(
                 }
 
                 // If ends with contiguous_height, ensure it is at least required_container
-                if metric.ends_with("_marshal_processed_height") {
+                if metric.ends_with("finalizer_height") {
                     let value = value.parse::<u64>().unwrap();
                     if value >= stop_height {
                         num_nodes_finished += 1;

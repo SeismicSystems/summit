@@ -39,7 +39,6 @@ impl Registry {
     }
 
     pub fn update_registry(&self, index: View, add: Vec<PublicKey>, remove: Vec<PublicKey>) {
-        tracing::error!("update registry view {index}");
         let mut views = self.views.write().unwrap();
 
         let mut participants = if let Some((latest_view, view_data)) = views.last_key_value() {

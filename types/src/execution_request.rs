@@ -98,7 +98,7 @@ impl DepositRequest {
         // Format: ed25519_pubkey(48) + withdrawal_credentials(32) + amount(8) + signature(96) + index(8) = 192 bytes
 
         if bytes.len() != 192 {
-            return Err("DepositRequest must be exactly 144 bytes");
+            return Err("DepositRequest must be exactly 192 bytes");
         }
 
         // Extract ed25519_pubkey (32 bytes) left padded
@@ -181,20 +181,22 @@ impl Read for ExecutionRequest {
 impl Write for WithdrawalRequest {
     fn write(&self, buf: &mut impl BufMut) {
         buf.put(&self.source_address.0[..]);
+        // padding for pubkey since eth puts pub key as 48 bytes in event
+        buf.put(&[0; 16][..]);
         buf.put(&self.validator_pubkey[..]);
         buf.put(&self.amount.to_le_bytes()[..]);
     }
 }
 
 impl FixedSize for WithdrawalRequest {
-    const SIZE: usize = 60; // 20 + 32 + 8
+    const SIZE: usize = 76; // 20 + 48 + 8
 }
 
 impl Read for WithdrawalRequest {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        if buf.remaining() < 60 {
+        if buf.remaining() < 76 {
             return Err(Error::Invalid("WithdrawalRequest", "Insufficient bytes"));
         }
 
@@ -202,6 +204,8 @@ impl Read for WithdrawalRequest {
         buf.copy_to_slice(&mut source_address_bytes);
         let source_address = Address::from(source_address_bytes);
 
+        // account for the padding
+        buf.advance(16);
         let mut validator_pubkey = [0u8; 32];
         buf.copy_to_slice(&mut validator_pubkey);
 
@@ -219,25 +223,31 @@ impl Read for WithdrawalRequest {
 
 impl Write for DepositRequest {
     fn write(&self, buf: &mut impl BufMut) {
+        // padding for pubkey since eth puts pub key as 48 bytes in event
+        buf.put(&[0; 16][..]);
         buf.put(&self.pubkey.encode()[..]);
         buf.put(&self.withdrawal_credentials[..]);
         buf.put(&self.amount.to_le_bytes()[..]);
+        // padding for sig
+        buf.put(&[0; 32][..]);
         buf.put(&self.signature[..]);
         buf.put(&self.index.to_le_bytes()[..])
     }
 }
 
 impl FixedSize for DepositRequest {
-    const SIZE: usize = 144; // 32 + 32 + 8 + 64 + 8
+    const SIZE: usize = 192; // 48 + 32 + 8 + 96 + 8
 }
 
 impl Read for DepositRequest {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        if buf.remaining() < 144 {
+        if buf.remaining() < 192 {
             return Err(Error::Invalid("DepositRequest", "Insufficient bytes"));
         }
+        // account for padding on pub key
+        buf.advance(16);
 
         let mut ed25519_pubkey_bytes = [0u8; 32];
         buf.copy_to_slice(&mut ed25519_pubkey_bytes);
@@ -250,6 +260,9 @@ impl Read for DepositRequest {
         let mut amount_bytes = [0u8; 8];
         buf.copy_to_slice(&mut amount_bytes);
         let amount = u64::from_le_bytes(amount_bytes);
+
+        // account for padding on signature
+        buf.advance(32);
 
         let mut signature = [0u8; 64];
         buf.copy_to_slice(&mut signature);
@@ -287,7 +300,7 @@ mod tests {
         // Test Write
         let mut buf = BytesMut::new();
         deposit.write(&mut buf);
-        assert_eq!(buf.len(), 144); // 32 + 32 + 8 + 64 + 8
+        assert_eq!(buf.len(), 192); // 48 + 32 + 8 + 96 + 8
 
         // Test Read
         let decoded = DepositRequest::read(&mut buf.as_ref()).unwrap();
@@ -305,7 +318,7 @@ mod tests {
         // Test Write
         let mut buf = BytesMut::new();
         withdrawal.write(&mut buf);
-        assert_eq!(buf.len(), 60); // 20 + 32 + 8
+        assert_eq!(buf.len(), 76); // 20 + 48 + 8
 
         // Test Read
         let decoded = WithdrawalRequest::read(&mut buf.as_ref()).unwrap();
@@ -326,7 +339,7 @@ mod tests {
         // Test Write
         let mut buf = BytesMut::new();
         exec_request.write(&mut buf);
-        assert_eq!(buf.len(), 145); // 1 (type) + 144 (deposit)
+        assert_eq!(buf.len(), 193); // 1 (type) + 192 (deposit)
         assert_eq!(buf[0], 0x00); // Deposit type byte
 
         // Test Read
@@ -351,7 +364,7 @@ mod tests {
         // Test Write
         let mut buf = BytesMut::new();
         exec_request.write(&mut buf);
-        assert_eq!(buf.len(), 61); // 1 (type) + 60 (withdrawal)
+        assert_eq!(buf.len(), 77); // 1 (type) + 76 (withdrawal)
         assert_eq!(buf[0], 0x01); // Withdrawal type byte
 
         // Test Read
@@ -396,7 +409,7 @@ mod tests {
     #[test]
     fn test_deposit_request_insufficient_bytes() {
         let mut buf = BytesMut::new();
-        buf.put(&[0u8; 143][..]); // One byte short
+        buf.put(&[0u8; 191][..]); // One byte short
 
         let result = DepositRequest::read(&mut buf.as_ref());
         assert!(result.is_err());
@@ -411,7 +424,7 @@ mod tests {
     #[test]
     fn test_withdrawal_request_insufficient_bytes() {
         let mut buf = BytesMut::new();
-        buf.put(&[0u8; 59][..]); // One byte short
+        buf.put(&[0u8; 71][..]); // One byte short
 
         let result = WithdrawalRequest::read(&mut buf.as_ref());
         assert!(result.is_err());

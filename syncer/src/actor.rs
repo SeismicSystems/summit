@@ -615,7 +615,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                 Value::Digest(digest) => {
                                     // try buffer
                                     if let Some(block) = buffer.get(None, digest, Some(digest)).await.into_iter().next() {
-                                        let _ = response.send(block.encode().into());
+                                        let bytes = block.encode();
+                                        let _ = response.send(bytes.into());
                                         continue;
                                     }
 
@@ -626,8 +627,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                     }
 
                                     // try notarized blocks
-                                    if let Some(block) = self.notarized.get(Identifier::Key(&digest)).await.expect("Failed to get notarized block") {
-                                        let _ = response.send(block.encode().into());
+                                    if let Some(notarized) = self.notarized.get(Identifier::Key(&digest)).await.expect("Failed to get notarized block") {
+                                        let _ = response.send(notarized.block.encode().into());
                                         continue;
                                     }
 

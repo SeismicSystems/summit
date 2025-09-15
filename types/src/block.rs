@@ -205,8 +205,9 @@ impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
         let ssz_bytes = &*self.as_ssz_bytes();
         let bytes_len = ssz_bytes.len() as u32;
+
         buf.put(&bytes_len.to_be_bytes()[..]);
-        buf.put(&*self.as_ssz_bytes());
+        buf.put(ssz_bytes);
     }
 }
 
@@ -214,8 +215,13 @@ impl Read for Block {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-        let len = buf.get_u32();
-
+        let len: u32 = buf.get_u32();
+        if len > buf.remaining() as u32 {
+            return Err(commonware_codec::Error::Invalid(
+                "Block",
+                "improper encoded length",
+            ));
+        }
         ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk()).map_err(|_| {
             commonware_codec::Error::Invalid("Block", "Unable to decode bytes for block")
         })

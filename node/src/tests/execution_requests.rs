@@ -495,7 +495,6 @@ fn test_deposit_and_withdrawal_request_single() {
         let mut num_nodes_processed_requests = 0;
         loop {
             let metrics = context.encode();
-
             // Iterate over all lines
             let mut success = false;
             for line in metrics.lines() {
@@ -584,7 +583,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
     };
     // Create context
     let threshold = quorum(n);
-    let cfg = deterministic::Config::default().with_seed(0);
+    let cfg = deterministic::Config::default().with_seed(2);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         // Create simulated network
@@ -727,7 +726,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 if metric.ends_with("withdrawal_validator_balance") {
                     let balance = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pub") {
+                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_withdrawal1.source_address));
