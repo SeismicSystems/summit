@@ -23,7 +23,6 @@ impl RpcRoutes {
             .route("/health", get(Self::handle_health_check))
             .route("/get_public_key", get(Self::handle_get_pub_key))
             .route("/send_genesis", post(Self::handle_send_genesis))
-            .route("/send_share", post(Self::handle_send_share))
             .with_state(state)
     }
 
@@ -53,14 +52,6 @@ impl RpcRoutes {
         body: String,
     ) -> Result<String, String> {
         Self::handle_send_file(&state.genesis, body, "genesis")
-    }
-
-    /// NOTE: this is a temporary function until we move to aggregate BLS
-    async fn handle_send_share(
-        State(state): State<Arc<RpcState>>,
-        body: String,
-    ) -> Result<String, String> {
-        Self::handle_send_file(&state.share, body, "share")
     }
 
     fn handle_send_file(

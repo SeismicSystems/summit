@@ -8,7 +8,6 @@ pub mod utils;
 pub mod withdrawal;
 
 pub use block::*;
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 pub use genesis::*;
 
 use commonware_consensus::simplex::types::Activity as CActivity;
@@ -19,4 +18,3 @@ pub type Activity = CActivity<Signature, Digest>;
 pub type PublicKey = commonware_cryptography::ed25519::PublicKey;
 pub type PrivateKey = commonware_cryptography::ed25519::PrivateKey;
 pub type Signature = commonware_cryptography::ed25519::Signature;
-pub type Identity = <MinPk as Variant>::Public;

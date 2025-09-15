@@ -3,16 +3,13 @@ use crate::test_harness::common;
 use crate::test_harness::common::get_default_engine_config;
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use alloy_primitives::{Address, hex};
-use alloy_signer::k256::elliptic_curve::rand_core::OsRng;
-use commonware_cryptography::bls12381::dkg::ops;
-use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_macros::test_traced;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-use commonware_utils::{from_hex_formatted, quorum};
+use commonware_utils::from_hex_formatted;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::PrivateKey;
@@ -32,7 +29,6 @@ fn test_deposit_request_single() {
         success_rate: 0.98,
     };
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -84,12 +80,9 @@ fn test_deposit_request_single() {
             .with_execution_requests(execution_requests_map)
             .build();
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for signer in signers.into_iter() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -106,8 +99,6 @@ fn test_deposit_request_single() {
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
@@ -200,7 +191,6 @@ fn test_deposit_request_top_up() {
         success_rate: 0.98,
     };
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -263,12 +253,9 @@ fn test_deposit_request_top_up() {
             .with_execution_requests(execution_requests_map)
             .build();
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for signer in signers.into_iter() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -285,8 +272,6 @@ fn test_deposit_request_top_up() {
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
@@ -387,7 +372,6 @@ fn test_deposit_and_withdrawal_request_single() {
         success_rate: 0.98,
     };
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -454,12 +438,9 @@ fn test_deposit_and_withdrawal_request_single() {
             .with_execution_requests(execution_requests_map)
             .build();
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for signer in signers.into_iter() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -476,8 +457,6 @@ fn test_deposit_and_withdrawal_request_single() {
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
@@ -582,7 +561,6 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         success_rate: 0.98,
     };
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(2);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -655,12 +633,9 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             .with_execution_requests(execution_requests_map)
             .build();
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for signer in signers.into_iter() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -677,8 +652,6 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
@@ -787,7 +760,6 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         success_rate: 0.98,
     };
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -854,12 +826,9 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             .with_execution_requests(execution_requests_map)
             .build();
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for signer in signers.into_iter() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -876,8 +845,6 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
@@ -989,7 +956,6 @@ fn test_deposit_and_withdrawal_request_multiple() {
         success_rate: 0.98,
     };
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -1073,12 +1039,9 @@ fn test_deposit_and_withdrawal_request_multiple() {
             .with_execution_requests(execution_requests_map)
             .build();
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for signer in signers.into_iter() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -1095,8 +1058,6 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;

@@ -22,27 +22,21 @@ impl PathSender {
 
 pub struct RpcState {
     key_path: String,
-    share: PathSender,
     genesis: PathSender,
 }
 
 impl RpcState {
-    pub fn new(key_path: String, share: PathSender, genesis: PathSender) -> Self {
-        Self {
-            key_path,
-            share,
-            genesis,
-        }
+    pub fn new(key_path: String, genesis: PathSender) -> Self {
+        Self { key_path, genesis }
     }
 }
 
 pub async fn start_rpc_server(
     key_path: String,
-    share: PathSender,
     genesis: PathSender,
     port: u16,
 ) -> anyhow::Result<()> {
-    let state = RpcState::new(key_path, share, genesis);
+    let state = RpcState::new(key_path, genesis);
 
     let server = RpcRoutes::mount(state);
 
