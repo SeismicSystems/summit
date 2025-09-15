@@ -9,7 +9,6 @@ pub mod utils;
 pub mod withdrawal;
 
 pub use block::*;
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 pub use genesis::*;
 pub use header::*;
 use withdrawal::PendingWithdrawal;
@@ -30,4 +29,3 @@ pub struct BlockAuxData {
 pub type PublicKey = commonware_cryptography::ed25519::PublicKey;
 pub type PrivateKey = commonware_cryptography::ed25519::PrivateKey;
 pub type Signature = commonware_cryptography::ed25519::Signature;
-pub type Identity = <MinPk as Variant>::Public;

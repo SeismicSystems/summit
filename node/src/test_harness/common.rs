@@ -1,23 +1,16 @@
-use commonware_cryptography::{
-    PrivateKeyExt, Signer,
-    bls12381::{
-        dkg::ops,
-        primitives::{group::Share, poly::Poly, variant::MinPk},
-    },
-};
+use commonware_cryptography::{PrivateKeyExt, Signer};
 
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, Bytes};
-use alloy_signer::k256::elliptic_curve::rand_core::OsRng;
 use commonware_codec::Write;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
     deterministic::{self, Runner},
 };
-use commonware_utils::{from_hex_formatted, quorum};
+use commonware_utils::from_hex_formatted;
 use governor::Quota;
 use std::time::Duration;
 use std::{
@@ -26,7 +19,7 @@ use std::{
 };
 use summit_application::engine_client::EngineClient;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
-use summit_types::{Identity, PrivateKey, PublicKey};
+use summit_types::{PrivateKey, PublicKey};
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
@@ -102,7 +95,6 @@ pub fn run_until_height(
     verify_consensus: bool,
 ) -> String {
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(seed);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -140,12 +132,9 @@ pub fn run_until_height(
             .expect("failed to convert genesis hash");
         let engine_client_network = MockEngineNetwork::new(genesis_hash);
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (_idx, signer) in signers.into_iter().enumerate() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -162,8 +151,6 @@ pub fn run_until_height(
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
 
@@ -359,8 +346,6 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 /// * `genesis_hash` - 32-byte array representing the genesis block hash
 /// * `namespace` - String namespace identifier (typically "_SEISMIC_BFT")
 /// * `signer` - Private key for signing operations
-/// * `polynomial` - BLS12-381 polynomial for threshold cryptography
-/// * `share` - BLS12-381 cryptographic share for threshold operations
 /// * `participants` - Vector of participant public keys
 ///
 /// # Returns
@@ -371,8 +356,6 @@ pub fn get_default_engine_config<C: EngineClient>(
     genesis_hash: [u8; 32],
     namespace: String,
     signer: PrivateKey,
-    polynomial: Poly<Identity>,
-    share: Share,
     participants: Vec<PublicKey>,
 ) -> EngineConfig<C> {
     EngineConfig {
@@ -381,8 +364,6 @@ pub fn get_default_engine_config<C: EngineClient>(
         genesis_hash,
         namespace,
         signer,
-        polynomial,
-        share,
         participants,
         mailbox_size: 1024,
         deque_size: 10,

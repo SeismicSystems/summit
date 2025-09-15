@@ -151,7 +151,6 @@ fn get_node_flags(node: usize) -> RunFlags {
 
     RunFlags {
         key_path: format!("{path}key.pem"),
-        share_path: format!("{path}share.pem"),
         store_path: format!("{path}db"),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,

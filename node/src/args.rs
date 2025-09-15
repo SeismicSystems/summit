@@ -1,7 +1,7 @@
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RESOLVER_CHANNEL, expect_share, expect_signer,
+        RESOLVER_CHANNEL, expect_signer,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -26,7 +26,6 @@ use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
 pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
-pub const DEFAULT_SHARE_PATH: &str = "~/.seismic/consensus/share.pem";
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
 pub const DEFAULT_ENGINE_IPC_PATH: &str = "/tmp/reth_engine_api.ipc";
@@ -60,9 +59,6 @@ pub struct RunFlags {
     /// Path to your private key or where you want it generated
     #[arg(long, default_value_t = DEFAULT_KEY_PATH.into())]
     pub key_path: String,
-    /// path to this nodes polynomial share
-    #[arg(long, default_value_t = DEFAULT_SHARE_PATH.into())]
-    pub share_path: String,
     /// Path to the folder we will keep the consensus DB
     #[arg(long, default_value_t = DEFAULT_DB_FOLDER.into())]
     pub store_path: String,
@@ -149,26 +145,18 @@ impl Command {
         let executor = tokio::Runner::new(cfg);
 
         executor.start(|context| async move {
-            let (share_tx, share_rx) = oneshot::channel();
             let (genesis_tx, genesis_rx) = oneshot::channel();
 
             // use the context async move to spawn a new runtime
             let key_path = flags.key_path.clone();
-            let share_path = flags.share_path.clone();
             let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let share_sender = Command::check_sender(share_path, share_tx);
                 let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                if let Err(e) =
-                    start_rpc_server(key_path, share_sender, genesis_sender, rpc_port).await
-                {
+                if let Err(e) = start_rpc_server(key_path, genesis_sender, rpc_port).await {
                     error!("RPC server failed: {}", e);
                 }
             });
-
-            let _ = share_rx.await;
-            let share = expect_share(&flags.share_path);
 
             // Wait for genesis if needed
             let _ = genesis_rx.await;
@@ -207,7 +195,6 @@ impl Command {
             let config = EngineConfig::get_engine_config(
                 engine_client,
                 signer,
-                share,
                 peers.clone(),
                 flags.db_prefix.clone(),
                 &genesis,
@@ -317,25 +304,18 @@ pub fn run_node_with_runtime(
     context.spawn(async move |context| {
         let signer = expect_signer(&flags.key_path);
 
-        let (share_tx, share_rx) = oneshot::channel();
         let (genesis_tx, genesis_rx) = oneshot::channel();
 
         // use the context async move to spawn a new runtime
         let key_path = flags.key_path.clone();
-        let share_path = flags.share_path.clone();
         let rpc_port = flags.rpc_port;
         let genesis_path = flags.genesis_path.clone();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let share_sender = Command::check_sender(share_path, share_tx);
             let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-            if let Err(e) = start_rpc_server(key_path, share_sender, genesis_sender, rpc_port).await
-            {
+            if let Err(e) = start_rpc_server(key_path, genesis_sender, rpc_port).await {
                 tracing::error!("RPC server failed: {}", e);
             }
         });
-
-        let _ = share_rx.await;
-        let share = expect_share(&flags.share_path);
 
         // Wait for genesis if needed
         let _ = genesis_rx.await;
@@ -361,7 +341,6 @@ pub fn run_node_with_runtime(
         let config = EngineConfig::get_engine_config(
             engine_client,
             signer,
-            share,
             peers.clone(),
             flags.db_prefix.clone(),
             &genesis,
