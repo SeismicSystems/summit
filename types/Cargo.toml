@@ -25,4 +25,5 @@ tracing.workspace = true
 serde_json = { workspace = true, optional = true }
 
 [features]
+base-bench = ["serde_json"]
 bench = ["serde_json"]

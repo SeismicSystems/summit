@@ -20,7 +20,7 @@ use std::{
     str::FromStr as _,
 };
 use summit_application::engine_client::RethEngineClient;
-#[cfg(feature = "bench")]
+#[cfg(feature = "base-bench")]
 use summit_application::engine_client::benchmarking::HistoricalEngineClient;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
@@ -66,7 +66,7 @@ pub struct RunFlags {
     #[arg(long, default_value_t = DEFAULT_ENGINE_IPC_PATH.into())]
     pub engine_ipc_path: String,
     /// Path to the directory containing historical blocks for benchmarking
-    #[cfg(feature = "bench")]
+    #[cfg(feature = "base-bench")]
     #[arg(long)]
     pub bench_block_dir: Option<String>,
     /// Port Consensus runs on
@@ -174,7 +174,7 @@ impl Command {
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
                 .expect("failed to expand engine ipc path");
 
-            #[cfg(feature = "bench")]
+            #[cfg(feature = "base-bench")]
             let engine_client = {
                 let block_dir = flags
                     .bench_block_dir
@@ -187,7 +187,7 @@ impl Command {
                 )
                 .await
             };
-            #[cfg(not(feature = "bench"))]
+            #[cfg(not(feature = "base-bench"))]
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 

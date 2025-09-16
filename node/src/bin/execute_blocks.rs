@@ -4,10 +4,16 @@ use clap::{Arg, Command};
 use commonware_utils::from_hex_formatted;
 use std::path::PathBuf;
 use summit_application::engine_client::EngineClient;
+#[cfg(feature = "base-bench")]
 use summit_application::engine_client::benchmarking::HistoricalEngineClient;
+#[cfg(feature = "bench")]
+use summit_application::engine_client::ethereum_benchmarking::EthereumHistoricalEngineClient;
 use summit_types::{Block, Digest};
 
+#[cfg(feature = "base-bench")]
 const GENESIS_HASH: &str = "0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd";
+#[cfg(feature = "bench")]
+const GENESIS_HASH: &str = "0x655cc1ecc77fe1eab4b1e62a1f461b7fddc9b06109b5ab3e9dc68c144b30c773";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -54,7 +60,12 @@ async fn main() -> Result<()> {
         .to_string();
     let num_blocks: u64 = matches.get_one::<String>("num-blocks").unwrap().parse()?;
 
-    let client = HistoricalEngineClient::new(engine_ipc_path, block_dir).await;
+    #[allow(unused)]
+    #[cfg(feature = "base-bench")]
+    let client = HistoricalEngineClient::new(engine_ipc_path.clone(), block_dir.clone()).await;
+    #[allow(unused)]
+    #[cfg(feature = "bench")]
+    let client = EthereumHistoricalEngineClient::new(engine_ipc_path, block_dir).await;
 
     // Load and commit blocks to Reth
     let genesis_hash: [u8; 32] = from_hex_formatted(genesis_hash_str)

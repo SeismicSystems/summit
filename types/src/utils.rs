@@ -26,7 +26,8 @@ pub fn is_penultimate_block_of_epoch(height: u64, epoch_num_blocks: u64) -> bool
     height > 0 && (height + 1) % epoch_num_blocks == 0
 }
 
-#[cfg(feature = "bench")]
+
+#[cfg(any(feature = "base-bench", feature = "bench"))]
 pub mod benchmarking {
     use alloy_primitives::B256;
     use anyhow::{anyhow, bail};

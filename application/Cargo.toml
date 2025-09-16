@@ -49,4 +49,5 @@ alloy-eips.workspace = true
 
 [features]
 prom = ["metrics"]
-bench = ["op-alloy-network", "op-alloy-rpc-types-engine", "serde", "serde_json"]
+base-bench = ["op-alloy-network", "op-alloy-rpc-types-engine", "serde", "serde_json"]
+bench = ["serde", "serde_json"]

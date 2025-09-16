@@ -115,7 +115,7 @@ impl EngineClient for RethEngineClient {
     }
 }
 
-#[cfg(feature = "bench")]
+#[cfg(feature = "base-bench")]
 pub mod benchmarking {
     use crate::engine_client::EngineClient;
     use alloy_eips::eip4895::Withdrawal;
@@ -180,9 +180,12 @@ pub mod benchmarking {
 
         async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
             let block_num = u64::from_le_bytes(payload_id.0.into());
-            let filename = format!("block_{block_num}.json");
+            let filename = self
+                .block_index
+                .get_block_file(block_num)
+                .expect("block not found in index");
 
-            let file_path = self.block_dir.join(&filename);
+            let file_path = self.block_dir.join(filename);
 
             let json_data = fs::read_to_string(&file_path)
                 .map_err(|e| {
@@ -304,6 +307,153 @@ pub mod benchmarking {
                 [0u8; 32].into(),
                 Vec::new(), // added_validators
                 Vec::new(), // removed_validators
+            )
+        }
+    }
+}
+
+#[cfg(feature = "bench")]
+pub mod ethereum_benchmarking {
+    use crate::engine_client::EngineClient;
+    use alloy_eips::eip4895::Withdrawal;
+    use alloy_eips::eip7685::Requests;
+    use alloy_primitives::{B256, FixedBytes, U256};
+    use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
+    use alloy_rpc_types_engine::{
+        ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3,
+        ForkchoiceState, PayloadId, PayloadStatus,
+    };
+    use alloy_transport_ipc::IpcConnect;
+    use serde::{Deserialize, Serialize};
+    use std::fs;
+    use std::path::PathBuf;
+    use summit_types::utils::benchmarking::BlockIndex;
+    use summit_types::{Block, Digest};
+
+    #[derive(Clone)]
+    pub struct EthereumHistoricalEngineClient {
+        provider: RootProvider,
+        block_dir: PathBuf,
+        block_index: BlockIndex,
+    }
+
+    impl EthereumHistoricalEngineClient {
+        pub async fn new(engine_ipc_path: String, block_dir: PathBuf) -> Self {
+            let ipc = IpcConnect::new(engine_ipc_path);
+            let provider = ProviderBuilder::default().connect_ipc(ipc).await.unwrap();
+
+            let index_path = block_dir.join("index.json");
+            let block_index =
+                BlockIndex::load_from_file(&index_path).expect("failed to load block index");
+
+            Self {
+                provider,
+                block_dir,
+                block_index,
+            }
+        }
+    }
+
+    impl EngineClient for EthereumHistoricalEngineClient {
+        async fn start_building_block(
+            &self,
+            fork_choice_state: ForkchoiceState,
+            _timestamp: u64,
+            _withdrawals: Vec<Withdrawal>,
+        ) -> Option<PayloadId> {
+            let block_num = self
+                .block_index
+                .get_block_number(&fork_choice_state.head_block_hash)?;
+            let next_block_num = block_num + 1;
+            if self.block_index.get_block_file(next_block_num).is_some() {
+                let bytes: [u8; 8] = next_block_num.to_le_bytes();
+                Some(PayloadId::new(bytes))
+            } else {
+                None
+            }
+        }
+
+        async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+            let block_num = u64::from_le_bytes(payload_id.0.into());
+            let filename = self
+                .block_index
+                .get_block_file(block_num)
+                .expect("block not found in index");
+
+            let file_path = self.block_dir.join(filename);
+
+            let json_data = fs::read_to_string(&file_path)
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to read block file {}: {}", file_path.display(), e)
+                })
+                .expect("failed to read block file");
+
+            let block_data: EthereumBlockData = serde_json::from_str(&json_data)
+                .map_err(|e| anyhow::anyhow!("Failed to parse block data: {}", e))
+                .expect("failed to parse block data");
+
+            // Convert to ExecutionPayloadEnvelopeV4 with correct structure
+            ExecutionPayloadEnvelopeV4 {
+                envelope_inner: ExecutionPayloadEnvelopeV3 {
+                    execution_payload: block_data.payload,
+                    block_value: U256::ZERO, // Historical blocks don't have block value
+                    blobs_bundle: Default::default(), // No blobs in historical blocks
+                    should_override_builder: false,
+                },
+                execution_requests: Requests::default(),
+            }
+        }
+
+        async fn check_payload(&self, block: &Block) -> PayloadStatus {
+            // For Ethereum, use standard engine_newPayloadV4 without Optimism-specific logic
+            self.provider
+                .new_payload_v4(
+                    block.payload.clone(),
+                    Vec::new(),                     // versioned_hashes - empty for historical blocks
+                    [1; 32].into(),                // parent_beacon_block_root
+                    block.execution_requests.clone(), // execution_requests
+                )
+                .await
+                .unwrap()
+        }
+
+        async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+            self.provider
+                .fork_choice_updated_v3(fork_choice_state, None)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct EthereumBlockData {
+        pub block_number: u64,
+        pub payload: ExecutionPayloadV3,
+        pub requests: FixedBytes<32>,
+        pub parent_beacon_block_root: B256,
+        pub versioned_hashes: Vec<B256>,
+    }
+
+    impl EthereumBlockData {
+        pub fn from_file(file_path: &PathBuf) -> anyhow::Result<Self> {
+            let json_data = fs::read_to_string(file_path)?;
+            let block_data: EthereumBlockData = serde_json::from_str(&json_data)?;
+            Ok(block_data)
+        }
+
+        pub fn to_block(self, parent: Digest, height: u64, timestamp: u64, view: u64) -> Block {
+            // Create execution requests from the stored requests hash
+            let execution_requests = Vec::new(); // Convert from self.requests if needed
+
+            // Compute and return the entire block
+            Block::compute_digest(
+                parent,
+                height,
+                timestamp,
+                self.payload,
+                execution_requests,
+                U256::ZERO, // block_value
+                view,
             )
         }
     }
