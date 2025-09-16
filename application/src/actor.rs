@@ -139,7 +139,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 match res {
                                     Ok(block) => {
                                         // store block
-                                        let digest = block.digest;
+                                        let digest = block.digest();
                                         {
                                             let mut built = built.lock().expect("locked poisoned");
                                             *built = Some(block);
@@ -166,7 +166,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         continue;
                     };
                     // todo(dalton): This should be a hard assert but for testing im just going to log
-                    if payload != built_block.digest {
+                    if payload != built_block.digest() {
                         error!(
                             "The payload we were asked to broadcast is different then our built block"
                         );
@@ -242,7 +242,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         // now that we have the parent additionally await for that to be executed by the finalizer
         let (tx, rx) = oneshot::channel();
         self.tx_height_notify
-            .try_send((parent.height, tx))
+            .try_send((parent.height(), tx))
             .expect("finalizer dropped");
 
         // await for notification
@@ -251,15 +251,15 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         // Request pending withdrawals
         let (tx, rx) = oneshot::channel();
         self.tx_pending_withdrawal
-            .try_send((parent.height + 1, tx))
+            .try_send((parent.height() + 1, tx))
             .expect("finalizer dropped");
 
         // await response
         let pending_withdrawals = rx.await.expect("finalizer dropped");
 
         let mut current = self.context.current().epoch_millis();
-        if current <= parent.timestamp {
-            current = parent.timestamp + 1;
+        if current <= parent.timestamp() {
+            current = parent.timestamp() + 1;
         }
         let forkchoice_clone;
         {
@@ -279,8 +279,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         let payload_envelope = self.engine_client.get_payload(payload_id).await;
 
         let block = Block::compute_digest(
-            parent.digest,
-            parent.height + 1,
+            parent.digest(),
+            parent.height() + 1,
             current,
             payload_envelope.envelope_inner.execution_payload,
             payload_envelope.execution_requests.to_vec(),
@@ -296,13 +296,13 @@ fn handle_verify(block: &Block, parent: Block) -> bool {
     if block.eth_parent_hash() != parent.eth_block_hash() {
         return false;
     }
-    if block.parent != parent.digest {
+    if block.parent() != parent.digest() {
         return false;
     }
-    if block.height != parent.height + 1 {
+    if block.height() != parent.height() + 1 {
         return false;
     }
-    if block.timestamp <= parent.timestamp {
+    if block.timestamp() <= parent.timestamp() {
         return false;
     }
 

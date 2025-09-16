@@ -75,7 +75,7 @@ impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Block>> Fina
             // Attempt to get the next block from the orchestrator.
             if let Some(block) = self.orchestrator.get(height).await {
                 // Sanity-check that the block height is the one we expect.
-                assert!(block.height == height, "block height mismatch");
+                assert_eq!(block.height(), height, "block height mismatch");
 
                 // Send the block to the application.
                 //

@@ -185,7 +185,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                         // check the payload
                         let payload_status = self.engine_client.check_payload(&block).await;
-                        let new_height = block.height;
+                        let new_height = block.height();
 
                         // Verify withdrawal requests that were included in the block
                         // Make sure that the included withdrawals match the expected withdrawals
@@ -223,7 +223,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             *self.forkchoice.lock().expect("poisoned") = forkchoice;
 
                             // Parse execution requests
-                            for request_bytes in block.execution_requests {
+                            for request_bytes in &block.execution_requests {
                                 match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
                                     Ok(execution_request) => {
                                         match execution_request {
@@ -345,12 +345,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                             // Remove pending withdrawals that are included in the committed block
                             let mut remove_validators = Vec::new();
-                            for withdrawal in block.payload.payload_inner.withdrawals {
+                            for withdrawal in &block.payload.payload_inner.withdrawals {
                                 let pending_withdrawal = self.state.pop_withdrawal();
                                 // TODO(matthias): these checks should never fail. we have to make sure that these withdrawals are
                                 // verified when the block is verified. it is too late when the block is committed.
                                 let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
-                                assert_eq!(pending_withdrawal.inner, withdrawal);
+                                assert_eq!(pending_withdrawal.inner, *withdrawal);
 
                                 if let Some(mut account) = self.state.get_account(&pending_withdrawal.pubkey).cloned()
                                     && account.balance >= withdrawal.amount
@@ -386,7 +386,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             // We collect two lists, one for validators we want to add, and the other for validators we want to remove.
                             // This is done so that the registry is updated atomically.
                             if !add_validators.is_empty() || !remove_validators.is_empty() {
-                                self.registry.update_registry(block.view + REGISTRY_CHANGE_VIEW_DELTA, add_validators, remove_validators);
+                                self.registry.update_registry(block.view() + REGISTRY_CHANGE_VIEW_DELTA, add_validators, remove_validators);
                             }
 
                             // TODO(matthias): verify what happens if the binary shuts down before storing the deposits to disk.

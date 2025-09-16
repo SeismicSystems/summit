@@ -682,16 +682,15 @@ mod tests {
 
         // Simulate consensus: client2 receives the block through Engine API
         // First, client2 validates the block (like receiving it from network)
-        let block_for_validation = Block {
-            payload: block1.clone(),
-            digest: summit_types::Digest::from([1u8; 32]), // Mock digest
-            parent: summit_types::Digest::from([0u8; 32]), // Genesis digest
-            height: 1,
-            timestamp: 1000,
-            block_value: alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
-            execution_requests: Vec::new(),
-            view: 1,
-        };
+        let block_for_validation = Block::compute_digest(
+            summit_types::Digest::from([0u8; 32]), // Genesis digest
+            1,
+            1000,
+            block1.clone(),
+            Vec::new(),
+            alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
+            1,
+        );
 
         // Client2 checks the payload (validates it)
         let validation_result = client2.check_payload(&block_for_validation).await;
@@ -752,16 +751,15 @@ mod tests {
             for client in [&client1, &client2, &client3] {
                 if client.client_id() != producer.client_id() {
                     // Each client validates the block (like receiving it from network)
-                    let block_for_validation = summit_types::Block {
-                        payload: new_block.clone(),
-                        digest: summit_types::Digest::from([round as u8; 32]), // Mock digest
-                        parent: summit_types::Digest::from([(round - 1) as u8; 32]), // Parent digest
-                        height: round as u64,
-                        timestamp: (round * 1000) as u64,
-                        block_value: U256::from(1_000_000_000_000_000_000u64),
-                        execution_requests: Vec::new(),
-                        view: 1,
-                    };
+                    let block_for_validation = summit_types::Block::compute_digest(
+                        summit_types::Digest::from([(round - 1) as u8; 32]), // Parent digest
+                        round as u64,
+                        (round * 1000) as u64,
+                        new_block.clone(),
+                        Vec::new(),
+                        U256::from(1_000_000_000_000_000_000u64),
+                        1,
+                    );
 
                     // Client validates the block
                     let validation_result = client.check_payload(&block_for_validation).await;
@@ -841,16 +839,15 @@ mod tests {
         client1.commit_hash(new_fork_choice).await;
 
         // Simulate network propagation to client2
-        let block_for_validation = Block {
-            payload: block.clone(),
-            digest: summit_types::Digest::from([1u8; 32]),
-            parent: summit_types::Digest::from([0u8; 32]),
-            height: 1,
-            timestamp: 1000,
-            block_value: alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
-            execution_requests: Vec::new(),
-            view: 1,
-        };
+        let block_for_validation = Block::compute_digest(
+            summit_types::Digest::from([0u8; 32]),
+            1,
+            1000,
+            block.clone(),
+            Vec::new(),
+            alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
+            1,
+        );
 
         client2.check_payload(&block_for_validation).await;
         client2.commit_hash(new_fork_choice).await;

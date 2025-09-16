@@ -268,7 +268,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             .into_iter()
                             .next()
                         {
-                            debug!(height = buffered.height, "found block in buffer");
+                            debug!(height = buffered.height(), "found block in buffer");
                             let _ = response.send(buffered);
                             continue;
                         }
@@ -280,7 +280,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             .await
                             .expect("Failed to read verified block store")
                         {
-                            debug!(height = block.height, "found block in verified");
+                            debug!(height = block.height(), "found block in verified");
                             let _ = response.send(block);
                             continue;
                         }
@@ -288,7 +288,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         // check notarized blocks
                         if let Some(notarization) = self.notarized.get(Identifier::Key(&payload)).await.expect("Failed to get notarized block"){
                             let block = notarization.block;
-                            debug!(height = block.height, "found block in notarized");
+                            debug!(height = block.height(), "found block in notarized");
                             let _ = response.send(block);
                             continue;
 
@@ -296,7 +296,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                         // check finalized blocks
                         if let Some(block) = self.blocks.get(Identifier::Key(&payload)).await.expect("Failed to get finalized block") {
-                            debug!(height = block.height, "found block in finalized");
+                            debug!(height = block.height(), "found block in finalized");
                             let _ = response.send(block);
                             continue;
                         }
@@ -317,7 +317,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         drop(ack);
                     }
                     Message::StoreVerified { view, payload } => {
-                        match self.verified.put(view, payload.digest, payload).await {
+                        match self.verified.put(view, payload.digest(), payload).await {
                             Ok(_) => {
                                 debug!(view, "verified block stored");
                             }
@@ -347,7 +347,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                         if let Some(block) = block {
                             let digest = proposal.payload;
-                            let height = block.height;
+                            let height = block.height();
 
                             // persist the finalization
                             self.finalized.put(height, digest, finalization).await.expect("Failed to insert into finalization store");
@@ -383,7 +383,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         }
 
                         if let Some(block) = block {
-                            let height = block.height;
+                            let height = block.height();
                             let digest = proposal.payload;
                             let notarization = Notarized::new(notarization, block);
 
@@ -445,10 +445,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                 let gapped_block = self.blocks.get(Identifier::Index(start_next)).await.expect("Failed to get finalized block").expect("Gapped block missing");
 
                                 // Attempt to repair one block from other sources
-                                let target_block = gapped_block.parent;
+                                let target_block = gapped_block.parent();
                                 let verified = self.verified.get(Identifier::Key(&target_block)).await.expect("Failed to get verified block");
                                 if let Some(verified) = verified {
-                                    let height = verified.height;
+                                    let height = verified.height();
                                     self.blocks.put(height, target_block, verified).await.expect("Failed to insert finalized block");
                                     debug!(height, "repaired block from verified");
                                     result.send(true).expect("Failed to send repair result");
@@ -456,7 +456,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                 }
                                 let notarization = self.notarized.get(Identifier::Key(&target_block)).await.expect("Failed to get notarized block");
                                 if let Some(notarization) = notarization {
-                                    let height = notarization.block.height;
+                                    let height = notarization.block.height();
                                     self.blocks.put(height, target_block, notarization.block).await.expect("Failed to insert finalized block");
                                     debug!(height, "repaired block from notarizations");
                                     result.send(true).expect("Failed to send repair result");
@@ -512,7 +512,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                     // Persist the notarization
                                     let _ = response.send(true);
                                     match self.notarized
-                                        .put(view, notarization.block.digest, notarization)
+                                        .put(view, notarization.block.digest(), notarization)
                                         .await {
                                         Ok(_) => {
                                             debug!(view, "notarized stored");
@@ -538,7 +538,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                     }
 
                                     // Ensure the received payload is for the correct height
-                                    if finalization.block.height != height {
+                                    if finalization.block.height() != height {
                                         let _ = response.send(false);
                                         continue;
                                     }
@@ -549,13 +549,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                                     // Persist the finalization
                                     self.finalized
-                                        .put(height, finalization.block.digest, finalization.proof )
+                                        .put(height, finalization.block.digest(), finalization.proof )
                                         .await
                                         .expect("Failed to insert finalization");
 
                                     // Persist the block
                                     self.blocks
-                                        .put(height, finalization.block.digest, finalization.block)
+                                        .put(height, finalization.block.digest(), finalization.block)
                                         .await
                                         .expect("Failed to insert finalized block");
 
@@ -569,16 +569,16 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                     };
 
                                     // Ensure the received payload is for the correct digest
-                                    if block.digest != digest {
+                                    if block.digest() != digest {
                                         let _ = response.send(false);
                                         continue;
                                     }
 
                                     // Persist the block
-                                    debug!(?digest, height = block.height, "received block");
+                                    debug!(?digest, height = block.height(), "received block");
                                     let _ = response.send(true);
                                     self.blocks
-                                        .put(block.height, digest, block)
+                                        .put(block.height(), digest, block)
                                         .await
                                         .expect("Failed to insert finalized block");
 
