@@ -72,7 +72,7 @@ pub struct Finalizer<
 
     validator_max_withdrawals_per_block: usize,
 
-    checkpoint_interval: u64,
+    epoch_num_blocks: u64,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
@@ -90,7 +90,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         validator_minimum_stake: u64,
         validator_withdrawal_period: u64,
         validator_max_withdrawals_per_block: usize,
-        checkpoint_interval: u64,
+        epoch_num_blocks: u64,
     ) -> (
         Self,
         FinalizerMailbox,
@@ -131,7 +131,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             validator_minimum_stake,
             validator_withdrawal_period,
             validator_max_withdrawals_per_block,
-            checkpoint_interval,
+            epoch_num_blocks,
         };
 
         // Try to load the latest ConsensusState from database
@@ -409,7 +409,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         self.state.set_latest_height(new_height);
 
                         // Periodically persist state to database as a blob
-                        if new_height % self.checkpoint_interval == 0 {
+                        if new_height % self.epoch_num_blocks == 0 {
                             self.db.store_consensus_state(new_height, &self.state).await;
                         }
                         self.height_notifier.notify_up_to(new_height);

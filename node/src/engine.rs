@@ -25,7 +25,6 @@ const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 const BUFFER_POOL_PAGE_SIZE: NonZero<usize> = NZUsize!(4_096); // 4KB
 const BUFFER_POOL_CAPACITY: NonZero<usize> = NZUsize!(8_192); // 32MB
 //
-const CHECKPOINT_INTERVAL: u64 = 100;
 // Onboarding config (set arbitrarily for now)
 
 #[cfg(debug_assertions)]
@@ -39,6 +38,10 @@ pub const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000; // in gwei
 pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 5;
 #[cfg(not(debug_assertions))]
 const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 100;
+#[cfg(debug_assertions)]
+pub const EPOCH_NUM_BLOCKS: u64 = 10;
+#[cfg(not(debug_assertions))]
+const EPOCH_NUM_BLOCKS: u64 = 1000;
 const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 //
 
@@ -84,7 +87,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
                 validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
-                checkpoint_interval: CHECKPOINT_INTERVAL,
+                epoch_num_blocks: EPOCH_NUM_BLOCKS,
             },
         )
         .await;
