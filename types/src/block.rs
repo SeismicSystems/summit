@@ -359,7 +359,7 @@ impl ssz::Encode for Block {
     fn ssz_bytes_len(&self) -> usize {
         self.header.ssz_bytes_len()
             + self.payload.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET
+            + ssz::BYTES_PER_LENGTH_OFFSET * 2  // 2 variable-length fields need 2 offsets
             + self.execution_requests.ssz_bytes_len()
     }
 }
@@ -388,7 +388,7 @@ impl ssz::Decode for Block {
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
-        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET * 2
+        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
     }
 }
 
@@ -645,5 +645,26 @@ mod test {
         let bytes = block.encode();
 
         Block::decode(bytes).unwrap();
+    }
+
+    #[test]
+    fn test_block_encode_size() {
+        let block = Block::genesis([0; 32]);
+
+        let ssz_len = block.ssz_bytes_len();
+        let encode_len = block.encode_size();
+        let actual_encoded = block.encode();
+
+        // Also check pure SSZ encoding
+        let pure_ssz = block.as_ssz_bytes();
+
+        assert_eq!(
+            pure_ssz.len(),
+            ssz_len,
+            "SSZ calculation should match actual SSZ encoding"
+        );
+        // The Write implementation adds a 4-byte length prefix
+        assert_eq!(actual_encoded.len(), pure_ssz.len() + 4);
+        assert_eq!(actual_encoded.len(), encode_len);
     }
 }

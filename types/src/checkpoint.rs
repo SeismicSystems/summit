@@ -573,5 +573,53 @@ mod tests {
         assert_eq!(decoded.removed_validators, checkpoint.removed_validators);
         assert_eq!(decoded.previous_digest, checkpoint.previous_digest);
         assert_eq!(decoded.digest, checkpoint.digest);
+
+        // Verify the encoded data is substantial due to populated state
+        assert!(buf.len() > 800); // Should be substantial due to all the populated data
+    }
+
+    #[test]
+    fn test_checkpoint_encode_size_investigation() {
+        use commonware_codec::EncodeSize;
+        use std::collections::{HashMap, VecDeque};
+
+        let state = ConsensusState {
+            latest_height: 42,
+            next_withdrawal_index: 99,
+            deposit_queue: VecDeque::new(),
+            withdrawal_queue: VecDeque::new(),
+            validator_accounts: HashMap::new(),
+        };
+
+        let key1 =
+            parse_public_key("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        let key2 =
+            parse_public_key("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c");
+
+        let checkpoint = Checkpoint::new(&state, vec![key1], vec![key2], [42u8; 32].into());
+
+        let ssz_len = checkpoint.ssz_bytes_len();
+        let encode_len = checkpoint.encode_size();
+        let pure_ssz = checkpoint.as_ssz_bytes();
+
+        println!("Checkpoint SSZ bytes len (calculated): {}", ssz_len);
+        println!("Checkpoint Pure SSZ actual len: {}", pure_ssz.len());
+        println!("Checkpoint EncodeSize: {}", encode_len);
+        println!(
+            "Difference (Pure SSZ - calculated SSZ): {}",
+            pure_ssz.len() as i32 - ssz_len as i32
+        );
+
+        // Check if my calculation is correct
+        assert_eq!(
+            pure_ssz.len(),
+            ssz_len,
+            "SSZ calculation should match actual SSZ encoding"
+        );
+        assert_eq!(
+            encode_len,
+            pure_ssz.len() + ssz::BYTES_PER_LENGTH_OFFSET,
+            "EncodeSize should be SSZ + 4-byte prefix"
+        );
     }
 }
