@@ -68,8 +68,6 @@ pub struct Finalizer<
 
     state: ConsensusState,
 
-    validator_onboarding_interval: u64,
-
     validator_onboarding_limit_per_block: usize,
 
     validator_minimum_stake: u64, // in gwei
@@ -91,7 +89,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         registry: Registry,
         forkchoice: Arc<Mutex<ForkchoiceState>>,
         db_prefix: String,
-        validator_onboarding_interval: u64,
         validator_onboarding_limit_per_block: usize,
         validator_minimum_stake: u64,
         validator_withdrawal_period: u64,
@@ -132,7 +129,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             rx_finalizer_mailbox,
             db,
             state: ConsensusState::default(),
-            validator_onboarding_interval,
             validator_onboarding_limit_per_block,
             validator_minimum_stake,
             validator_withdrawal_period,
@@ -178,18 +174,20 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                         // TODO(matthias): the height notify should take care of the synchronization, but verify this
                         // Get ready withdrawals at the current height
-                        let ready_withdrawals = self.state
-                            .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
 
                         // Create checkpoint if we're at an epoch boundary.
                         // The consensus state is saved every `epoch_num_blocks` blocks.
                         // The proposed block will contain the checkpoint that was saved at the previous height.
-                        let checkpoint_hash = if height > 1 && (height - 1) % self.epoch_num_blocks == 0 {
+                        let (ready_withdrawals, checkpoint_hash) = if include_withdrawals_in_block(height, self.epoch_num_blocks) {
                             // TODO(matthias): revisit this expect when the state isn't in the DB
                             let ckpt = self.db.get_checkpoint(height - 1).await.expect("the checkpoint is stored at this height before this call");
-                            Some(ckpt.digest)
+
+                            // Only submit withdrawals at the end of an epoch
+                            let ready_withdrawals = self.state
+                                .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
+                            (ready_withdrawals, Some(ckpt.digest))
                         } else {
-                            None
+                            (vec![], None)
                         };
                         let _ = sender.send((ready_withdrawals, checkpoint_hash));
                     },
@@ -206,11 +204,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                         // Verify withdrawal requests that were included in the block
                         // Make sure that the included withdrawals match the expected withdrawals
-                        let pending_withdrawals = self.state
-                            .get_next_ready_withdrawals(new_height, self.validator_max_withdrawals_per_block);
-                        let expected_withdrawals: Vec<Withdrawal> =
-                            pending_withdrawals.into_iter().map(|w| w.inner).collect();
-
+                        let expected_withdrawals: Vec<Withdrawal> = if include_withdrawals_in_block(new_height, self.epoch_num_blocks) {
+                            let pending_withdrawals = self.state
+                                .get_next_ready_withdrawals(new_height, self.validator_max_withdrawals_per_block);
+                                pending_withdrawals.into_iter().map(|w| w.inner).collect()
+                        } else {
+                            vec![]
+                        };
                         if payload_status.is_valid() && block.payload.payload_inner.withdrawals == expected_withdrawals {
                             let eth_hash = block.eth_block_hash();
 
@@ -289,8 +289,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                             // Add validators that deposited to the validator set
                             let mut add_validators = Vec::new();
-                            let last_indexed = self.state.get_latest_height();
-                            if last_indexed % self.validator_onboarding_interval == 0 {
+                            if new_height % self.epoch_num_blocks == 0 {
                                 for _ in 0..self.validator_onboarding_limit_per_block {
                                     if let Some(request) = self.state.pop_deposit() {
                                         let mut validator_balance = 0;
@@ -389,14 +388,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                         );
                                     }
 
-                                    // If the remaining balance is 0, mark the validator as inactive.
-                                    // An argument can be made from removing the validator account from the DB here.
+                                    // If the remaining balance is 0, remove the validator account from the state.
                                     if account.balance == 0 {
-                                        account.status = ValidatorStatus::Inactive;
+                                        self.state.remove_account(&pending_withdrawal.pubkey);
                                         remove_validators.push(PublicKey::decode(&pending_withdrawal.pubkey[..]).unwrap()); // todo(dalton) remove unwrap
+                                    } else {
+                                        self.state.set_account(pending_withdrawal.pubkey, account);
                                     }
-
-                                    self.state.set_account(pending_withdrawal.pubkey, account);
                                 }
                             }
 
@@ -497,4 +495,8 @@ impl Reporter for FinalizerMailbox {
         // wait until finalization finishes
         let _ = rx.await;
     }
+}
+
+fn include_withdrawals_in_block(height: u64, epoch_num_blocks: u64) -> bool {
+    height > 1 && (height - 1) % epoch_num_blocks == 0
 }

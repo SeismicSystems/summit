@@ -91,7 +91,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 cfg.registry,
                 forkchoice.clone(),
                 cfg.partition_prefix,
-                cfg.validator_onboarding_interval,
                 cfg.validator_onboarding_limit_per_block,
                 cfg.validator_minimum_stake,
                 cfg.validator_withdrawal_period,

@@ -1,4 +1,4 @@
-use crate::engine::{Engine, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
 use crate::test_harness::common::get_default_engine_config;
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -443,9 +443,13 @@ fn test_deposit_and_withdrawal_request_single() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
+        // The deposit request will processed after 10 blocks because `EPOCH_NUM_BLOCKS`
+        // is set to 10 in debug mode.
+        // The withdrawal request should be added after block 10, otherwise it will be ignored, because
+        // the account doesn't exist yet.
         let deposit_block_height = 5;
-        let withdrawal_block_height = 7;
-        let stop_height = deposit_block_height + 10;
+        let withdrawal_block_height = 11;
+        let stop_height = withdrawal_block_height + EPOCH_NUM_BLOCKS + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -550,8 +554,12 @@ fn test_deposit_and_withdrawal_request_single() {
 
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
+        let withdrawal_epoch =
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
+                / EPOCH_NUM_BLOCKS;
+        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS + 1;
         let withdrawals = withdrawals
-            .get(&(withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD))
+            .get(&(withdrawal_height))
             .expect("missing withdrawal");
         assert_eq!(withdrawals[0].amount, test_withdrawal.amount);
         assert_eq!(withdrawals[0].address, test_withdrawal.source_address);
@@ -643,9 +651,13 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let requests3 = common::execution_requests_to_requests(execution_requests3);
 
         // Create execution requests map (add deposit to block 5)
+        // The deposit request will processed after 10 blocks because `EPOCH_NUM_BLOCKS`
+        // is set to 10 in debug mode.
+        // The withdrawal request should be added after block 10, otherwise it will be ignored, because
+        // the account doesn't exist yet.
         let deposit_block_height = 5;
-        let withdrawal_block_height = 7;
-        let stop_height = deposit_block_height + 10;
+        let withdrawal_block_height = 11;
+        let stop_height = withdrawal_block_height + EPOCH_NUM_BLOCKS + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -754,8 +766,12 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // Make sure that test_withdrawal2 was ignored, only test_withdraw1 should be submitted
         // to the execution layer.
         assert_eq!(withdrawals.len(), 1);
+        let withdrawal_epoch =
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
+                / EPOCH_NUM_BLOCKS;
+        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS + 1;
         let withdrawals = withdrawals
-            .get(&(withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD))
+            .get(&withdrawal_height)
             .expect("missing withdrawal");
         // Even though the first withdrawal was only 50% of the deposited amount,
         // since it put the validator under the minimum stake limit, the entire balance was withdrawn.
@@ -843,9 +859,13 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
+        // The deposit request will processed after 10 blocks because `EPOCH_NUM_BLOCKS`
+        // is set to 10 in debug mode.
+        // The withdrawal request should be added after block 10, otherwise it will be ignored, because
+        // the account doesn't exist yet.
         let deposit_block_height = 5;
-        let withdrawal_block_height = 7;
-        let stop_height = deposit_block_height + 10;
+        let withdrawal_block_height = 11;
+        let stop_height = withdrawal_block_height + EPOCH_NUM_BLOCKS + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -960,8 +980,12 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
 
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
+        let withdrawal_epoch =
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
+                / EPOCH_NUM_BLOCKS;
+        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS + 1;
         let withdrawals = withdrawals
-            .get(&(withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD))
+            .get(&withdrawal_height)
             .expect("missing withdrawal");
         assert_eq!(withdrawals[0].amount, test_withdrawal.amount);
         assert_eq!(withdrawals[0].address, test_withdrawal.source_address);
@@ -1063,8 +1087,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
-        let withdrawal_block_height = 6;
-        let stop_height = deposit_block_height + 15;
+        let withdrawal_block_height = 11;
+        let stop_height = withdrawal_block_height + EPOCH_NUM_BLOCKS + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);

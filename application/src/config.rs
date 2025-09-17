@@ -15,10 +15,6 @@ pub struct ApplicationConfig<C: EngineClient> {
 
     pub genesis_hash: [u8; 32],
 
-    /// Validators that deposited the minimum stake will be added to the
-    /// validator set every `validator_onboarding_interval` blocks
-    pub validator_onboarding_interval: u64,
-
     /// The maximum number of validators that will be onboarded at the same time
     pub validator_onboarding_limit_per_block: usize,
 

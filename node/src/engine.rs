@@ -27,10 +27,6 @@ const BUFFER_POOL_CAPACITY: NonZero<usize> = NZUsize!(8_192); // 32MB
 //
 // Onboarding config (set arbitrarily for now)
 
-#[cfg(debug_assertions)]
-const VALIDATOR_ONBOARDING_INTERVAL: u64 = 1;
-#[cfg(not(debug_assertions))]
-const VALIDATOR_ONBOARDING_INTERVAL: u64 = 10;
 const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 3;
 pub const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000; // in gwei
 
@@ -82,7 +78,6 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 mailbox_size: cfg.mailbox_size,
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
-                validator_onboarding_interval: VALIDATOR_ONBOARDING_INTERVAL,
                 validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                 validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
                 validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
