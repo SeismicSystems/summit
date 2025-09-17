@@ -5,11 +5,13 @@ use commonware_storage::store::{self, Store};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
 pub use store::Config;
+use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 
 // Key prefixes for different data types
 const STATE_PREFIX: u8 = 0x01;
 const CONSENSUS_STATE_PREFIX: u8 = 0x05;
+const CHECKPOINT_PREFIX: u8 = 0x06;
 
 // State variable keys
 const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
@@ -37,6 +39,13 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     fn make_consensus_state_key(height: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = CONSENSUS_STATE_PREFIX;
+        key[1..9].copy_from_slice(&height.to_be_bytes());
+        FixedBytes::new(key)
+    }
+
+    fn make_checkpoint_key(height: u64) -> FixedBytes<64> {
+        let mut key = [0u8; 64];
+        key[0] = CHECKPOINT_PREFIX;
         key[1..9].copy_from_slice(&height.to_be_bytes());
         FixedBytes::new(key)
     }
@@ -112,12 +121,41 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             None
         }
     }
+
+    // Checkpoint operations
+    pub async fn store_checkpoint(&mut self, height: u64, checkpoint: &Checkpoint) {
+        let key = Self::make_checkpoint_key(height);
+        self.store
+            .update(key, Value::Checkpoint(checkpoint.clone()))
+            .await
+            .expect("failed to store checkpoint");
+
+        self.store
+            .commit()
+            .await
+            .expect("failed to commit checkpoint");
+    }
+
+    pub async fn get_checkpoint(&self, height: u64) -> Option<Checkpoint> {
+        let key = Self::make_checkpoint_key(height);
+        if let Some(Value::Checkpoint(checkpoint)) = self
+            .store
+            .get(&key)
+            .await
+            .expect("failed to get checkpoint")
+        {
+            Some(checkpoint)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone)]
 enum Value {
     U64(u64),
     ConsensusState(ConsensusState),
+    Checkpoint(Checkpoint),
 }
 
 impl EncodeSize for Value {
@@ -125,6 +163,7 @@ impl EncodeSize for Value {
         1 + match self {
             Self::U64(_) => 8,
             Self::ConsensusState(state) => state.encode_size(),
+            Self::Checkpoint(checkpoint) => checkpoint.encode_size(),
         }
     }
 }
@@ -137,6 +176,7 @@ impl Read for Value {
         match value_type {
             0x01 => Ok(Self::U64(buf.get_u64())),
             0x05 => Ok(Self::ConsensusState(ConsensusState::read_cfg(buf, &())?)),
+            0x06 => Ok(Self::Checkpoint(Checkpoint::read_cfg(buf, &())?)),
             byte => Err(Error::InvalidVarint(byte as usize)),
         }
     }
@@ -152,6 +192,10 @@ impl Write for Value {
             Self::ConsensusState(state) => {
                 buf.put_u8(0x05);
                 state.write(buf);
+            }
+            Self::Checkpoint(checkpoint) => {
+                buf.put_u8(0x06);
+                checkpoint.write(buf);
             }
         }
     }

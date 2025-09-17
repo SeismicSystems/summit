@@ -32,12 +32,12 @@ use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::withdrawal::PendingWithdrawal;
-use summit_types::{Block, PublicKey};
+use summit_types::{Block, Digest, PublicKey};
 use tracing::{info, warn};
 
 type WithdrawalCheckpointRequest = (
     u64,
-    oneshot::Sender<(Vec<PendingWithdrawal>, Option<Checkpoint>)>,
+    oneshot::Sender<(Vec<PendingWithdrawal>, Option<Digest>)>,
 );
 
 const PAGE_SIZE: usize = 77;
@@ -184,18 +184,14 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         // Create checkpoint if we're at an epoch boundary.
                         // The consensus state is saved every `epoch_num_blocks` blocks.
                         // The proposed block will contain the checkpoint that was saved at the previous height.
-                        let checkpoint = if height > 1 && (height - 1) % self.epoch_num_blocks == 0 {
-                            // For now, we'll create a checkpoint with empty validator changes
-                            let added_validators = Vec::new(); // TODO: Get actual validator changes
-                            let removed_validators = Vec::new(); // TODO: Get actual validator changes
-                            let previous_digest = summit_types::Digest::from([0u8; 32]); // TODO: Get actual previous checkpoint digest
+                        let checkpoint_hash = if height > 1 && (height - 1) % self.epoch_num_blocks == 0 {
                             // TODO(matthias): revisit this expect when the state isn't in the DB
-                            let ckpt_state = self.db.get_consensus_state(height - 1).await.expect("the state is stored at this height");
-                            Some(Checkpoint::new(&ckpt_state, added_validators, removed_validators, previous_digest))
+                            let ckpt = self.db.get_checkpoint(height - 1).await.expect("the checkpoint is stored at this height before this call");
+                            Some(ckpt.digest)
                         } else {
                             None
                         };
-                        let _ = sender.send((ready_withdrawals, checkpoint));
+                        let _ = sender.send((ready_withdrawals, checkpoint_hash));
                     },
 
                     msg = self.rx_finalizer_mailbox.next() => {
@@ -432,6 +428,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         // Periodically persist state to database as a blob
                         if new_height % self.epoch_num_blocks == 0 {
                             self.db.store_consensus_state(new_height, &self.state).await;
+
+                            let added_validators = Vec::new(); // TODO: Get actual validator changes
+                            let removed_validators = Vec::new(); // TODO: Get actual validator changes
+                            let previous_digest = summit_types::Digest::from([0u8; 32]); // TODO: Get actual previous checkpoint digest
+                            let ckpt = Checkpoint::new(&self.state, added_validators, removed_validators, previous_digest);
+                            // Store the checkpoint in the database
+                            self.db.store_checkpoint(new_height, &ckpt).await;
                         }
                         self.height_notifier.notify_up_to(new_height);
                         let _ = notifier.send(());

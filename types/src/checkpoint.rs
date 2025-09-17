@@ -1,8 +1,7 @@
-use crate::PublicKey;
 use crate::consensus_state::ConsensusState;
+use crate::{Digest, PublicKey};
 use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{Encode, EncodeSize, Error, Read, Write};
-use commonware_cryptography::sha256::Digest;
 use commonware_cryptography::{Hasher, Sha256};
 use ssz::{Decode, Encode as SszEncode};
 

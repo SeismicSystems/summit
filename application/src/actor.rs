@@ -26,13 +26,12 @@ use std::{
 use tracing::{error, info, warn};
 
 use summit_syncer::ingress::Mailbox as SyncerMailbox;
-use summit_types::checkpoint::Checkpoint;
 use summit_types::withdrawal::PendingWithdrawal;
 use summit_types::{Block, Digest};
 
 type WithdrawalCheckpointRequest = (
     u64,
-    oneshot::Sender<(Vec<PendingWithdrawal>, Option<Checkpoint>)>,
+    oneshot::Sender<(Vec<PendingWithdrawal>, Option<Digest>)>,
 );
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
@@ -261,7 +260,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             .expect("finalizer dropped");
 
         // await response
-        let (pending_withdrawals, checkpoint) = rx.await.expect("finalizer dropped");
+        let (pending_withdrawals, checkpoint_hash) = rx.await.expect("finalizer dropped");
 
         let mut current = self.context.current().epoch_millis();
         if current <= parent.timestamp() {
@@ -292,7 +291,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             payload_envelope.execution_requests.to_vec(),
             payload_envelope.envelope_inner.block_value,
             view,
-            checkpoint,
+            checkpoint_hash,
         );
 
         Ok(block)
