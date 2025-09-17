@@ -23,6 +23,7 @@ import "./App.css";
 import "./AboutModal.css";
 import StatsSection from "./StatsSection";
 import "./StatsSection.css";
+import Footer from "./ui/Footer";
 
 import Header from "./ui/Header";
 import "./MapOverlay.css";
@@ -752,13 +753,7 @@ const App: React.FC = () => {
       </main>
 
       <footer className="footer">
-        <div className="socials">
-          <a href="https://docs.seismic.systems">Docs</a>
-          <a href="https://github.com/seismic-systems">GitHub</a>
-          <a href="https://discord.gg/seismic">Discord</a>
-          <a href="https://t.me/seismicsystems">Telegram</a>
-        </div>
-        &copy; {new Date().getFullYear()} Seismic Systems. All rights reserved.
+        <Footer />
       </footer>
     </div>
   );
