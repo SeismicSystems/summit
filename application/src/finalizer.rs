@@ -28,11 +28,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
+use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::withdrawal::PendingWithdrawal;
 use summit_types::{Block, PublicKey};
 use tracing::{info, warn};
+
+type WithdrawalCheckpointRequest = (
+    u64,
+    oneshot::Sender<(Vec<PendingWithdrawal>, Option<Checkpoint>)>,
+);
 
 const PAGE_SIZE: usize = 77;
 const PAGE_CACHE_SIZE: usize = 9;
@@ -48,7 +54,7 @@ pub struct Finalizer<
 
     height_notify_mailbox: mpsc::Receiver<(u64, oneshot::Sender<()>)>,
 
-    pending_withdrawal_mailbox: mpsc::Receiver<(u64, oneshot::Sender<Vec<PendingWithdrawal>>)>,
+    withdrawal_checkpoint_mailbox: mpsc::Receiver<WithdrawalCheckpointRequest>,
 
     engine_client: C,
 
@@ -95,7 +101,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         Self,
         FinalizerMailbox,
         mpsc::Sender<(u64, oneshot::Sender<()>)>,
-        mpsc::Sender<(u64, oneshot::Sender<Vec<PendingWithdrawal>>)>,
+        mpsc::Sender<WithdrawalCheckpointRequest>,
     ) {
         let state_cfg = StateConfig {
             log_journal_partition: format!("{db_prefix}-finalizer_state-log"),
@@ -111,7 +117,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         let db = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
 
         let (tx_height_notify, height_notify_mailbox) = mpsc::channel(1000);
-        let (tx_pending_withdrawal, pending_withdrawal_mailbox) = mpsc::channel(1000);
+        let (tx_withdrawal_checkpoint, withdrawal_checkpoint_mailbox) = mpsc::channel(1000);
 
         let (tx_finalizer, rx_finalizer_mailbox) = mpsc::channel(1); // todo(dalton) there should only ever be one message in this channel since we block but lets verify this
 
@@ -119,7 +125,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             context,
             height_notifier: HeightNotifier::new(),
             height_notify_mailbox,
-            pending_withdrawal_mailbox,
+            withdrawal_checkpoint_mailbox,
             engine_client,
             registry,
             forkchoice,
@@ -143,7 +149,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             finalizer,
             FinalizerMailbox::new(tx_finalizer),
             tx_height_notify,
-            tx_pending_withdrawal,
+            tx_withdrawal_checkpoint,
         )
     }
 
@@ -167,14 +173,29 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         self.height_notifier.register(height, sender);
                     },
 
-                    mail = self.pending_withdrawal_mailbox.next() => {
-                        let (height, sender) = mail.expect("pending withdrawal mailbox dropped");
+                    mail = self.withdrawal_checkpoint_mailbox.next() => {
+                        let (height, sender) = mail.expect("withdrawal checkpoint mailbox dropped");
 
                         // TODO(matthias): the height notify should take care of the synchronization, but verify this
                         // Get ready withdrawals at the current height
                         let ready_withdrawals = self.state
                             .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
-                        let _ = sender.send(ready_withdrawals);
+
+                        // Create checkpoint if we're at an epoch boundary.
+                        // The consensus state is saved every `epoch_num_blocks` blocks.
+                        // The proposed block will contain the checkpoint that was saved at the previous height.
+                        let checkpoint = if height > 1 && (height - 1) % self.epoch_num_blocks == 0 {
+                            // For now, we'll create a checkpoint with empty validator changes
+                            let added_validators = Vec::new(); // TODO: Get actual validator changes
+                            let removed_validators = Vec::new(); // TODO: Get actual validator changes
+                            let previous_digest = summit_types::Digest::from([0u8; 32]); // TODO: Get actual previous checkpoint digest
+                            // TODO(matthias): revisit this expect when the state isn't in the DB
+                            let ckpt_state = self.db.get_consensus_state(height - 1).await.expect("the state is stored at this height");
+                            Some(Checkpoint::new(&ckpt_state, added_validators, removed_validators, previous_digest))
+                        } else {
+                            None
+                        };
+                        let _ = sender.send((ready_withdrawals, checkpoint));
                     },
 
                     msg = self.rx_finalizer_mailbox.next() => {

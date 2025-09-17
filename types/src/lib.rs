@@ -1,6 +1,6 @@
 pub mod account;
 mod block;
-mod checkpoint;
+pub mod checkpoint;
 pub mod consensus_state;
 pub mod execution_request;
 pub mod genesis;
