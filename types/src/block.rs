@@ -1,5 +1,7 @@
 use std::ops::Deref as _;
 
+use crate::Signature;
+use crate::checkpoint::Checkpoint;
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
 use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
@@ -14,8 +16,6 @@ use commonware_consensus::{
 use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 
-use crate::Signature;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
     pub parent: Digest,
@@ -24,14 +24,16 @@ pub struct Header {
     pub view: u64,
     pub payload_hash: Digest,
     pub execution_request_hash: Digest,
+    pub checkpoint_hash: Digest,
     pub block_value: U256,
     // precomputed digest of this header
     pub digest: Digest,
 }
 
-const HEADER_BYTES_LEN: usize = 32 + 8 + 8 + 8 + 32 + 32 + 32; // 152
+const HEADER_BYTES_LEN: usize = 32 + 8 + 8 + 8 + 32 + 32 + 32 + 32; // 184
 
 impl Header {
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_digest(
         parent: Digest,
         height: u64,
@@ -39,6 +41,7 @@ impl Header {
         view: u64,
         payload_hash: Digest,
         execution_request_hash: Digest,
+        checkpoint_hash: Digest,
         block_value: U256,
     ) -> Self {
         let mut hasher = Sha256::new();
@@ -47,6 +50,7 @@ impl Header {
         hasher.update(&timestamp.to_be_bytes());
         hasher.update(&payload_hash);
         hasher.update(&execution_request_hash);
+        hasher.update(&checkpoint_hash);
         hasher.update(&block_value.as_ssz_bytes());
         hasher.update(&view.to_be_bytes());
         let digest = hasher.finalize();
@@ -58,6 +62,7 @@ impl Header {
             view,
             payload_hash,
             execution_request_hash,
+            checkpoint_hash,
             block_value,
             digest,
         }
@@ -86,6 +91,11 @@ impl ssz::Encode for Header {
             .deref()
             .try_into()
             .expect("Safe unwrap unless we change digest size");
+        let checkpoint_hash: [u8; 32] = self
+            .checkpoint_hash
+            .deref()
+            .try_into()
+            .expect("Safe unwrap unless we change digest size");
 
         buf.extend_from_slice(&parent);
         buf.extend_from_slice(&self.height.as_ssz_bytes());
@@ -93,6 +103,7 @@ impl ssz::Encode for Header {
         buf.extend_from_slice(&self.view.as_ssz_bytes());
         buf.extend_from_slice(&payload_hash);
         buf.extend_from_slice(&execution_request_hash);
+        buf.extend_from_slice(&checkpoint_hash);
         buf.extend_from_slice(&self.block_value.as_ssz_bytes());
     }
 
@@ -138,6 +149,9 @@ impl ssz::Decode for Header {
         let execution_request_hash = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
         offset += 32;
 
+        let checkpoint_hash = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
+        offset += 32;
+
         let block_value = U256::from_ssz_bytes(&bytes[offset..offset + 32])?;
 
         Ok(Self::compute_digest(
@@ -147,6 +161,7 @@ impl ssz::Decode for Header {
             view,
             payload_hash.into(),
             execution_request_hash.into(),
+            checkpoint_hash.into(),
             block_value,
         ))
     }
@@ -187,6 +202,7 @@ pub struct Block {
     pub header: Header,
     pub payload: ExecutionPayloadV3,
     pub execution_requests: Vec<AlloyBytes>,
+    pub checkpoint: Option<Checkpoint>,
 }
 
 impl Block {
@@ -203,6 +219,7 @@ impl Block {
         self.payload.payload_inner.payload_inner.parent_hash.into()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_digest(
         parent: Digest,
         height: u64,
@@ -211,11 +228,21 @@ impl Block {
         execution_requests: Vec<AlloyBytes>,
         block_value: U256,
         view: u64,
+        checkpoint: Option<Checkpoint>,
     ) -> Self {
         let payload_ssz = payload.as_ssz_bytes();
         let mut hasher = Sha256::new();
         hasher.update(&payload_ssz);
         let payload_hash = hasher.finalize();
+
+        let checkpoint_hash = if let Some(checkpoint) = &checkpoint {
+            let execution_requests_ssz = checkpoint.as_ssz_bytes();
+            let mut hasher = Sha256::new();
+            hasher.update(&execution_requests_ssz);
+            hasher.finalize()
+        } else {
+            [0; 32].into()
+        };
 
         let execution_request_hash = if !execution_requests.is_empty() {
             let execution_requests_ssz = execution_requests.as_ssz_bytes();
@@ -233,6 +260,7 @@ impl Block {
             view,
             payload_hash,
             execution_request_hash,
+            checkpoint_hash,
             block_value,
         );
 
@@ -240,6 +268,7 @@ impl Block {
             header,
             payload,
             execution_requests,
+            checkpoint,
         }
     }
 
@@ -247,6 +276,7 @@ impl Block {
         header: Header,
         payload: ExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
+        checkpoint: Option<Checkpoint>,
     ) -> Result<Self> {
         let payload_ssz = payload.as_ssz_bytes();
         let mut hasher = Sha256::new();
@@ -262,16 +292,29 @@ impl Block {
             [0; 32].into()
         };
 
+        let checkpoint_hash = if let Some(checkpoint) = &checkpoint {
+            let execution_requests_ssz = checkpoint.as_ssz_bytes();
+            let mut hasher = Sha256::new();
+            hasher.update(&execution_requests_ssz);
+            hasher.finalize()
+        } else {
+            [0; 32].into()
+        };
+
         if payload_hash != header.payload_hash {
             return Err(anyhow!("Payload hash mismatch"));
         }
         if execution_request_hash != header.execution_request_hash {
             return Err(anyhow!("Execution request hash mismatch"));
         }
+        if checkpoint_hash != header.checkpoint_hash {
+            return Err(anyhow!("Checkpoint hash mismatch"));
+        }
         Ok(Self {
             header,
             payload,
             execution_requests,
+            checkpoint,
         })
     }
 
@@ -289,6 +332,7 @@ impl Block {
             view: 1,
             payload_hash,
             execution_request_hash: [0; 32].into(),
+            checkpoint_hash: [0; 32].into(),
             block_value: U256::ZERO,
             digest: genesis_hash.into(),
         };
@@ -296,6 +340,7 @@ impl Block {
             header,
             payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
             execution_requests: Default::default(),
+            checkpoint: None,
         }
     }
 
@@ -346,21 +391,24 @@ impl ssz::Encode for Block {
     fn ssz_append(&self, buf: &mut Vec<u8>) {
         let offset = HEADER_BYTES_LEN
             + <ExecutionPayloadV3 as ssz::Encode>::ssz_fixed_len()
-            + <Vec<AlloyBytes> as ssz::Encode>::ssz_fixed_len();
+            + <Vec<AlloyBytes> as ssz::Encode>::ssz_fixed_len()
+            + <Option<Checkpoint> as ssz::Encode>::ssz_fixed_len();
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
 
         encoder.append(&self.header);
         encoder.append(&self.payload);
         encoder.append(&self.execution_requests);
+        encoder.append(&self.checkpoint);
         encoder.finalize();
     }
 
     fn ssz_bytes_len(&self) -> usize {
         self.header.ssz_bytes_len()
             + self.payload.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET * 2  // 2 variable-length fields need 2 offsets
+            + ssz::BYTES_PER_LENGTH_OFFSET * 3  // 3 variable-length fields need 3 offsets
             + self.execution_requests.ssz_bytes_len()
+            + self.checkpoint.ssz_bytes_len()
     }
 }
 
@@ -374,14 +422,16 @@ impl ssz::Decode for Block {
         builder.register_type::<Header>()?;
         builder.register_type::<ExecutionPayloadV3>()?;
         builder.register_type::<Vec<AlloyBytes>>()?;
+        builder.register_type::<Option<Checkpoint>>()?;
 
         let mut decoder = builder.build()?;
 
         let header: Header = decoder.decode_next()?;
         let payload = decoder.decode_next()?;
         let execution_requests = decoder.decode_next()?;
+        let checkpoint = decoder.decode_next()?;
 
-        Self::new_with_verify(header, payload, execution_requests)
+        Self::new_with_verify(header, payload, execution_requests, checkpoint)
             .map_err(|e| ssz::DecodeError::BytesInvalid(e.to_string()))
     }
 }
@@ -568,6 +618,129 @@ mod test {
             vec![Default::default()],
             U256::ZERO,
             42,
+            None,
+        );
+
+        let encoded = block.encode();
+
+        let decoded = Block::decode(encoded).unwrap();
+
+        assert_eq!(block, decoded);
+    }
+
+    #[test]
+    fn test_block_encode_decode_with_checkpoint() {
+        use crate::execution_request::DepositRequest;
+        use crate::withdrawal::PendingWithdrawal;
+        use crate::{
+            PublicKey,
+            account::{ValidatorAccount, ValidatorStatus},
+        };
+        use alloy_eips::eip4895::Withdrawal;
+        use alloy_primitives::Address;
+        use commonware_codec::DecodeExt;
+
+        // Helper function to parse hex string to PublicKey
+        fn parse_public_key(public_key: &str) -> PublicKey {
+            PublicKey::decode(
+                commonware_utils::from_hex_formatted(public_key)
+                    .unwrap()
+                    .as_ref(),
+            )
+            .unwrap()
+        }
+
+        let first_transaction_raw = AlloyBytes::from_static(
+            &hex!(
+                "b9017e02f9017a8501a1f0ff438211cc85012a05f2008512a05f2000830249f094d5409474fd5a725eab2ac9a8b26ca6fb51af37ef80b901040cc7326300000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000001bdd2ed4b616c800000000000000000000000000001e9ee781dd4b97bdef92e5d1785f73a1f931daa20000000000000000000000007a40026a3b9a41754a95eec8c92c6b99886f440c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020000000000000000000000009ae80eb647dd09968488fa1d7e412bf8558a0b7a0000000000000000000000000f9815537d361cb02befd9918c95c97d4d8a4a2bc001a0ba8f1928bb0efc3fcd01524a2039a9a2588fa567cd9a7cc18217e05c615e9d69a0544bfd11425ac7748e76b3795b57a5563e2b0eff47b5428744c62ff19ccfc305"
+            )[..],
+        );
+        let second_transaction_raw = AlloyBytes::from_static(
+            &hex!(
+                "b9013c03f901388501a1f0ff430c843b9aca00843b9aca0082520894e7249813d8ccf6fa95a2203f46a64166073d58878080c005f8c6a00195f6dff17753fc89b60eac6477026a805116962c9e412de8015c0484e661c1a001aae314061d4f5bbf158f15d9417a238f9589783f58762cd39d05966b3ba2fba0013f5be9b12e7da06f0dd11a7bdc4e0db8ef33832acc23b183bd0a2c1408a757a0019d9ac55ea1a615d92965e04d960cb3be7bff121a381424f1f22865bd582e09a001def04412e76df26fefe7b0ed5e10580918ae4f355b074c0cfe5d0259157869a0011c11a415db57e43db07aef0de9280b591d65ca0cce36c7002507f8191e5d4a80a0c89b59970b119187d97ad70539f1624bbede92648e2dc007890f9658a88756c5a06fb2e3d4ce2c438c0856c2de34948b7032b1aadc4642a9666228ea8cdc7786b7"
+            )[..],
+        );
+        let payload = ExecutionPayloadV3 {
+            payload_inner: ExecutionPayloadV2 {
+                payload_inner: ExecutionPayloadV1 {
+                    base_fee_per_gas:  U256::from(7u64),
+                    block_number: 0xa946u64,
+                    block_hash: hex!("a5ddd3f286f429458a39cafc13ffe89295a7efa8eb363cf89a1a4887dbcf272b").into(),
+                    logs_bloom: hex!("00200004000000000000000080000000000200000000000000000000000000000000200000000000000000000000000000000000800000000200000000000000000000000000000000000008000000200000000000000000000001000000000000000000000000000000800000000000000000000100000000000030000000000000000040000000000000000000000000000000000800080080404000000000000008000000000008200000000000200000000000000000000000000000000000000002000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000100000000000000000000").into(),
+                    extra_data: hex!("d883010d03846765746888676f312e32312e31856c696e7578").into(),
+                    gas_limit: 0x1c9c380,
+                    gas_used: 0x1f4a9,
+                    timestamp: 0x651f35b8,
+                    fee_recipient: hex!("f97e180c050e5ab072211ad2c213eb5aee4df134").into(),
+                    parent_hash: hex!("d829192799c73ef28a7332313b3c03af1f2d5da2c36f8ecfafe7a83a3bfb8d1e").into(),
+                    prev_randao: hex!("753888cc4adfbeb9e24e01c84233f9d204f4a9e1273f0e29b43c4c148b2b8b7e").into(),
+                    receipts_root: hex!("4cbc48e87389399a0ea0b382b1c46962c4b8e398014bf0cc610f9c672bee3155").into(),
+                    state_root: hex!("017d7fa2b5adb480f5e05b2c95cb4186e12062eed893fc8822798eed134329d1").into(),
+                    transactions: vec![first_transaction_raw, second_transaction_raw],
+                },
+                withdrawals: vec![],
+            },
+            blob_gas_used: 0xc0000,
+            excess_blob_gas: 0x580000,
+        };
+
+        // Create a checkpoint with populated data
+        let deposit1 = DepositRequest {
+            pubkey: parse_public_key(
+                "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+            ),
+            withdrawal_credentials: [1u8; 32],
+            amount: 32_000_000_000, // 32 ETH in gwei
+            signature: [42u8; 64],
+            index: 100,
+        };
+
+        let validator1 = ValidatorAccount {
+            withdrawal_credentials: Address::from([1u8; 20]),
+            balance: 32_000_000_000,
+            pending_withdrawal_amount: 0,
+            status: ValidatorStatus::Active,
+            last_deposit_index: 100,
+        };
+
+        let withdrawal1 = PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([1u8; 20]),
+                amount: 32_000_000_000,
+            },
+            withdrawal_height: 100,
+            pubkey: [1u8; 32],
+        };
+
+        let mut state = crate::consensus_state::ConsensusState::default();
+        state.deposit_queue.push_back(deposit1);
+        state.validator_accounts.insert([1u8; 32], validator1);
+        state.withdrawal_queue.push_back(withdrawal1);
+
+        let added_validators = vec![parse_public_key(
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        )];
+        let removed_validators = vec![];
+        let previous_digest = Digest::from([1u8; 32]);
+
+        let checkpoint = Checkpoint::new(
+            &state,
+            added_validators,
+            removed_validators,
+            previous_digest,
+        );
+
+        let block = Block::compute_digest(
+            [27u8; 32].into(),
+            27,
+            2727,
+            payload,
+            vec![Default::default()],
+            U256::ZERO,
+            42,
+            Some(checkpoint),
         );
 
         let encoded = block.encode();
@@ -586,6 +759,100 @@ mod test {
             42,
             [1u8; 32].into(),
             [2u8; 32].into(),
+            [3u8; 32].into(),
+            U256::ZERO,
+        );
+
+        let encoded = header.encode();
+        let decoded = Header::decode(encoded).unwrap();
+
+        assert_eq!(header, decoded);
+    }
+
+    #[test]
+    fn test_header_encode_decode_with_checkpoint() {
+        use crate::execution_request::DepositRequest;
+        use crate::withdrawal::PendingWithdrawal;
+        use crate::{
+            PublicKey,
+            account::{ValidatorAccount, ValidatorStatus},
+        };
+        use alloy_eips::eip4895::Withdrawal;
+        use alloy_primitives::Address;
+        use commonware_codec::DecodeExt;
+
+        // Helper function to parse hex string to PublicKey
+        fn parse_public_key(public_key: &str) -> PublicKey {
+            PublicKey::decode(
+                commonware_utils::from_hex_formatted(public_key)
+                    .unwrap()
+                    .as_ref(),
+            )
+            .unwrap()
+        }
+
+        // Create a checkpoint with populated data
+        let deposit1 = DepositRequest {
+            pubkey: parse_public_key(
+                "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+            ),
+            withdrawal_credentials: [1u8; 32],
+            amount: 32_000_000_000, // 32 ETH in gwei
+            signature: [42u8; 64],
+            index: 100,
+        };
+
+        let validator1 = ValidatorAccount {
+            withdrawal_credentials: Address::from([1u8; 20]),
+            balance: 32_000_000_000,
+            pending_withdrawal_amount: 0,
+            status: ValidatorStatus::Active,
+            last_deposit_index: 100,
+        };
+
+        let withdrawal1 = PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([1u8; 20]),
+                amount: 32_000_000_000,
+            },
+            withdrawal_height: 100,
+            pubkey: [1u8; 32],
+        };
+
+        let mut state = crate::consensus_state::ConsensusState::default();
+        state.deposit_queue.push_back(deposit1);
+        state.validator_accounts.insert([1u8; 32], validator1);
+        state.withdrawal_queue.push_back(withdrawal1);
+
+        let added_validators = vec![parse_public_key(
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        )];
+        let removed_validators = vec![];
+        let previous_digest = Digest::from([1u8; 32]);
+
+        let checkpoint = Checkpoint::new(
+            &state,
+            added_validators,
+            removed_validators,
+            previous_digest,
+        );
+
+        // Compute the checkpoint hash
+        let checkpoint_ssz = checkpoint.as_ssz_bytes();
+        let mut hasher = commonware_cryptography::Sha256::new();
+        hasher.update(&checkpoint_ssz);
+        let checkpoint_hash = hasher.finalize();
+
+        let header = Header::compute_digest(
+            [27u8; 32].into(),
+            27,
+            2727,
+            42,
+            [1u8; 32].into(),
+            [2u8; 32].into(),
+            checkpoint_hash,
             U256::ZERO,
         );
 
@@ -629,6 +896,7 @@ mod test {
             Vec::new(),
             U256::ZERO,
             42,
+            None,
         );
 
         let encoded = block.encode();

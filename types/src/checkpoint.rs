@@ -6,7 +6,7 @@ use commonware_cryptography::sha256::Digest;
 use commonware_cryptography::{Hasher, Sha256};
 use ssz::{Decode, Encode as SszEncode};
 
-#[allow(unused)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Checkpoint {
     pub data: Bytes,
     pub added_validators: Vec<PublicKey>,
@@ -16,7 +16,7 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
-    fn new(
+    pub fn new(
         state: &ConsensusState,
         mut added_validators: Vec<PublicKey>,
         mut removed_validators: Vec<PublicKey>,

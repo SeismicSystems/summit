@@ -286,6 +286,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             payload_envelope.execution_requests.to_vec(),
             payload_envelope.envelope_inner.block_value,
             view,
+            None, // TODO: Add checkpoint logic
         );
 
         Ok(block)

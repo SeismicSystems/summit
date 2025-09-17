@@ -145,6 +145,7 @@ fn execution_payload_envelope_to_block(
         execution_requests,
         payload.envelope_inner.block_value,
         view,
+        None,
     )
 }
 

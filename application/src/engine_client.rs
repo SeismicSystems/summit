@@ -300,6 +300,7 @@ pub mod benchmarking {
                 execution_requests,
                 U256::ZERO, // block_value
                 view,
+                None,
             )
         }
     }
