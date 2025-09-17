@@ -96,6 +96,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 cfg.validator_withdrawal_period,
                 cfg.validator_max_withdrawals_per_block,
                 cfg.epoch_num_blocks,
+                genesis_hash,
             )
             .await;
 

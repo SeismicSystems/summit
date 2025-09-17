@@ -17,6 +17,8 @@ const HEADER_PREFIX: u8 = 0x07;
 
 // State variable keys
 const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
+const PENDING_CHECKPOINT_KEY: [u8; 2] = [CHECKPOINT_PREFIX, 0];
+const FINALIZED_CHECKPOINT_KEY: [u8; 2] = [CHECKPOINT_PREFIX, 1];
 
 pub struct FinalizerState<E: Clock + Storage + Metrics> {
     store: Store<E, FixedBytes<64>, Value, TwoCap>,
@@ -41,13 +43,6 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     fn make_consensus_state_key(height: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = CONSENSUS_STATE_PREFIX;
-        key[1..9].copy_from_slice(&height.to_be_bytes());
-        FixedBytes::new(key)
-    }
-
-    fn make_checkpoint_key(height: u64) -> FixedBytes<64> {
-        let mut key = [0u8; 64];
-        key[0] = CHECKPOINT_PREFIX;
         key[1..9].copy_from_slice(&height.to_be_bytes());
         FixedBytes::new(key)
     }
@@ -127,26 +122,56 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     }
 
     // Checkpoint operations
-    pub async fn store_checkpoint(&mut self, height: u64, checkpoint: &Checkpoint) {
-        let key = Self::make_checkpoint_key(height);
+    pub async fn store_pending_checkpoint(&mut self, checkpoint: &Checkpoint) {
+        let key = Self::pad_key(&PENDING_CHECKPOINT_KEY);
         self.store
             .update(key, Value::Checkpoint(checkpoint.clone()))
             .await
-            .expect("failed to store checkpoint");
+            .expect("failed to store pending checkpoint");
     }
 
-    pub async fn get_checkpoint(&self, height: u64) -> Option<Checkpoint> {
-        let key = Self::make_checkpoint_key(height);
+    pub async fn get_pending_checkpoint(&self) -> Option<Checkpoint> {
+        let key = Self::pad_key(&PENDING_CHECKPOINT_KEY);
         if let Some(Value::Checkpoint(checkpoint)) = self
             .store
             .get(&key)
             .await
-            .expect("failed to get checkpoint")
+            .expect("failed to get pending checkpoint")
         {
             Some(checkpoint)
         } else {
             None
         }
+    }
+
+    pub async fn store_finalized_checkpoint(&mut self, checkpoint: &Checkpoint) {
+        let key = Self::pad_key(&FINALIZED_CHECKPOINT_KEY);
+        self.store
+            .update(key, Value::Checkpoint(checkpoint.clone()))
+            .await
+            .expect("failed to store finalized checkpoint");
+    }
+
+    pub async fn get_finalized_checkpoint(&self) -> Option<Checkpoint> {
+        let key = Self::pad_key(&FINALIZED_CHECKPOINT_KEY);
+        if let Some(Value::Checkpoint(checkpoint)) = self
+            .store
+            .get(&key)
+            .await
+            .expect("failed to get finalized checkpoint")
+        {
+            Some(checkpoint)
+        } else {
+            None
+        }
+    }
+
+    pub async fn remove_pending_checkpoint(&mut self) {
+        let key = Self::pad_key(&PENDING_CHECKPOINT_KEY);
+        self.store
+            .delete(key)
+            .await
+            .expect("failed to remove pending checkpoint");
     }
 
     // Header operations
@@ -158,6 +183,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .expect("failed to store header");
     }
 
+    #[allow(unused)]
     pub async fn get_header(&self, height: u64) -> Option<Header> {
         let key = Self::make_header_key(height);
         if let Some(Value::Header(header)) =
@@ -367,6 +393,87 @@ mod tests {
             assert_eq!(h1.height, 100);
             assert_eq!(h2.height, 200);
             assert_ne!(h1.digest, h2.digest);
+        });
+    }
+
+    #[test]
+    fn test_checkpoint_operations() {
+        let cfg = commonware_runtime::deterministic::Config::default().with_seed(4);
+        let executor = Runner::from(cfg);
+        executor.start(|context| async move {
+            let mut db = create_test_db_with_context("test_checkpoint", context).await;
+
+            // Create test consensus state
+            let mut consensus_state = ConsensusState::new();
+            consensus_state.set_latest_height(100);
+
+            // Create test checkpoints
+            let pending_checkpoint =
+                summit_types::checkpoint::Checkpoint::new(&consensus_state, [1u8; 32].into());
+            let finalized_checkpoint =
+                summit_types::checkpoint::Checkpoint::new(&consensus_state, [2u8; 32].into());
+
+            // Test that no checkpoints exist initially
+            assert!(db.get_pending_checkpoint().await.is_none());
+            assert!(db.get_finalized_checkpoint().await.is_none());
+
+            // Store pending checkpoint
+            db.store_pending_checkpoint(&pending_checkpoint).await;
+            db.commit().await;
+
+            // Retrieve pending checkpoint
+            let retrieved_pending = db.get_pending_checkpoint().await;
+            assert!(retrieved_pending.is_some());
+            let retrieved_pending = retrieved_pending.unwrap();
+            assert_eq!(retrieved_pending.data, pending_checkpoint.data);
+            assert_eq!(
+                retrieved_pending.previous_digest,
+                pending_checkpoint.previous_digest
+            );
+            assert_eq!(retrieved_pending.digest, pending_checkpoint.digest);
+
+            // Finalized checkpoint should still be None
+            assert!(db.get_finalized_checkpoint().await.is_none());
+
+            // Store finalized checkpoint
+            db.store_finalized_checkpoint(&finalized_checkpoint).await;
+            db.commit().await;
+
+            // Retrieve finalized checkpoint
+            let retrieved_finalized = db.get_finalized_checkpoint().await;
+            assert!(retrieved_finalized.is_some());
+            let retrieved_finalized = retrieved_finalized.unwrap();
+            assert_eq!(retrieved_finalized.data, finalized_checkpoint.data);
+            assert_eq!(
+                retrieved_finalized.previous_digest,
+                finalized_checkpoint.previous_digest
+            );
+            assert_eq!(retrieved_finalized.digest, finalized_checkpoint.digest);
+
+            // Both checkpoints should be accessible
+            let pending = db.get_pending_checkpoint().await.unwrap();
+            let finalized = db.get_finalized_checkpoint().await.unwrap();
+            assert_ne!(pending.digest, finalized.digest);
+            assert_ne!(pending.previous_digest, finalized.previous_digest);
+
+            // Test overwriting checkpoints
+            let new_pending =
+                summit_types::checkpoint::Checkpoint::new(&consensus_state, [3u8; 32].into());
+            db.store_pending_checkpoint(&new_pending).await;
+            db.commit().await;
+
+            let updated_pending = db.get_pending_checkpoint().await.unwrap();
+            assert_eq!(updated_pending.digest, new_pending.digest);
+            assert_ne!(updated_pending.digest, pending.digest);
+
+            // Test removing pending checkpoint
+            db.remove_pending_checkpoint().await;
+            db.commit().await;
+
+            // Pending checkpoint should be None after removal
+            assert!(db.get_pending_checkpoint().await.is_none());
+            // Finalized checkpoint should still exist
+            assert!(db.get_finalized_checkpoint().await.is_some());
         });
     }
 }

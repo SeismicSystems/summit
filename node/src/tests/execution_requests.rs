@@ -120,8 +120,8 @@ fn test_deposit_request_single() {
             engine.start(pending, resolver, broadcast, backfill);
         }
         // Poll metrics
-        let mut num_nodes_processed_requests = 0;
-        let mut num_nodes_height_reached = 0;
+        let mut height_reached = HashSet::new();
+        let mut processed_requests = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -147,7 +147,7 @@ fn test_deposit_request_single() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
-                        num_nodes_height_reached += 1;
+                        height_reached.insert(metric.to_string());
                     }
                 }
 
@@ -160,12 +160,12 @@ fn test_deposit_request_single() {
                         assert_eq!(creds, hex::encode(test_deposit.withdrawal_credentials));
                         assert_eq!(pubkey_hex, test_deposit.pubkey.to_string());
                         assert_eq!(value, test_deposit.amount);
-                        num_nodes_processed_requests += 1;
+                        processed_requests.insert(metric.to_string());
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
                 }
-                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
                     break;
                 }
@@ -300,8 +300,8 @@ fn test_deposit_request_top_up() {
         }
 
         // Poll metrics
-        let mut num_nodes_height_reached = 0;
-        let mut num_nodes_processed_requests = 0;
+        let mut height_reached = HashSet::new();
+        let mut processed_requests = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -327,7 +327,7 @@ fn test_deposit_request_top_up() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
-                        num_nodes_height_reached += 1;
+                        height_reached.insert(metric.to_string());
                     }
                 }
 
@@ -344,12 +344,12 @@ fn test_deposit_request_top_up() {
                         assert_eq!(ed_pubkey_hex, test_deposit1.pubkey.to_string());
                         // The amount from both deposits should be added to the validator balance
                         assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
-                        num_nodes_processed_requests += 1;
+                        processed_requests.insert(metric.to_string());
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
                 }
-                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
                     break;
                 }
@@ -495,8 +495,8 @@ fn test_deposit_and_withdrawal_request_single() {
         }
 
         // Poll metrics
-        let mut num_nodes_height_reached = 0;
-        let mut num_nodes_processed_requests = 0;
+        let mut height_reached = HashSet::new();
+        let mut processed_requests = HashSet::new();
         loop {
             let metrics = context.encode();
             // Iterate over all lines
@@ -521,7 +521,7 @@ fn test_deposit_and_withdrawal_request_single() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
-                        num_nodes_height_reached += 1;
+                        height_reached.insert(metric.to_string());
                     }
                 }
 
@@ -534,12 +534,12 @@ fn test_deposit_and_withdrawal_request_single() {
                         assert_eq!(creds, hex::encode(test_withdrawal.source_address));
                         assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
                         assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
-                        num_nodes_processed_requests += 1;
+                        processed_requests.insert(metric.to_string());
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
                 }
-                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
                     break;
                 }
@@ -704,8 +704,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         }
 
         // Poll metrics
-        let mut num_nodes_height_reached = 0;
-        let mut num_nodes_processed_requests = 0;
+        let mut height_reached = HashSet::new();
+        let mut processed_requests = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -731,7 +731,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
-                        num_nodes_height_reached += 1;
+                        height_reached.insert(metric.to_string());
                     }
                 }
 
@@ -744,12 +744,12 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                         assert_eq!(creds, hex::encode(test_withdrawal1.source_address));
                         assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
                         assert_eq!(balance, 0);
-                        num_nodes_processed_requests += 1;
+                        processed_requests.insert(metric.to_string());
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
                 }
-                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
                     break;
                 }
@@ -911,8 +911,8 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         }
 
         // Poll metrics
-        let mut num_nodes_height_reached = 0;
-        let mut num_nodes_processed_requests = 0;
+        let mut height_reached = HashSet::new();
+        let mut processed_requests = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -938,7 +938,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
-                        num_nodes_height_reached += 1;
+                        height_reached.insert(metric.to_string());
                     }
                 }
 
@@ -960,12 +960,12 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                         assert_eq!(creds, hex::encode(test_withdrawal.source_address));
                         assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
                         assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
-                        num_nodes_processed_requests += 1;
+                        processed_requests.insert(metric.to_string());
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
                 }
-                if num_nodes_processed_requests >= n && num_nodes_height_reached >= n {
+                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
                     break;
                 }
@@ -1134,7 +1134,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
         }
 
         // Poll metrics
-        let mut num_nodes_height_reached = 0;
+        let mut height_reached = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -1160,7 +1160,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
-                        num_nodes_height_reached += 1;
+                        height_reached.insert(metric.to_string());
                     }
                 }
 
@@ -1193,7 +1193,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
                     assert_eq!(ed_pubkey_hex, deposit_req.pubkey.to_string());
                     assert_eq!(balance, deposit_req.amount - withdrawal_req.amount);
                 }
-                if num_nodes_height_reached >= n {
+                if height_reached.len() as u32 >= n {
                     success = true;
                     break;
                 }
