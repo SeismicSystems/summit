@@ -1,44 +1,38 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
-import { LatLng, DivIcon } from "leaflet";
+
+import { LatLng } from "leaflet";
 import "leaflet/dist/leaflet.css";
-import init, { parse_notarized, parse_finalized, parse_seed } from "./alto_types/alto_types.js";
-import { BACKEND_URL, LOCATIONS, PUBLIC_KEY_HEX } from "./config";
+import init, {
+  parse_notarized,
+  parse_finalized,
+  parse_seed,
+} from "./alto_types/alto_types.js";
+import {
+  BACKEND_URL,
+  LOCATIONS,
+  PUBLIC_KEY_HEX,
+  HEALTH_CHECK_INTERVAL,
+  TIMEOUT_DURATION,
+  PUBLIC_KEY,
+  SCALE_DURATION,
+} from "./config";
 import { SeedJs, NotarizedJs, FinalizedJs, ViewData } from "./types";
-import { hexToUint8Array, hexUint8Array } from "./utils";
+import { hexUint8Array } from "./utils";
 import "./App.css";
-import AboutModal from './AboutModal';
-import './AboutModal.css';
+import AboutModal from "./AboutModal";
+import "./AboutModal.css";
 import StatsSection from "./StatsSection";
-import './StatsSection.css';
-import KeyInfoModal from './KeyModal';
-import MapOverlay from './MapOverlay';
-import './MapOverlay.css';
-import { useClockSkew } from './useClockSkew';
-import ErrorNotification from './ErrorNotification';
-import './ErrorNotification.css';
-import MaintenancePage from './MaintenancePage';
-import SearchModal from './SearchModal';
-import './SearchModal.css';
+import "./StatsSection.css";
+import KeyInfoModal from "./KeyModal";
 
-// Export PUBLIC_KEY as a Uint8Array for use in the application
-const PUBLIC_KEY = hexToUint8Array(PUBLIC_KEY_HEX);
-
-const SCALE_DURATION = 750; // 750ms
-const TIMEOUT_DURATION = 5000; // 5s
-const HEALTH_CHECK_INTERVAL = 60000; // Check health every minute
-
-const markerIcon = new DivIcon({
-  className: "custom-div-icon",
-  html: `<div style="
-      background-color: #0000eeff;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-    "></div>`,
-  iconSize: [12, 12],
-  iconAnchor: [6, 6],
-});
+import "./MapOverlay.css";
+import { useClockSkew } from "./useClockSkew";
+import ErrorNotification from "./ErrorNotification";
+import "./ErrorNotification.css";
+import MaintenancePage from "./MaintenancePage";
+import SearchModal from "./SearchModal";
+import "./SearchModal.css";
+import MapComponent from "./components/MapComponent";
 
 // ASCII Logo animation logic
 const initializeLogoAnimations = () => {
@@ -59,16 +53,25 @@ const initializeLogoAnimations = () => {
     setTimeout(() => updateSymbol(symbol, choices), getRandomDuration(500));
   }
 
-  document.querySelectorAll('.horizontal-logo-symbol').forEach(symbol => {
-    setTimeout(() => updateSymbol(symbol, horizontalSymbols), getRandomDuration(1500));
+  document.querySelectorAll(".horizontal-logo-symbol").forEach((symbol) => {
+    setTimeout(
+      () => updateSymbol(symbol, horizontalSymbols),
+      getRandomDuration(1500)
+    );
   });
 
-  document.querySelectorAll('.vertical-logo-symbol').forEach(symbol => {
-    setTimeout(() => updateSymbol(symbol, verticalSymbols), getRandomDuration(1500));
+  document.querySelectorAll(".vertical-logo-symbol").forEach((symbol) => {
+    setTimeout(
+      () => updateSymbol(symbol, verticalSymbols),
+      getRandomDuration(1500)
+    );
   });
 
-  document.querySelectorAll('.edge-logo-symbol').forEach(symbol => {
-    setTimeout(() => updateSymbol(symbol, edgeSymbols), getRandomDuration(1500));
+  document.querySelectorAll(".edge-logo-symbol").forEach((symbol) => {
+    setTimeout(
+      () => updateSymbol(symbol, edgeSymbols),
+      getRandomDuration(1500)
+    );
   });
 };
 
@@ -79,7 +82,8 @@ const App: React.FC = () => {
   const [isKeyInfoModalOpen, setIsKeyInfoModalOpen] = useState<boolean>(false);
   const [isMobile, setIsMobile] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
-  const [connectionStatusKnown, setConnectionStatusKnown] = useState<boolean>(false);
+  const [connectionStatusKnown, setConnectionStatusKnown] =
+    useState<boolean>(false);
   const [showError, setShowError] = useState<boolean>(false);
   const [isInMaintenance, setIsInMaintenance] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -99,14 +103,14 @@ const App: React.FC = () => {
   // Health check function
   const checkHealth = useCallback(async () => {
     try {
-      const protocol = BACKEND_URL.includes(':') ? 'http' : 'https';
+      const protocol = BACKEND_URL.includes(":") ? "http" : "https";
       const response = await fetch(`${protocol}://${BACKEND_URL}/health`, {
         method: "GET",
         headers: {
           "Cache-Control": "no-cache, no-store, must-revalidate",
-          "Pragma": "no-cache",
-          "Expires": "0"
-        }
+          Pragma: "no-cache",
+          Expires: "0",
+        },
       });
 
       if (response.status !== 200) {
@@ -134,7 +138,10 @@ const App: React.FC = () => {
 
     // Only set up periodic checks after the initial check
     const setupInterval = () => {
-      healthCheckIntervalRef.current = setInterval(checkHealth, HEALTH_CHECK_INTERVAL);
+      healthCheckIntervalRef.current = setInterval(
+        checkHealth,
+        HEALTH_CHECK_INTERVAL
+      );
     };
 
     // Wait for the initial check before setting up the interval
@@ -164,341 +171,369 @@ const App: React.FC = () => {
     checkIfMobile();
 
     // Add resize listener
-    window.addEventListener('resize', checkIfMobile);
+    window.addEventListener("resize", checkIfMobile);
 
     return () => {
-      window.removeEventListener('resize', checkIfMobile);
+      window.removeEventListener("resize", checkIfMobile);
     };
   }, []);
 
-  const handleSeed = useCallback((seed: SeedJs) => {
-    const view = seed.view + 1; // Next view is determined by seed - 1
-    setViews((prevViews) => {
-      // Create a copy of the current views that we'll modify
-      let newViews = [...prevViews];
+  const handleSeed = useCallback(
+    (seed: SeedJs) => {
+      const view = seed.view + 1; // Next view is determined by seed - 1
+      setViews((prevViews) => {
+        // Create a copy of the current views that we'll modify
+        let newViews = [...prevViews];
 
-      // If we haven't observed any views yet, or if the new view is greater than the last observed view + 1,
-      // handle potentially missed views
-      if (lastObservedView === null || view > lastObservedView + 1) {
-        const startViewIndex = lastObservedView !== null ? lastObservedView + 1 : view;
+        // If we haven't observed any views yet, or if the new view is greater than the last observed view + 1,
+        // handle potentially missed views
+        if (lastObservedView === null || view > lastObservedView + 1) {
+          const startViewIndex =
+            lastObservedView !== null ? lastObservedView + 1 : view;
 
-        // Add any missed views as skipped/timed out
-        for (let missedView = startViewIndex; missedView < view; missedView++) {
-          // Check if this view already exists
-          const existingIndex = newViews.findIndex(v => v.view === missedView);
+          // Add any missed views as skipped/timed out
+          for (
+            let missedView = startViewIndex;
+            missedView < view;
+            missedView++
+          ) {
+            // Check if this view already exists
+            const existingIndex = newViews.findIndex(
+              (v) => v.view === missedView
+            );
 
-          if (existingIndex === -1) {
-            // Set a timeout for unknown views
-            const timeoutId = setTimeout(() => {
-              setViews((currentViews) => {
-                return currentViews.map((v) => {
-                  // Only time out this specific view if it's still in unknown state
-                  if (v.view === missedView && v.status === "unknown") {
-                    return { ...v, status: "timed_out", timeoutId: undefined };
-                  }
-                  return v;
+            if (existingIndex === -1) {
+              // Set a timeout for unknown views
+              const timeoutId = setTimeout(() => {
+                setViews((currentViews) => {
+                  return currentViews.map((v) => {
+                    // Only time out this specific view if it's still in unknown state
+                    if (v.view === missedView && v.status === "unknown") {
+                      return {
+                        ...v,
+                        status: "timed_out",
+                        timeoutId: undefined,
+                      };
+                    }
+                    return v;
+                  });
                 });
+              }, TIMEOUT_DURATION);
+
+              // Only add if it doesn't already exist
+              newViews.unshift({
+                view: missedView,
+                location: undefined,
+                locationName: undefined,
+                status: "unknown",
+                startTime: adjustTime(Date.now()),
+                timeoutId: timeoutId,
               });
-            }, TIMEOUT_DURATION);
-
-
-            // Only add if it doesn't already exist
-            newViews.unshift({
-              view: missedView,
-              location: undefined,
-              locationName: undefined,
-              status: "unknown",
-              startTime: adjustTime(Date.now()),
-              timeoutId: timeoutId
-            });
+            }
           }
         }
-      }
 
-      // Check if this view already exists
-      const existingIndex = newViews.findIndex(v => v.view === view);
+        // Check if this view already exists
+        const existingIndex = newViews.findIndex((v) => v.view === view);
 
-      if (existingIndex !== -1) {
-        // If it exists and is already finalized or notarized, just update
-        // the location and signature information without changing timing
-        const existingStatus = newViews[existingIndex].status;
-        if (existingStatus === "finalized" || existingStatus === "notarized") {
-          console.log("HERE");
-          const locationIndex = view % LOCATIONS.length;
-          console.log(locationIndex);
-          // Only update location and signature info, preserve all timing and status
-          newViews[existingIndex] = {
-            ...newViews[existingIndex],
-            location: LOCATIONS[locationIndex][0],
-            locationName: LOCATIONS[locationIndex][1],
-            signature: seed.signature,
-          };
+        if (existingIndex !== -1) {
+          // If it exists and is already finalized or notarized, just update
+          // the location and signature information without changing timing
+          const existingStatus = newViews[existingIndex].status;
+          if (
+            existingStatus === "finalized" ||
+            existingStatus === "notarized"
+          ) {
+            console.log("HERE");
+            const locationIndex = view % LOCATIONS.length;
+            console.log(locationIndex);
+            // Only update location and signature info, preserve all timing and status
+            newViews[existingIndex] = {
+              ...newViews[existingIndex],
+              location: LOCATIONS[locationIndex][0],
+              locationName: LOCATIONS[locationIndex][1],
+              signature: seed.signature,
+            };
 
-          return newViews;
+            return newViews;
+          }
+
+          // Skip processing for views with "unknown" status
+          if (existingStatus === "unknown") {
+            return newViews;
+          }
+
+          // If it exists but is in another state, clear its timeout but preserve everything else
+          if (newViews[existingIndex].timeoutId) {
+            clearTimeout(newViews[existingIndex].timeoutId);
+          }
         }
 
-        // Skip processing for views with "unknown" status
-        if (existingStatus === "unknown") {
-          return newViews;
-        }
-
-        // If it exists but is in another state, clear its timeout but preserve everything else
-        if (newViews[existingIndex].timeoutId) {
-          clearTimeout(newViews[existingIndex].timeoutId);
-        }
-      }
-
-      // Create the new view data
-      const locationIndex = view % LOCATIONS.length;
-      const newView: ViewData = {
-        view,
-        location: LOCATIONS[locationIndex][0],
-        locationName: LOCATIONS[locationIndex][1],
-        status: "growing",
-        startTime: adjustTime(Date.now()),
-        signature: seed.signature,
-      };
-
-      // Set a timeout for this specific view
-      const timeoutId = setTimeout(() => {
-        setViews((currentViews) => {
-          return currentViews.map((v) => {
-            // Only time out this specific view if it's still in growing state
-            if (v.view === view && v.status === "growing") {
-              return { ...v, status: "timed_out", timeoutId: undefined };
-            }
-            return v;
-          });
-        });
-      }, TIMEOUT_DURATION);
-
-      // Add timeoutId to the new view
-      const viewWithTimeout = { ...newView, timeoutId };
-
-      // Update or add the view
-      if (existingIndex !== -1) {
-        // Only update if necessary - preserve existing data that shouldn't change
-        newViews[existingIndex] = {
-          ...newViews[existingIndex],
-          status: "growing",
-          signature: seed.signature,
-          timeoutId: timeoutId,
+        // Create the new view data
+        const locationIndex = view % LOCATIONS.length;
+        const newView: ViewData = {
+          view,
           location: LOCATIONS[locationIndex][0],
           locationName: LOCATIONS[locationIndex][1],
+          status: "growing",
+          startTime: adjustTime(Date.now()),
+          signature: seed.signature,
         };
-      } else {
-        // Add as new
-        newViews.unshift(viewWithTimeout);
-      }
 
-      // Update the last observed view if this is a new maximum
-      if (lastObservedView === null || view > lastObservedView) {
-        setLastObservedView(view);
-      }
+        // Set a timeout for this specific view
+        const timeoutId = setTimeout(() => {
+          setViews((currentViews) => {
+            return currentViews.map((v) => {
+              // Only time out this specific view if it's still in growing state
+              if (v.view === view && v.status === "growing") {
+                return { ...v, status: "timed_out", timeoutId: undefined };
+              }
+              return v;
+            });
+          });
+        }, TIMEOUT_DURATION);
 
-      // Limit the number of views to 50
-      if (newViews.length > 50) {
-        // Clean up any timeouts for views we're about to remove
-        for (let i = 50; i < newViews.length; i++) {
-          if (newViews[i].timeoutId) {
-            clearTimeout(newViews[i].timeoutId);
+        // Add timeoutId to the new view
+        const viewWithTimeout = { ...newView, timeoutId };
+
+        // Update or add the view
+        if (existingIndex !== -1) {
+          // Only update if necessary - preserve existing data that shouldn't change
+          newViews[existingIndex] = {
+            ...newViews[existingIndex],
+            status: "growing",
+            signature: seed.signature,
+            timeoutId: timeoutId,
+            location: LOCATIONS[locationIndex][0],
+            locationName: LOCATIONS[locationIndex][1],
+          };
+        } else {
+          // Add as new
+          newViews.unshift(viewWithTimeout);
+        }
+
+        // Update the last observed view if this is a new maximum
+        if (lastObservedView === null || view > lastObservedView) {
+          setLastObservedView(view);
+        }
+
+        // Limit the number of views to 50
+        if (newViews.length > 50) {
+          // Clean up any timeouts for views we're about to remove
+          for (let i = 50; i < newViews.length; i++) {
+            if (newViews[i].timeoutId) {
+              clearTimeout(newViews[i].timeoutId);
+            }
           }
-        }
-        newViews = newViews.slice(0, 50);
-      }
-
-      return newViews;
-    });
-  }, [lastObservedView, adjustTime]);
-
-  const handleNotarization = useCallback((notarized: NotarizedJs) => {
-    const view = notarized.proof.view;
-    console.log(view);
-    setViews((prevViews) => {
-      const index = prevViews.findIndex((v) => v.view === view);
-
-      // If the view exists and is already finalized, ignore this notarization completely
-      if (index !== -1 && prevViews[index].status === "finalized") {
-        return prevViews; // No changes needed, preserve finalized state
-      }
-      let newViews = [...prevViews];
-      const currentTime = adjustTime(Date.now());
-
-      // Calculate a reasonable start time using the block timestamp if available
-      let calculatedStartTime = currentTime;
-      if (notarized.block && notarized.block.timestamp) {
-        // The block timestamp is in milliseconds since epoch
-        const blockTime = Number(notarized.block.timestamp);
-        calculatedStartTime = blockTime;
-      }
-
-      if (index !== -1) {
-        const viewData = prevViews[index];
-        // Clear timeout if it exists
-        if (viewData.timeoutId) {
-          clearTimeout(viewData.timeoutId);
+          newViews = newViews.slice(0, 50);
         }
 
-        // Calculate actual notarization latency when we receive the notarization message
-        let actualNotarizationLatency: number | undefined = undefined;
+        return newViews;
+      });
+    },
+    [lastObservedView, adjustTime]
+  );
+
+  const handleNotarization = useCallback(
+    (notarized: NotarizedJs) => {
+      const view = notarized.proof.view;
+      console.log(view);
+      setViews((prevViews) => {
+        const index = prevViews.findIndex((v) => v.view === view);
+
+        // If the view exists and is already finalized, ignore this notarization completely
+        if (index !== -1 && prevViews[index].status === "finalized") {
+          return prevViews; // No changes needed, preserve finalized state
+        }
+        let newViews = [...prevViews];
+        const currentTime = adjustTime(Date.now());
+
+        // Calculate a reasonable start time using the block timestamp if available
+        let calculatedStartTime = currentTime;
         if (notarized.block && notarized.block.timestamp) {
+          // The block timestamp is in milliseconds since epoch
           const blockTime = Number(notarized.block.timestamp);
-          if (blockTime > 0 && blockTime < currentTime) {
-            actualNotarizationLatency = currentTime - blockTime;
+          calculatedStartTime = blockTime;
+        }
+
+        if (index !== -1) {
+          const viewData = prevViews[index];
+          // Clear timeout if it exists
+          if (viewData.timeoutId) {
+            clearTimeout(viewData.timeoutId);
           }
-        }
 
-        // Update the view with notarization data
-        const updatedView: ViewData = {
-          ...viewData,
-          status: "notarized", // We already checked it's not finalized
-          notarizationTime: currentTime,
-          // If no start time exists, use the block timestamp
-          startTime: viewData.startTime || calculatedStartTime,
-          block: viewData.block || notarized.block, // Don't overwrite existing block data
-          timeoutId: undefined,
-          actualNotarizationLatency,
-        };
-
-        newViews = [
-          ...prevViews.slice(0, index),
-          updatedView,
-          ...prevViews.slice(index + 1),
-        ];
-      } else {
-        // If view doesn't exist, create it with block timestamp as start time
-        let actualNotarizationLatency: number | undefined = undefined;
-        if (notarized.block && notarized.block.timestamp) {
-          const blockTime = Number(notarized.block.timestamp);
-          if (blockTime > 0 && blockTime < currentTime) {
-            actualNotarizationLatency = currentTime - blockTime;
+          // Calculate actual notarization latency when we receive the notarization message
+          let actualNotarizationLatency: number | undefined = undefined;
+          if (notarized.block && notarized.block.timestamp) {
+            const blockTime = Number(notarized.block.timestamp);
+            if (blockTime > 0 && blockTime < currentTime) {
+              actualNotarizationLatency = currentTime - blockTime;
+            }
           }
-        }
-        newViews = [{
-          view,
-          location: undefined,
-          locationName: undefined,
-          status: "notarized",
-          startTime: calculatedStartTime,
-          notarizationTime: currentTime,
-          block: notarized.block,
-          actualNotarizationLatency,
-        }, ...prevViews];
-      }
 
-      // Limit the number of views to 50
-      if (newViews.length > 50) {
-        // Clean up any timeouts for views we're about to remove
-        for (let i = 50; i < newViews.length; i++) {
-          if (newViews[i].timeoutId) {
-            clearTimeout(newViews[i].timeoutId);
+          // Update the view with notarization data
+          const updatedView: ViewData = {
+            ...viewData,
+            status: "notarized", // We already checked it's not finalized
+            notarizationTime: currentTime,
+            // If no start time exists, use the block timestamp
+            startTime: viewData.startTime || calculatedStartTime,
+            block: viewData.block || notarized.block, // Don't overwrite existing block data
+            timeoutId: undefined,
+            actualNotarizationLatency,
+          };
+
+          newViews = [
+            ...prevViews.slice(0, index),
+            updatedView,
+            ...prevViews.slice(index + 1),
+          ];
+        } else {
+          // If view doesn't exist, create it with block timestamp as start time
+          let actualNotarizationLatency: number | undefined = undefined;
+          if (notarized.block && notarized.block.timestamp) {
+            const blockTime = Number(notarized.block.timestamp);
+            if (blockTime > 0 && blockTime < currentTime) {
+              actualNotarizationLatency = currentTime - blockTime;
+            }
           }
-        }
-        newViews = newViews.slice(0, 50);
-      }
-
-      return newViews;
-    });
-  }, [adjustTime]);
-
-  const handleFinalization = useCallback((finalized: FinalizedJs) => {
-    const view = finalized.proof.view;
-    setViews((prevViews) => {
-      const index = prevViews.findIndex((v) => v.view === view);
-      let newViews = [...prevViews];
-      const currentTime = adjustTime(Date.now());
-
-      // Calculate a reasonable start time using the block timestamp if available
-      let calculatedStartTime = currentTime;
-      if (finalized.block && finalized.block.timestamp) {
-        // The block timestamp is in milliseconds since epoch
-        const blockTime = Number(finalized.block.timestamp);
-        calculatedStartTime = blockTime;
-      }
-
-      if (index !== -1) {
-        const viewData = prevViews[index];
-        // Clear timeout if it exists
-        if (viewData.timeoutId) {
-          clearTimeout(viewData.timeoutId);
+          newViews = [
+            {
+              view,
+              location: undefined,
+              locationName: undefined,
+              status: "notarized",
+              startTime: calculatedStartTime,
+              notarizationTime: currentTime,
+              block: notarized.block,
+              actualNotarizationLatency,
+            },
+            ...prevViews,
+          ];
         }
 
-        // Calculate actual finalization latency when we receive the finalization message
-        let actualFinalizationLatency: number | undefined = undefined;
+        // Limit the number of views to 50
+        if (newViews.length > 50) {
+          // Clean up any timeouts for views we're about to remove
+          for (let i = 50; i < newViews.length; i++) {
+            if (newViews[i].timeoutId) {
+              clearTimeout(newViews[i].timeoutId);
+            }
+          }
+          newViews = newViews.slice(0, 50);
+        }
+
+        return newViews;
+      });
+    },
+    [adjustTime]
+  );
+
+  const handleFinalization = useCallback(
+    (finalized: FinalizedJs) => {
+      const view = finalized.proof.view;
+      setViews((prevViews) => {
+        const index = prevViews.findIndex((v) => v.view === view);
+        let newViews = [...prevViews];
+        const currentTime = adjustTime(Date.now());
+
+        // Calculate a reasonable start time using the block timestamp if available
+        let calculatedStartTime = currentTime;
         if (finalized.block && finalized.block.timestamp) {
+          // The block timestamp is in milliseconds since epoch
           const blockTime = Number(finalized.block.timestamp);
-          if (blockTime > 0 && blockTime < currentTime) {
-            actualFinalizationLatency = currentTime - blockTime;
+          calculatedStartTime = blockTime;
+        }
+
+        if (index !== -1) {
+          const viewData = prevViews[index];
+          // Clear timeout if it exists
+          if (viewData.timeoutId) {
+            clearTimeout(viewData.timeoutId);
           }
-        }
 
-        // If already finalized, don't update
-        if (viewData.status === "finalized") {
-          return prevViews;
-        }
-
-        // Use existing data if available, without fabricating missing data
-        const updatedView: ViewData = {
-          ...viewData,
-          status: "finalized",
-          finalizationTime: currentTime,
-          // Keep existing notarization time if available, but don't create one if missing
-          // Keep existing start time or use block timestamp if none
-          startTime: viewData.startTime || calculatedStartTime,
-          block: finalized.block,
-          timeoutId: undefined,
-          actualNotarizationLatency: viewData.actualNotarizationLatency,
-          actualFinalizationLatency,
-        };
-
-        newViews = [
-          ...prevViews.slice(0, index),
-          updatedView,
-          ...prevViews.slice(index + 1),
-        ];
-      } else {
-        // If view doesn't exist, create it with just the data we have
-        let actualFinalizationLatency: number | undefined = undefined;
-        if (finalized.block && finalized.block.timestamp) {
-          const blockTime = Number(finalized.block.timestamp);
-          if (blockTime > 0 && blockTime < currentTime) {
-            actualFinalizationLatency = currentTime - blockTime;
+          // Calculate actual finalization latency when we receive the finalization message
+          let actualFinalizationLatency: number | undefined = undefined;
+          if (finalized.block && finalized.block.timestamp) {
+            const blockTime = Number(finalized.block.timestamp);
+            if (blockTime > 0 && blockTime < currentTime) {
+              actualFinalizationLatency = currentTime - blockTime;
+            }
           }
-        }
-        newViews = [{
-          view,
-          location: undefined,
-          locationName: undefined,
-          status: "finalized",
-          startTime: calculatedStartTime,
-          // No notarization time observed yet
-          finalizationTime: currentTime,
-          block: finalized.block,
-          actualFinalizationLatency,
-        }, ...prevViews];
-      }
 
-      // Limit the number of views to 50
-      if (newViews.length > 50) {
-        // Clean up any timeouts for views we're about to remove
-        for (let i = 50; i < newViews.length; i++) {
-          if (newViews[i].timeoutId) {
-            clearTimeout(newViews[i].timeoutId);
+          // If already finalized, don't update
+          if (viewData.status === "finalized") {
+            return prevViews;
           }
-        }
-        newViews = newViews.slice(0, 50);
-      }
 
-      return newViews;
-    });
-  }, [adjustTime]);
+          // Use existing data if available, without fabricating missing data
+          const updatedView: ViewData = {
+            ...viewData,
+            status: "finalized",
+            finalizationTime: currentTime,
+            // Keep existing notarization time if available, but don't create one if missing
+            // Keep existing start time or use block timestamp if none
+            startTime: viewData.startTime || calculatedStartTime,
+            block: finalized.block,
+            timeoutId: undefined,
+            actualNotarizationLatency: viewData.actualNotarizationLatency,
+            actualFinalizationLatency,
+          };
+
+          newViews = [
+            ...prevViews.slice(0, index),
+            updatedView,
+            ...prevViews.slice(index + 1),
+          ];
+        } else {
+          // If view doesn't exist, create it with just the data we have
+          let actualFinalizationLatency: number | undefined = undefined;
+          if (finalized.block && finalized.block.timestamp) {
+            const blockTime = Number(finalized.block.timestamp);
+            if (blockTime > 0 && blockTime < currentTime) {
+              actualFinalizationLatency = currentTime - blockTime;
+            }
+          }
+          newViews = [
+            {
+              view,
+              location: undefined,
+              locationName: undefined,
+              status: "finalized",
+              startTime: calculatedStartTime,
+              // No notarization time observed yet
+              finalizationTime: currentTime,
+              block: finalized.block,
+              actualFinalizationLatency,
+            },
+            ...prevViews,
+          ];
+        }
+
+        // Limit the number of views to 50
+        if (newViews.length > 50) {
+          // Clean up any timeouts for views we're about to remove
+          for (let i = 50; i < newViews.length; i++) {
+            if (newViews[i].timeoutId) {
+              clearTimeout(newViews[i].timeoutId);
+            }
+          }
+          newViews = newViews.slice(0, 50);
+        }
+
+        return newViews;
+      });
+    },
+    [adjustTime]
+  );
 
   // Update current time every 50ms to force re-render for growing bars
   useEffect(() => {
     const interval = setInterval(() => {
       currentTimeRef.current = adjustTime(Date.now());
       // Force re-render without relying on state updates
-      setViews(views => [...views]);
+      setViews((views) => [...views]);
     }, 50);
     return () => clearInterval(interval);
   }, [adjustTime]);
@@ -560,7 +595,7 @@ const App: React.FC = () => {
 
       // Create new WebSocket connection
       const wsCreationTime = Date.now();
-      const protocol = BACKEND_URL.includes(':') ? 'ws' : 'wss';
+      const protocol = BACKEND_URL.includes(":") ? "ws" : "wss";
       const ws = new WebSocket(`${protocol}://${BACKEND_URL}/consensus/ws`);
       wsRef.current = ws;
       ws.binaryType = "arraybuffer";
@@ -605,7 +640,9 @@ const App: React.FC = () => {
           // If connection closed very quickly, likely rate-limited
           const timeSinceStarted = Date.now() - wsCreationTime;
           if (timeSinceStarted < 1000) {
-            setErrorMessage("Too many connection attempts from your IP. Try connecting again in an hour.");
+            setErrorMessage(
+              "Too many connection attempts from your IP. Try connecting again in an hour."
+            );
             setShowError(true);
 
             // Clear reference to prevent reconnection
@@ -679,8 +716,19 @@ const App: React.FC = () => {
       <header className="app-header">
         <div className="logo-container">
           <div className="svg-logo">
-            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="37" viewBox="0 0 31 29" fill="none">
-              <path fillRule="evenodd" clipRule="evenodd" d="M6.35297 2.2688C9.68945 2.2688 12.8391 3.63008 15.1079 5.99676C17.3767 3.63008 20.5264 2.2688 23.8629 2.2688H29.0944C30.5358 2.2688 30.6425 0 29.0944 0H23.8629C20.6776 0 17.608 1.04989 15.1079 2.96281C12.6167 1.04989 9.54709 0 6.35297 0H1.12141C-0.426712 0 -0.319945 2.2688 1.12141 2.2688H6.35297ZM6.12131 11.2688C4.67105 11.2688 4.58208 9 6.12131 9C13.0167 9 13.0167 19.7657 6.12131 19.7657C4.58208 19.7657 4.67105 17.4969 6.12131 17.4969C10.0361 17.4969 10.0361 11.2599 6.12131 11.2599V11.2688ZM24.1715 11.2688C25.6218 11.2688 25.7108 9 24.1715 9C17.2762 9 17.2762 19.7657 24.1715 19.7657C25.7108 19.7657 25.6218 17.4969 24.1715 17.4969C20.2567 17.4969 20.2567 11.2599 24.1715 11.2599V11.2688ZM24.2226 24.7786H26.8562C28.3954 24.7786 28.2887 22.5277 26.8562 22.5277H24.2404C14.4801 22.5277 14.4801 7.25098 24.2404 7.25098H26.8562C28.2887 7.25098 28.3954 5 26.8562 5H24.2226C21.5356 5 18.9821 6.10324 17.1137 8.03395L15.4854 9.72445L13.8572 8.03395C11.9977 6.09434 9.43528 5 6.7483 5H4.11474C2.57551 5 2.68228 7.25098 4.11474 7.25098H6.73055C16.4909 7.25098 16.4909 22.5277 6.73055 22.5277H4.11474C2.68228 22.5277 2.57551 24.7786 4.11474 24.7786H6.7483C9.43528 24.7786 11.9888 23.6754 13.8572 21.7447L15.4854 20.0542L17.1137 21.7447C18.9732 23.6843 21.5356 24.7786 24.2226 24.7786ZM6.35297 26.728C9.68945 26.728 12.8391 25.3667 15.1079 23C17.3767 25.3667 20.5264 26.728 23.8629 26.728H29.0944C30.5358 26.728 30.6425 28.9968 29.0944 28.9968H23.8629C20.6776 28.9968 17.608 27.9469 15.1079 26.0339C12.6167 27.9469 9.54709 28.9968 6.35297 28.9968H1.12141C-0.426712 28.9968 -0.319945 26.728 1.12141 26.728H6.35297Z" fill="currentColor"/>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="40"
+              height="37"
+              viewBox="0 0 31 29"
+              fill="none"
+            >
+              <path
+                fillRule="evenodd"
+                clipRule="evenodd"
+                d="M6.35297 2.2688C9.68945 2.2688 12.8391 3.63008 15.1079 5.99676C17.3767 3.63008 20.5264 2.2688 23.8629 2.2688H29.0944C30.5358 2.2688 30.6425 0 29.0944 0H23.8629C20.6776 0 17.608 1.04989 15.1079 2.96281C12.6167 1.04989 9.54709 0 6.35297 0H1.12141C-0.426712 0 -0.319945 2.2688 1.12141 2.2688H6.35297ZM6.12131 11.2688C4.67105 11.2688 4.58208 9 6.12131 9C13.0167 9 13.0167 19.7657 6.12131 19.7657C4.58208 19.7657 4.67105 17.4969 6.12131 17.4969C10.0361 17.4969 10.0361 11.2599 6.12131 11.2599V11.2688ZM24.1715 11.2688C25.6218 11.2688 25.7108 9 24.1715 9C17.2762 9 17.2762 19.7657 24.1715 19.7657C25.7108 19.7657 25.6218 17.4969 24.1715 17.4969C20.2567 17.4969 20.2567 11.2599 24.1715 11.2599V11.2688ZM24.2226 24.7786H26.8562C28.3954 24.7786 28.2887 22.5277 26.8562 22.5277H24.2404C14.4801 22.5277 14.4801 7.25098 24.2404 7.25098H26.8562C28.2887 7.25098 28.3954 5 26.8562 5H24.2226C21.5356 5 18.9821 6.10324 17.1137 8.03395L15.4854 9.72445L13.8572 8.03395C11.9977 6.09434 9.43528 5 6.7483 5H4.11474C2.57551 5 2.68228 7.25098 4.11474 7.25098H6.73055C16.4909 7.25098 16.4909 22.5277 6.73055 22.5277H4.11474C2.68228 22.5277 2.57551 24.7786 4.11474 24.7786H6.7483C9.43528 24.7786 11.9888 23.6754 13.8572 21.7447L15.4854 20.0542L17.1137 21.7447C18.9732 23.6843 21.5356 24.7786 24.2226 24.7786ZM6.35297 26.728C9.68945 26.728 12.8391 25.3667 15.1079 23C17.3767 25.3667 20.5264 26.728 23.8629 26.728H29.0944C30.5358 26.728 30.6425 28.9968 29.0944 28.9968H23.8629C20.6776 28.9968 17.608 27.9469 15.1079 26.0339C12.6167 27.9469 9.54709 28.9968 6.35297 28.9968H1.12141C-0.426712 28.9968 -0.319945 26.728 1.12141 26.728H6.35297Z"
+                fill="currentColor"
+              />
             </svg>
           </div>
           <div className="logo-text-container">
@@ -711,36 +759,8 @@ const App: React.FC = () => {
 
       <main className="app-main">
         {/* Map */}
-        <div className="map-container">
-          <MapContainer center={center} zoom={1} style={{ height: "100%", width: "100%" }} zoomControl={false} scrollWheelZoom={false} doubleClickZoom={false} touchZoom={false} dragging={false}>
-            <TileLayer
-              url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
-              attribution='&copy; OSM | &copy; CARTO</a>'
-            />
-            {views.length > 0 && views[0].location !== undefined && (
-              <Marker
-                key={views[0].view}
-                position={views[0].location}
-                icon={markerIcon}
-              >
-                <Popup>
-                  <div>
-                    <strong>View: {views[0].view}</strong><br />
-                    Location: {views[0].locationName}<br />
-                    Status: {views[0].status}<br />
-                    {views[0].block && (
-                      <>Block Height: {views[0].block.height}<br /></>
-                    )}
-                    {views[0].startTime && (
-                      <>Start Time: {new Date(views[0].startTime).toLocaleTimeString()}<br /></>
-                    )}
-                  </div>
-                </Popup>
-              </Marker>
-            )}
-            <MapOverlay numValidators={LOCATIONS.length} />
-          </MapContainer>
-        </div>
+
+        <MapComponent views={views} />
 
         {/* Stats Section */}
         <StatsSection
@@ -771,7 +791,7 @@ const App: React.FC = () => {
             ))}
           </div>
         </div>
-      </main >
+      </main>
 
       <footer className="footer">
         <div className="socials">
@@ -783,7 +803,10 @@ const App: React.FC = () => {
         &copy; {new Date().getFullYear()} Seismic Systems. All rights reserved.
       </footer>
 
-      <AboutModal isOpen={isAboutModalOpen} onClose={() => setIsAboutModalOpen(false)} />
+      <AboutModal
+        isOpen={isAboutModalOpen}
+        onClose={() => setIsAboutModalOpen(false)}
+      />
       <KeyInfoModal
         isOpen={isKeyInfoModalOpen}
         onClose={() => setIsKeyInfoModalOpen(false)}
@@ -793,7 +816,7 @@ const App: React.FC = () => {
         isOpen={isSearchModalOpen}
         onClose={() => setIsSearchModalOpen(false)}
       />
-    </div >
+    </div>
   );
 };
 
@@ -821,7 +844,17 @@ interface BarProps {
 // Replace the existing Bar component with this updated version
 
 const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
-  const { view, status, startTime, notarizationTime, finalizationTime, signature, block, actualNotarizationLatency, actualFinalizationLatency } = viewData;
+  const {
+    view,
+    status,
+    startTime,
+    notarizationTime,
+    finalizationTime,
+    signature,
+    block,
+    actualNotarizationLatency,
+    actualFinalizationLatency,
+  } = viewData;
   const [measuredWidth, setMeasuredWidth] = useState(isMobile ? 200 : 500); // Reasonable default
   const barContainerRef = useRef<HTMLDivElement>(null);
 
@@ -838,10 +871,10 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
     updateWidth();
 
     // Add resize listener
-    window.addEventListener('resize', updateWidth);
+    window.addEventListener("resize", updateWidth);
 
     return () => {
-      window.removeEventListener('resize', updateWidth);
+      window.removeEventListener("resize", updateWidth);
     };
   }, [isMobile]);
 
@@ -917,7 +950,10 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
   if (status === "growing" || status === "unknown") {
     totalWidth = calculateScaledWidth(growingLatency);
     // Ensure growing bars are visible but don't exceed available width
-    totalWidth = Math.min(Math.max(totalWidth, growingLatency > 50 ? minSegmentWidth : 0), measuredWidth);
+    totalWidth = Math.min(
+      Math.max(totalWidth, growingLatency > 50 ? minSegmentWidth : 0),
+      measuredWidth
+    );
   } else if (status === "notarized") {
     totalWidth = calculateScaledWidth(notarizedLatency);
     // Ensure notarized bars meet minimum width
@@ -963,9 +999,11 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
   const minLabelSpacing = labelWidth + 5; // Increased minimum space needed between labels
 
   // Calculate ideal positions for notarization and finalization labels (centered on their respective points)
-  let growingLabelPosition = Math.max(0, totalWidth - (labelWidth / 2));
-  let notarizedLabelPosition = notarizedWidth > 0 ? Math.max(0, notarizedWidth - (labelWidth / 2)) : 0;
-  let finalizedLabelPosition = totalWidth > 0 ? Math.max(0, totalWidth - (labelWidth / 2)) : 0;
+  let growingLabelPosition = Math.max(0, totalWidth - labelWidth / 2);
+  let notarizedLabelPosition =
+    notarizedWidth > 0 ? Math.max(0, notarizedWidth - labelWidth / 2) : 0;
+  let finalizedLabelPosition =
+    totalWidth > 0 ? Math.max(0, totalWidth - labelWidth / 2) : 0;
 
   // Constraint to ensure labels don't overflow right edge
   const maxLabelPosition = measuredWidth - labelWidth;
@@ -974,9 +1012,10 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
   finalizedLabelPosition = Math.min(finalizedLabelPosition, maxLabelPosition);
 
   // Check if labels would overlap
-  const wouldOverlap = status === "finalized" &&
+  const wouldOverlap =
+    status === "finalized" &&
     notarizationTime &&
-    (finalizedLabelPosition - notarizedLabelPosition < minLabelSpacing);
+    finalizedLabelPosition - notarizedLabelPosition < minLabelSpacing;
 
   // Adjust positions if overlap detected
   if (wouldOverlap) {
@@ -993,13 +1032,14 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
         finalizedLabelPosition = minLabelSpacing;
       } else {
         // Not enough room for both, keep finalization at the far right
-        finalizedLabelPosition = totalWidth - (labelWidth / 2);
+        finalizedLabelPosition = totalWidth - labelWidth / 2;
       }
     }
   }
 
   // Determine what content to render in bar - for finalized without notarization
-  const renderFinalizedWithoutNotarization = status === "finalized" && !notarizationTime;
+  const renderFinalizedWithoutNotarization =
+    status === "finalized" && !notarizationTime;
 
   return (
     <div className="bar-row">
@@ -1019,11 +1059,17 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
           }}
         >
           {/* Timed out or Growing state */}
-          {(status === "timed_out" || status === "growing" || status === "unknown") && (
+          {(status === "timed_out" ||
+            status === "growing" ||
+            status === "unknown") && (
             <div
-              className={`bar-segment ${status === "timed_out" ? "timed-out" :
-                status === "unknown" ? "unknown" : "growing"
-                }`}
+              className={`bar-segment ${
+                status === "timed_out"
+                  ? "timed-out"
+                  : status === "unknown"
+                  ? "unknown"
+                  : "growing"
+              }`}
               style={{ width: "100%" }}
             >
               {inBarText}
@@ -1033,10 +1079,7 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
           {/* Notarized state */}
           {status === "notarized" && (
             <>
-              <div
-                className="bar-segment growing"
-                style={{ width: "100%" }}
-              >
+              <div className="bar-segment growing" style={{ width: "100%" }}>
                 {inBarText}
               </div>
               <div
@@ -1064,7 +1107,7 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
                 className="marker notarization-marker"
                 style={{
                   left: `${notarizedWidth}px`,
-                  right: 'auto',
+                  right: "auto",
                 }}
                 title="Notarization point"
               />
@@ -1082,10 +1125,7 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
 
           {/* Finalized state without notarization - just a single finalized bar */}
           {renderFinalizedWithoutNotarization && (
-            <div
-              className="bar-segment finalized"
-              style={{ width: "100%" }}
-            >
+            <div className="bar-segment finalized" style={{ width: "100%" }}>
               {inBarText}
             </div>
           )}
@@ -1136,16 +1176,17 @@ const Bar: React.FC<BarProps> = ({ viewData, currentTime, isMobile }) => {
               )}
 
               {/* Latency for growing bars - follows the tip - only show if text exists */}
-              {(status === "growing" || status === "unknown") && growingLatencyText && (
-                <div
-                  className="latency-text growing-latency"
-                  style={{
-                    left: `${growingLabelPosition}px`,
-                  }}
-                >
-                  {growingLatencyText}
-                </div>
-              )}
+              {(status === "growing" || status === "unknown") &&
+                growingLatencyText && (
+                  <div
+                    className="latency-text growing-latency"
+                    style={{
+                      left: `${growingLabelPosition}px`,
+                    }}
+                  >
+                    {growingLatencyText}
+                  </div>
+                )}
             </>
           )}
         </div>
