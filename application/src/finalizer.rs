@@ -427,10 +427,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         if new_height % self.epoch_num_blocks == 0 {
                             self.db.store_consensus_state(new_height, &self.state).await;
 
-                            let added_validators = Vec::new(); // TODO: Get actual validator changes
-                            let removed_validators = Vec::new(); // TODO: Get actual validator changes
                             let previous_digest = summit_types::Digest::from([0u8; 32]); // TODO: Get actual previous checkpoint digest
-                            let ckpt = Checkpoint::new(&self.state, added_validators, removed_validators, previous_digest);
+                            let ckpt = Checkpoint::new(&self.state, previous_digest);
                             // Store the checkpoint in the database
                             self.db.store_checkpoint(new_height, &ckpt).await;
                         }
