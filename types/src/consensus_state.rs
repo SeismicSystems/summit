@@ -44,6 +44,10 @@ impl ConsensusState {
         self.validator_accounts.insert(pubkey, account);
     }
 
+    pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
+        self.validator_accounts.remove(pubkey)
+    }
+
     // Deposit queue operations
     pub fn push_deposit(&mut self, request: DepositRequest) {
         self.deposit_queue.push_back(request);
@@ -332,5 +336,33 @@ mod tests {
         let actual_size = actual_encoded.len();
 
         assert_eq!(predicted_size, actual_size);
+    }
+
+    #[test]
+    fn test_account_operations() {
+        let mut state = ConsensusState::new();
+        let pubkey = [1u8; 32];
+        let account = create_test_validator_account(1, 32000000000);
+
+        // Test that account doesn't exist initially
+        assert!(state.get_account(&pubkey).is_none());
+
+        // Test setting account
+        state.set_account(pubkey, account.clone());
+        let retrieved_account = state.get_account(&pubkey);
+        assert!(retrieved_account.is_some());
+        assert_eq!(retrieved_account.unwrap().balance, account.balance);
+
+        // Test removing account
+        let removed_account = state.remove_account(&pubkey);
+        assert!(removed_account.is_some());
+        assert_eq!(removed_account.unwrap().balance, account.balance);
+
+        // Test that account no longer exists
+        assert!(state.get_account(&pubkey).is_none());
+
+        // Test removing non-existent account
+        let non_existent = state.remove_account(&pubkey);
+        assert!(non_existent.is_none());
     }
 }
