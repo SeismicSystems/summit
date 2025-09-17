@@ -5,6 +5,7 @@ use commonware_storage::store::{self, Store};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
 pub use store::Config;
+use summit_types::Header;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 
@@ -12,6 +13,7 @@ use summit_types::consensus_state::ConsensusState;
 const STATE_PREFIX: u8 = 0x01;
 const CONSENSUS_STATE_PREFIX: u8 = 0x05;
 const CHECKPOINT_PREFIX: u8 = 0x06;
+const HEADER_PREFIX: u8 = 0x07;
 
 // State variable keys
 const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
@@ -46,6 +48,13 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     fn make_checkpoint_key(height: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = CHECKPOINT_PREFIX;
+        key[1..9].copy_from_slice(&height.to_be_bytes());
+        FixedBytes::new(key)
+    }
+
+    fn make_header_key(height: u64) -> FixedBytes<64> {
+        let mut key = [0u8; 64];
+        key[0] = HEADER_PREFIX;
         key[1..9].copy_from_slice(&height.to_be_bytes());
         FixedBytes::new(key)
     }
@@ -86,11 +95,6 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
         if height > current_latest {
             self.set_latest_consensus_state_height(height).await;
         }
-
-        self.store
-            .commit()
-            .await
-            .expect("failed to commit consensus state");
     }
 
     pub async fn get_consensus_state(&self, height: u64) -> Option<ConsensusState> {
@@ -129,11 +133,6 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .update(key, Value::Checkpoint(checkpoint.clone()))
             .await
             .expect("failed to store checkpoint");
-
-        self.store
-            .commit()
-            .await
-            .expect("failed to commit checkpoint");
     }
 
     pub async fn get_checkpoint(&self, height: u64) -> Option<Checkpoint> {
@@ -149,6 +148,34 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             None
         }
     }
+
+    // Header operations
+    pub async fn store_header(&mut self, height: u64, header: &Header) {
+        let key = Self::make_header_key(height);
+        self.store
+            .update(key, Value::Header(header.clone()))
+            .await
+            .expect("failed to store header");
+    }
+
+    pub async fn get_header(&self, height: u64) -> Option<Header> {
+        let key = Self::make_header_key(height);
+        if let Some(Value::Header(header)) =
+            self.store.get(&key).await.expect("failed to get header")
+        {
+            Some(header)
+        } else {
+            None
+        }
+    }
+
+    // Commit all pending changes to the database
+    pub async fn commit(&mut self) {
+        self.store
+            .commit()
+            .await
+            .expect("failed to commit to database");
+    }
 }
 
 #[derive(Clone)]
@@ -156,6 +183,7 @@ enum Value {
     U64(u64),
     ConsensusState(ConsensusState),
     Checkpoint(Checkpoint),
+    Header(Header),
 }
 
 impl EncodeSize for Value {
@@ -164,6 +192,7 @@ impl EncodeSize for Value {
             Self::U64(_) => 8,
             Self::ConsensusState(state) => state.encode_size(),
             Self::Checkpoint(checkpoint) => checkpoint.encode_size(),
+            Self::Header(header) => header.encode_size(),
         }
     }
 }
@@ -177,6 +206,7 @@ impl Read for Value {
             0x01 => Ok(Self::U64(buf.get_u64())),
             0x05 => Ok(Self::ConsensusState(ConsensusState::read_cfg(buf, &())?)),
             0x06 => Ok(Self::Checkpoint(Checkpoint::read_cfg(buf, &())?)),
+            0x07 => Ok(Self::Header(Header::read_cfg(buf, &())?)),
             byte => Err(Error::InvalidVarint(byte as usize)),
         }
     }
@@ -196,6 +226,10 @@ impl Write for Value {
             Self::Checkpoint(checkpoint) => {
                 buf.put_u8(0x06);
                 checkpoint.write(buf);
+            }
+            Self::Header(header) => {
+                buf.put_u8(0x07);
+                header.write(buf);
             }
         }
     }
@@ -243,6 +277,7 @@ mod tests {
 
             // Store the consensus state
             db.store_consensus_state(42, &consensus_state).await;
+            db.commit().await;
 
             // Retrieve the consensus state
             let retrieved = db.get_consensus_state(42).await;
@@ -260,6 +295,7 @@ mod tests {
             let mut newer_state = ConsensusState::new();
             newer_state.set_latest_height(100);
             db.store_consensus_state(100, &newer_state).await;
+            db.commit().await;
 
             // Should return the most recent state
             let latest = db.get_latest_consensus_state().await;
@@ -271,6 +307,66 @@ mod tests {
             let old_state = db.get_consensus_state(42).await;
             assert!(old_state.is_some());
             assert_eq!(old_state.unwrap().get_latest_height(), 42);
+        });
+    }
+
+    #[test]
+    fn test_header_operations() {
+        let cfg = commonware_runtime::deterministic::Config::default().with_seed(3);
+        let executor = Runner::from(cfg);
+        executor.start(|context| async move {
+            let mut db = create_test_db_with_context("test_header", context).await;
+
+            // Create a test header
+            let header = summit_types::Header::compute_digest(
+                [1u8; 32].into(),                    // parent
+                100,                                 // height
+                1234567890,                          // timestamp
+                1,                                   // view
+                [2u8; 32].into(),                    // payload_hash
+                [3u8; 32].into(),                    // execution_request_hash
+                [4u8; 32].into(),                    // checkpoint_hash
+                alloy_primitives::U256::from(42u64), // block_value
+            );
+
+            // Test that no header exists initially
+            assert!(db.get_header(100).await.is_none());
+
+            // Store the header at height 100
+            db.store_header(100, &header).await;
+            db.commit().await;
+
+            // Retrieve the header
+            let retrieved = db.get_header(100).await;
+            assert!(retrieved.is_some());
+            let retrieved = retrieved.unwrap();
+            assert_eq!(retrieved.height, header.height);
+            assert_eq!(retrieved.digest, header.digest);
+            assert_eq!(retrieved.timestamp, header.timestamp);
+
+            // Test that non-existent header returns None
+            assert!(db.get_header(200).await.is_none());
+
+            // Store another header at different height
+            let header2 = summit_types::Header::compute_digest(
+                [5u8; 32].into(),                    // parent
+                200,                                 // height
+                1234567900,                          // timestamp
+                2,                                   // view
+                [6u8; 32].into(),                    // payload_hash
+                [7u8; 32].into(),                    // execution_request_hash
+                [8u8; 32].into(),                    // checkpoint_hash
+                alloy_primitives::U256::from(84u64), // block_value
+            );
+            db.store_header(200, &header2).await;
+            db.commit().await;
+
+            // Both headers should be accessible
+            let h1 = db.get_header(100).await.unwrap();
+            let h2 = db.get_header(200).await.unwrap();
+            assert_eq!(h1.height, 100);
+            assert_eq!(h2.height, 200);
+            assert_ne!(h1.digest, h2.digest);
         });
     }
 }

@@ -431,7 +431,18 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             let ckpt = Checkpoint::new(&self.state, previous_digest);
                             // Store the checkpoint in the database
                             self.db.store_checkpoint(new_height, &ckpt).await;
+                            self.db.commit().await;
                         }
+
+                        // Store finalizes checkpoint to database
+                        if block.header.checkpoint_hash != [0; 32].into() {
+                            let _ckpt = self.db.get_checkpoint(block.header.height - 1).await.expect("this checkpoint was stored last height");
+
+                            // Store the block header in the database
+                            self.db.store_header(new_height, &block.header).await;
+                            self.db.commit().await;
+                        }
+
                         self.height_notifier.notify_up_to(new_height);
                         let _ = notifier.send(());
                     },
