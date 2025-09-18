@@ -557,7 +557,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let withdrawal_epoch =
             (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
                 / EPOCH_NUM_BLOCKS;
-        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS + 1;
+        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS;
         let withdrawals = withdrawals
             .get(&(withdrawal_height))
             .expect("missing withdrawal");
@@ -769,7 +769,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let withdrawal_epoch =
             (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
                 / EPOCH_NUM_BLOCKS;
-        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS + 1;
+        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");
@@ -983,7 +983,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let withdrawal_epoch =
             (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
                 / EPOCH_NUM_BLOCKS;
-        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS + 1;
+        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");

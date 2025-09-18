@@ -24,4 +24,6 @@ pub struct Config {
     pub activity_timeout: u64,
 
     pub namespace: String,
+
+    pub epoch_num_blocks: u64,
 }

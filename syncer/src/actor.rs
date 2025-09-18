@@ -26,7 +26,7 @@ use commonware_storage::{
 use futures::{StreamExt as _, channel::mpsc};
 use governor::Quota;
 use rand::Rng;
-use summit_types::{Block, Digest, Finalized, Notarized, PublicKey, Signature};
+use summit_types::{Block, BlockEnvelope, Digest, Finalized, Notarized, PublicKey, Signature};
 use tracing::{debug, warn};
 
 const PAGE_SIZE: usize = 77;
@@ -55,6 +55,7 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
     backfill_quota: Quota,
     activity_timeout: u64,
     namespace: String,
+    epoch_num_blocks: u64,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Actor<R> {
@@ -164,6 +165,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 backfill_quota: config.backfill_quota,
                 activity_timeout: config.activity_timeout,
                 namespace: config.namespace,
+                epoch_num_blocks: config.epoch_num_blocks,
             },
             Mailbox::new(tx),
         )
@@ -176,7 +178,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        app: impl Reporter<Activity = Block>,
+        app: impl Reporter<Activity = BlockEnvelope>,
     ) -> Handle<()> {
         self.context.spawn_ref()(self.run(buffer, backfill, app))
     }
@@ -188,7 +190,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        app: impl Reporter<Activity = Block>,
+        app: impl Reporter<Activity = BlockEnvelope>,
     ) {
         let (orchestrator_sender, mut orchestrator_mailbox) = mpsc::channel(2); // buffer to send processed while moving forward
         let orchestrator = Orchestrator::new(orchestrator_sender);
@@ -201,6 +203,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
             app,
             orchestrator,
             rx_finalizer,
+            self.epoch_num_blocks,
         )
         .await;
 
@@ -416,6 +419,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             // Check if in blocks
                             let block = self.blocks.get(Identifier::Index(next)).await.expect("Failed to get finalized block");
                             result.send(block).expect("Failed to send block");
+                        },
+                        Orchestration::GetWithFinalization { next, result } => {
+                            let block = self.blocks.get(Identifier::Index(next)).await.expect("Failed to get finalized block");
+                            let finalized = self.finalized.get(Identifier::Index(next)).await.expect("Failed to get finalized block");
+                            result.send((block, finalized)).expect("Failed to send block with finalized");
                         },
                         Orchestration::Processed { next, digest } => {
                             // Cancel any outstanding requests (by height and by digest)

@@ -31,7 +31,8 @@ use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
-use summit_types::{Block, BlockAuxData, PublicKey};
+use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
+use summit_types::{BlockAuxData, BlockEnvelope, PublicKey};
 use tracing::{info, warn};
 
 type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
@@ -58,7 +59,7 @@ pub struct Finalizer<
 
     forkchoice: Arc<Mutex<ForkchoiceState>>,
 
-    rx_finalizer_mailbox: mpsc::Receiver<(Block, oneshot::Sender<()>)>,
+    rx_finalizer_mailbox: mpsc::Receiver<(BlockEnvelope, oneshot::Sender<()>)>,
 
     db: FinalizerState<R>,
 
@@ -178,7 +179,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         // Create checkpoint if we're at an epoch boundary.
                         // The consensus state is saved every `epoch_num_blocks` blocks.
                         // The proposed block will contain the checkpoint that was saved at the previous height.
-                        let aux_data = if include_withdrawals_in_block(height, self.epoch_num_blocks) {
+                        let aux_data = if is_last_block_of_epoch(height, self.epoch_num_blocks) {
                             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
                             let ckpt = self.db.get_pending_checkpoint().await.expect("the checkpoint is stored before this call");
                             // TODO(matthias): should we verify the ckpt height against the `height` variable?
@@ -210,10 +211,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     },
 
                     msg = self.rx_finalizer_mailbox.next() => {
-                        let Some((block, notifier)) = msg else {
+                        let Some((envelope, notifier)) = msg else {
                             warn!("All senders to finalizer dropped");
                             break;
                         };
+                        let BlockEnvelope { block, finalized: _ } = envelope;
 
                         // check the payload
                         let payload_status = self.engine_client.check_payload(&block).await;
@@ -221,7 +223,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                         // Verify withdrawal requests that were included in the block
                         // Make sure that the included withdrawals match the expected withdrawals
-                        let expected_withdrawals: Vec<Withdrawal> = if include_withdrawals_in_block(new_height, self.epoch_num_blocks) {
+                        let expected_withdrawals: Vec<Withdrawal> = if is_last_block_of_epoch(new_height, self.epoch_num_blocks) {
                             let pending_withdrawals = self.state
                                 .get_next_ready_withdrawals(new_height, self.validator_max_withdrawals_per_block);
                                 pending_withdrawals.into_iter().map(|w| w.inner).collect()
@@ -441,7 +443,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         self.state.set_latest_height(new_height);
 
                         // Periodically persist state to database as a blob
-                        if new_height % self.epoch_num_blocks == 0 {
+                        // We build the checkpoint one height before the epoch end which
+                        // allows the validators to sign the checkpoint hash in the last block
+                        // of the epoch
+                        if is_penultimate_block_of_epoch(new_height, self.epoch_num_blocks) {
                             self.db.store_consensus_state(new_height, &self.state).await;
 
                             let ckpt = Checkpoint::new(&self.state);
@@ -451,7 +456,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         }
 
                         // Store finalizes checkpoint to database
-                        if block.header.checkpoint_hash != [0; 32].into() {
+                        if is_last_block_of_epoch(new_height, self.epoch_num_blocks) {
                             let ckpt = self.db.get_pending_checkpoint().await.expect("this checkpoint was stored last height");
                             self.db.store_finalized_checkpoint(&ckpt).await;
                             self.db.remove_pending_checkpoint().await;
@@ -503,17 +508,17 @@ impl HeightNotifier {
 
 #[derive(Clone)]
 pub struct FinalizerMailbox {
-    sender: mpsc::Sender<(Block, oneshot::Sender<()>)>,
+    sender: mpsc::Sender<(BlockEnvelope, oneshot::Sender<()>)>,
 }
 
 impl FinalizerMailbox {
-    pub fn new(sender: mpsc::Sender<(Block, oneshot::Sender<()>)>) -> Self {
+    pub fn new(sender: mpsc::Sender<(BlockEnvelope, oneshot::Sender<()>)>) -> Self {
         Self { sender }
     }
 }
 
 impl Reporter for FinalizerMailbox {
-    type Activity = Block;
+    type Activity = BlockEnvelope;
 
     async fn report(&mut self, activity: Self::Activity) {
         let (tx, rx) = oneshot::channel();
@@ -522,8 +527,4 @@ impl Reporter for FinalizerMailbox {
         // wait until finalization finishes
         let _ = rx.await;
     }
-}
-
-fn include_withdrawals_in_block(height: u64, epoch_num_blocks: u64) -> bool {
-    height > 1 && (height - 1) % epoch_num_blocks == 0
 }

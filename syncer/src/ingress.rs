@@ -9,6 +9,8 @@ use futures::{
 use summit_types::{Activity, Block, Digest, Signature};
 use tracing::debug;
 
+pub(crate) type BlockWithFinalization = (Option<Block>, Option<Finalization<Signature, Digest>>);
+
 pub enum Message {
     Get {
         view: Option<u64>,
@@ -148,6 +150,10 @@ pub enum Orchestration {
         next: u64,
         result: oneshot::Sender<Option<Block>>,
     },
+    GetWithFinalization {
+        next: u64,
+        result: oneshot::Sender<BlockWithFinalization>,
+    },
     Processed {
         next: u64,
         digest: Digest,
@@ -177,6 +183,18 @@ impl Orchestrator {
             })
             .await
             .expect("Failed to send get");
+        receiver.await.unwrap()
+    }
+
+    pub async fn get_with_finalized(&mut self, next: u64) -> BlockWithFinalization {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Orchestration::GetWithFinalization {
+                next,
+                result: response,
+            })
+            .await
+            .expect("Failed to send get with finalized");
         receiver.await.unwrap()
     }
 

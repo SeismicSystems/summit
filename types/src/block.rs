@@ -559,6 +559,12 @@ impl EncodeSize for Finalized {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockEnvelope {
+    pub block: Block,
+    pub finalized: Option<Finalization<Signature, Digest>>,
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

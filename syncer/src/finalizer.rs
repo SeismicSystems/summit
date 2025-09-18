@@ -1,13 +1,13 @@
+use crate::Orchestrator;
 use commonware_consensus::Reporter;
 use commonware_cryptography::Committable as _;
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::sequence::FixedBytes;
 use futures::{StreamExt, channel::mpsc};
-use summit_types::Block;
+use summit_types::BlockEnvelope;
+use summit_types::utils::is_last_block_of_epoch;
 use tracing::{debug, error};
-
-use crate::Orchestrator;
 
 // The key used to store the last indexed height in the metadata store.
 const LATEST_KEY: FixedBytes<1> = FixedBytes::new([0u8]);
@@ -17,7 +17,8 @@ const LATEST_KEY: FixedBytes<1> = FixedBytes::new([0u8]);
 ///
 /// Stores the highest height for which the application has processed. This allows resuming
 /// processing from the last processed height after a restart.
-pub struct Finalizer<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Block>> {
+pub struct Finalizer<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = BlockEnvelope>>
+{
     // Application that processes the finalized blocks.
     application: Z,
 
@@ -29,9 +30,14 @@ pub struct Finalizer<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activit
 
     // Metadata store that stores the last indexed height.
     metadata: Metadata<R, FixedBytes<1>, u64>,
+
+    // Number of blocks per epoch
+    epoch_num_blocks: u64,
 }
 
-impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Block>> Finalizer<R, Z> {
+impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = BlockEnvelope>>
+    Finalizer<R, Z>
+{
     /// Initialize the finalizer.
     pub async fn new(
         context: R,
@@ -39,6 +45,7 @@ impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Block>> Fina
         application: Z,
         orchestrator: Orchestrator,
         notifier_rx: mpsc::Receiver<()>,
+        epoch_num_blocks: u64,
     ) -> Self {
         // Initialize metadata
         let metadata = Metadata::init(
@@ -56,6 +63,7 @@ impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Block>> Fina
             orchestrator,
             notifier_rx,
             metadata,
+            epoch_num_blocks,
         }
     }
 
@@ -72,8 +80,14 @@ impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Block>> Fina
             // The next height to process is the next height after the last processed height.
             let height = latest + 1;
 
+            let (block, finalized) = if is_last_block_of_epoch(height, self.epoch_num_blocks) {
+                self.orchestrator.get_with_finalized(height).await
+            } else {
+                (self.orchestrator.get(height).await, None)
+            };
+
             // Attempt to get the next block from the orchestrator.
-            if let Some(block) = self.orchestrator.get(height).await {
+            if let Some(block) = block {
                 // Sanity-check that the block height is the one we expect.
                 assert_eq!(block.height(), height, "block height mismatch");
 
@@ -83,7 +97,8 @@ impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Block>> Fina
                 // height is processed by the application), it is possible that the application may
                 // be asked to process a block it has already seen (which it can simply ignore).
                 let commitment = block.commitment();
-                self.application.report(block).await;
+                let envelope = BlockEnvelope { block, finalized };
+                self.application.report(envelope).await;
 
                 // Record that we have processed up through this height.
                 latest = height;

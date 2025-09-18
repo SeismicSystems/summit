@@ -110,6 +110,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
             backfill_quota: cfg.backfill_quota,
             activity_timeout: cfg.activity_timeout,
             namespace: cfg.namespace.clone(),
+            epoch_num_blocks: EPOCH_NUM_BLOCKS,
         };
         let (syncer, syncer_mailbox) =
             summit_syncer::Actor::new(context.with_label("syncer"), syncer_config).await;
