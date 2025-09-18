@@ -1,6 +1,4 @@
-use std::ops::Deref as _;
-
-use crate::Signature;
+use crate::{Header, Signature};
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
 use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
@@ -14,201 +12,6 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Header {
-    pub parent: Digest,
-    pub height: u64,
-    pub timestamp: u64,
-    pub view: u64,
-    pub payload_hash: Digest,
-    pub execution_request_hash: Digest,
-    pub checkpoint_hash: Digest,
-    pub prev_epoch_header_hash: Digest,
-    pub block_value: U256,
-    // precomputed digest of this header
-    pub digest: Digest,
-}
-
-const HEADER_BYTES_LEN: usize = 32 + 8 + 8 + 8 + 32 + 32 + 32 + 32 + 32; // 216
-
-impl Header {
-    #[allow(clippy::too_many_arguments)]
-    pub fn compute_digest(
-        parent: Digest,
-        height: u64,
-        timestamp: u64,
-        view: u64,
-        payload_hash: Digest,
-        execution_request_hash: Digest,
-        checkpoint_hash: Digest,
-        prev_epoch_header_hash: Digest,
-        block_value: U256,
-    ) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(&parent);
-        hasher.update(&height.to_be_bytes());
-        hasher.update(&timestamp.to_be_bytes());
-        hasher.update(&payload_hash);
-        hasher.update(&execution_request_hash);
-        hasher.update(&checkpoint_hash);
-        hasher.update(&prev_epoch_header_hash);
-        hasher.update(&block_value.as_ssz_bytes());
-        hasher.update(&view.to_be_bytes());
-        let digest = hasher.finalize();
-
-        Self {
-            parent,
-            height,
-            timestamp,
-            view,
-            payload_hash,
-            execution_request_hash,
-            checkpoint_hash,
-            prev_epoch_header_hash,
-            block_value,
-            digest,
-        }
-    }
-}
-
-impl ssz::Encode for Header {
-    fn is_ssz_fixed_len() -> bool {
-        true
-    }
-
-    fn ssz_append(&self, buf: &mut Vec<u8>) {
-        // todo: safe unwrap unless we change digest size. Reason for this is because Digest.0 is private in commonware and it only derefs into [u8] instead of the [u8; DIGEST_LENGTH] that we want
-        let parent: [u8; 32] = self
-            .parent
-            .deref()
-            .try_into()
-            .expect("Safe unwrap unless we change digest size");
-        let payload_hash: [u8; 32] = self
-            .payload_hash
-            .deref()
-            .try_into()
-            .expect("Safe unwrap unless we change digest size");
-        let execution_request_hash: [u8; 32] = self
-            .execution_request_hash
-            .deref()
-            .try_into()
-            .expect("Safe unwrap unless we change digest size");
-        let checkpoint_hash: [u8; 32] = self
-            .checkpoint_hash
-            .deref()
-            .try_into()
-            .expect("Safe unwrap unless we change digest size");
-        let prev_epoch_header_hash: [u8; 32] = self
-            .prev_epoch_header_hash
-            .deref()
-            .try_into()
-            .expect("Safe unwrap unless we change digest size");
-
-        buf.extend_from_slice(&parent);
-        buf.extend_from_slice(&self.height.as_ssz_bytes());
-        buf.extend_from_slice(&self.timestamp.as_ssz_bytes());
-        buf.extend_from_slice(&self.view.as_ssz_bytes());
-        buf.extend_from_slice(&payload_hash);
-        buf.extend_from_slice(&execution_request_hash);
-        buf.extend_from_slice(&checkpoint_hash);
-        buf.extend_from_slice(&prev_epoch_header_hash);
-        buf.extend_from_slice(&self.block_value.as_ssz_bytes());
-    }
-
-    fn ssz_fixed_len() -> usize {
-        HEADER_BYTES_LEN
-    }
-
-    fn ssz_bytes_len(&self) -> usize {
-        HEADER_BYTES_LEN
-    }
-}
-
-impl ssz::Decode for Header {
-    fn is_ssz_fixed_len() -> bool {
-        true
-    }
-
-    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
-        if bytes.len() != HEADER_BYTES_LEN {
-            return Err(ssz::DecodeError::InvalidByteLength {
-                len: bytes.len(),
-                expected: HEADER_BYTES_LEN,
-            });
-        }
-
-        let mut offset = 0;
-
-        let parent = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
-        offset += 32;
-
-        let height = u64::from_ssz_bytes(&bytes[offset..offset + 8])?;
-        offset += 8;
-
-        let timestamp = u64::from_ssz_bytes(&bytes[offset..offset + 8])?;
-        offset += 8;
-
-        let view = u64::from_ssz_bytes(&bytes[offset..offset + 8])?;
-        offset += 8;
-
-        let payload_hash = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
-        offset += 32;
-
-        let execution_request_hash = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
-        offset += 32;
-
-        let checkpoint_hash = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
-        offset += 32;
-
-        let prev_epoch_header_hash = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
-        offset += 32;
-
-        let block_value = U256::from_ssz_bytes(&bytes[offset..offset + 32])?;
-
-        Ok(Self::compute_digest(
-            parent.into(),
-            height,
-            timestamp,
-            view,
-            payload_hash.into(),
-            execution_request_hash.into(),
-            checkpoint_hash.into(),
-            prev_epoch_header_hash.into(),
-            block_value,
-        ))
-    }
-
-    fn ssz_fixed_len() -> usize {
-        HEADER_BYTES_LEN
-    }
-}
-
-impl EncodeSize for Header {
-    fn encode_size(&self) -> usize {
-        self.ssz_bytes_len()
-    }
-}
-
-impl Write for Header {
-    fn write(&self, buf: &mut impl BufMut) {
-        let ssz_bytes = &*self.as_ssz_bytes();
-        buf.put(ssz_bytes);
-    }
-}
-
-impl Read for Header {
-    type Cfg = ();
-
-    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let len = HEADER_BYTES_LEN;
-        if len > buf.remaining() {
-            return Err(Error::Invalid("Header", "missing bytes"));
-        }
-        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len).chunk())
-            .map_err(|_| Error::Invalid("Header", "Unable to decode bytes for header"))
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
@@ -385,7 +188,7 @@ impl ssz::Encode for Block {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset = HEADER_BYTES_LEN
+        let offset = crate::header::HEADER_BYTES_LEN
             + <ExecutionPayloadV3 as ssz::Encode>::ssz_fixed_len()
             + <Vec<AlloyBytes> as ssz::Encode>::ssz_fixed_len();
 
@@ -624,26 +427,6 @@ mod test {
         let decoded = Block::decode(encoded).unwrap();
 
         assert_eq!(block, decoded);
-    }
-
-    #[test]
-    fn test_header_encode_decode() {
-        let header = Header::compute_digest(
-            [27u8; 32].into(),
-            27,
-            2727,
-            42,
-            [1u8; 32].into(),
-            [2u8; 32].into(),
-            [3u8; 32].into(),
-            [4u8; 32].into(),
-            U256::ZERO,
-        );
-
-        let encoded = header.encode();
-        let decoded = Header::decode(encoded).unwrap();
-
-        assert_eq!(header, decoded);
     }
 
     #[test]

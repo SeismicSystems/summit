@@ -215,7 +215,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             warn!("All senders to finalizer dropped");
                             break;
                         };
-                        let BlockEnvelope { block, finalized: _ } = envelope;
+                        let BlockEnvelope { block, finalized } = envelope;
 
                         // check the payload
                         let payload_status = self.engine_client.check_payload(&block).await;
@@ -457,6 +457,16 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                         // Store finalizes checkpoint to database
                         if is_last_block_of_epoch(new_height, self.epoch_num_blocks) {
+                            if let Some(finalized) = finalized {
+                                // The finalized signatures should always be included on the last block 
+                                // of the epoch. However, there is an edge case, where the block after
+                                // last block of the epoch arrived out of order.
+                                // This is not critical and will likely never happen on all validators
+                                // at the same time.
+                                // TODO(matthias): figure out a good solution for making checkpoints available
+                                debug_assert!(block.header.digest == finalized.proposal.payload)
+                            }
+
                             let ckpt = self.db.get_pending_checkpoint().await.expect("this checkpoint was stored last height");
                             self.db.store_finalized_checkpoint(&ckpt).await;
                             self.db.remove_pending_checkpoint().await;

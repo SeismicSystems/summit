@@ -4,12 +4,14 @@ pub mod checkpoint;
 pub mod consensus_state;
 pub mod execution_request;
 pub mod genesis;
+pub mod header;
 pub mod utils;
 pub mod withdrawal;
 
 pub use block::*;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 pub use genesis::*;
+pub use header::*;
 use withdrawal::PendingWithdrawal;
 
 use commonware_consensus::simplex::types::Activity as CActivity;
