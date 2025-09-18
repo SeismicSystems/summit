@@ -1,5 +1,4 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
-
 import { LatLng } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import init, {
@@ -10,7 +9,6 @@ import init, {
 import {
   BACKEND_URL,
   LOCATIONS,
-  PUBLIC_KEY_HEX,
   HEALTH_CHECK_INTERVAL,
   TIMEOUT_DURATION,
   PUBLIC_KEY,
@@ -20,7 +18,7 @@ import { SeedJs, NotarizedJs, FinalizedJs, ViewData } from "./types";
 import { hexUint8Array } from "./utils";
 import "./App.css";
 
-import "./AboutModal.css";
+import "./components/modals/AboutModal.css";
 import StatsSection from "./StatsSection";
 import "./StatsSection.css";
 import Footer from "./ui/Footer";
@@ -32,7 +30,7 @@ import ErrorNotification from "./ErrorNotification";
 import "./ErrorNotification.css";
 import MaintenancePage from "./MaintenancePage";
 
-import "./SearchModal.css";
+import "./components/modals/SearchModal.css";
 import MapComponent from "./components/MapComponent";
 
 // ASCII Logo animation logic

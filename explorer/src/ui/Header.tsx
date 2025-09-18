@@ -1,14 +1,19 @@
-import React, { useState } from "react";
-import AboutModal from "../AboutModal";
-import KeyInfoModal from "../KeyModal";
-import SearchModal from "../SearchModal";
+import React from "react";
+import { useAtomValue, useSetAtom } from "jotai";
+import AboutModal from "../components/modals/AboutModal";
+import KeyInfoModal from "../components/modals/KeyModal";
+import SearchModal from "../components/modals/SearchModal";
 import { PUBLIC_KEY_HEX } from "../config";
+import {
+  openModalAtom,
+  closeModalAtom,
+  activeModalAtom,
+} from "../atoms/ui/modalAtoms";
 
 export default function Header() {
-  const [isSearchModalOpen, setIsSearchModalOpen] = useState<boolean>(false);
-  const [isKeyInfoModalOpen, setIsKeyInfoModalOpen] = useState<boolean>(false);
-  const [isAboutModalOpen, setIsAboutModalOpen] = useState<boolean>(false);
-
+  const activeModal = useAtomValue(activeModalAtom);
+  const openModal = useSetAtom(openModalAtom);
+  const closeModal = useSetAtom(closeModalAtom);
   return (
     <>
       <div className="logo-container">
@@ -35,36 +40,36 @@ export default function Header() {
       <div className="about-button-container">
         <button
           className="search-header-button"
-          onClick={() => setIsSearchModalOpen(true)}
+          onClick={() => openModal("search")}
         >
           ⚲
         </button>
         <button
           className="key-header-button"
-          onClick={() => setIsKeyInfoModalOpen(true)}
+          onClick={() => openModal("keyInfo")}
         >
           ⚷︎
         </button>
         <button
           className="about-header-button"
-          onClick={() => setIsAboutModalOpen(true)}
+          onClick={() => openModal("about")}
         >
           ?︎
         </button>
       </div>
 
       <AboutModal
-        isOpen={isAboutModalOpen}
-        onClose={() => setIsAboutModalOpen(false)}
+        isOpen={activeModal === "about"}
+        onClose={() => closeModal()}
       />
       <KeyInfoModal
-        isOpen={isKeyInfoModalOpen}
-        onClose={() => setIsKeyInfoModalOpen(false)}
+        isOpen={activeModal === "keyInfo"}
+        onClose={() => closeModal()}
         publicKeyHex={PUBLIC_KEY_HEX}
       />
       <SearchModal
-        isOpen={isSearchModalOpen}
-        onClose={() => setIsSearchModalOpen(false)}
+        isOpen={activeModal === "search"}
+        onClose={() => closeModal()}
       />
     </>
   );
