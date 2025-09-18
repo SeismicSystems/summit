@@ -24,12 +24,13 @@ pub struct Header {
     pub payload_hash: Digest,
     pub execution_request_hash: Digest,
     pub checkpoint_hash: Digest,
+    pub prev_epoch_header_hash: Digest,
     pub block_value: U256,
     // precomputed digest of this header
     pub digest: Digest,
 }
 
-const HEADER_BYTES_LEN: usize = 32 + 8 + 8 + 8 + 32 + 32 + 32 + 32; // 184
+const HEADER_BYTES_LEN: usize = 32 + 8 + 8 + 8 + 32 + 32 + 32 + 32 + 32; // 216
 
 impl Header {
     #[allow(clippy::too_many_arguments)]
@@ -41,6 +42,7 @@ impl Header {
         payload_hash: Digest,
         execution_request_hash: Digest,
         checkpoint_hash: Digest,
+        prev_epoch_header_hash: Digest,
         block_value: U256,
     ) -> Self {
         let mut hasher = Sha256::new();
@@ -50,6 +52,7 @@ impl Header {
         hasher.update(&payload_hash);
         hasher.update(&execution_request_hash);
         hasher.update(&checkpoint_hash);
+        hasher.update(&prev_epoch_header_hash);
         hasher.update(&block_value.as_ssz_bytes());
         hasher.update(&view.to_be_bytes());
         let digest = hasher.finalize();
@@ -62,6 +65,7 @@ impl Header {
             payload_hash,
             execution_request_hash,
             checkpoint_hash,
+            prev_epoch_header_hash,
             block_value,
             digest,
         }
@@ -95,6 +99,11 @@ impl ssz::Encode for Header {
             .deref()
             .try_into()
             .expect("Safe unwrap unless we change digest size");
+        let prev_epoch_header_hash: [u8; 32] = self
+            .prev_epoch_header_hash
+            .deref()
+            .try_into()
+            .expect("Safe unwrap unless we change digest size");
 
         buf.extend_from_slice(&parent);
         buf.extend_from_slice(&self.height.as_ssz_bytes());
@@ -103,6 +112,7 @@ impl ssz::Encode for Header {
         buf.extend_from_slice(&payload_hash);
         buf.extend_from_slice(&execution_request_hash);
         buf.extend_from_slice(&checkpoint_hash);
+        buf.extend_from_slice(&prev_epoch_header_hash);
         buf.extend_from_slice(&self.block_value.as_ssz_bytes());
     }
 
@@ -151,6 +161,9 @@ impl ssz::Decode for Header {
         let checkpoint_hash = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
         offset += 32;
 
+        let prev_epoch_header_hash = <[u8; 32]>::from_ssz_bytes(&bytes[offset..offset + 32])?;
+        offset += 32;
+
         let block_value = U256::from_ssz_bytes(&bytes[offset..offset + 32])?;
 
         Ok(Self::compute_digest(
@@ -161,6 +174,7 @@ impl ssz::Decode for Header {
             payload_hash.into(),
             execution_request_hash.into(),
             checkpoint_hash.into(),
+            prev_epoch_header_hash.into(),
             block_value,
         ))
     }
@@ -227,6 +241,7 @@ impl Block {
         block_value: U256,
         view: u64,
         checkpoint_hash: Option<Digest>,
+        prev_epoch_header_hash: Digest,
     ) -> Self {
         let payload_ssz = payload.as_ssz_bytes();
         let mut hasher = Sha256::new();
@@ -256,6 +271,7 @@ impl Block {
             payload_hash,
             execution_request_hash,
             checkpoint_hash,
+            prev_epoch_header_hash,
             block_value,
         );
 
@@ -313,6 +329,7 @@ impl Block {
             payload_hash,
             execution_request_hash: [0; 32].into(),
             checkpoint_hash: [0; 32].into(),
+            prev_epoch_header_hash: [0; 32].into(),
             block_value: U256::ZERO,
             digest: genesis_hash.into(),
         };
@@ -593,6 +610,7 @@ mod test {
             U256::ZERO,
             42,
             Some([0u8; 32].into()),
+            [0u8; 32].into(),
         );
 
         let encoded = block.encode();
@@ -612,6 +630,7 @@ mod test {
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
+            [4u8; 32].into(),
             U256::ZERO,
         );
 
@@ -656,6 +675,7 @@ mod test {
             U256::ZERO,
             42,
             Some([0u8; 32].into()),
+            [0u8; 32].into(),
         );
 
         let encoded = block.encode();

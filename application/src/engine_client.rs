@@ -301,6 +301,7 @@ pub mod benchmarking {
                 U256::ZERO, // block_value
                 view,
                 None,
+                [0u8; 32].into(),
             )
         }
     }

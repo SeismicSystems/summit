@@ -691,6 +691,7 @@ mod tests {
             alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
             1,
             None,
+            [0u8; 32].into(),
         );
 
         // Client2 checks the payload (validates it)
@@ -761,6 +762,7 @@ mod tests {
                         U256::from(1_000_000_000_000_000_000u64),
                         1,
                         None,
+                        [0u8; 32].into(),
                     );
 
                     // Client validates the block
@@ -850,6 +852,7 @@ mod tests {
             alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
             1,
             None,
+            [0u8; 32].into(),
         );
 
         client2.check_payload(&block_for_validation).await;

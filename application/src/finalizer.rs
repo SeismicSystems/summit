@@ -432,14 +432,14 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         if new_height % self.epoch_num_blocks == 0 {
                             self.db.store_consensus_state(new_height, &self.state).await;
 
-                            let previous_digest = if let Some(prev_ckpt) = self.db.get_finalized_checkpoint().await {
+                            let _previous_digest = if let Some(prev_ckpt) = self.db.get_finalized_checkpoint().await {
                                 prev_ckpt.digest
                             } else {
                                 // if this is the first checkpoint, then we use the genesis hash
                                 // as the previous digest
                                 self.genesis_hash.into()
                             };
-                            let ckpt = Checkpoint::new(&self.state, previous_digest);
+                            let ckpt = Checkpoint::new(&self.state);
                             // Store the checkpoint in the database
                             self.db.store_pending_checkpoint(&ckpt).await;
                             self.db.commit().await;

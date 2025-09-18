@@ -292,6 +292,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             payload_envelope.envelope_inner.block_value,
             view,
             checkpoint_hash,
+            [0u8; 32].into(), // TODO: Get actual previous epoch header hash
         );
 
         Ok(block)

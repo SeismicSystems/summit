@@ -146,6 +146,7 @@ fn execution_payload_envelope_to_block(
         payload.envelope_inner.block_value,
         view,
         None,
+        [0u8; 32].into(),
     )
 }
 

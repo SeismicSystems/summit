@@ -352,6 +352,7 @@ mod tests {
                 [2u8; 32].into(),                    // payload_hash
                 [3u8; 32].into(),                    // execution_request_hash
                 [4u8; 32].into(),                    // checkpoint_hash
+                [5u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(42u64), // block_value
             );
 
@@ -382,6 +383,7 @@ mod tests {
                 [6u8; 32].into(),                    // payload_hash
                 [7u8; 32].into(),                    // execution_request_hash
                 [8u8; 32].into(),                    // checkpoint_hash
+                [9u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(84u64), // block_value
             );
             db.store_header(200, &header2).await;
@@ -403,15 +405,16 @@ mod tests {
         executor.start(|context| async move {
             let mut db = create_test_db_with_context("test_checkpoint", context).await;
 
-            // Create test consensus state
-            let mut consensus_state = ConsensusState::new();
-            consensus_state.set_latest_height(100);
+            // Create test consensus states with different heights to ensure different digests
+            let mut pending_state = ConsensusState::new();
+            pending_state.set_latest_height(100);
+
+            let mut finalized_state = ConsensusState::new();
+            finalized_state.set_latest_height(200);
 
             // Create test checkpoints
-            let pending_checkpoint =
-                summit_types::checkpoint::Checkpoint::new(&consensus_state, [1u8; 32].into());
-            let finalized_checkpoint =
-                summit_types::checkpoint::Checkpoint::new(&consensus_state, [2u8; 32].into());
+            let pending_checkpoint = summit_types::checkpoint::Checkpoint::new(&pending_state);
+            let finalized_checkpoint = summit_types::checkpoint::Checkpoint::new(&finalized_state);
 
             // Test that no checkpoints exist initially
             assert!(db.get_pending_checkpoint().await.is_none());
@@ -426,10 +429,6 @@ mod tests {
             assert!(retrieved_pending.is_some());
             let retrieved_pending = retrieved_pending.unwrap();
             assert_eq!(retrieved_pending.data, pending_checkpoint.data);
-            assert_eq!(
-                retrieved_pending.previous_digest,
-                pending_checkpoint.previous_digest
-            );
             assert_eq!(retrieved_pending.digest, pending_checkpoint.digest);
 
             // Finalized checkpoint should still be None
@@ -444,21 +443,17 @@ mod tests {
             assert!(retrieved_finalized.is_some());
             let retrieved_finalized = retrieved_finalized.unwrap();
             assert_eq!(retrieved_finalized.data, finalized_checkpoint.data);
-            assert_eq!(
-                retrieved_finalized.previous_digest,
-                finalized_checkpoint.previous_digest
-            );
             assert_eq!(retrieved_finalized.digest, finalized_checkpoint.digest);
 
             // Both checkpoints should be accessible
             let pending = db.get_pending_checkpoint().await.unwrap();
             let finalized = db.get_finalized_checkpoint().await.unwrap();
             assert_ne!(pending.digest, finalized.digest);
-            assert_ne!(pending.previous_digest, finalized.previous_digest);
 
             // Test overwriting checkpoints
-            let new_pending =
-                summit_types::checkpoint::Checkpoint::new(&consensus_state, [3u8; 32].into());
+            let mut new_pending_state = ConsensusState::new();
+            new_pending_state.set_latest_height(300);
+            let new_pending = summit_types::checkpoint::Checkpoint::new(&new_pending_state);
             db.store_pending_checkpoint(&new_pending).await;
             db.commit().await;
 

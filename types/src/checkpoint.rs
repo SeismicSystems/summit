@@ -8,22 +8,16 @@ use ssz::{Decode, Encode as SszEncode};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Checkpoint {
     pub data: Bytes,
-    pub previous_digest: Digest,
     pub digest: Digest,
 }
 
 impl Checkpoint {
-    pub fn new(state: &ConsensusState, previous_digest: Digest) -> Self {
+    pub fn new(state: &ConsensusState) -> Self {
         let data = state.encode().freeze();
         let mut hasher = Sha256::new();
         hasher.update(&data);
-        hasher.update(&previous_digest);
         let digest = hasher.finalize();
-        Self {
-            data,
-            previous_digest,
-            digest,
-        }
+        Self { data, digest }
     }
 }
 
@@ -33,9 +27,8 @@ impl SszEncode for Checkpoint {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset = <Vec<u8> as SszEncode>::ssz_fixed_len()
-            + <[u8; 32] as SszEncode>::ssz_fixed_len()
-            + <[u8; 32] as SszEncode>::ssz_fixed_len();
+        let offset =
+            <Vec<u8> as SszEncode>::ssz_fixed_len() + <[u8; 32] as SszEncode>::ssz_fixed_len();
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
 
@@ -44,18 +37,12 @@ impl SszEncode for Checkpoint {
         encoder.append(&data_vec);
 
         // Convert Digest to [u8; 32]
-        let previous_digest_array: [u8; 32] = self
-            .previous_digest
-            .as_ref()
-            .try_into()
-            .expect("Digest should be 32 bytes");
         let digest_array: [u8; 32] = self
             .digest
             .as_ref()
             .try_into()
             .expect("Digest should be 32 bytes");
 
-        encoder.append(&previous_digest_array);
         encoder.append(&digest_array);
         encoder.finalize();
     }
@@ -65,7 +52,6 @@ impl SszEncode for Checkpoint {
 
         data_vec.ssz_bytes_len()
             + ssz::BYTES_PER_LENGTH_OFFSET  // 1 variable-length field needs 1 offset
-            + 32  // previous_digest as [u8; 32]
             + 32 // digest as [u8; 32]
     }
 }
@@ -79,17 +65,14 @@ impl Decode for Checkpoint {
         let mut builder = ssz::SszDecoderBuilder::new(bytes);
         builder.register_type::<Vec<u8>>()?;
         builder.register_type::<[u8; 32]>()?;
-        builder.register_type::<[u8; 32]>()?;
 
         let mut decoder = builder.build()?;
 
         let data: Vec<u8> = decoder.decode_next()?;
-        let previous_digest_bytes: [u8; 32] = decoder.decode_next()?;
         let digest_bytes: [u8; 32] = decoder.decode_next()?;
 
         Ok(Self {
             data: Bytes::from(data),
-            previous_digest: Digest::from(previous_digest_bytes),
             digest: Digest::from(digest_bytes),
         })
     }
@@ -142,25 +125,6 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn test_digest() {
-        let state = ConsensusState {
-            latest_height: 10,
-            next_withdrawal_index: 100,
-            deposit_queue: VecDeque::new(),
-            withdrawal_queue: VecDeque::new(),
-            validator_accounts: HashMap::new(),
-        };
-
-        let previous_digest1 = [1; 32].into();
-        let previous_digest2 = [2; 32].into();
-
-        let ckpt1 = Checkpoint::new(&state, previous_digest1);
-        let ckpt2 = Checkpoint::new(&state, previous_digest2);
-
-        // Make sure the digest are different
-        assert_ne!(ckpt1.digest, ckpt2.digest);
-    }
 
     #[test]
     fn test_checkpoint_ssz_encode_decode_empty() {
@@ -172,9 +136,7 @@ mod tests {
             validator_accounts: HashMap::new(),
         };
 
-        let previous_digest = [1; 32].into();
-
-        let checkpoint = Checkpoint::new(&state, previous_digest);
+        let checkpoint = Checkpoint::new(&state);
 
         // Test SSZ encoding/decoding
         let encoded = checkpoint.as_ssz_bytes();
@@ -182,7 +144,6 @@ mod tests {
 
         // Check that all fields match
         assert_eq!(decoded.data, checkpoint.data);
-        assert_eq!(decoded.previous_digest, checkpoint.previous_digest);
         assert_eq!(decoded.digest, checkpoint.digest);
     }
 
@@ -263,9 +224,7 @@ mod tests {
             validator_accounts,
         };
 
-        let previous_digest = [99u8; 32].into();
-
-        let checkpoint = Checkpoint::new(&state, previous_digest);
+        let checkpoint = Checkpoint::new(&state);
 
         // Test SSZ encoding/decoding
         let encoded = checkpoint.as_ssz_bytes();
@@ -273,7 +232,6 @@ mod tests {
 
         // Check that all fields match
         assert_eq!(decoded.data, checkpoint.data);
-        assert_eq!(decoded.previous_digest, checkpoint.previous_digest);
         assert_eq!(decoded.digest, checkpoint.digest);
 
         // Verify the encoded data contains the populated state data
@@ -294,9 +252,7 @@ mod tests {
             validator_accounts: HashMap::new(),
         };
 
-        let previous_digest = [42u8; 32].into();
-
-        let checkpoint = Checkpoint::new(&state, previous_digest);
+        let checkpoint = Checkpoint::new(&state);
 
         // Test Write
         let mut buf = BytesMut::new();
@@ -310,7 +266,6 @@ mod tests {
 
         // Verify all fields match
         assert_eq!(decoded.data, checkpoint.data);
-        assert_eq!(decoded.previous_digest, checkpoint.previous_digest);
         assert_eq!(decoded.digest, checkpoint.digest);
     }
 
@@ -392,9 +347,7 @@ mod tests {
             validator_accounts,
         };
 
-        let previous_digest = [123u8; 32].into();
-
-        let checkpoint = Checkpoint::new(&state, previous_digest);
+        let checkpoint = Checkpoint::new(&state);
 
         // Test Write
         let mut buf = BytesMut::new();
@@ -408,7 +361,6 @@ mod tests {
 
         // Verify all fields match
         assert_eq!(decoded.data, checkpoint.data);
-        assert_eq!(decoded.previous_digest, checkpoint.previous_digest);
         assert_eq!(decoded.digest, checkpoint.digest);
 
         // Verify the encoded data contains the populated state data
@@ -428,7 +380,7 @@ mod tests {
             validator_accounts: HashMap::new(),
         };
 
-        let checkpoint = Checkpoint::new(&state, [42u8; 32].into());
+        let checkpoint = Checkpoint::new(&state);
 
         let ssz_len = checkpoint.ssz_bytes_len();
         let encode_len = checkpoint.encode_size();
