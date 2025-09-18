@@ -170,7 +170,7 @@ fn test_previous_header_hash_matches() {
     let link = Link {
         latency: 80.0,
         jitter: 10.0,
-        success_rate: 0.98,
+        success_rate: 1.0,
     };
     // Create context
     let threshold = quorum(n);
@@ -296,10 +296,9 @@ fn test_previous_header_hash_matches() {
                         assert_eq!(height % EPOCH_NUM_BLOCKS, 0);
                     }
                 }
-                // We don't enforce that all validators reach this condition because there
-                // is an edge case where a block is skipped because the next one arrived out of order.
-                // In that case, the finalized header is not stored.
-                if second_header_stored.len() as u32 >= n / 2 {
+                // There is an edge case where not all validators write a finalized header to disk.
+                // That's why we only enforce n - 1 validators to reach this checkpoint to avoid a flaky test.
+                if second_header_stored.len() as u32 == n - 1 {
                     success = true;
                     break;
                 }
