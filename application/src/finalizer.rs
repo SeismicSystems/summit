@@ -32,7 +32,7 @@ use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
-use summit_types::{BlockAuxData, BlockEnvelope, PublicKey};
+use summit_types::{BlockAuxData, BlockEnvelope, FinalizedHeader, PublicKey};
 use tracing::{info, warn};
 
 type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
@@ -186,8 +186,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                             // This is not the header from the last block, but the header from
                             // the block that contains the last checkpoint
-                            let prev_header_hash = if let Some(header) = self.db.get_most_recent_header().await {
-                                header.digest
+                            let prev_header_hash = if let Some(finalized_header) = self.db.get_most_recent_finalized_header().await {
+                                finalized_header.header.digest
                             } else {
                                 self.genesis_hash.into()
                             };
@@ -458,21 +458,23 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         // Store finalizes checkpoint to database
                         if is_last_block_of_epoch(new_height, self.epoch_num_blocks) {
                             if let Some(finalized) = finalized {
-                                // The finalized signatures should always be included on the last block 
+                                // The finalized signatures should always be included on the last block
                                 // of the epoch. However, there is an edge case, where the block after
                                 // last block of the epoch arrived out of order.
                                 // This is not critical and will likely never happen on all validators
                                 // at the same time.
                                 // TODO(matthias): figure out a good solution for making checkpoints available
-                                debug_assert!(block.header.digest == finalized.proposal.payload)
+                                debug_assert!(block.header.digest == finalized.proposal.payload);
+
+                                // Store the finalized block header in the database
+                                let finalized_header = FinalizedHeader { header: block.header, finalized };
+                                self.db.store_finalized_header(new_height, &finalized_header).await;
                             }
 
                             let ckpt = self.db.get_pending_checkpoint().await.expect("this checkpoint was stored last height");
                             self.db.store_finalized_checkpoint(&ckpt).await;
                             self.db.remove_pending_checkpoint().await;
 
-                            // Store the block header in the database
-                            self.db.store_header(new_height, &block.header).await;
                             self.db.commit().await;
                         }
 

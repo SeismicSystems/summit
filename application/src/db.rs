@@ -5,7 +5,7 @@ use commonware_storage::store::{self, Store};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
 pub use store::Config;
-use summit_types::Header;
+use summit_types::FinalizedHeader;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 
@@ -13,11 +13,11 @@ use summit_types::consensus_state::ConsensusState;
 const STATE_PREFIX: u8 = 0x01;
 const CONSENSUS_STATE_PREFIX: u8 = 0x05;
 const CHECKPOINT_PREFIX: u8 = 0x06;
-const HEADER_PREFIX: u8 = 0x07;
+const FINALIZED_HEADER_PREFIX: u8 = 0x07;
 
 // State variable keys
 const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
-const LATEST_HEADER_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 1];
+const LATEST_FINALIZED_HEADER_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const PENDING_CHECKPOINT_KEY: [u8; 2] = [CHECKPOINT_PREFIX, 0];
 const FINALIZED_CHECKPOINT_KEY: [u8; 2] = [CHECKPOINT_PREFIX, 1];
 
@@ -48,9 +48,9 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
         FixedBytes::new(key)
     }
 
-    fn make_header_key(height: u64) -> FixedBytes<64> {
+    fn make_finalized_header_key(height: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
-        key[0] = HEADER_PREFIX;
+        key[0] = FINALIZED_HEADER_PREFIX;
         key[1..9].copy_from_slice(&height.to_be_bytes());
         FixedBytes::new(key)
     }
@@ -78,14 +78,14 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .expect("failed to set latest consensus state height");
     }
 
-    // Header height tracking operations
-    async fn get_latest_header_height(&self) -> u64 {
-        let key = Self::pad_key(&LATEST_HEADER_HEIGHT_KEY);
+    // FinalizedHeader height tracking operations
+    async fn get_latest_finalized_header_height(&self) -> u64 {
+        let key = Self::pad_key(&LATEST_FINALIZED_HEADER_HEIGHT_KEY);
         if let Some(Value::U64(height)) = self
             .store
             .get(&key)
             .await
-            .expect("failed to get latest header height")
+            .expect("failed to get latest finalized header height")
         {
             height
         } else {
@@ -93,12 +93,12 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
         }
     }
 
-    async fn set_latest_header_height(&mut self, height: u64) {
-        let key = Self::pad_key(&LATEST_HEADER_HEIGHT_KEY);
+    async fn set_latest_finalized_header_height(&mut self, height: u64) {
+        let key = Self::pad_key(&LATEST_FINALIZED_HEADER_HEIGHT_KEY);
         self.store
             .update(key, Value::U64(height))
             .await
-            .expect("failed to set latest header height");
+            .expect("failed to set latest finalized header height");
     }
 
     // ConsensusState blob operations
@@ -199,26 +199,29 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .expect("failed to remove pending checkpoint");
     }
 
-    // Header operations
-    pub async fn store_header(&mut self, height: u64, header: &Header) {
-        let key = Self::make_header_key(height);
+    // FinalizedHeader operations
+    pub async fn store_finalized_header(&mut self, height: u64, header: &FinalizedHeader) {
+        let key = Self::make_finalized_header_key(height);
         self.store
-            .update(key, Value::Header(header.clone()))
+            .update(key, Value::FinalizedHeader(header.clone()))
             .await
-            .expect("failed to store header");
+            .expect("failed to store finalized header");
 
-        // Update the latest header height tracker
-        let current_latest = self.get_latest_header_height().await;
+        // Update the latest finalized header height tracker
+        let current_latest = self.get_latest_finalized_header_height().await;
         if height > current_latest {
-            self.set_latest_header_height(height).await;
+            self.set_latest_finalized_header_height(height).await;
         }
     }
 
     #[allow(unused)]
-    pub async fn get_header(&self, height: u64) -> Option<Header> {
-        let key = Self::make_header_key(height);
-        if let Some(Value::Header(header)) =
-            self.store.get(&key).await.expect("failed to get header")
+    pub async fn get_finalized_header(&self, height: u64) -> Option<FinalizedHeader> {
+        let key = Self::make_finalized_header_key(height);
+        if let Some(Value::FinalizedHeader(header)) = self
+            .store
+            .get(&key)
+            .await
+            .expect("failed to get finalized header")
         {
             Some(header)
         } else {
@@ -226,10 +229,10 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
         }
     }
 
-    pub async fn get_most_recent_header(&self) -> Option<Header> {
-        let latest_height = self.get_latest_header_height().await;
+    pub async fn get_most_recent_finalized_header(&self) -> Option<FinalizedHeader> {
+        let latest_height = self.get_latest_finalized_header_height().await;
         if latest_height > 0 {
-            self.get_header(latest_height).await
+            self.get_finalized_header(latest_height).await
         } else {
             None
         }
@@ -249,7 +252,7 @@ enum Value {
     U64(u64),
     ConsensusState(ConsensusState),
     Checkpoint(Checkpoint),
-    Header(Header),
+    FinalizedHeader(FinalizedHeader),
 }
 
 impl EncodeSize for Value {
@@ -258,7 +261,7 @@ impl EncodeSize for Value {
             Self::U64(_) => 8,
             Self::ConsensusState(state) => state.encode_size(),
             Self::Checkpoint(checkpoint) => checkpoint.encode_size(),
-            Self::Header(header) => header.encode_size(),
+            Self::FinalizedHeader(header) => header.encode_size(),
         }
     }
 }
@@ -272,7 +275,7 @@ impl Read for Value {
             0x01 => Ok(Self::U64(buf.get_u64())),
             0x05 => Ok(Self::ConsensusState(ConsensusState::read_cfg(buf, &())?)),
             0x06 => Ok(Self::Checkpoint(Checkpoint::read_cfg(buf, &())?)),
-            0x07 => Ok(Self::Header(Header::read_cfg(buf, &())?)),
+            0x07 => Ok(Self::FinalizedHeader(FinalizedHeader::read_cfg(buf, &())?)),
             byte => Err(Error::InvalidVarint(byte as usize)),
         }
     }
@@ -293,7 +296,7 @@ impl Write for Value {
                 buf.put_u8(0x06);
                 checkpoint.write(buf);
             }
-            Self::Header(header) => {
+            Self::FinalizedHeader(header) => {
                 buf.put_u8(0x07);
                 header.write(buf);
             }
@@ -377,11 +380,11 @@ mod tests {
     }
 
     #[test]
-    fn test_header_operations() {
+    fn test_finalized_header_operations() {
         let cfg = commonware_runtime::deterministic::Config::default().with_seed(3);
         let executor = Runner::from(cfg);
         executor.start(|context| async move {
-            let mut db = create_test_db_with_context("test_header", context).await;
+            let mut db = create_test_db_with_context("test_finalized_header", context).await;
 
             // Create a test header
             let header = summit_types::Header::compute_digest(
@@ -396,23 +399,36 @@ mod tests {
                 alloy_primitives::U256::from(42u64), // block_value
             );
 
-            // Test that no header exists initially
-            assert!(db.get_header(100).await.is_none());
+            // Create finalization proof
+            use commonware_consensus::simplex::types::{Finalization, Proposal};
+            let proposal = Proposal {
+                view: header.view,
+                parent: header.height,
+                payload: header.digest,
+            };
+            let finalized = Finalization {
+                proposal,
+                signatures: Vec::new(),
+            };
+            let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized);
 
-            // Store the header at height 100
-            db.store_header(100, &header).await;
+            // Test that no header exists initially
+            assert!(db.get_finalized_header(100).await.is_none());
+
+            // Store the finalized header at height 100
+            db.store_finalized_header(100, &finalized_header).await;
             db.commit().await;
 
-            // Retrieve the header
-            let retrieved = db.get_header(100).await;
+            // Retrieve the finalized header
+            let retrieved = db.get_finalized_header(100).await;
             assert!(retrieved.is_some());
             let retrieved = retrieved.unwrap();
-            assert_eq!(retrieved.height, header.height);
-            assert_eq!(retrieved.digest, header.digest);
-            assert_eq!(retrieved.timestamp, header.timestamp);
+            assert_eq!(retrieved.header.height, header.height);
+            assert_eq!(retrieved.header.digest, header.digest);
+            assert_eq!(retrieved.header.timestamp, header.timestamp);
 
             // Test that non-existent header returns None
-            assert!(db.get_header(200).await.is_none());
+            assert!(db.get_finalized_header(200).await.is_none());
 
             // Store another header at different height
             let header2 = summit_types::Header::compute_digest(
@@ -426,34 +442,47 @@ mod tests {
                 [9u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(84u64), // block_value
             );
-            db.store_header(200, &header2).await;
+            let proposal2 = Proposal {
+                view: header2.view,
+                parent: header2.height,
+                payload: header2.digest,
+            };
+            let finalized2 = Finalization {
+                proposal: proposal2,
+                signatures: Vec::new(),
+            };
+            let finalized_header2 = summit_types::FinalizedHeader::new(header2.clone(), finalized2);
+            db.store_finalized_header(200, &finalized_header2).await;
             db.commit().await;
 
             // Both headers should be accessible
-            let h1 = db.get_header(100).await.unwrap();
-            let h2 = db.get_header(200).await.unwrap();
-            assert_eq!(h1.height, 100);
-            assert_eq!(h2.height, 200);
-            assert_ne!(h1.digest, h2.digest);
+            let h1 = db.get_finalized_header(100).await.unwrap();
+            let h2 = db.get_finalized_header(200).await.unwrap();
+            assert_eq!(h1.header.height, 100);
+            assert_eq!(h2.header.height, 200);
+            assert_ne!(h1.header.digest, h2.header.digest);
 
-            // Test get_most_recent_header returns the latest header
-            let most_recent = db.get_most_recent_header().await;
+            // Test get_most_recent_finalized_header returns the latest header
+            let most_recent = db.get_most_recent_finalized_header().await;
             assert!(most_recent.is_some());
             let most_recent = most_recent.unwrap();
-            assert_eq!(most_recent.height, 200);
-            assert_eq!(most_recent.digest, header2.digest);
+            assert_eq!(most_recent.header.height, 200);
+            assert_eq!(most_recent.header.digest, header2.digest);
         });
     }
 
     #[test]
-    fn test_most_recent_header_operations() {
+    fn test_most_recent_finalized_header_operations() {
         let cfg = commonware_runtime::deterministic::Config::default().with_seed(5);
         let executor = Runner::from(cfg);
         executor.start(|context| async move {
-            let mut db = create_test_db_with_context("test_most_recent_header", context).await;
+            let mut db =
+                create_test_db_with_context("test_most_recent_finalized_header", context).await;
 
             // Test that no most recent header exists initially
-            assert!(db.get_most_recent_header().await.is_none());
+            assert!(db.get_most_recent_finalized_header().await.is_none());
+
+            use commonware_consensus::simplex::types::{Finalization, Proposal};
 
             // Store headers out of order
             let header1 = summit_types::Header::compute_digest(
@@ -467,6 +496,16 @@ mod tests {
                 [5u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(42u64), // block_value
             );
+            let proposal1 = Proposal {
+                view: header1.view,
+                parent: header1.height,
+                payload: header1.digest,
+            };
+            let finalized1 = Finalization {
+                proposal: proposal1,
+                signatures: Vec::new(),
+            };
+            let finalized_header1 = summit_types::FinalizedHeader::new(header1.clone(), finalized1);
 
             let header3 = summit_types::Header::compute_digest(
                 [7u8; 32].into(),                     // parent
@@ -479,6 +518,16 @@ mod tests {
                 [11u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(126u64), // block_value
             );
+            let proposal3 = Proposal {
+                view: header3.view,
+                parent: header3.height,
+                payload: header3.digest,
+            };
+            let finalized3 = Finalization {
+                proposal: proposal3,
+                signatures: Vec::new(),
+            };
+            let finalized_header3 = summit_types::FinalizedHeader::new(header3.clone(), finalized3);
 
             let header2 = summit_types::Header::compute_digest(
                 [5u8; 32].into(),                    // parent
@@ -491,41 +540,51 @@ mod tests {
                 [9u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(84u64), // block_value
             );
+            let proposal2 = Proposal {
+                view: header2.view,
+                parent: header2.height,
+                payload: header2.digest,
+            };
+            let finalized2 = Finalization {
+                proposal: proposal2,
+                signatures: Vec::new(),
+            };
+            let finalized_header2 = summit_types::FinalizedHeader::new(header2.clone(), finalized2);
 
             // Store headers in non-sequential order: 100, 300, 200
-            db.store_header(100, &header1).await;
+            db.store_finalized_header(100, &finalized_header1).await;
             db.commit().await;
 
             // Most recent should be height 100
-            let most_recent = db.get_most_recent_header().await.unwrap();
-            assert_eq!(most_recent.height, 100);
-            assert_eq!(most_recent.digest, header1.digest);
+            let most_recent = db.get_most_recent_finalized_header().await.unwrap();
+            assert_eq!(most_recent.header.height, 100);
+            assert_eq!(most_recent.header.digest, header1.digest);
 
             // Store height 300
-            db.store_header(300, &header3).await;
+            db.store_finalized_header(300, &finalized_header3).await;
             db.commit().await;
 
             // Most recent should now be height 300
-            let most_recent = db.get_most_recent_header().await.unwrap();
-            assert_eq!(most_recent.height, 300);
-            assert_eq!(most_recent.digest, header3.digest);
+            let most_recent = db.get_most_recent_finalized_header().await.unwrap();
+            assert_eq!(most_recent.header.height, 300);
+            assert_eq!(most_recent.header.digest, header3.digest);
 
             // Store height 200 (lower than current max)
-            db.store_header(200, &header2).await;
+            db.store_finalized_header(200, &finalized_header2).await;
             db.commit().await;
 
             // Most recent should still be height 300
-            let most_recent = db.get_most_recent_header().await.unwrap();
-            assert_eq!(most_recent.height, 300);
-            assert_eq!(most_recent.digest, header3.digest);
+            let most_recent = db.get_most_recent_finalized_header().await.unwrap();
+            assert_eq!(most_recent.header.height, 300);
+            assert_eq!(most_recent.header.digest, header3.digest);
 
             // Verify all headers are still individually accessible
-            let h1 = db.get_header(100).await.unwrap();
-            let h2 = db.get_header(200).await.unwrap();
-            let h3 = db.get_header(300).await.unwrap();
-            assert_eq!(h1.height, 100);
-            assert_eq!(h2.height, 200);
-            assert_eq!(h3.height, 300);
+            let h1 = db.get_finalized_header(100).await.unwrap();
+            let h2 = db.get_finalized_header(200).await.unwrap();
+            let h3 = db.get_finalized_header(300).await.unwrap();
+            assert_eq!(h1.header.height, 100);
+            assert_eq!(h2.header.height, 200);
+            assert_eq!(h3.header.height, 300);
         });
     }
 
