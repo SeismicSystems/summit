@@ -31,14 +31,10 @@ use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
-use summit_types::withdrawal::PendingWithdrawal;
-use summit_types::{Block, Digest, PublicKey};
+use summit_types::{Block, BlockAuxData, PublicKey};
 use tracing::{info, warn};
 
-type WithdrawalCheckpointRequest = (
-    u64,
-    oneshot::Sender<(Vec<PendingWithdrawal>, Option<Digest>)>,
-);
+type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
 
 const PAGE_SIZE: usize = 77;
 const PAGE_CACHE_SIZE: usize = 9;
@@ -54,7 +50,7 @@ pub struct Finalizer<
 
     height_notify_mailbox: mpsc::Receiver<(u64, oneshot::Sender<()>)>,
 
-    withdrawal_checkpoint_mailbox: mpsc::Receiver<WithdrawalCheckpointRequest>,
+    aux_data_mailbox: mpsc::Receiver<AuxDataRequest>,
 
     engine_client: C,
 
@@ -101,7 +97,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         Self,
         FinalizerMailbox,
         mpsc::Sender<(u64, oneshot::Sender<()>)>,
-        mpsc::Sender<WithdrawalCheckpointRequest>,
+        mpsc::Sender<AuxDataRequest>,
     ) {
         let state_cfg = StateConfig {
             log_journal_partition: format!("{db_prefix}-finalizer_state-log"),
@@ -117,7 +113,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         let db = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
 
         let (tx_height_notify, height_notify_mailbox) = mpsc::channel(1000);
-        let (tx_withdrawal_checkpoint, withdrawal_checkpoint_mailbox) = mpsc::channel(1000);
+        let (tx_aux_data, aux_data_mailbox) = mpsc::channel(1000);
 
         let (tx_finalizer, rx_finalizer_mailbox) = mpsc::channel(1); // todo(dalton) there should only ever be one message in this channel since we block but lets verify this
 
@@ -125,7 +121,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             context,
             height_notifier: HeightNotifier::new(),
             height_notify_mailbox,
-            withdrawal_checkpoint_mailbox,
+            aux_data_mailbox,
             engine_client,
             registry,
             forkchoice,
@@ -149,7 +145,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             finalizer,
             FinalizerMailbox::new(tx_finalizer),
             tx_height_notify,
-            tx_withdrawal_checkpoint,
+            tx_aux_data,
         )
     }
 
@@ -173,8 +169,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         self.height_notifier.register(height, sender);
                     },
 
-                    mail = self.withdrawal_checkpoint_mailbox.next() => {
-                        let (height, sender) = mail.expect("withdrawal checkpoint mailbox dropped");
+                    mail = self.aux_data_mailbox.next() => {
+                        let (height, sender) = mail.expect("aux data mailbox dropped");
 
                         // TODO(matthias): the height notify should take care of the synchronization, but verify this
                         // Get ready withdrawals at the current height
@@ -182,19 +178,35 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         // Create checkpoint if we're at an epoch boundary.
                         // The consensus state is saved every `epoch_num_blocks` blocks.
                         // The proposed block will contain the checkpoint that was saved at the previous height.
-                        let (ready_withdrawals, checkpoint_hash) = if include_withdrawals_in_block(height, self.epoch_num_blocks) {
+                        let aux_data = if include_withdrawals_in_block(height, self.epoch_num_blocks) {
                             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
                             let ckpt = self.db.get_pending_checkpoint().await.expect("the checkpoint is stored before this call");
                             // TODO(matthias): should we verify the ckpt height against the `height` variable?
 
+                            // This is not the header from the last block, but the header from
+                            // the block that contains the last checkpoint
+                            let prev_header_hash = if let Some(header) = self.db.get_most_recent_header().await {
+                                header.digest
+                            } else {
+                                self.genesis_hash.into()
+                            };
+
                             // Only submit withdrawals at the end of an epoch
                             let ready_withdrawals = self.state
                                 .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
-                            (ready_withdrawals, Some(ckpt.digest))
+                            BlockAuxData {
+                                withdrawals: ready_withdrawals,
+                                checkpoint_hash: Some(ckpt.digest),
+                                header_hash: prev_header_hash,
+                            }
                         } else {
-                            (vec![], None)
+                            BlockAuxData {
+                                withdrawals: vec![],
+                                checkpoint_hash: None,
+                                header_hash: [0; 32].into(),
+                            }
                         };
-                        let _ = sender.send((ready_withdrawals, checkpoint_hash));
+                        let _ = sender.send(aux_data);
                     },
 
                     msg = self.rx_finalizer_mailbox.next() => {
@@ -432,13 +444,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         if new_height % self.epoch_num_blocks == 0 {
                             self.db.store_consensus_state(new_height, &self.state).await;
 
-                            let _previous_digest = if let Some(prev_ckpt) = self.db.get_finalized_checkpoint().await {
-                                prev_ckpt.digest
-                            } else {
-                                // if this is the first checkpoint, then we use the genesis hash
-                                // as the previous digest
-                                self.genesis_hash.into()
-                            };
                             let ckpt = Checkpoint::new(&self.state);
                             // Store the checkpoint in the database
                             self.db.store_pending_checkpoint(&ckpt).await;

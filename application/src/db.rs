@@ -17,6 +17,7 @@ const HEADER_PREFIX: u8 = 0x07;
 
 // State variable keys
 const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
+const LATEST_HEADER_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const PENDING_CHECKPOINT_KEY: [u8; 2] = [CHECKPOINT_PREFIX, 0];
 const FINALIZED_CHECKPOINT_KEY: [u8; 2] = [CHECKPOINT_PREFIX, 1];
 
@@ -75,6 +76,29 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .update(key, Value::U64(height))
             .await
             .expect("failed to set latest consensus state height");
+    }
+
+    // Header height tracking operations
+    async fn get_latest_header_height(&self) -> u64 {
+        let key = Self::pad_key(&LATEST_HEADER_HEIGHT_KEY);
+        if let Some(Value::U64(height)) = self
+            .store
+            .get(&key)
+            .await
+            .expect("failed to get latest header height")
+        {
+            height
+        } else {
+            0
+        }
+    }
+
+    async fn set_latest_header_height(&mut self, height: u64) {
+        let key = Self::pad_key(&LATEST_HEADER_HEIGHT_KEY);
+        self.store
+            .update(key, Value::U64(height))
+            .await
+            .expect("failed to set latest header height");
     }
 
     // ConsensusState blob operations
@@ -152,6 +176,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .expect("failed to store finalized checkpoint");
     }
 
+    #[allow(unused)]
     pub async fn get_finalized_checkpoint(&self) -> Option<Checkpoint> {
         let key = Self::pad_key(&FINALIZED_CHECKPOINT_KEY);
         if let Some(Value::Checkpoint(checkpoint)) = self
@@ -181,6 +206,12 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .update(key, Value::Header(header.clone()))
             .await
             .expect("failed to store header");
+
+        // Update the latest header height tracker
+        let current_latest = self.get_latest_header_height().await;
+        if height > current_latest {
+            self.set_latest_header_height(height).await;
+        }
     }
 
     #[allow(unused)]
@@ -190,6 +221,15 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             self.store.get(&key).await.expect("failed to get header")
         {
             Some(header)
+        } else {
+            None
+        }
+    }
+
+    pub async fn get_most_recent_header(&self) -> Option<Header> {
+        let latest_height = self.get_latest_header_height().await;
+        if latest_height > 0 {
+            self.get_header(latest_height).await
         } else {
             None
         }
@@ -395,6 +435,97 @@ mod tests {
             assert_eq!(h1.height, 100);
             assert_eq!(h2.height, 200);
             assert_ne!(h1.digest, h2.digest);
+
+            // Test get_most_recent_header returns the latest header
+            let most_recent = db.get_most_recent_header().await;
+            assert!(most_recent.is_some());
+            let most_recent = most_recent.unwrap();
+            assert_eq!(most_recent.height, 200);
+            assert_eq!(most_recent.digest, header2.digest);
+        });
+    }
+
+    #[test]
+    fn test_most_recent_header_operations() {
+        let cfg = commonware_runtime::deterministic::Config::default().with_seed(5);
+        let executor = Runner::from(cfg);
+        executor.start(|context| async move {
+            let mut db = create_test_db_with_context("test_most_recent_header", context).await;
+
+            // Test that no most recent header exists initially
+            assert!(db.get_most_recent_header().await.is_none());
+
+            // Store headers out of order
+            let header1 = summit_types::Header::compute_digest(
+                [1u8; 32].into(),                    // parent
+                100,                                 // height
+                1234567890,                          // timestamp
+                1,                                   // view
+                [2u8; 32].into(),                    // payload_hash
+                [3u8; 32].into(),                    // execution_request_hash
+                [4u8; 32].into(),                    // checkpoint_hash
+                [5u8; 32].into(),                    // prev_epoch_header_hash
+                alloy_primitives::U256::from(42u64), // block_value
+            );
+
+            let header3 = summit_types::Header::compute_digest(
+                [7u8; 32].into(),                     // parent
+                300,                                  // height
+                1234567920,                           // timestamp
+                3,                                    // view
+                [8u8; 32].into(),                     // payload_hash
+                [9u8; 32].into(),                     // execution_request_hash
+                [10u8; 32].into(),                    // checkpoint_hash
+                [11u8; 32].into(),                    // prev_epoch_header_hash
+                alloy_primitives::U256::from(126u64), // block_value
+            );
+
+            let header2 = summit_types::Header::compute_digest(
+                [5u8; 32].into(),                    // parent
+                200,                                 // height
+                1234567900,                          // timestamp
+                2,                                   // view
+                [6u8; 32].into(),                    // payload_hash
+                [7u8; 32].into(),                    // execution_request_hash
+                [8u8; 32].into(),                    // checkpoint_hash
+                [9u8; 32].into(),                    // prev_epoch_header_hash
+                alloy_primitives::U256::from(84u64), // block_value
+            );
+
+            // Store headers in non-sequential order: 100, 300, 200
+            db.store_header(100, &header1).await;
+            db.commit().await;
+
+            // Most recent should be height 100
+            let most_recent = db.get_most_recent_header().await.unwrap();
+            assert_eq!(most_recent.height, 100);
+            assert_eq!(most_recent.digest, header1.digest);
+
+            // Store height 300
+            db.store_header(300, &header3).await;
+            db.commit().await;
+
+            // Most recent should now be height 300
+            let most_recent = db.get_most_recent_header().await.unwrap();
+            assert_eq!(most_recent.height, 300);
+            assert_eq!(most_recent.digest, header3.digest);
+
+            // Store height 200 (lower than current max)
+            db.store_header(200, &header2).await;
+            db.commit().await;
+
+            // Most recent should still be height 300
+            let most_recent = db.get_most_recent_header().await.unwrap();
+            assert_eq!(most_recent.height, 300);
+            assert_eq!(most_recent.digest, header3.digest);
+
+            // Verify all headers are still individually accessible
+            let h1 = db.get_header(100).await.unwrap();
+            let h2 = db.get_header(200).await.unwrap();
+            let h3 = db.get_header(300).await.unwrap();
+            assert_eq!(h1.height, 100);
+            assert_eq!(h2.height, 200);
+            assert_eq!(h3.height, 300);
         });
     }
 

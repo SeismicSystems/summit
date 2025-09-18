@@ -125,7 +125,6 @@ mod tests {
         .unwrap()
     }
 
-
     #[test]
     fn test_checkpoint_ssz_encode_decode_empty() {
         let state = ConsensusState {
