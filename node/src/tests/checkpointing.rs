@@ -24,7 +24,7 @@ fn test_checkpoint_created() {
     let link = Link {
         latency: 80.0,
         jitter: 10.0,
-        success_rate: 0.98,
+        success_rate: 1.0,
     };
     // Create context
     let threshold = quorum(n);

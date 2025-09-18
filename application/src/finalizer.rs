@@ -308,7 +308,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                             // Add validators that deposited to the validator set
                             let mut add_validators = Vec::new();
-                            if new_height % self.epoch_num_blocks == 0 {
+                            if is_last_block_of_epoch(new_height, self.epoch_num_blocks) {
                                 for _ in 0..self.validator_onboarding_limit_per_block {
                                     if let Some(request) = self.state.pop_deposit() {
                                         let mut validator_balance = 0;
