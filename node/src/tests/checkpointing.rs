@@ -12,7 +12,7 @@ use commonware_p2p::simulated::{Link, Network};
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
 use commonware_utils::{from_hex_formatted, quorum};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::PrivateKey;
 
@@ -138,6 +138,168 @@ fn test_checkpoint_created() {
                     header_stored.insert(metric.to_string());
                 }
                 if header_stored.len() as u32 >= n && state_stored.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            // Still waiting for all validators to complete
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Check that all nodes have the same canonical chain
+        assert!(
+            engine_client_network
+                .verify_consensus(Some(stop_height))
+                .is_ok()
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test_traced("INFO")]
+fn test_previous_header_hash_matches() {
+    // The finalized header that is stored at the end of an epoch points to the finalized
+    // header that was stored at the previous epoch.
+    // This test verifies that these hashes match.
+    let n = 10;
+    let link = Link {
+        latency: 80.0,
+        jitter: 10.0,
+        success_rate: 0.98,
+    };
+    // Create context
+    let threshold = quorum(n);
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        // Create simulated network
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+            },
+        );
+        // Start network
+        network.start();
+        // Register participants
+        let mut signers = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let signer = PrivateKey::from_seed(i as u64);
+            let pk = signer.public_key();
+            signers.push(signer);
+            validators.push(pk);
+        }
+        validators.sort();
+        signers.sort_by_key(|s| s.public_key());
+        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+
+        // Link all validators
+        common::link_validators(&mut oracle, &validators, link, None).await;
+        // Create the engine clients
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let stop_height = EPOCH_NUM_BLOCKS + 1;
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+
+        // Derive threshold
+        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
+
+        // Create instances
+        let mut public_keys = HashSet::new();
+        for (idx, signer) in signers.into_iter().enumerate() {
+            // Create signer context
+            let public_key = signer.public_key();
+            public_keys.insert(public_key.clone());
+
+            // Configure engine
+            let uid = format!("validator-{public_key}");
+            let namespace = String::from("_SEISMIC_BFT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                signer,
+                polynomial.clone(),
+                shares[idx].clone(),
+                validators.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+
+            // Get networking
+            let (pending, resolver, broadcast, backfill) =
+                registrations.remove(&public_key).unwrap();
+
+            // Start engine
+            engine.start(pending, resolver, broadcast, backfill);
+        }
+        // Poll metrics
+        let mut first_header_stored = HashMap::new();
+        let mut second_header_stored = HashSet::new();
+        loop {
+            let metrics = context.encode();
+
+            // Iterate over all lines
+            let mut success = false;
+            for line in metrics.lines() {
+                // Ensure it is a metrics line
+                if !line.starts_with("validator-") {
+                    continue;
+                }
+
+                // Split metric and value
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                // If ends with peers_blocked, ensure it is zero
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalized_header_stored") {
+                    let height = value.parse::<u64>().unwrap();
+                    let header =
+                        common::parse_metric_substring(metric, "header").expect("header missing");
+                    let prev_header = common::parse_metric_substring(metric, "prev_header")
+                        .expect("prev_header missing");
+                    let validator_id =
+                        common::extract_validator_id(metric).expect("failed to parse validator id");
+
+                    if height == EPOCH_NUM_BLOCKS {
+                        // This is the first time the finalized header is written to disk
+                        first_header_stored.insert(validator_id, header);
+                    } else if height == 2 * EPOCH_NUM_BLOCKS {
+                        // This is the second time the finalized header is written to disk
+                        if let Some(header_from_prev_epoch) = first_header_stored.get(&validator_id)
+                        {
+                            // Assert that the finalized header in epoch 2 points to the finalized header of epoch 1
+                            assert_eq!(header_from_prev_epoch, &prev_header);
+                            second_header_stored.insert(validator_id);
+                        }
+                    } else {
+                        assert_eq!(height % EPOCH_NUM_BLOCKS, 0);
+                    }
+                }
+                // We don't enforce that all validators reach this condition because there
+                // is an edge case where a block is skipped because the next one arrived out of order.
+                // In that case, the finalized header is not stored.
+                if second_header_stored.len() as u32 >= n / 2 {
                     success = true;
                     break;
                 }

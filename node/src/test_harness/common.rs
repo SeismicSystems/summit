@@ -260,6 +260,20 @@ pub fn parse_metric_substring(metric: &str, tag: &str) -> Option<String> {
     Some(metric[substring_start..end].to_string())
 }
 
+/// Extracts the validator id from a metric string.
+///
+/// # Arguments
+/// * `metric` - The metric name to parse from
+///
+/// # Returns
+/// * `Some(String)` if the validator id is contained in the string
+/// * `None` if the validator if doesn't exist
+/// ```
+pub fn extract_validator_id(metric: &str) -> Option<String> {
+    let end = metric.find("_")?;
+    Some(metric[..end].to_string())
+}
+
 /// Create a single DepositRequest for testing
 ///
 /// # Arguments

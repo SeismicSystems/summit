@@ -486,7 +486,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                     let gauge: Gauge = Gauge::default();
                                     gauge.set(new_height as i64);
                                     ctx.register(
-                                        "finalized_header_stored",
+                                        format!("<header>{}</header><prev_header>{}</prev_header>_finalized_header_stored",
+                                        hex::encode(finalized_header.header.digest), hex::encode(finalized_header.header.prev_epoch_header_hash)),
                                         "chain height",
                                         gauge
                                     );
