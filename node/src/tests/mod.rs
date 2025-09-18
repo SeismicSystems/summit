@@ -1,3 +1,4 @@
+mod checkpointing;
 mod execution_requests;
 
 use crate::test_harness::common::run_until_height;

@@ -429,7 +429,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             info!(new_height, "finalized block");
                         }
 
-                        // This will commit all changes to the state db
                         #[cfg(debug_assertions)]
                         {
                             let gauge: Gauge = Gauge::default();
@@ -452,7 +451,19 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             let ckpt = Checkpoint::new(&self.state);
                             // Store the checkpoint in the database
                             self.db.store_pending_checkpoint(&ckpt).await;
+                            // This will commit all changes to the state db
                             self.db.commit().await;
+
+                            #[cfg(debug_assertions)]
+                            {
+                                let gauge: Gauge = Gauge::default();
+                                gauge.set(new_height as i64);
+                                ctx.register(
+                                    "consensus_state_stored",
+                                    "chain height",
+                                    gauge
+                                );
+                            }
                         }
 
                         // Store finalizes checkpoint to database
@@ -469,12 +480,23 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 // Store the finalized block header in the database
                                 let finalized_header = FinalizedHeader { header: block.header, finalized };
                                 self.db.store_finalized_header(new_height, &finalized_header).await;
+
+                                #[cfg(debug_assertions)]
+                                {
+                                    let gauge: Gauge = Gauge::default();
+                                    gauge.set(new_height as i64);
+                                    ctx.register(
+                                        "finalized_header_stored",
+                                        "chain height",
+                                        gauge
+                                    );
+                                }
                             }
 
                             let ckpt = self.db.get_pending_checkpoint().await.expect("this checkpoint was stored last height");
                             self.db.store_finalized_checkpoint(&ckpt).await;
                             self.db.remove_pending_checkpoint().await;
-
+                            // This will commit all changes to the state db
                             self.db.commit().await;
                         }
 
