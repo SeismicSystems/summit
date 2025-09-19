@@ -128,7 +128,7 @@ fn test_checkpoint_created() {
 
                 if metric.ends_with("consensus_state_stored") {
                     let height = value.parse::<u64>().unwrap();
-                    assert_eq!(height, EPOCH_NUM_BLOCKS - 1);
+                    assert_eq!(height, EPOCH_NUM_BLOCKS);
                     state_stored.insert(metric.to_string());
                 }
 
