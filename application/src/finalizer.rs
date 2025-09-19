@@ -40,7 +40,7 @@ type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
 
 const PAGE_SIZE: usize = 77;
 const PAGE_CACHE_SIZE: usize = 9;
-const REGISTRY_CHANGE_VIEW_DELTA: u64 = 3;
+//const REGISTRY_CHANGE_VIEW_DELTA: u64 = 3;
 
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -79,6 +79,10 @@ pub struct Finalizer<
     genesis_hash: [u8; 32],
 
     pending_checkpoint: Option<Checkpoint>,
+
+    added_validators: Vec<PublicKey>,
+
+    removed_validators: Vec<PublicKey>,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
@@ -139,6 +143,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             epoch_num_blocks,
             genesis_hash,
             pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
         };
 
         // Try to load the latest ConsensusState from database
@@ -275,6 +281,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
             // Store finalizes checkpoint to database
             if is_last_block_of_epoch(new_height, self.epoch_num_blocks) {
+                let view = block.view();
                 if let Some(finalized) = finalized {
                     // The finalized signatures should always be included on the last block
                     // of the epoch. However, there is an edge case, where the block after
@@ -304,6 +311,17 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             gauge
                         );
                     }
+                }
+
+                // Add and remove validators for the next epoch
+                if !self.added_validators.is_empty() || !self.removed_validators.is_empty() {
+                    self.registry.update_registry(
+                        // TODO(matthias): do we still need the DELTA?
+                        //block.view() + REGISTRY_CHANGE_VIEW_DELTA,
+                        view,
+                        std::mem::take(&mut self.added_validators),
+                        std::mem::take(&mut self.removed_validators),
+                    );
                 }
 
                 let checkpoint = self
@@ -401,8 +419,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     }
 
     async fn process_execution_requests(&mut self, ctx: &R, block: &Block, new_height: u64) {
-        let mut add_validators = Vec::new();
-        if is_last_block_of_epoch(new_height, self.epoch_num_blocks) {
+        if is_penultimate_block_of_epoch(new_height, self.epoch_num_blocks) {
             for _ in 0..self.validator_onboarding_limit_per_block {
                 if let Some(request) = self.state.pop_deposit() {
                     let mut validator_balance = 0;
@@ -472,7 +489,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     if !account_exists && validator_balance >= self.validator_minimum_stake {
                         // If the node shuts down, before the account changes are committed,
                         // then everything should work normally, because the registry is not persisted to disk
-                        add_validators.push(request.pubkey.clone());
+                        self.added_validators.push(request.pubkey.clone());
                     }
                     #[cfg(debug_assertions)]
                     {
@@ -491,7 +508,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         }
 
         // Remove pending withdrawals that are included in the committed block
-        let mut remove_validators = Vec::new();
         for withdrawal in &block.payload.payload_inner.withdrawals {
             let pending_withdrawal = self.state.pop_withdrawal();
             // TODO(matthias): these checks should never fail. we have to make sure that these withdrawals are
@@ -528,22 +544,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 // If the remaining balance is 0, remove the validator account from the state.
                 if account.balance == 0 {
                     self.state.remove_account(&pending_withdrawal.pubkey);
-                    remove_validators
+                    self.removed_validators
                         .push(PublicKey::decode(&pending_withdrawal.pubkey[..]).unwrap()); // todo(dalton) remove unwrap
                 } else {
                     self.state.set_account(pending_withdrawal.pubkey, account);
                 }
             }
-        }
-
-        // We collect two lists, one for validators we want to add, and the other for validators we want to remove.
-        // This is done so that the registry is updated atomically.
-        if !add_validators.is_empty() || !remove_validators.is_empty() {
-            self.registry.update_registry(
-                block.view() + REGISTRY_CHANGE_VIEW_DELTA,
-                add_validators,
-                remove_validators,
-            );
         }
     }
 
@@ -585,12 +591,16 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 withdrawals: ready_withdrawals,
                 checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
+                added_validators: self.added_validators.clone(),
+                removed_validators: self.removed_validators.clone(),
             }
         } else {
             BlockAuxData {
                 withdrawals: vec![],
                 checkpoint_hash: None,
                 header_hash: [0; 32].into(),
+                added_validators: vec![],
+                removed_validators: vec![],
             }
         };
         let _ = sender.send(aux_data);

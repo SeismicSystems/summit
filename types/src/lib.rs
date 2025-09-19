@@ -24,6 +24,8 @@ pub struct BlockAuxData {
     pub withdrawals: Vec<PendingWithdrawal>,
     pub checkpoint_hash: Option<Digest>,
     pub header_hash: Digest,
+    pub added_validators: Vec<PublicKey>,
+    pub removed_validators: Vec<PublicKey>,
 }
 
 pub type PublicKey = commonware_cryptography::ed25519::PublicKey;

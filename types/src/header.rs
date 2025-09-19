@@ -363,13 +363,37 @@ impl Read for FinalizedHeader {
 #[cfg(test)]
 mod test {
     use super::*;
-    use alloy_primitives::U256;
+    use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_consensus::simplex::types::{Finalization, Proposal};
     use ssz::Decode;
 
+    fn create_test_public_key(seed: u8) -> PublicKey {
+        let test_keys = [
+            hex!("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"),
+            hex!("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"),
+            hex!("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"),
+            hex!("278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e"),
+            hex!("ec172b93ad5e563bf4932c70e1245034c35467ef2efd4d64ebf819683467e2bf"),
+        ];
+
+        let key_bytes = test_keys[seed as usize % test_keys.len()];
+        PublicKey::decode(&key_bytes[..]).expect("Valid test key from known vectors")
+    }
+
+    fn create_test_validators() -> (Vec<PublicKey>, Vec<PublicKey>) {
+        let added = vec![
+            create_test_public_key(1),
+            create_test_public_key(2),
+            create_test_public_key(3),
+        ];
+        let removed = vec![create_test_public_key(10), create_test_public_key(11)];
+        (added, removed)
+    }
+
     #[test]
     fn test_header_encode_decode() {
+        let (added_validators, removed_validators) = create_test_validators();
         let header = Header::compute_digest(
             [27u8; 32].into(),
             27,
@@ -380,8 +404,8 @@ mod test {
             [3u8; 32].into(),
             [4u8; 32].into(),
             U256::ZERO,
-            Vec::new(),
-            Vec::new(),
+            added_validators,
+            removed_validators,
         );
 
         let encoded = header.encode();
@@ -392,6 +416,7 @@ mod test {
 
     #[test]
     fn test_finalized_header_encode_decode() {
+        let (added_validators, removed_validators) = create_test_validators();
         let header = Header::compute_digest(
             [27u8; 32].into(),
             27,
@@ -402,8 +427,8 @@ mod test {
             [3u8; 32].into(),
             [4u8; 32].into(),
             U256::ZERO,
-            Vec::new(),
-            Vec::new(),
+            added_validators,
+            removed_validators,
         );
 
         let proposal = Proposal {
@@ -428,6 +453,7 @@ mod test {
 
     #[test]
     fn test_finalized_header_validation() {
+        let (added_validators, removed_validators) = create_test_validators();
         let header = Header::compute_digest(
             [27u8; 32].into(),
             27,
@@ -438,8 +464,8 @@ mod test {
             [3u8; 32].into(),
             [4u8; 32].into(),
             U256::ZERO,
-            Vec::new(),
-            Vec::new(),
+            added_validators,
+            removed_validators,
         );
 
         // Create a finalization with wrong payload
@@ -470,6 +496,7 @@ mod test {
 
     #[test]
     fn test_finalized_header_encode_size() {
+        let (added_validators, removed_validators) = create_test_validators();
         let header = Header::compute_digest(
             [27u8; 32].into(),
             27,
@@ -480,8 +507,8 @@ mod test {
             [3u8; 32].into(),
             [4u8; 32].into(),
             U256::ZERO,
-            Vec::new(),
-            Vec::new(),
+            added_validators,
+            removed_validators,
         );
 
         let proposal = Proposal {
