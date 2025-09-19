@@ -76,6 +76,8 @@ impl Block {
             checkpoint_hash,
             prev_epoch_header_hash,
             block_value,
+            Vec::new(), // added_validators
+            Vec::new(), // removed_validators
         );
 
         Self {
@@ -134,6 +136,8 @@ impl Block {
             checkpoint_hash: [0; 32].into(),
             prev_epoch_header_hash: [0; 32].into(),
             block_value: U256::ZERO,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
             digest: genesis_hash.into(),
         };
         Self {
@@ -188,9 +192,8 @@ impl ssz::Encode for Block {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset = crate::header::HEADER_BYTES_LEN
-            + <ExecutionPayloadV3 as ssz::Encode>::ssz_fixed_len()
-            + <Vec<AlloyBytes> as ssz::Encode>::ssz_fixed_len();
+        // All three fields are variable-length, so we only need offsets
+        let offset = ssz::BYTES_PER_LENGTH_OFFSET * 3; // 3 variable-length fields
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
 
@@ -203,8 +206,8 @@ impl ssz::Encode for Block {
     fn ssz_bytes_len(&self) -> usize {
         self.header.ssz_bytes_len()
             + self.payload.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET * 2  // 2 variable-length fields need 2 offsets
             + self.execution_requests.ssz_bytes_len()
+            + ssz::BYTES_PER_LENGTH_OFFSET * 3 // 3 variable-length fields need 3 offsets
     }
 }
 

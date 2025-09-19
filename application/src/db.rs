@@ -173,7 +173,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     pub async fn store_finalized_header(&mut self, height: u64, header: &FinalizedHeader) {
         let key = Self::make_finalized_header_key(height);
         self.store
-            .update(key, Value::FinalizedHeader(header.clone()))
+            .update(key, Value::FinalizedHeader(Box::new(header.clone())))
             .await
             .expect("failed to store finalized header");
 
@@ -193,7 +193,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .await
             .expect("failed to get finalized header")
         {
-            Some(header)
+            Some(*header)
         } else {
             None
         }
@@ -222,7 +222,7 @@ enum Value {
     U64(u64),
     ConsensusState(ConsensusState),
     Checkpoint(Checkpoint),
-    FinalizedHeader(FinalizedHeader),
+    FinalizedHeader(Box<FinalizedHeader>),
 }
 
 impl EncodeSize for Value {
@@ -245,7 +245,10 @@ impl Read for Value {
             0x01 => Ok(Self::U64(buf.get_u64())),
             0x05 => Ok(Self::ConsensusState(ConsensusState::read_cfg(buf, &())?)),
             0x06 => Ok(Self::Checkpoint(Checkpoint::read_cfg(buf, &())?)),
-            0x07 => Ok(Self::FinalizedHeader(FinalizedHeader::read_cfg(buf, &())?)),
+            0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::read_cfg(
+                buf,
+                &(),
+            )?))),
             byte => Err(Error::InvalidVarint(byte as usize)),
         }
     }
@@ -367,6 +370,8 @@ mod tests {
                 [4u8; 32].into(),                    // checkpoint_hash
                 [5u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(42u64), // block_value
+                Vec::new(),                          // added_validators
+                Vec::new(),                          // removed_validators
             );
 
             // Create finalization proof
@@ -411,6 +416,8 @@ mod tests {
                 [8u8; 32].into(),                    // checkpoint_hash
                 [9u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(84u64), // block_value
+                Vec::new(),                          // added_validators
+                Vec::new(),                          // removed_validators
             );
             let proposal2 = Proposal {
                 view: header2.view,
@@ -465,6 +472,8 @@ mod tests {
                 [4u8; 32].into(),                    // checkpoint_hash
                 [5u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(42u64), // block_value
+                Vec::new(),                          // added_validators
+                Vec::new(),                          // removed_validators
             );
             let proposal1 = Proposal {
                 view: header1.view,
@@ -487,6 +496,8 @@ mod tests {
                 [10u8; 32].into(),                    // checkpoint_hash
                 [11u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(126u64), // block_value
+                Vec::new(),                           // added_validators
+                Vec::new(),                           // removed_validators
             );
             let proposal3 = Proposal {
                 view: header3.view,
@@ -509,6 +520,8 @@ mod tests {
                 [8u8; 32].into(),                    // checkpoint_hash
                 [9u8; 32].into(),                    // prev_epoch_header_hash
                 alloy_primitives::U256::from(84u64), // block_value
+                Vec::new(),                          // added_validators
+                Vec::new(),                          // removed_validators
             );
             let proposal2 = Proposal {
                 view: header2.view,
