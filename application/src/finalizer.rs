@@ -77,6 +77,8 @@ pub struct Finalizer<
     epoch_num_blocks: u64,
 
     genesis_hash: [u8; 32],
+
+    pending_checkpoint: Option<Checkpoint>,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
@@ -136,6 +138,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             validator_max_withdrawals_per_block,
             epoch_num_blocks,
             genesis_hash,
+            pending_checkpoint: None,
         };
 
         // Try to load the latest ConsensusState from database
@@ -266,20 +269,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             // allows the validators to sign the checkpoint hash in the last block
             // of the epoch
             if is_penultimate_block_of_epoch(new_height, self.epoch_num_blocks) {
-                self.db.store_consensus_state(new_height, &self.state).await;
-
-                let ckpt = Checkpoint::new(&self.state);
-                // Store the checkpoint in the database
-                self.db.store_pending_checkpoint(&ckpt).await;
-                // This will commit all changes to the state db
-                self.db.commit().await;
-
-                #[cfg(debug_assertions)]
-                {
-                    let gauge: Gauge = Gauge::default();
-                    gauge.set(new_height as i64);
-                    ctx.register("consensus_state_stored", "chain height", gauge);
-                }
+                let checkpoint = Checkpoint::new(&self.state);
+                self.pending_checkpoint = Some(checkpoint);
             }
 
             // Store finalizes checkpoint to database
@@ -315,15 +306,21 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     }
                 }
 
-                let ckpt = self
-                    .db
-                    .get_pending_checkpoint()
-                    .await
+                let checkpoint = self
+                    .pending_checkpoint
+                    .as_ref()
                     .expect("this checkpoint was stored last height");
-                self.db.store_finalized_checkpoint(&ckpt).await;
-                self.db.remove_pending_checkpoint().await;
+                self.db.store_finalized_checkpoint(checkpoint).await;
+                self.db.store_consensus_state(new_height, &self.state).await;
                 // This will commit all changes to the state db
                 self.db.commit().await;
+
+                #[cfg(debug_assertions)]
+                {
+                    let gauge: Gauge = Gauge::default();
+                    gauge.set(new_height as i64);
+                    ctx.register("consensus_state_stored", "chain height", gauge);
+                }
             }
 
             self.height_notifier.notify_up_to(new_height);
@@ -564,11 +561,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         // The proposed block will contain the checkpoint that was saved at the previous height.
         let aux_data = if is_last_block_of_epoch(height, self.epoch_num_blocks) {
             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
-            let ckpt = self
-                .db
-                .get_pending_checkpoint()
-                .await
-                .expect("the checkpoint is stored before this call");
+            let checkpoint_hash = if let Some(checkpoint) = &self.pending_checkpoint {
+                checkpoint.digest
+            } else {
+                unreachable!("pending checkpoint was calculated at the previous height")
+            };
             // TODO(matthias): should we verify the ckpt height against the `height` variable?
 
             // This is not the header from the last block, but the header from
@@ -586,7 +583,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
             BlockAuxData {
                 withdrawals: ready_withdrawals,
-                checkpoint_hash: Some(ckpt.digest),
+                checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
             }
         } else {
