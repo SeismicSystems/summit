@@ -692,6 +692,8 @@ mod tests {
             1,
             None,
             [0u8; 32].into(),
+            Vec::new(), // added_validators
+            Vec::new(), // removed_validators
         );
 
         // Client2 checks the payload (validates it)
@@ -763,6 +765,8 @@ mod tests {
                         1,
                         None,
                         [0u8; 32].into(),
+                        Vec::new(), // added_validators
+                        Vec::new(), // removed_validators
                     );
 
                     // Client validates the block
@@ -853,6 +857,8 @@ mod tests {
             1,
             None,
             [0u8; 32].into(),
+            Vec::new(), // added_validators
+            Vec::new(), // removed_validators
         );
 
         client2.check_payload(&block_for_validation).await;

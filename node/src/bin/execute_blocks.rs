@@ -147,6 +147,8 @@ fn execution_payload_envelope_to_block(
         view,
         None,
         [0u8; 32].into(),
+        Vec::new(), // added_validators
+        Vec::new(), // removed_validators
     )
 }
 

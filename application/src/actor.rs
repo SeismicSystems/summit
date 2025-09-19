@@ -290,6 +290,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             view,
             checkpoint_hash,
             aux_data.header_hash,
+            aux_data.added_validators,
+            aux_data.removed_validators,
         );
 
         Ok(block)
