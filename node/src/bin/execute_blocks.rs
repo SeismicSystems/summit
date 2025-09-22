@@ -10,7 +10,7 @@ use summit_application::engine_client::benchmarking::HistoricalEngineClient;
 use summit_application::engine_client::ethereum_benchmarking::EthereumHistoricalEngineClient;
 use summit_types::{Block, Digest};
 
-#[cfg(feature = "base-bench")]
+#[cfg(all(feature = "base-bench", not(feature = "bench")))]
 const GENESIS_HASH: &str = "0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd";
 #[cfg(feature = "bench")]
 const GENESIS_HASH: &str = "0x655cc1ecc77fe1eab4b1e62a1f461b7fddc9b06109b5ab3e9dc68c144b30c773";

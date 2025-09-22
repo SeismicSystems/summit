@@ -10,11 +10,12 @@ path = "src/bin/testnet.rs"
 [[bin]]
 name = "block-fetcher"
 path = "src/bin/block_fetcher.rs"
-required-features = ["base-bench"]
+required-features = ["bench", "base-bench"]
 
 [[bin]]
 name = "execute-blocks"
 path = "src/bin/execute_blocks.rs"
+required-features = ["bench", "base-bench"]
 
 [dependencies]
 summit-types.workspace = true

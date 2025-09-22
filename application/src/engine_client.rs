@@ -409,8 +409,8 @@ pub mod ethereum_benchmarking {
             self.provider
                 .new_payload_v4(
                     block.payload.clone(),
-                    Vec::new(),                     // versioned_hashes - empty for historical blocks
-                    [1; 32].into(),                // parent_beacon_block_root
+                    Vec::new(),     // versioned_hashes - empty for historical blocks
+                    [1; 32].into(), // parent_beacon_block_root
                     block.execution_requests.clone(), // execution_requests
                 )
                 .await
@@ -454,6 +454,8 @@ pub mod ethereum_benchmarking {
                 execution_requests,
                 U256::ZERO, // block_value
                 view,
+                None,             // checkpoint_hash
+                [0u8; 32].into(), // prev_epoch_header_hash
             )
         }
     }
