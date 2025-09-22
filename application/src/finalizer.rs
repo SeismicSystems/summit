@@ -7,7 +7,9 @@ use alloy_primitives::Address;
 use alloy_primitives::hex;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::DecodeExt as _;
+use commonware_codec::ReadExt;
 use commonware_consensus::Reporter;
+use commonware_cryptography::Verifier;
 use commonware_macros::select;
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
@@ -33,7 +35,7 @@ use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
-use summit_types::{Block, BlockAuxData, BlockEnvelope, FinalizedHeader, PublicKey};
+use summit_types::{Block, BlockAuxData, BlockEnvelope, FinalizedHeader, PublicKey, Signature};
 use tracing::{info, warn};
 
 type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
@@ -354,7 +356,23 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 Ok(execution_request) => {
                     match execution_request {
                         ExecutionRequest::Deposit(deposit_request) => {
-                            //deposit_request.pubkey.verify()
+                            // TODO(matthias): we use the genesis hash as the domain for now,
+                            // but we should revisit this
+                            let message = deposit_request.as_message(self.genesis_hash.into());
+
+                            let mut signature_bytes = &deposit_request.signature[..];
+                            let Ok(signature) = Signature::read(&mut signature_bytes) else {
+                                info!(
+                                    "Failed to parse signature from deposit request: {deposit_request:?}"
+                                );
+                                continue; // Skip this deposit request
+                            };
+                            if !deposit_request.pubkey.verify(None, &message, &signature) {
+                                info!(
+                                    "Failed to verify signature from deposit request: {deposit_request:?}"
+                                );
+                                continue; // Skip this deposit request
+                            }
 
                             self.state.push_deposit(deposit_request);
                         }

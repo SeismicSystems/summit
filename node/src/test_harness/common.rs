@@ -282,18 +282,34 @@ pub fn extract_validator_id(metric: &str) -> Option<String> {
 ///
 /// # Returns
 /// * `DepositRequest` - A single deposit request with valid test data and signature
-pub fn create_deposit_request(seed: u64, amount: u64, domain: Digest) -> DepositRequest {
-    // Create valid Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20-byte address
-    let mut withdrawal_credentials = [0u8; 32];
-    withdrawal_credentials[0] = 0x01; // Eth1 withdrawal prefix
-    // Use seed-based address pattern for the last 20 bytes
-    for j in 0..20 {
-        withdrawal_credentials[12 + j] = ((seed + j as u64) % 256) as u8;
-    }
+pub fn create_deposit_request(
+    index: u64,
+    amount: u64,
+    domain: Digest,
+    private_key: Option<PrivateKey>,
+    withdrawal_credentials: Option<[u8; 32]>,
+) -> (DepositRequest, PrivateKey) {
+    let withdrawal_credentials = if let Some(withdrawal_credentials) = withdrawal_credentials {
+        withdrawal_credentials
+    } else {
+        // Create valid Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20-byte address
+        let mut withdrawal_credentials = [0u8; 32];
+        withdrawal_credentials[0] = 0x01; // Eth1 withdrawal prefix
+        // Use seed-based address pattern for the last 20 bytes
+        for j in 0..20 {
+            withdrawal_credentials[12 + j] = ((index + j as u64) % 256) as u8;
+        }
+        withdrawal_credentials
+    };
 
-    // Create deterministic but seed-based keys
-    // Generate a valid ED25519 private key using the seed
-    let ed25519_private_key = PrivateKey::from_seed(seed);
+    let ed25519_private_key = if let Some(private_key) = private_key {
+        private_key
+    } else {
+        // Create deterministic but seed-based keys
+        // Generate a valid ED25519 private key using the seed
+        PrivateKey::from_seed(index)
+    };
+
     let pubkey = ed25519_private_key.public_key();
 
     let mut deposit = DepositRequest {
@@ -301,7 +317,7 @@ pub fn create_deposit_request(seed: u64, amount: u64, domain: Digest) -> Deposit
         withdrawal_credentials,
         amount,
         signature: [0u8; 64],
-        index: seed,
+        index,
     };
 
     // Create the message to sign: hash of pubkey + withdrawal_credentials + amount
@@ -310,7 +326,7 @@ pub fn create_deposit_request(seed: u64, amount: u64, domain: Digest) -> Deposit
     //// Generate a valid ED25519 signature
     let signature_bytes = ed25519_private_key.sign(None, &message);
     deposit.signature.copy_from_slice(&signature_bytes);
-    deposit
+    (deposit, ed25519_private_key)
 }
 
 /// Create a single WithdrawalRequest for testing
