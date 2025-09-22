@@ -42,6 +42,7 @@ serde_json = { workspace = true, optional = true }
 op-alloy-network = { version = "0.19.1", optional = true }
 serde = { workspace = true, optional = true }
 op-alloy-rpc-types-engine = { version = "0.19.1", optional = true }
+ethereum_ssz = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives.workspace = true
@@ -50,4 +51,4 @@ alloy-eips.workspace = true
 [features]
 prom = ["metrics"]
 base-bench = ["op-alloy-network", "op-alloy-rpc-types-engine", "serde", "serde_json"]
-bench = ["serde", "serde_json"]
+bench = ["serde", "serde_json", "ethereum_ssz"]

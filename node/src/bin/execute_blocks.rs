@@ -78,21 +78,27 @@ async fn main() -> Result<()> {
         safe_block_hash: genesis_hash.into(),
         finalized_block_hash: genesis_hash.into(),
     };
+    let mut block_number = 0;
     for _ in 0..num_blocks {
         #[cfg(any(feature = "bench", feature = "base-bench"))]
-        let result = client.start_building_block(forkchoice, 0, vec![], 0).await;
+        let result = client.start_building_block(forkchoice, 0, vec![], block_number).await;
         #[cfg(not(any(feature = "bench", feature = "base-bench")))]
         let result = client.start_building_block(forkchoice, 0, vec![]).await;
-        
+
         match result {
             Some(payload_id) => {
                 let payload = client.get_payload(payload_id).await;
+                let block_num = u64::from_le_bytes(payload_id.0.into());
 
-                let block_number = payload
+                block_number = payload
                     .execution_payload
                     .payload_inner
                     .payload_inner
                     .block_number;
+
+                // TODO(matthias): we do this because the block number is always
+                // one higher than the block
+                block_number -= 1;
                 let block_hash = payload
                     .execution_payload
                     .payload_inner

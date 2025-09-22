@@ -330,14 +330,12 @@ pub mod ethereum_benchmarking {
     use serde::{Deserialize, Serialize};
     use std::fs;
     use std::path::PathBuf;
-    use summit_types::utils::benchmarking::BlockIndex;
     use summit_types::{Block, Digest};
 
     #[derive(Clone)]
     pub struct EthereumHistoricalEngineClient {
         provider: RootProvider,
         block_dir: PathBuf,
-        block_index: BlockIndex,
     }
 
     impl EthereumHistoricalEngineClient {
@@ -345,14 +343,9 @@ pub mod ethereum_benchmarking {
             let ipc = IpcConnect::new(engine_ipc_path);
             let provider = ProviderBuilder::default().connect_ipc(ipc).await.unwrap();
 
-            let index_path = block_dir.join("index.json");
-            let block_index =
-                BlockIndex::load_from_file(&index_path).expect("failed to load block index");
-
             Self {
                 provider,
                 block_dir,
-                block_index,
             }
         }
     }
@@ -360,48 +353,35 @@ pub mod ethereum_benchmarking {
     impl EngineClient for EthereumHistoricalEngineClient {
         async fn start_building_block(
             &self,
-            fork_choice_state: ForkchoiceState,
+            _fork_choice_state: ForkchoiceState,
             _timestamp: u64,
             _withdrawals: Vec<Withdrawal>,
-            #[cfg(any(feature = "bench", feature = "base-bench"))] _height: u64,
+            #[cfg(any(feature = "bench", feature = "base-bench"))] height: u64,
         ) -> Option<PayloadId> {
-            let block_num = self
-                .block_index
-                .get_block_number(&fork_choice_state.head_block_hash)?;
-            let next_block_num = block_num + 1;
-            if self.block_index.get_block_file(next_block_num).is_some() {
-                let bytes: [u8; 8] = next_block_num.to_le_bytes();
-                Some(PayloadId::new(bytes))
-            } else {
-                None
-            }
+            let next_block_num = height + 1;
+            Some(PayloadId::new(next_block_num.to_le_bytes()))
         }
 
         async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
             let block_num = u64::from_le_bytes(payload_id.0.into());
-            let filename = self
-                .block_index
-                .get_block_file(block_num)
-                .expect("block not found in index");
-
+            let filename = format!("block-{block_num}");
             let file_path = self.block_dir.join(filename);
 
-            let json_data = fs::read_to_string(&file_path)
+            let data = fs::read(&file_path)
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to read block file {}: {}", file_path.display(), e)
                 })
                 .expect("failed to read block file");
 
-            let block_data: EthereumBlockData = serde_json::from_str(&json_data)
-                .map_err(|e| anyhow::anyhow!("Failed to parse block data: {}", e))
-                .expect("failed to parse block data");
+            let block_data: ExecutionPayloadV3 =
+                ssz::Decode::from_ssz_bytes(&data).expect("failed to read block file");
 
             // Convert to ExecutionPayloadEnvelopeV4 with correct structure
             ExecutionPayloadEnvelopeV4 {
                 envelope_inner: ExecutionPayloadEnvelopeV3 {
-                    execution_payload: block_data.payload,
-                    block_value: U256::ZERO, // Historical blocks don't have block value
-                    blobs_bundle: Default::default(), // No blobs in historical blocks
+                    execution_payload: block_data,
+                    block_value: U256::ZERO,
+                    blobs_bundle: Default::default(),
                     should_override_builder: false,
                 },
                 execution_requests: Requests::default(),
@@ -460,6 +440,8 @@ pub mod ethereum_benchmarking {
                 view,
                 None,             // checkpoint_hash
                 [0u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
             )
         }
     }
