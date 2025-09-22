@@ -64,7 +64,8 @@ fn test_deposit_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE);
+        let test_deposit =
+            common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE, genesis_hash.into());
 
         // Convert to ExecutionRequest and then to Requests
         let execution_requests = vec![ExecutionRequest::Deposit(test_deposit.clone())];
@@ -229,7 +230,8 @@ fn test_deposit_request_top_up() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit1 = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE);
+        let test_deposit1 =
+            common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE, genesis_hash.into());
         let mut test_deposit2 = test_deposit1.clone();
         test_deposit2.amount = 10_000_000_000;
         test_deposit2.index += 1;
@@ -410,7 +412,8 @@ fn test_deposit_and_withdrawal_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE);
+        let test_deposit =
+            common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE, genesis_hash.into());
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
@@ -607,7 +610,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE);
+        let test_deposit =
+            common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE, genesis_hash.into());
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal1 = common::create_withdrawal_request(
@@ -814,7 +818,11 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let test_deposit = common::create_deposit_request(n as u64, VALIDATOR_MINIMUM_STAKE / 2);
+        let test_deposit = common::create_deposit_request(
+            n as u64,
+            VALIDATOR_MINIMUM_STAKE / 2,
+            genesis_hash.into(),
+        );
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
@@ -1021,8 +1029,11 @@ fn test_deposit_and_withdrawal_request_multiple() {
         let mut deposit_reqs = HashMap::new();
         let mut withdrawal_reqs = HashMap::new();
         for i in 0..deposit_reqs.len() {
-            let test_deposit =
-                common::create_deposit_request(n as u64 + i as u64, VALIDATOR_MINIMUM_STAKE);
+            let test_deposit = common::create_deposit_request(
+                n as u64 + i as u64,
+                VALIDATOR_MINIMUM_STAKE,
+                genesis_hash.into(),
+            );
 
             let withdrawal_address =
                 Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);

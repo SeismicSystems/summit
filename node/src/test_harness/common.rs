@@ -19,7 +19,7 @@ use std::{
 };
 use summit_application::engine_client::EngineClient;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
-use summit_types::{PrivateKey, PublicKey};
+use summit_types::{Digest, PrivateKey, PublicKey};
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
@@ -268,8 +268,8 @@ pub fn extract_validator_id(metric: &str) -> Option<String> {
 /// * `amount` - The deposit amount in gwei
 ///
 /// # Returns
-/// * `DepositRequest` - A single deposit request with valid test data
-pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
+/// * `DepositRequest` - A single deposit request with valid test data and signature
+pub fn create_deposit_request(seed: u64, amount: u64, domain: Digest) -> DepositRequest {
     // Create valid Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20-byte address
     let mut withdrawal_credentials = [0u8; 32];
     withdrawal_credentials[0] = 0x01; // Eth1 withdrawal prefix
@@ -283,18 +283,21 @@ pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
     let ed25519_private_key = PrivateKey::from_seed(seed);
     let pubkey = ed25519_private_key.public_key();
 
-    let mut signature = [0u8; 64];
-    for j in 0..64 {
-        signature[j] = ((seed + j as u64 + 81) % 256) as u8;
-    }
-
-    DepositRequest {
+    let mut deposit = DepositRequest {
         pubkey,
         withdrawal_credentials,
         amount,
-        signature,
+        signature: [0u8; 64],
         index: seed,
-    }
+    };
+
+    // Create the message to sign: hash of pubkey + withdrawal_credentials + amount
+    let message = deposit.as_message(domain);
+
+    //// Generate a valid ED25519 signature
+    let signature_bytes = ed25519_private_key.sign(None, &message);
+    deposit.signature.copy_from_slice(&signature_bytes);
+    deposit
 }
 
 /// Create a single WithdrawalRequest for testing

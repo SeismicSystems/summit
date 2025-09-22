@@ -354,6 +354,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 Ok(execution_request) => {
                     match execution_request {
                         ExecutionRequest::Deposit(deposit_request) => {
+                            //deposit_request.pubkey.verify()
+
                             self.state.push_deposit(deposit_request);
                         }
                         ExecutionRequest::Withdrawal(mut withdrawal_request) => {
