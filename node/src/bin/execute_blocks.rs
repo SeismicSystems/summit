@@ -88,17 +88,8 @@ async fn main() -> Result<()> {
         match result {
             Some(payload_id) => {
                 let payload = client.get_payload(payload_id).await;
-                let block_num = u64::from_le_bytes(payload_id.0.into());
+                block_number = u64::from_le_bytes(payload_id.0.into());
 
-                block_number = payload
-                    .execution_payload
-                    .payload_inner
-                    .payload_inner
-                    .block_number;
-
-                // TODO(matthias): we do this because the block number is always
-                // one higher than the block
-                block_number -= 1;
                 let block_hash = payload
                     .execution_payload
                     .payload_inner
