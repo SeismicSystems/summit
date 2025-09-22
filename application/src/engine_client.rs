@@ -34,6 +34,7 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
+        #[cfg(any(feature = "bench", feature = "base-bench"))] height: u64,
     ) -> impl Future<Output = Option<PayloadId>> + Send;
 
     fn get_payload(
@@ -65,6 +66,7 @@ impl EngineClient for RethEngineClient {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
+        #[cfg(any(feature = "bench", feature = "base-bench"))] _height: u64,
     ) -> Option<PayloadId> {
         let payload_attributes = PayloadAttributes {
             timestamp,
@@ -165,6 +167,7 @@ pub mod benchmarking {
             fork_choice_state: ForkchoiceState,
             _timestamp: u64,
             _withdrawals: Vec<Withdrawal>,
+            #[cfg(any(feature = "bench", feature = "base-bench"))] _height: u64,
         ) -> Option<PayloadId> {
             let block_num = self
                 .block_index
@@ -360,6 +363,7 @@ pub mod ethereum_benchmarking {
             fork_choice_state: ForkchoiceState,
             _timestamp: u64,
             _withdrawals: Vec<Withdrawal>,
+            #[cfg(any(feature = "bench", feature = "base-bench"))] _height: u64,
         ) -> Option<PayloadId> {
             let block_num = self
                 .block_index

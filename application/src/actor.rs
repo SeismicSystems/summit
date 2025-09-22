@@ -272,11 +272,26 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
         // Add pending withdrawals to the block
         let withdrawals = pending_withdrawals.into_iter().map(|w| w.inner).collect();
-        let payload_id = self
-            .engine_client
-            .start_building_block(forkchoice_clone, current, withdrawals)
-            .await
-            .ok_or(anyhow!("Unable to build payload"))?;
+        let payload_id = {
+            #[cfg(any(feature = "bench", feature = "base-bench"))]
+            {
+                self.engine_client
+                    .start_building_block(
+                        forkchoice_clone,
+                        current,
+                        withdrawals,
+                        parent.height() + 1,
+                    )
+                    .await
+            }
+            #[cfg(not(any(feature = "bench", feature = "base-bench")))]
+            {
+                self.engine_client
+                    .start_building_block(forkchoice_clone, current, withdrawals)
+                    .await
+            }
+        }
+        .ok_or(anyhow!("Unable to build payload"))?;
 
         self.context.sleep(Duration::from_millis(50)).await;
 
