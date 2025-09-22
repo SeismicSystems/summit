@@ -1,8 +1,8 @@
+use crate::{Digest, PublicKey};
 use alloy_primitives::Address;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, Encode, Error, FixedSize, Read, Write};
-
-use crate::PublicKey;
+use commonware_cryptography::{Hasher, Sha256};
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
@@ -137,6 +137,35 @@ impl DepositRequest {
             signature,
             index,
         })
+    }
+
+    pub fn as_message(&self, domain: Digest) -> Digest {
+        let mut pubkey = [0u8; 32];
+        pubkey.copy_from_slice(&self.pubkey);
+
+        let mut left = Vec::with_capacity(64);
+        left.extend_from_slice(&pubkey);
+        left.extend_from_slice(&self.withdrawal_credentials);
+        let mut hasher = Sha256::default();
+        hasher.update(&left);
+        let left_hash = hasher.finalize();
+
+        let mut right = Vec::with_capacity(64);
+        right.extend_from_slice(&self.amount.to_le_bytes());
+        right.extend_from_slice(&[0; 56]);
+        let mut hasher = Sha256::default();
+        hasher.update(&right);
+        let right_hash = hasher.finalize();
+
+        let mut hasher = Sha256::default();
+        hasher.update(&left_hash);
+        hasher.update(&right_hash);
+        let root_hash = hasher.finalize();
+
+        let mut hasher = Sha256::default();
+        hasher.update(&root_hash);
+        hasher.update(&domain);
+        hasher.finalize()
     }
 }
 

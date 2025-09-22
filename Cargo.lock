@@ -5404,7 +5404,6 @@ dependencies = [
  "commonware-utils",
  "dirs 6.0.0",
  "ethereum_ssz",
- "ethereum_ssz_derive",
  "serde",
  "serde_json",
  "toml",
