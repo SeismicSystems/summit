@@ -2,16 +2,13 @@ use crate::engine::{EPOCH_NUM_BLOCKS, Engine};
 use crate::test_harness::common;
 use crate::test_harness::common::get_default_engine_config;
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
-use alloy_signer::k256::elliptic_curve::rand_core::OsRng;
-use commonware_cryptography::bls12381::dkg::ops;
-use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_macros::test_traced;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-use commonware_utils::{from_hex_formatted, quorum};
+use commonware_utils::from_hex_formatted;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::PrivateKey;
@@ -27,7 +24,6 @@ fn test_checkpoint_created() {
         success_rate: 1.0,
     };
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -66,12 +62,9 @@ fn test_checkpoint_created() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for signer in signers.into_iter() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -88,8 +81,6 @@ fn test_checkpoint_created() {
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
@@ -173,7 +164,6 @@ fn test_previous_header_hash_matches() {
         success_rate: 1.0,
     };
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -212,12 +202,9 @@ fn test_previous_header_hash_matches() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for signer in signers.into_iter() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -234,8 +221,6 @@ fn test_previous_header_hash_matches() {
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
