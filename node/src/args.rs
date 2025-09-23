@@ -21,9 +21,9 @@ use std::{
 };
 use summit_application::engine_client::RethEngineClient;
 #[cfg(feature = "bench")]
-use summit_application::engine_client::benchmarking::EthHistoricalEngineClient;
+use summit_application::engine_client::benchmarking::EthereumHistoricalEngineClient;
 #[cfg(feature = "base-bench")]
-use summit_application::engine_client::benchmarking::HistoricalEngineClient;
+use summit_application::engine_client::base_benchmarking::HistoricalEngineClient;
 
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};

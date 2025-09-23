@@ -118,7 +118,7 @@ impl EngineClient for RethEngineClient {
 }
 
 #[cfg(feature = "base-bench")]
-pub mod benchmarking {
+pub mod base_benchmarking {
     use crate::engine_client::EngineClient;
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
@@ -316,7 +316,7 @@ pub mod benchmarking {
 }
 
 #[cfg(feature = "bench")]
-pub mod ethereum_benchmarking {
+pub mod benchmarking {
     use crate::engine_client::EngineClient;
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
