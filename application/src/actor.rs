@@ -280,7 +280,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         forkchoice_clone,
                         current,
                         withdrawals,
-                        parent.height() + 1,
+                        parent.height(),
                     )
                     .await
             }
