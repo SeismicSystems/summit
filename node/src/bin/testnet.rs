@@ -160,7 +160,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         db_prefix: format!("{node}-quarts"),
         genesis_path: "./example_genesis.toml".into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
-        #[cfg(feature = "base-bench")]
+        #[cfg(any(feature = "base-bench", feature = "bench"))]
         bench_block_dir: None,
     }
 }
