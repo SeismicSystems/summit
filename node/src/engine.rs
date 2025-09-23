@@ -17,6 +17,8 @@ use summit_application::registry::Registry;
 use summit_types::{Block, Digest, PrivateKey, PublicKey};
 use tracing::{error, warn};
 
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const REPLAY_BUFFER: NonZero<usize> = NZUsize!(8 * 1024 * 1024);
@@ -83,6 +85,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
                 epoch_num_blocks: EPOCH_NUM_BLOCKS,
+                protocol_version: PROTOCOL_VERSION,
             },
         )
         .await;

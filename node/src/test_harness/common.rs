@@ -1,5 +1,6 @@
 use commonware_cryptography::{PrivateKeyExt, Signer};
 
+use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
@@ -219,6 +220,10 @@ pub fn run_until_height(
 
         context.auditor().state()
     })
+}
+
+pub fn get_domain() -> Digest {
+    commonware_cryptography::sha256::hash(&PROTOCOL_VERSION.to_le_bytes())
 }
 
 /// Parse a substring from a metric name using XML-like tags

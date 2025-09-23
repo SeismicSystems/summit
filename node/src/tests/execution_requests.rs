@@ -1,4 +1,4 @@
-use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{EPOCH_NUM_BLOCKS, Engine, PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
 use crate::test_harness::common::get_default_engine_config;
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -67,7 +67,7 @@ fn test_deposit_request_single() {
         let (test_deposit, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
-            genesis_hash.into(),
+            common::get_domain(),
             None,
             None,
         );
@@ -238,14 +238,14 @@ fn test_deposit_request_top_up() {
         let (test_deposit1, private_key) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
-            genesis_hash.into(),
+            common::get_domain(),
             None,
             None,
         );
         let (test_deposit2, _) = common::create_deposit_request(
             2,
             10_000_000_000,
-            genesis_hash.into(),
+            common::get_domain(),
             Some(private_key),
             Some(test_deposit1.withdrawal_credentials),
         );
@@ -429,7 +429,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let (test_deposit, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
-            genesis_hash.into(),
+            common::get_domain(),
             None,
             None,
         );
@@ -632,7 +632,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let (test_deposit, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
-            genesis_hash.into(),
+            common::get_domain(),
             None,
             None,
         );
@@ -845,7 +845,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let (test_deposit, _) = common::create_deposit_request(
             n as u64,
             VALIDATOR_MINIMUM_STAKE / 2,
-            genesis_hash.into(),
+            common::get_domain(),
             None,
             None,
         );
@@ -1058,7 +1058,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
             let (test_deposit, _) = common::create_deposit_request(
                 i as u64,
                 VALIDATOR_MINIMUM_STAKE,
-                genesis_hash.into(),
+                common::get_domain(),
                 None,
                 None,
             );

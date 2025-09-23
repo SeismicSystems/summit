@@ -34,7 +34,9 @@ use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
-use summit_types::{Block, BlockAuxData, BlockEnvelope, FinalizedHeader, PublicKey, Signature};
+use summit_types::{
+    Block, BlockAuxData, BlockEnvelope, Digest, FinalizedHeader, PublicKey, Signature,
+};
 use tracing::{info, warn};
 
 type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
@@ -79,6 +81,8 @@ pub struct Finalizer<
 
     genesis_hash: [u8; 32],
 
+    protocol_version_digest: Digest,
+
     pending_checkpoint: Option<Checkpoint>,
 
     added_validators: Vec<PublicKey>,
@@ -102,6 +106,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         validator_max_withdrawals_per_block: usize,
         epoch_num_blocks: u64,
         genesis_hash: [u8; 32],
+        protocol_version: u32,
     ) -> (
         Self,
         FinalizerMailbox,
@@ -143,6 +148,9 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             validator_max_withdrawals_per_block,
             epoch_num_blocks,
             genesis_hash,
+            protocol_version_digest: commonware_cryptography::sha256::hash(
+                &protocol_version.to_le_bytes(),
+            ),
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
@@ -249,7 +257,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     let block_delta = last_committed.elapsed().as_millis() as f64;
                     histogram!("block_time_millis").record(block_delta);
                 }
-                *last_committed_timestamp = Some(std::time::Instant::now());
+                *last_committed_timestamp = Some(Instant::now());
             }
 
             self.engine_client.commit_hash(forkchoice).await;
@@ -355,9 +363,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 Ok(execution_request) => {
                     match execution_request {
                         ExecutionRequest::Deposit(deposit_request) => {
-                            // TODO(matthias): we use the genesis hash as the domain for now,
-                            // but we should revisit this
-                            let message = deposit_request.as_message(self.genesis_hash.into());
+                            let message = deposit_request.as_message(self.protocol_version_digest);
 
                             let mut signature_bytes = &deposit_request.signature[..];
                             let Ok(signature) = Signature::read(&mut signature_bytes) else {

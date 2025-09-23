@@ -26,4 +26,7 @@ pub struct ApplicationConfig<C: EngineClient> {
 
     /// Number of blocks in an epoch
     pub epoch_num_blocks: u64,
+
+    /// Protocol version for the consensus protocol
+    pub protocol_version: u32,
 }
