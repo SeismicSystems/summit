@@ -357,7 +357,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         }
     }
 
-    async fn parse_execution_requests(&mut self, _ctx: &R, block: &Block, new_height: u64) {
+    async fn parse_execution_requests(&mut self, ctx: &R, block: &Block, new_height: u64) {
         for request_bytes in &block.execution_requests {
             match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
                 Ok(execution_request) => {
@@ -373,6 +373,19 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 continue; // Skip this deposit request
                             };
                             if !deposit_request.pubkey.verify(None, &message, &signature) {
+                                #[cfg(debug_assertions)]
+                                {
+                                    let gauge: Gauge = Gauge::default();
+                                    gauge.set(new_height as i64);
+                                    ctx.register(
+                                        format!(
+                                            "<pubkey>{}</pubkey>_deposit_request_invalid_sig",
+                                            hex::encode(&deposit_request.pubkey)
+                                        ),
+                                        "height",
+                                        gauge,
+                                    );
+                                }
                                 info!(
                                     "Failed to verify signature from deposit request: {deposit_request:?}"
                                 );

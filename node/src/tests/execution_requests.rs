@@ -1,4 +1,4 @@
-use crate::engine::{EPOCH_NUM_BLOCKS, Engine, PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
 use crate::test_harness::common::get_default_engine_config;
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -1231,4 +1231,172 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
         context.auditor().state()
     })
+}
+
+#[test_traced("INFO")]
+fn test_deposit_request_invalid_signature() {
+    // Adds a deposit request with an invalid signature to the block at height 5, and then
+    // verifies that the request is rejected.
+    let n = 10;
+    let link = Link {
+        latency: 80.0,
+        jitter: 10.0,
+        success_rate: 0.98,
+    };
+    // Create context
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        // Create simulated network
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+            },
+        );
+        // Start network
+        network.start();
+        // Register participants
+        let mut signers = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let signer = PrivateKey::from_seed(i as u64);
+            let pk = signer.public_key();
+            signers.push(signer);
+            validators.push(pk);
+        }
+        validators.sort();
+        signers.sort_by_key(|s| s.public_key());
+        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+
+        // Link all validators
+        common::link_validators(&mut oracle, &validators, link, None).await;
+        // Create the engine clients
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Create a single deposit request using the helper
+        let (mut test_deposit, _) = common::create_deposit_request(
+            1,
+            VALIDATOR_MINIMUM_STAKE,
+            common::get_domain(),
+            None,
+            None,
+        );
+
+        let (test_deposit2, _) = common::create_deposit_request(
+            2,
+            VALIDATOR_MINIMUM_STAKE,
+            common::get_domain(),
+            None,
+            None,
+        );
+        // Use signature from another private key
+        test_deposit.signature = test_deposit2.signature;
+
+        // Convert to ExecutionRequest and then to Requests
+        let execution_requests = vec![ExecutionRequest::Deposit(test_deposit.clone())];
+        let requests = common::execution_requests_to_requests(execution_requests);
+
+        // Create execution requests map (add deposit to block 5)
+        let deposit_block_height = 5;
+        let stop_height = deposit_block_height + EPOCH_NUM_BLOCKS + 1;
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(deposit_block_height, requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .build();
+
+        // Create instances
+        let mut public_keys = HashSet::new();
+        for signer in signers.into_iter() {
+            // Create signer context
+            let public_key = signer.public_key();
+            public_keys.insert(public_key.clone());
+
+            // Configure engine
+            let uid = format!("validator-{public_key}");
+            let namespace = String::from("_SEISMIC_BFT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                signer,
+                validators.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+
+            // Get networking
+            let (pending, resolver, broadcast, backfill) =
+                registrations.remove(&public_key).unwrap();
+
+            // Start engine
+            engine.start(pending, resolver, broadcast, backfill);
+        }
+        // Poll metrics
+        let mut processed_requests = HashSet::new();
+        loop {
+            let metrics = context.encode();
+
+            // Iterate over all lines
+            let mut success = false;
+            for line in metrics.lines() {
+                // Ensure it is a metrics line
+                if !line.starts_with("validator-") {
+                    continue;
+                }
+
+                // Split metric and value
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                // If ends with peers_blocked, ensure it is zero
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("deposit_request_invalid_sig") {
+                    let value = value.parse::<u64>().unwrap();
+                    // Parse the pubkey from the metric name using helper function
+                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
+                        let validator_id = common::extract_validator_id(metric)
+                            .expect("failed to parse validator id");
+                        assert_eq!(pubkey_hex, test_deposit.pubkey.to_string());
+                        processed_requests.insert(validator_id);
+                    } else {
+                        println!("{}: {} (failed to parse pubkey)", metric, value);
+                    }
+                }
+                if processed_requests.len() as u32 >= n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            // Still waiting for all validators to complete
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Check that all nodes have the same canonical chain
+        assert!(
+            engine_client_network
+                .verify_consensus(Some(stop_height))
+                .is_ok()
+        );
+
+        context.auditor().state()
+    });
 }
