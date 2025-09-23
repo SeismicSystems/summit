@@ -20,8 +20,11 @@ use std::{
     str::FromStr as _,
 };
 use summit_application::engine_client::RethEngineClient;
+#[cfg(feature = "bench")]
+use summit_application::engine_client::benchmarking::EthHistoricalEngineClient;
 #[cfg(feature = "base-bench")]
 use summit_application::engine_client::benchmarking::HistoricalEngineClient;
+
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
@@ -187,11 +190,25 @@ impl Command {
                 )
                 .await
             };
-            #[cfg(not(feature = "base-bench"))]
+
+            #[cfg(feature = "bench")]
+            let engine_client = {
+                let block_dir = flags
+                    .bench_block_dir
+                    .as_ref()
+                    .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+                    .expect("bench_block_dir is required when using bench feature");
+                EthereumHistoricalEngineClient::new(
+                    engine_ipc_path.to_string_lossy().to_string(),
+                    block_dir,
+                )
+                .await
+            };
+
+            #[cfg(not(any(feature = "bench", feature = "base-bench")))]
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-            // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
             let config = EngineConfig::get_engine_config(
                 engine_client,
                 signer,

@@ -276,12 +276,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             #[cfg(any(feature = "bench", feature = "base-bench"))]
             {
                 self.engine_client
-                    .start_building_block(
-                        forkchoice_clone,
-                        current,
-                        withdrawals,
-                        parent.height(),
-                    )
+                    .start_building_block(forkchoice_clone, current, withdrawals, parent.height())
                     .await
             }
             #[cfg(not(any(feature = "bench", feature = "base-bench")))]

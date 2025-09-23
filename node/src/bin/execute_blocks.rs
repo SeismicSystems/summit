@@ -81,7 +81,9 @@ async fn main() -> Result<()> {
     let mut block_number = 0;
     for _ in 0..num_blocks {
         #[cfg(any(feature = "bench", feature = "base-bench"))]
-        let result = client.start_building_block(forkchoice, 0, vec![], block_number).await;
+        let result = client
+            .start_building_block(forkchoice, 0, vec![], block_number)
+            .await;
         #[cfg(not(any(feature = "bench", feature = "base-bench")))]
         let result = client.start_building_block(forkchoice, 0, vec![]).await;
 
