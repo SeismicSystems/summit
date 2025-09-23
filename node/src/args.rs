@@ -66,7 +66,7 @@ pub struct RunFlags {
     #[arg(long, default_value_t = DEFAULT_ENGINE_IPC_PATH.into())]
     pub engine_ipc_path: String,
     /// Path to the directory containing historical blocks for benchmarking
-    #[cfg(feature = "base-bench")]
+    #[cfg(any(feature = "base-bench", feature = "bench"))]
     #[arg(long)]
     pub bench_block_dir: Option<String>,
     /// Port Consensus runs on
