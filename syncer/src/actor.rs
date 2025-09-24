@@ -320,7 +320,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         drop(ack);
                     }
                     Message::StoreVerified { view, payload } => {
-                        match self.verified.put(view, payload.digest(), payload).await {
+                        match self.verified.put_sync(view, payload.digest(), payload).await {
                             Ok(_) => {
                                 debug!(view, "verified block stored");
                             }
@@ -353,8 +353,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             let height = block.height();
 
                             // persist the finalization
-                            self.finalized.put(height, digest, finalization).await.expect("Failed to insert into finalization store");
-                            self.blocks.put(height, digest,block).await.expect("failed to insert into block store");
+                            self.finalized.put_sync(height, digest, finalization).await.expect("Failed to insert into finalization store");
+                            self.blocks.put_sync(height, digest,block).await.expect("failed to insert into block store");
 
                             // prune blocks
                             let min_view = last_view_processed.saturating_sub(self.activity_timeout);
@@ -391,7 +391,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             let notarization = Notarized::new(notarization, block);
 
                             // Persist the notarization
-                            match self.notarized.put(view,digest,notarization).await {
+                            match self.notarized.put_sync(view,digest,notarization).await {
                                 Ok(_) => {
                                     debug!(view,height, "notarized block stored")
                                 }
@@ -457,7 +457,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                 let verified = self.verified.get(Identifier::Key(&target_block)).await.expect("Failed to get verified block");
                                 if let Some(verified) = verified {
                                     let height = verified.height();
-                                    self.blocks.put(height, target_block, verified).await.expect("Failed to insert finalized block");
+                                    self.blocks.put_sync(height, target_block, verified).await.expect("Failed to insert finalized block");
                                     debug!(height, "repaired block from verified");
                                     result.send(true).expect("Failed to send repair result");
                                     continue;
@@ -465,7 +465,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                 let notarization = self.notarized.get(Identifier::Key(&target_block)).await.expect("Failed to get notarized block");
                                 if let Some(notarization) = notarization {
                                     let height = notarization.block.height();
-                                    self.blocks.put(height, target_block, notarization.block).await.expect("Failed to insert finalized block");
+                                    self.blocks.put_sync(height, target_block, notarization.block).await.expect("Failed to insert finalized block");
                                     debug!(height, "repaired block from notarizations");
                                     result.send(true).expect("Failed to send repair result");
                                     continue;
@@ -520,7 +520,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                     // Persist the notarization
                                     let _ = response.send(true);
                                     match self.notarized
-                                        .put(view, notarization.block.digest(), notarization)
+                                        .put_sync(view, notarization.block.digest(), notarization)
                                         .await {
                                         Ok(_) => {
                                             debug!(view, "notarized stored");
@@ -557,13 +557,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                                     // Persist the finalization
                                     self.finalized
-                                        .put(height, finalization.block.digest(), finalization.proof )
+                                        .put_sync(height, finalization.block.digest(), finalization.proof )
                                         .await
                                         .expect("Failed to insert finalization");
 
                                     // Persist the block
                                     self.blocks
-                                        .put(height, finalization.block.digest(), finalization.block)
+                                        .put_sync(height, finalization.block.digest(), finalization.block)
                                         .await
                                         .expect("Failed to insert finalized block");
 
@@ -586,7 +586,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                                     debug!(?digest, height = block.height(), "received block");
                                     let _ = response.send(true);
                                     self.blocks
-                                        .put(block.height(), digest, block)
+                                        .put_sync(block.height(), digest, block)
                                         .await
                                         .expect("Failed to insert finalized block");
 
