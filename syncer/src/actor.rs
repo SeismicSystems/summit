@@ -15,7 +15,7 @@ use commonware_consensus::{Reporter, Viewable as _};
 use commonware_macros::select;
 use commonware_p2p::{Receiver, Recipients, Sender, utils::requester};
 use commonware_resolver::{Resolver as _, p2p};
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage, buffer::PoolRef};
+use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::{
     archive::{
         self, Archive as _, Identifier, immutable::Archive as ImmutableArchive,
@@ -23,14 +23,19 @@ use commonware_storage::{
     },
     translator::TwoCap,
 };
+use commonware_utils::NZU64;
 use futures::{StreamExt as _, channel::mpsc};
 use governor::Quota;
 use rand::Rng;
 use summit_types::{Block, BlockEnvelope, Digest, Finalized, Notarized, PublicKey, Signature};
 use tracing::{debug, warn};
 
-const PAGE_SIZE: usize = 77;
-const PAGE_CACHE_SIZE: usize = 9;
+const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
+const IMMUTABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(262_144);
+const FREEZER_INITIAL_SIZE: u32 = 65_536; // todo(dalton): Check this default
+const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
+const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
+const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 
 const REPLAY_BUFFER: usize = 8 * 1024 * 1024;
 const WRITE_BUFFER: usize = 1024 * 1024;
@@ -70,13 +75,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 partition: format!("{}-verified-archive", config.partition_prefix),
                 compression: None,
                 codec_config: (),
-                items_per_section: NonZero::new(1024).expect("not zero"),
+                items_per_section: PRUNABLE_ITEMS_PER_SECTION,
                 write_buffer: NonZero::new(WRITE_BUFFER).expect("not zero"),
                 replay_buffer: NonZero::new(REPLAY_BUFFER).expect("not zero"),
-                buffer_pool: PoolRef::new(
-                    NonZero::new(PAGE_SIZE).expect("not zero"),
-                    NonZero::new(PAGE_CACHE_SIZE).expect("not zero"),
-                ),
+                buffer_pool: config.buffer_pool.clone(),
             },
         )
         .await
@@ -89,13 +91,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 partition: format!("{}-notarized-archive", config.partition_prefix),
                 compression: None,
                 codec_config: (),
-                items_per_section: NonZero::new(1024).expect("not zero"),
+                items_per_section: PRUNABLE_ITEMS_PER_SECTION,
                 write_buffer: NonZero::new(WRITE_BUFFER).expect("not zero"),
                 replay_buffer: NonZero::new(REPLAY_BUFFER).expect("not zero"),
-                buffer_pool: PoolRef::new(
-                    NonZero::new(PAGE_SIZE).expect("not zero"),
-                    NonZero::new(PAGE_CACHE_SIZE).expect("not zero"),
-                ),
+                buffer_pool: config.buffer_pool.clone(),
             },
         )
         .await
@@ -106,18 +105,15 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
             archive::immutable::Config {
                 metadata_partition: format!("{}-finalized-metadata", config.partition_prefix),
                 freezer_table_partition: format!("{}-finalized-table", config.partition_prefix),
-                freezer_table_initial_size: 65_536,
-                freezer_table_resize_frequency: 4,
-                freezer_table_resize_chunk_size: 16_384,
+                freezer_table_initial_size: FREEZER_INITIAL_SIZE,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
                 freezer_journal_partition: format!("{}-finalized-journal", config.partition_prefix),
-                freezer_journal_target_size: 1024,
-                freezer_journal_compression: None,
-                freezer_journal_buffer_pool: PoolRef::new(
-                    NonZero::new(PAGE_SIZE).expect("not zero"),
-                    NonZero::new(PAGE_CACHE_SIZE).expect("not zero"),
-                ),
+                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_journal_compression: Some(3),
+                freezer_journal_buffer_pool: config.buffer_pool.clone(),
                 ordinal_partition: format!("{}-finalized-ordinal", config.partition_prefix),
-                items_per_section: NonZero::new(1024).expect("not zero"),
+                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
                 write_buffer: NonZero::new(WRITE_BUFFER).expect("not zero"),
                 replay_buffer: NonZero::new(REPLAY_BUFFER).expect("not zero"),
                 codec_config: usize::MAX,
@@ -131,18 +127,15 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
             archive::immutable::Config {
                 metadata_partition: format!("{}-block-metadata", config.partition_prefix),
                 freezer_table_partition: format!("{}-block-table", config.partition_prefix),
-                freezer_table_initial_size: 65_536,
-                freezer_table_resize_frequency: 4,
-                freezer_table_resize_chunk_size: 16_384,
+                freezer_table_initial_size: FREEZER_INITIAL_SIZE,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
                 freezer_journal_partition: format!("{}-block-journal", config.partition_prefix),
-                freezer_journal_target_size: 1024,
-                freezer_journal_compression: None,
-                freezer_journal_buffer_pool: PoolRef::new(
-                    NonZero::new(PAGE_SIZE).expect("not zero"),
-                    NonZero::new(PAGE_CACHE_SIZE).expect("not zero"),
-                ),
+                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_journal_compression: Some(3),
+                freezer_journal_buffer_pool: config.buffer_pool,
                 ordinal_partition: format!("{}-block-ordinal", config.partition_prefix),
-                items_per_section: NonZero::new(1024).expect("not zero"),
+                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
                 write_buffer: NonZero::new(WRITE_BUFFER).expect("not zero"),
                 replay_buffer: NonZero::new(REPLAY_BUFFER).expect("not zero"),
                 codec_config: (),

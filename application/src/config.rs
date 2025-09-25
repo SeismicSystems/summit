@@ -1,3 +1,5 @@
+use commonware_runtime::buffer::PoolRef;
+
 use crate::Registry;
 use crate::engine_client::EngineClient;
 
@@ -29,4 +31,6 @@ pub struct ApplicationConfig<C: EngineClient> {
 
     /// Protocol version for the consensus protocol
     pub protocol_version: u32,
+
+    pub buffer_pool: PoolRef,
 }

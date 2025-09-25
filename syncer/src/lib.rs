@@ -1,6 +1,7 @@
 pub mod actor;
 pub use actor::*;
 pub mod ingress;
+use commonware_runtime::buffer::PoolRef;
 pub use ingress::*;
 use summit_types::PublicKey;
 pub mod coordinator;
@@ -26,4 +27,6 @@ pub struct Config {
     pub namespace: String,
 
     pub epoch_num_blocks: u64,
+
+    pub buffer_pool: PoolRef,
 }

@@ -71,6 +71,8 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
 {
     pub async fn new(context: E, cfg: EngineConfig<C>) -> Self {
         let registry = Registry::new(cfg.participants.clone());
+        let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+
         // create application
         let (application, application_mailbox, finalizer_mailbox) = summit_application::Actor::new(
             context.with_label("application"),
@@ -86,6 +88,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
                 epoch_num_blocks: EPOCH_NUM_BLOCKS,
                 protocol_version: PROTOCOL_VERSION,
+                buffer_pool: buffer_pool.clone(),
             },
         )
         .await;
@@ -102,8 +105,6 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
             },
         );
 
-        let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-
         // create the syncer
         let syncer_config = summit_syncer::Config {
             partition_prefix: cfg.partition_prefix.clone(),
@@ -114,6 +115,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
             activity_timeout: cfg.activity_timeout,
             namespace: cfg.namespace.clone(),
             epoch_num_blocks: EPOCH_NUM_BLOCKS,
+            buffer_pool: buffer_pool.clone(),
         };
         let (syncer, syncer_mailbox) =
             summit_syncer::Actor::new(context.with_label("syncer"), syncer_config).await;

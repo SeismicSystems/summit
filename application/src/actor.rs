@@ -93,6 +93,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             cfg.epoch_num_blocks,
             genesis_hash,
             cfg.protocol_version,
+            cfg.buffer_pool,
         )
         .await;
 

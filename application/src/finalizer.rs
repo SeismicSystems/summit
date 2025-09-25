@@ -24,6 +24,7 @@ use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
+use std::num::NonZero;
 use std::time::Instant;
 use std::{
     collections::BTreeMap,
@@ -41,9 +42,7 @@ use tracing::{info, warn};
 
 type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
 
-const PAGE_SIZE: usize = 77;
-const PAGE_CACHE_SIZE: usize = 9;
-//const REGISTRY_CHANGE_VIEW_DELTA: u64 = 3;
+const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -107,6 +106,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         epoch_num_blocks: u64,
         genesis_hash: [u8; 32],
         protocol_version: u32,
+        buffer_pool: PoolRef,
     ) -> (
         Self,
         FinalizerMailbox,
@@ -115,14 +115,14 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     ) {
         let state_cfg = StateConfig {
             log_journal_partition: format!("{db_prefix}-finalizer_state-log"),
-            log_write_buffer: NZUsize!(64 * 1024),
+            log_write_buffer: WRITE_BUFFER,
             log_compression: None,
             log_codec_config: (),
-            log_items_per_section: NZU64!(4),
+            log_items_per_section: NZU64!(262_144),
             locations_journal_partition: format!("{db_prefix}-finalizer_state-locations"),
-            locations_items_per_blob: NZU64!(4),
+            locations_items_per_blob: NZU64!(262_144), // todo: No reference for this config option look into this
             translator: TwoCap,
-            buffer_pool: PoolRef::new(NZUsize!(PAGE_SIZE), NZUsize!(PAGE_CACHE_SIZE)),
+            buffer_pool,
         };
         let db = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
 
