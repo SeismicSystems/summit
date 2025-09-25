@@ -42,13 +42,19 @@ async fn main() -> Result<()> {
                 .value_name("PATH")
                 .help("Engine API IPC socket path")
                 .required(true),
+        ).arg(
+            Arg::new("start-block")
+                .long("start-block")
+                .value_name("COUNT")
+                .help("Block number of the first block")
+                .default_value("0"),
         )
         .arg(
             Arg::new("num-blocks")
                 .long("num-blocks")
                 .value_name("COUNT")
                 .help("Number of blocks to process")
-                .default_value("50000"),
+                .default_value("1000"),
         )
         .get_matches();
 
@@ -58,6 +64,7 @@ async fn main() -> Result<()> {
         .get_one::<String>("engine-ipc-path")
         .unwrap()
         .to_string();
+    let start_block: u64 = matches.get_one::<String>("start-block").unwrap().parse()?;
     let num_blocks: u64 = matches.get_one::<String>("num-blocks").unwrap().parse()?;
 
     #[allow(unused)]
@@ -78,15 +85,15 @@ async fn main() -> Result<()> {
         safe_block_hash: genesis_hash.into(),
         finalized_block_hash: genesis_hash.into(),
     };
-    let mut block_number = 0;
+    let mut block_number = start_block;
     for _ in 0..num_blocks {
+        println!("Block number: {}", block_number);
         #[cfg(any(feature = "bench", feature = "base-bench"))]
         let result = client
             .start_building_block(forkchoice, 0, vec![], block_number)
             .await;
         #[cfg(not(any(feature = "bench", feature = "base-bench")))]
         let result = client.start_building_block(forkchoice, 0, vec![]).await;
-
         match result {
             Some(payload_id) => {
                 let payload = client.get_payload(payload_id).await;
@@ -120,6 +127,7 @@ async fn main() -> Result<()> {
                 let payload_status = client.check_payload(&summit_block).await;
                 println!("  Payload status: {:?}", payload_status);
 
+                println!("forkchoice: {:?}", block_hash);
                 forkchoice = ForkchoiceState {
                     head_block_hash: block_hash,
                     safe_block_hash: block_hash,
