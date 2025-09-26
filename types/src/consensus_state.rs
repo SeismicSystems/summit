@@ -5,7 +5,7 @@ use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::PendingWithdrawal;
 use alloy_eips::eip4895::Withdrawal;
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Error, Read, Write};
+use commonware_codec::{DecodeExt, EncodeSize, Error, Read, Write};
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Debug, Default)]
@@ -236,6 +236,14 @@ impl Write for ConsensusState {
     }
 }
 
+impl TryFrom<Checkpoint> for ConsensusState {
+    type Error = Error;
+
+    fn try_from(checkpoint: Checkpoint) -> Result<Self, Self::Error> {
+        ConsensusState::decode(checkpoint.data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +251,7 @@ mod tests {
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
     use crate::withdrawal::PendingWithdrawal;
+
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
@@ -420,5 +429,60 @@ mod tests {
         // Test removing non-existent account
         let non_existent = state.remove_account(&pubkey);
         assert!(non_existent.is_none());
+    }
+
+    #[test]
+    fn test_try_from_checkpoint() {
+        // Create a populated ConsensusState
+        let mut original_state = ConsensusState::new();
+        original_state.set_latest_height(100);
+        original_state.next_withdrawal_index = 42;
+
+        // Add some data
+        let deposit = create_test_deposit_request(1, 32000000000);
+        original_state.push_deposit(deposit);
+
+        let withdrawal = create_test_withdrawal(1, 16000000000, 50);
+        original_state.push_withdrawal(withdrawal);
+
+        let pubkey = [1u8; 32];
+        let account = create_test_validator_account(1, 32000000000);
+        original_state.set_account(pubkey, account);
+
+        // Convert to checkpoint
+        let checkpoint = Checkpoint::new(&original_state);
+
+        // Convert back to ConsensusState
+        let restored_state: ConsensusState = checkpoint
+            .try_into()
+            .expect("Failed to convert checkpoint back to ConsensusState");
+
+        // Verify the data matches
+        assert_eq!(restored_state.latest_height, original_state.latest_height);
+        assert_eq!(
+            restored_state.next_withdrawal_index,
+            original_state.next_withdrawal_index
+        );
+        assert_eq!(
+            restored_state.deposit_queue.len(),
+            original_state.deposit_queue.len()
+        );
+        assert_eq!(
+            restored_state.withdrawal_queue.len(),
+            original_state.withdrawal_queue.len()
+        );
+        assert_eq!(
+            restored_state.validator_accounts.len(),
+            original_state.validator_accounts.len()
+        );
+
+        // Check specific values
+        assert_eq!(restored_state.deposit_queue[0].amount, 32000000000);
+        assert_eq!(restored_state.withdrawal_queue[0].inner.amount, 16000000000);
+        assert_eq!(restored_state.withdrawal_queue[0].withdrawal_height, 50);
+
+        let restored_account = restored_state.get_account(&pubkey).unwrap();
+        assert_eq!(restored_account.balance, 32000000000);
+        assert_eq!(restored_account.last_deposit_index, 1);
     }
 }
