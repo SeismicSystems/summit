@@ -354,6 +354,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             let _ = notifier.send(());
 
             info!(new_height, "finalized block");
+
+            if new_height == 50_000 {
+                std::process::exit(0);
+            }
         }
     }
 
