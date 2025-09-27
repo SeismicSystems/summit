@@ -342,6 +342,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 // This will commit all changes to the state db
                 self.db.commit().await;
 
+                if new_height == 50_000 {
+                    info!("Exit at block 50k");
+                    std::process::exit(0);
+                }
+
                 #[cfg(debug_assertions)]
                 {
                     let gauge: Gauge = Gauge::default();
@@ -354,10 +359,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             let _ = notifier.send(());
 
             info!(new_height, "finalized block");
-
-            if new_height == 50_000 {
-                std::process::exit(0);
-            }
         }
     }
 
