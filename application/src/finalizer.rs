@@ -81,12 +81,6 @@ pub struct Finalizer<
     genesis_hash: [u8; 32],
 
     protocol_version_digest: Digest,
-
-    pending_checkpoint: Option<Checkpoint>,
-
-    added_validators: Vec<PublicKey>,
-
-    removed_validators: Vec<PublicKey>,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
@@ -151,9 +145,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             protocol_version_digest: commonware_cryptography::sha256::hash(
                 &protocol_version.to_le_bytes(),
             ),
-            pending_checkpoint: None,
-            added_validators: Vec::new(),
-            removed_validators: Vec::new(),
         };
 
         // Try to load the latest ConsensusState from database
@@ -285,7 +276,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             // of the epoch
             if is_penultimate_block_of_epoch(new_height, self.epoch_num_blocks) {
                 let checkpoint = Checkpoint::new(&self.state);
-                self.pending_checkpoint = Some(checkpoint);
+                self.state.pending_checkpoint = Some(checkpoint);
             }
 
             // Store finalizes checkpoint to database
@@ -323,17 +314,20 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 }
 
                 // Add and remove validators for the next epoch
-                if !self.added_validators.is_empty() || !self.removed_validators.is_empty() {
+                if !self.state.added_validators.is_empty()
+                    || !self.state.removed_validators.is_empty()
+                {
                     self.registry.update_registry(
                         // TODO(matthias): do we still need the DELTA?
                         //block.view() + REGISTRY_CHANGE_VIEW_DELTA,
                         view,
-                        std::mem::take(&mut self.added_validators),
-                        std::mem::take(&mut self.removed_validators),
+                        std::mem::take(&mut self.state.added_validators),
+                        std::mem::take(&mut self.state.removed_validators),
                     );
                 }
 
                 let checkpoint = self
+                    .state
                     .pending_checkpoint
                     .as_ref()
                     .expect("this checkpoint was stored last height");
@@ -527,7 +521,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     if !account_exists && validator_balance >= self.validator_minimum_stake {
                         // If the node shuts down, before the account changes are committed,
                         // then everything should work normally, because the registry is not persisted to disk
-                        self.added_validators.push(request.pubkey.clone());
+                        self.state.added_validators.push(request.pubkey.clone());
                     }
                     #[cfg(debug_assertions)]
                     {
@@ -582,7 +576,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 // If the remaining balance is 0, remove the validator account from the state.
                 if account.balance == 0 {
                     self.state.remove_account(&pending_withdrawal.pubkey);
-                    self.removed_validators
+                    self.state
+                        .removed_validators
                         .push(PublicKey::decode(&pending_withdrawal.pubkey[..]).unwrap()); // todo(dalton) remove unwrap
                 } else {
                     self.state.set_account(pending_withdrawal.pubkey, account);
@@ -605,7 +600,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         // The proposed block will contain the checkpoint that was saved at the previous height.
         let aux_data = if is_last_block_of_epoch(height, self.epoch_num_blocks) {
             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
-            let checkpoint_hash = if let Some(checkpoint) = &self.pending_checkpoint {
+            let checkpoint_hash = if let Some(checkpoint) = &self.state.pending_checkpoint {
                 checkpoint.digest
             } else {
                 unreachable!("pending checkpoint was calculated at the previous height")
@@ -629,8 +624,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 withdrawals: ready_withdrawals,
                 checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
-                added_validators: self.added_validators.clone(),
-                removed_validators: self.removed_validators.clone(),
+                added_validators: self.state.added_validators.clone(),
+                removed_validators: self.state.removed_validators.clone(),
             }
         } else {
             BlockAuxData {

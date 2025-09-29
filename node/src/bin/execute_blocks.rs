@@ -42,7 +42,8 @@ async fn main() -> Result<()> {
                 .value_name("PATH")
                 .help("Engine API IPC socket path")
                 .required(true),
-        ).arg(
+        )
+        .arg(
             Arg::new("start-block")
                 .long("start-block")
                 .value_name("COUNT")

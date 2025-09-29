@@ -133,6 +133,9 @@ mod tests {
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
             validator_accounts: HashMap::new(),
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -221,6 +224,9 @@ mod tests {
             deposit_queue,
             withdrawal_queue,
             validator_accounts,
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -249,6 +255,9 @@ mod tests {
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
             validator_accounts: HashMap::new(),
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -344,6 +353,9 @@ mod tests {
             deposit_queue,
             withdrawal_queue,
             validator_accounts,
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -377,6 +389,9 @@ mod tests {
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
             validator_accounts: HashMap::new(),
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
         };
 
         let checkpoint = Checkpoint::new(&state);

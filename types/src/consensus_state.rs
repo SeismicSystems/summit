@@ -1,4 +1,6 @@
+use crate::PublicKey;
 use crate::account::ValidatorAccount;
+use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::PendingWithdrawal;
 use alloy_eips::eip4895::Withdrawal;
@@ -13,6 +15,9 @@ pub struct ConsensusState {
     pub deposit_queue: VecDeque<DepositRequest>,
     pub withdrawal_queue: VecDeque<PendingWithdrawal>,
     pub validator_accounts: HashMap<[u8; 32], ValidatorAccount>,
+    pub pending_checkpoint: Option<Checkpoint>,
+    pub added_validators: Vec<PublicKey>,
+    pub removed_validators: Vec<PublicKey>,
 }
 
 impl ConsensusState {
@@ -116,6 +121,12 @@ impl EncodeSize for ConsensusState {
         + self.withdrawal_queue.iter().map(|req| req.encode_size()).sum::<usize>()
         + 4 // validator_accounts length
         + self.validator_accounts.iter().map(|(key, account)| key.len() + account.encode_size()).sum::<usize>()
+        + 1 // pending_checkpoint presence flag
+        + self.pending_checkpoint.as_ref().map_or(0, |cp| cp.encode_size())
+        + 4 // added_validators length
+        + self.added_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
+        + 4 // removed_validators length
+        + self.removed_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
     }
 }
 
@@ -147,12 +158,37 @@ impl Read for ConsensusState {
             validator_accounts.insert(key, account);
         }
 
+        // Read pending_checkpoint
+        let has_pending_checkpoint = buf.get_u8() != 0;
+        let pending_checkpoint = if has_pending_checkpoint {
+            Some(Checkpoint::read_cfg(buf, &())?)
+        } else {
+            None
+        };
+
+        // Read added_validators
+        let added_validators_len = buf.get_u32() as usize;
+        let mut added_validators = Vec::with_capacity(added_validators_len);
+        for _ in 0..added_validators_len {
+            added_validators.push(PublicKey::read_cfg(buf, &())?);
+        }
+
+        // Read removed_validators
+        let removed_validators_len = buf.get_u32() as usize;
+        let mut removed_validators = Vec::with_capacity(removed_validators_len);
+        for _ in 0..removed_validators_len {
+            removed_validators.push(PublicKey::read_cfg(buf, &())?);
+        }
+
         Ok(Self {
             latest_height,
             next_withdrawal_index,
             deposit_queue,
             withdrawal_queue,
             validator_accounts,
+            pending_checkpoint,
+            added_validators,
+            removed_validators,
         })
     }
 }
@@ -176,6 +212,26 @@ impl Write for ConsensusState {
         for (key, account) in &self.validator_accounts {
             buf.put_slice(key);
             account.write(buf);
+        }
+
+        // Write pending_checkpoint
+        if let Some(checkpoint) = &self.pending_checkpoint {
+            buf.put_u8(1); // has checkpoint
+            checkpoint.write(buf);
+        } else {
+            buf.put_u8(0); // no checkpoint
+        }
+
+        // Write added_validators
+        buf.put_u32(self.added_validators.len() as u32);
+        for validator in &self.added_validators {
+            validator.write(buf);
+        }
+
+        // Write removed_validators
+        buf.put_u32(self.removed_validators.len() as u32);
+        for validator in &self.removed_validators {
+            validator.write(buf);
         }
     }
 }
