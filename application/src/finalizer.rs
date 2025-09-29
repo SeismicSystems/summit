@@ -342,8 +342,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 // This will commit all changes to the state db
                 self.db.commit().await;
 
-                if new_height == 50_000 {
-                    info!("Exit at block 50k");
+                if new_height == 100 {
+                    info!("Exit at block 100");
                     std::process::exit(0);
                 }
 
