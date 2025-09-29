@@ -18,6 +18,7 @@ const FINALIZED_HEADER_PREFIX: u8 = 0x07;
 // State variable keys
 const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
 const LATEST_FINALIZED_HEADER_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 1];
+const RESTARTED_KEY: [u8; 2] = [STATE_PREFIX, 2];
 const FINALIZED_CHECKPOINT_KEY: [u8; 2] = [CHECKPOINT_PREFIX, 1];
 
 pub struct FinalizerState<E: Clock + Storage + Metrics> {
@@ -98,6 +99,29 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .update(key, Value::U64(height))
             .await
             .expect("failed to set latest finalized header height");
+    }
+
+    // Restarted state operations
+    pub async fn get_restarted(&self) -> bool {
+        let key = Self::pad_key(&RESTARTED_KEY);
+        if let Some(Value::Bool(restarted)) = self
+            .store
+            .get(&key)
+            .await
+            .expect("failed to get restarted state")
+        {
+            restarted
+        } else {
+            false // Default to false if not set
+        }
+    }
+
+    pub async fn set_restarted(&mut self, restarted: bool) {
+        let key = Self::pad_key(&RESTARTED_KEY);
+        self.store
+            .update(key, Value::Bool(restarted))
+            .await
+            .expect("failed to set restarted state");
     }
 
     // ConsensusState blob operations
@@ -220,6 +244,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
 #[derive(Clone)]
 enum Value {
     U64(u64),
+    Bool(bool),
     ConsensusState(ConsensusState),
     Checkpoint(Checkpoint),
     FinalizedHeader(Box<FinalizedHeader>),
@@ -229,6 +254,7 @@ impl EncodeSize for Value {
     fn encode_size(&self) -> usize {
         1 + match self {
             Self::U64(_) => 8,
+            Self::Bool(_) => 1,
             Self::ConsensusState(state) => state.encode_size(),
             Self::Checkpoint(checkpoint) => checkpoint.encode_size(),
             Self::FinalizedHeader(header) => header.encode_size(),
@@ -243,6 +269,7 @@ impl Read for Value {
         let value_type = buf.get_u8();
         match value_type {
             0x01 => Ok(Self::U64(buf.get_u64())),
+            0x02 => Ok(Self::Bool(buf.get_u8() != 0)),
             0x05 => Ok(Self::ConsensusState(ConsensusState::read_cfg(buf, &())?)),
             0x06 => Ok(Self::Checkpoint(Checkpoint::read_cfg(buf, &())?)),
             0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::read_cfg(
@@ -260,6 +287,10 @@ impl Write for Value {
             Self::U64(val) => {
                 buf.put_u8(0x01);
                 buf.put_u64(*val);
+            }
+            Self::Bool(val) => {
+                buf.put_u8(0x02);
+                buf.put_u8(if *val { 1 } else { 0 });
             }
             Self::ConsensusState(state) => {
                 buf.put_u8(0x05);
@@ -612,6 +643,37 @@ mod tests {
             let updated_finalized = db.get_finalized_checkpoint().await.unwrap();
             assert_eq!(updated_finalized.digest, finalized_checkpoint2.digest);
             assert_ne!(updated_finalized.digest, finalized_checkpoint1.digest);
+        });
+    }
+
+    #[test]
+    fn test_restarted_state_operations() {
+        let cfg = commonware_runtime::deterministic::Config::default().with_seed(6);
+        let executor = Runner::from(cfg);
+        executor.start(|context| async move {
+            let mut db = create_test_db_with_context("test_restarted_state", context).await;
+
+            // Test that restarted defaults to false
+            assert_eq!(db.get_restarted().await, false);
+
+            // Test setting restarted to true
+            db.set_restarted(true).await;
+            db.commit().await;
+
+            // Test that restarted is now true
+            assert_eq!(db.get_restarted().await, true);
+
+            // Test setting restarted to false
+            db.set_restarted(false).await;
+            db.commit().await;
+
+            // Test that restarted is now false
+            assert_eq!(db.get_restarted().await, false);
+
+            // Test setting it back to true to verify it persists
+            db.set_restarted(true).await;
+            db.commit().await;
+            assert_eq!(db.get_restarted().await, true);
         });
     }
 }

@@ -337,8 +337,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 self.db.commit().await;
 
                 if new_height == 1000 {
-                    info!("Exit at block 1000");
-                    std::process::exit(0);
+                    if !self.db.get_restarted().await {
+                        self.db.set_restarted(true).await;
+                        self.db.commit().await;
+                        info!("Exit at block 1000");
+                        std::process::exit(0);
+                    }
                 }
 
                 #[cfg(debug_assertions)]
