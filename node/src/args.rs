@@ -20,10 +20,10 @@ use std::{
     str::FromStr as _,
 };
 use summit_application::engine_client::RethEngineClient;
-#[cfg(feature = "bench")]
-use summit_application::engine_client::benchmarking::EthereumHistoricalEngineClient;
 #[cfg(feature = "base-bench")]
 use summit_application::engine_client::base_benchmarking::HistoricalEngineClient;
+#[cfg(feature = "bench")]
+use summit_application::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
