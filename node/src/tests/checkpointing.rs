@@ -64,7 +64,8 @@ fn test_checkpoint_created() {
 
         // Create instances
         let mut public_keys = HashSet::new();
-        for signer in signers.into_iter() {
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, signer) in signers.into_iter().enumerate() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -83,8 +84,9 @@ fn test_checkpoint_created() {
                 signer,
                 validators.clone(),
             );
-            let (engine, _consensus_state_query) =
+            let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, consensus_state_query);
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -205,7 +207,8 @@ fn test_previous_header_hash_matches() {
 
         // Create instances
         let mut public_keys = HashSet::new();
-        for signer in signers.into_iter() {
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, signer) in signers.into_iter().enumerate() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -224,8 +227,9 @@ fn test_previous_header_hash_matches() {
                 signer,
                 validators.clone(),
             );
-            let (engine, _consensus_state_query) =
+            let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, consensus_state_query);
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =

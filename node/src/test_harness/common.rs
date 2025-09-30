@@ -135,7 +135,8 @@ pub fn run_until_height(
 
         // Create instances
         let mut public_keys = HashSet::new();
-        for (_idx, signer) in signers.into_iter().enumerate() {
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, signer) in signers.into_iter().enumerate() {
             // Create signer context
             let public_key = signer.public_key();
             public_keys.insert(public_key.clone());
@@ -155,8 +156,9 @@ pub fn run_until_height(
                 validators.clone(),
             );
 
-            let (engine, _consensus_state_query) =
+            let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, consensus_state_query);
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =

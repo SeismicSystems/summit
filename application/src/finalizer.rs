@@ -33,12 +33,13 @@ use std::{
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
-use summit_types::consensus_state_query::{ConsensusStateQuery, ConsensusStateQueryMailbox};
+use summit_types::consensus_state_query::{
+    ConsensusStateQuery, ConsensusStateRequest, ConsensusStateResponse,
+};
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
 use summit_types::{
     Block, BlockAuxData, BlockEnvelope, Digest, FinalizedHeader, PublicKey, Signature,
-    consensus_state_query,
 };
 use tracing::{info, warn};
 
@@ -70,7 +71,10 @@ pub struct Finalizer<
 
     state: ConsensusState,
 
-    state_query_mailbox: ConsensusStateQueryMailbox,
+    state_query_mailbox: mpsc::Receiver<(
+        ConsensusStateRequest,
+        oneshot::Sender<ConsensusStateResponse>,
+    )>,
 
     validator_onboarding_limit_per_block: usize,
 
@@ -130,7 +134,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
         let (tx_finalizer, rx_finalizer_mailbox) = mpsc::channel(1); // todo(dalton) there should only ever be one message in this channel since we block but lets verify this
 
-        let (state_query, state_query_mailbox) = consensus_state_query::new(1000);
+        let (state_query, state_query_mailbox) = ConsensusStateQuery::new(1000);
 
         let mut finalizer = Self {
             context,
@@ -201,6 +205,14 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                         self.handle_execution_block(&ctx, notifier, envelope, &mut last_committed_timestamp).await;
                     },
+
+                    req = self.state_query_mailbox.next() => {
+                        let Some((request, sender)) = req else {
+                            warn!("All consensus state querries dropped");
+                            break;
+                        };
+                        self.handle_consensus_state_query(&ctx, request, sender).await;
+                    }
                 }
             }
         });
@@ -646,6 +658,20 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             }
         };
         let _ = sender.send(aux_data);
+    }
+
+    async fn handle_consensus_state_query(
+        &self,
+        _ctx: &R,
+        consensus_state_request: ConsensusStateRequest,
+        sender: oneshot::Sender<ConsensusStateResponse>,
+    ) {
+        match consensus_state_request {
+            ConsensusStateRequest::GetCheckpoint => {
+                let checkpoint = self.db.get_finalized_checkpoint().await;
+                let _ = sender.send(ConsensusStateResponse::Checkpoint(checkpoint));
+            }
+        }
     }
 }
 

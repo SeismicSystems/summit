@@ -1,5 +1,6 @@
 use crate::checkpoint::Checkpoint;
-use tokio::sync::{mpsc, oneshot};
+use futures::SinkExt;
+use futures::channel::{mpsc, oneshot};
 
 pub enum ConsensusStateRequest {
     GetCheckpoint,
@@ -8,25 +9,6 @@ pub enum ConsensusStateRequest {
 pub enum ConsensusStateResponse {
     Checkpoint(Option<Checkpoint>),
 }
-
-pub fn new(buffer_size: usize) -> (ConsensusStateQuery, ConsensusStateQueryMailbox) {
-    let (sender, receiver) = mpsc::channel(buffer_size);
-    (
-        ConsensusStateQuery { sender },
-        ConsensusStateQueryMailbox { receiver },
-    )
-}
-
-/// Receives queries about the consensus state..
-#[derive(Debug)]
-pub struct ConsensusStateQueryMailbox {
-    receiver: mpsc::Receiver<(
-        ConsensusStateRequest,
-        oneshot::Sender<ConsensusStateResponse>,
-    )>,
-}
-
-impl ConsensusStateQueryMailbox {}
 
 /// Used to send queries to the application finalizer to query the consensus state.
 #[derive(Clone, Debug)]
@@ -38,10 +20,35 @@ pub struct ConsensusStateQuery {
 }
 
 impl ConsensusStateQuery {
-    pub async fn get_latest_checkpoint(&self) -> Option<Checkpoint> {
+    pub fn new(
+        buffer_size: usize,
+    ) -> (
+        ConsensusStateQuery,
+        mpsc::Receiver<(
+            ConsensusStateRequest,
+            oneshot::Sender<ConsensusStateResponse>,
+        )>,
+    ) {
+        let (sender, receiver) = mpsc::channel(buffer_size);
+        (ConsensusStateQuery { sender }, receiver)
+    }
+
+    pub async fn get_latest_checkpoint_mut(&mut self) -> Option<Checkpoint> {
         let (tx, rx) = oneshot::channel();
         let req = ConsensusStateRequest::GetCheckpoint;
         let _ = self.sender.send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::Checkpoint(maybe_checkpoint) = res;
+        maybe_checkpoint
+    }
+
+    pub async fn get_latest_checkpoint(&self) -> Option<Checkpoint> {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetCheckpoint;
+        let _ = self.sender.clone().send((req, tx)).await;
 
         let res = rx
             .await

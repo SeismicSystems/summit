@@ -14,7 +14,7 @@ alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 
-tokio.workspace = true
+futures.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 ethereum_ssz.workspace = true
