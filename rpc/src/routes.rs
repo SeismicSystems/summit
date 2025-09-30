@@ -7,7 +7,8 @@ use axum::{
 };
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::Signer;
-use commonware_utils::from_hex_formatted;
+use commonware_utils::{from_hex_formatted, hex};
+use ssz::Encode;
 use summit_types::{PrivateKey, utils::get_expanded_path};
 
 use crate::{GenesisRpcState, PathSender, RpcState};
@@ -22,6 +23,7 @@ impl RpcRoutes {
         Router::new()
             .route("/health", get(Self::handle_health_check))
             .route("/get_public_key", get(Self::handle_get_pub_key))
+            .route("/get_checkpoint", get(Self::handle_get_checkpoint))
             .with_state(state)
     }
 
@@ -53,6 +55,16 @@ impl RpcRoutes {
         let pk = PrivateKey::decode(&*key).map_err(|_| "unable to decode private key")?;
 
         Ok(pk)
+    }
+
+    async fn handle_get_checkpoint(State(state): State<Arc<RpcState>>) -> Result<String, String> {
+        let maybe_checkpoint = state.consensus_state_query.get_latest_checkpoint().await;
+        let Some(checkpoint) = maybe_checkpoint else {
+            return Err("checkpoint not found".into());
+        };
+
+        let encoded = checkpoint.as_ssz_bytes();
+        Ok(hex(&encoded))
     }
 
     async fn handle_send_genesis(

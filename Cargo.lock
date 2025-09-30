@@ -5361,6 +5361,7 @@ dependencies = [
  "commonware-cryptography",
  "commonware-utils",
  "dirs 5.0.1",
+ "ethereum_ssz",
  "futures",
  "serde",
  "summit-types",
