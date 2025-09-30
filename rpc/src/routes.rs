@@ -22,6 +22,14 @@ impl RpcRoutes {
         Router::new()
             .route("/health", get(Self::handle_health_check))
             .route("/get_public_key", get(Self::handle_get_pub_key))
+            .with_state(state)
+    }
+
+    pub fn mount_for_genesis(state: RpcState) -> Router {
+        // todo(dalton): Add cors
+        let state = Arc::new(state);
+
+        Router::new()
             .route("/send_genesis", post(Self::handle_send_genesis))
             .with_state(state)
     }
@@ -72,9 +80,13 @@ impl RpcRoutes {
         // Signal that file is ready
         if let Some(sender) = sender.lock().expect("poisoned").take() {
             let _ = sender.send(());
-            Ok(format!("{kind} file written and node notified"))
+            Ok(format!(
+                "{kind} file written at location {path} and node notified"
+            ))
         } else {
-            Ok(format!("{kind} file written (no notification needed)"))
+            Ok(format!(
+                "{kind} file written at location {path} (no notification needed)"
+            ))
         }
     }
 }

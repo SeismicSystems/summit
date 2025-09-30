@@ -10,7 +10,8 @@ use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated;
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
-use summit_rpc::{PathSender, start_rpc_server};
+use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
+use tokio_util::sync::CancellationToken;
 
 use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
@@ -101,7 +102,7 @@ pub struct RunFlags {
     /// Path to the genesis file
     #[arg(
         long,
-        default_value_t = String::from("./example_genesis.toml")
+        default_value_t = String::from("./example_genesis_.toml")
     )]
     pub genesis_path: String,
 }
@@ -150,19 +151,28 @@ impl Command {
         executor.start(|context| async move {
             let (genesis_tx, genesis_rx) = oneshot::channel();
 
+            let cancel_token = CancellationToken::new();
+            let cloned_token = cancel_token.clone();
+
             // use the context async move to spawn a new runtime
             let key_path = flags.key_path.clone();
             let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
                 let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                if let Err(e) = start_rpc_server(key_path, genesis_sender, rpc_port).await {
+                if let Err(e) =
+                    start_rpc_server_for_genesis(key_path, genesis_sender, rpc_port, cloned_token)
+                        .await
+                {
                     error!("RPC server failed: {}", e);
                 }
             });
 
             // Wait for genesis if needed
             let _ = genesis_rx.await;
+            // Shut down the genesis rpc server after receiving the genesis file
+            cancel_token.cancel();
+
             let genesis =
                 Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
@@ -316,28 +326,34 @@ impl Command {
     }
 }
 
-pub fn run_node_with_runtime(
-    context: commonware_runtime::tokio::Context,
-    flags: RunFlags,
-) -> Handle<()> {
+pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle<()> {
     context.spawn(async move |context| {
         let signer = expect_signer(&flags.key_path);
 
         let (genesis_tx, genesis_rx) = oneshot::channel();
 
+        let cancel_token = CancellationToken::new();
+        let cloned_token = cancel_token.clone();
         // use the context async move to spawn a new runtime
         let key_path = flags.key_path.clone();
         let rpc_port = flags.rpc_port;
         let genesis_path = flags.genesis_path.clone();
-        let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-            if let Err(e) = start_rpc_server(key_path, genesis_sender, rpc_port).await {
-                tracing::error!("RPC server failed: {}", e);
-            }
-        });
+        let rpc_handle = context
+            .with_label("rpc_genesis")
+            .spawn(move |_context| async move {
+                let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+                if let Err(e) =
+                    start_rpc_server_for_genesis(key_path, genesis_sender, rpc_port, cloned_token)
+                        .await
+                {
+                    error!("RPC server failed: {}", e);
+                }
+            });
 
         // Wait for genesis if needed
         let _ = genesis_rx.await;
+        // Shut down the genesis rpc server after receiving the genesis file
+        cancel_token.cancel();
 
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
@@ -356,7 +372,6 @@ pub fn run_node_with_runtime(
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-        // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
         let config = EngineConfig::get_engine_config(
             engine_client,
             signer,

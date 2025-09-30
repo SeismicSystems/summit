@@ -39,8 +39,9 @@ clap.workspace = true
 dirs.workspace = true
 
 tokio = { version = "1.45.1", features = ["sync"] }
+tokio-util.workspace = true
 
-# testnet bin deps 
+# testnet bin deps
 alloy-node-bindings.workspace = true
 alloy-network = { workspace = true }
 alloy-primitives.workspace = true
@@ -49,7 +50,6 @@ alloy-rpc-client.workspace = true
 alloy-rpc-types-engine = { version = "1.0.9", features = ["serde"] }
 op-alloy-consensus = { version = "0.19.1", default-features = false, features = ["alloy-compat"] }
 tracing-subscriber = "0.3.19"
-
 
 serde.workspace = true
 serde_json.workspace = true

@@ -1,10 +1,10 @@
 pub mod routes;
 use std::sync::Mutex;
 
+use crate::routes::RpcRoutes;
 use futures::channel::oneshot;
 use tokio::net::TcpListener;
-
-use crate::routes::RpcRoutes;
+use tokio_util::sync::CancellationToken;
 
 pub struct PathSender {
     path: String,
@@ -46,5 +46,28 @@ pub async fn start_rpc_server(
 
     axum::serve(listener, server).await?;
 
+    Ok(())
+}
+
+pub async fn start_rpc_server_for_genesis(
+    key_path: String,
+    genesis: PathSender,
+    port: u16,
+    cancel_token: CancellationToken,
+) -> anyhow::Result<()> {
+    let state = RpcState::new(key_path, genesis);
+
+    let server = RpcRoutes::mount_for_genesis(state);
+
+    let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+
+    println!("Genesis RPC Server listening on http://0.0.0.0:{port}");
+
+    axum::serve(listener, server)
+        .with_graceful_shutdown(async move {
+            cancel_token.cancelled().await;
+            println!("Genesis RPC server stopped");
+        })
+        .await?;
     Ok(())
 }

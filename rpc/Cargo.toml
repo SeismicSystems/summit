@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
+tokio-util.workspace = true
 futures.workspace = true
 axum = { version = "0.8.4"}
 summit-types = { workspace = true }
