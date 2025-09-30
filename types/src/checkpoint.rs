@@ -118,10 +118,7 @@ impl TryFrom<&Checkpoint> for ConsensusState {
         let computed_digest = hasher.finalize();
 
         if computed_digest != checkpoint.digest {
-            return Err(Error::Invalid(
-                "Checkpoint",
-                "Digest verification failed",
-            ));
+            return Err(Error::Invalid("Checkpoint", "Digest verification failed"));
         }
 
         ConsensusState::read(&mut checkpoint.data.as_ref())

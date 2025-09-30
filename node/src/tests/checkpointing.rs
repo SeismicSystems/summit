@@ -12,6 +12,7 @@ use commonware_utils::from_hex_formatted;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::PrivateKey;
+use summit_types::consensus_state::ConsensusState;
 
 #[test_traced("INFO")]
 fn test_checkpoint_created() {
@@ -143,6 +144,14 @@ fn test_checkpoint_created() {
             // Still waiting for all validators to complete
             context.sleep(Duration::from_secs(1)).await;
         }
+
+        let consensus_state_query = consensus_state_queries.get(&0).unwrap();
+        let checkpoint = consensus_state_query
+            .get_latest_checkpoint()
+            .await
+            .expect("failed to query checkpoint");
+        let _consensus_state =
+            ConsensusState::try_from(&checkpoint).expect("failed to parse consensus state");
 
         // Check that all nodes have the same canonical chain
         assert!(
@@ -301,6 +310,14 @@ fn test_previous_header_hash_matches() {
             // Still waiting for all validators to complete
             context.sleep(Duration::from_secs(1)).await;
         }
+
+        let consensus_state_query = consensus_state_queries.get(&0).unwrap();
+        let checkpoint = consensus_state_query
+            .get_latest_checkpoint()
+            .await
+            .expect("failed to query checkpoint");
+        let _consensus_state =
+            ConsensusState::try_from(&checkpoint).expect("failed to parse consensus state");
 
         // Check that all nodes have the same canonical chain
         assert!(
