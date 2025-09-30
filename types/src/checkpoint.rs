@@ -1,7 +1,7 @@
 use crate::Digest;
 use crate::consensus_state::ConsensusState;
 use bytes::{Buf, BufMut, Bytes};
-use commonware_codec::{Encode, EncodeSize, Error, Read, Write};
+use commonware_codec::{Encode, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{Hasher, Sha256};
 use ssz::{Decode, Encode as SszEncode};
 
@@ -105,6 +105,26 @@ impl Read for Checkpoint {
 
         Self::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk())
             .map_err(|_| Error::Invalid("Checkpoint", "Unable to decode SSZ bytes for checkpoint"))
+    }
+}
+
+impl TryFrom<&Checkpoint> for ConsensusState {
+    type Error = Error;
+
+    fn try_from(checkpoint: &Checkpoint) -> Result<Self, Self::Error> {
+        // Verify the digest matches the data
+        let mut hasher = Sha256::new();
+        hasher.update(&checkpoint.data);
+        let computed_digest = hasher.finalize();
+
+        if computed_digest != checkpoint.digest {
+            return Err(Error::Invalid(
+                "Checkpoint",
+                "Digest verification failed",
+            ));
+        }
+
+        ConsensusState::read(&mut checkpoint.data.as_ref())
     }
 }
 
@@ -418,6 +438,161 @@ mod tests {
             encode_len,
             pure_ssz.len() + ssz::BYTES_PER_LENGTH_OFFSET,
             "EncodeSize should be SSZ + 4-byte prefix"
+        );
+    }
+
+    #[test]
+    fn test_try_from_checkpoint_to_consensus_state() {
+        use std::collections::{HashMap, VecDeque};
+
+        let original_state = ConsensusState {
+            latest_height: 42,
+            next_withdrawal_index: 99,
+            deposit_queue: VecDeque::new(),
+            withdrawal_queue: VecDeque::new(),
+            validator_accounts: HashMap::new(),
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
+        };
+
+        let checkpoint = Checkpoint::new(&original_state);
+        let converted_state = ConsensusState::try_from(&checkpoint).unwrap();
+
+        assert_eq!(converted_state.latest_height, original_state.latest_height);
+        assert_eq!(
+            converted_state.next_withdrawal_index,
+            original_state.next_withdrawal_index
+        );
+        assert_eq!(
+            converted_state.deposit_queue.len(),
+            original_state.deposit_queue.len()
+        );
+        assert_eq!(
+            converted_state.withdrawal_queue.len(),
+            original_state.withdrawal_queue.len()
+        );
+        assert_eq!(
+            converted_state.validator_accounts.len(),
+            original_state.validator_accounts.len()
+        );
+    }
+
+    #[test]
+    fn test_try_from_checkpoint_with_corrupted_digest() {
+        use std::collections::{HashMap, VecDeque};
+
+        let original_state = ConsensusState {
+            latest_height: 42,
+            next_withdrawal_index: 99,
+            deposit_queue: VecDeque::new(),
+            withdrawal_queue: VecDeque::new(),
+            validator_accounts: HashMap::new(),
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
+        };
+
+        let mut checkpoint = Checkpoint::new(&original_state);
+        // Corrupt the digest
+        checkpoint.digest = [0xFF; 32].into();
+
+        let result = ConsensusState::try_from(&checkpoint);
+        assert!(result.is_err());
+
+        if let Err(commonware_codec::Error::Invalid(entity, message)) = result {
+            assert_eq!(entity, "Checkpoint");
+            assert_eq!(message, "Digest verification failed");
+        } else {
+            panic!("Expected Invalid error with digest verification message");
+        }
+    }
+
+    #[test]
+    fn test_try_from_checkpoint_with_populated_state() {
+        use crate::account::{ValidatorAccount, ValidatorStatus};
+        use crate::execution_request::DepositRequest;
+        use crate::withdrawal::PendingWithdrawal;
+        use alloy_eips::eip4895::Withdrawal;
+        use alloy_primitives::Address;
+
+        // Create sample data for the populated state
+        let deposit1 = DepositRequest {
+            pubkey: parse_public_key(
+                "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+            ),
+            withdrawal_credentials: [1u8; 32],
+            amount: 32_000_000_000, // 32 ETH in gwei
+            signature: [42u8; 64],
+            index: 100,
+        };
+
+        let pending_withdrawal = PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 1,
+                address: Address::from([3u8; 20]),
+                amount: 8_000_000_000, // 8 ETH in gwei
+            },
+            withdrawal_height: 500,
+            pubkey: [5u8; 32],
+        };
+
+        let validator_account1 = ValidatorAccount {
+            withdrawal_credentials: Address::from([7u8; 20]),
+            balance: 32_000_000_000, // 32 ETH
+            pending_withdrawal_amount: 0,
+            status: ValidatorStatus::Active,
+            last_deposit_index: 100,
+        };
+
+        // Create populated state
+        let mut deposit_queue = VecDeque::new();
+        deposit_queue.push_back(deposit1);
+
+        let mut withdrawal_queue = VecDeque::new();
+        withdrawal_queue.push_back(pending_withdrawal);
+
+        let mut validator_accounts = HashMap::new();
+        validator_accounts.insert([10u8; 32], validator_account1);
+
+        let original_state = ConsensusState {
+            latest_height: 1000,
+            next_withdrawal_index: 200,
+            deposit_queue,
+            withdrawal_queue,
+            validator_accounts,
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
+        };
+
+        let checkpoint = Checkpoint::new(&original_state);
+        let converted_state = ConsensusState::try_from(&checkpoint).unwrap();
+
+        // Verify all fields match
+        assert_eq!(converted_state.latest_height, original_state.latest_height);
+        assert_eq!(
+            converted_state.next_withdrawal_index,
+            original_state.next_withdrawal_index
+        );
+        assert_eq!(converted_state.deposit_queue.len(), 1);
+        assert_eq!(converted_state.withdrawal_queue.len(), 1);
+        assert_eq!(converted_state.validator_accounts.len(), 1);
+
+        // Verify specific content
+        assert_eq!(converted_state.deposit_queue[0].amount, 32_000_000_000);
+        assert_eq!(
+            converted_state.withdrawal_queue[0].inner.amount,
+            8_000_000_000
+        );
+        assert_eq!(
+            converted_state
+                .validator_accounts
+                .get(&[10u8; 32])
+                .unwrap()
+                .balance,
+            32_000_000_000
         );
     }
 }
