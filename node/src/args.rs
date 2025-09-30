@@ -161,8 +161,7 @@ impl Command {
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
                 let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
                 if let Err(e) =
-                    start_rpc_server_for_genesis(key_path, genesis_sender, rpc_port, cloned_token)
-                        .await
+                    start_rpc_server_for_genesis(genesis_sender, rpc_port, cloned_token).await
                 {
                     error!("RPC server failed: {}", e);
                 }
@@ -343,8 +342,7 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
             .spawn(move |_context| async move {
                 let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
                 if let Err(e) =
-                    start_rpc_server_for_genesis(key_path, genesis_sender, rpc_port, cloned_token)
-                        .await
+                    start_rpc_server_for_genesis(genesis_sender, rpc_port, cloned_token).await
                 {
                     error!("RPC server failed: {}", e);
                 }

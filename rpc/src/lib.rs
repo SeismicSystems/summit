@@ -6,6 +6,30 @@ use futures::channel::oneshot;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+pub struct RpcState {
+    key_path: String,
+}
+
+impl RpcState {
+    pub fn new(key_path: String) -> Self {
+        Self { key_path }
+    }
+}
+
+pub async fn start_rpc_server(key_path: String, port: u16) -> anyhow::Result<()> {
+    let state = RpcState::new(key_path);
+
+    let server = RpcRoutes::mount(state);
+
+    let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+
+    println!("RPC Server listening on http://0.0.0.0:{port}");
+
+    axum::serve(listener, server).await?;
+
+    Ok(())
+}
+
 pub struct PathSender {
     path: String,
     sender: Mutex<Option<oneshot::Sender<()>>>,
@@ -20,42 +44,22 @@ impl PathSender {
     }
 }
 
-pub struct RpcState {
-    key_path: String,
+pub struct GenesisRpcState {
     genesis: PathSender,
 }
 
-impl RpcState {
-    pub fn new(key_path: String, genesis: PathSender) -> Self {
-        Self { key_path, genesis }
+impl GenesisRpcState {
+    pub fn new(genesis: PathSender) -> Self {
+        Self { genesis }
     }
 }
 
-pub async fn start_rpc_server(
-    key_path: String,
-    genesis: PathSender,
-    port: u16,
-) -> anyhow::Result<()> {
-    let state = RpcState::new(key_path, genesis);
-
-    let server = RpcRoutes::mount(state);
-
-    let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
-
-    println!("RPC Server listening on http://0.0.0.0:{port}");
-
-    axum::serve(listener, server).await?;
-
-    Ok(())
-}
-
 pub async fn start_rpc_server_for_genesis(
-    key_path: String,
     genesis: PathSender,
     port: u16,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let state = RpcState::new(key_path, genesis);
+    let state = GenesisRpcState::new(genesis);
 
     let server = RpcRoutes::mount_for_genesis(state);
 

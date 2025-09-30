@@ -10,7 +10,7 @@ use commonware_cryptography::Signer;
 use commonware_utils::from_hex_formatted;
 use summit_types::{PrivateKey, utils::get_expanded_path};
 
-use crate::{PathSender, RpcState};
+use crate::{GenesisRpcState, PathSender, RpcState};
 
 pub(crate) struct RpcRoutes;
 
@@ -25,7 +25,7 @@ impl RpcRoutes {
             .with_state(state)
     }
 
-    pub fn mount_for_genesis(state: RpcState) -> Router {
+    pub fn mount_for_genesis(state: GenesisRpcState) -> Router {
         // todo(dalton): Add cors
         let state = Arc::new(state);
 
@@ -56,7 +56,7 @@ impl RpcRoutes {
     }
 
     async fn handle_send_genesis(
-        State(state): State<Arc<RpcState>>,
+        State(state): State<Arc<GenesisRpcState>>,
         body: String,
     ) -> Result<String, String> {
         Self::handle_send_file(&state.genesis, body, "genesis")
