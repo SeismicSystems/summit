@@ -177,6 +177,7 @@ impl Command {
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
                 .expect("failed to expand engine ipc path");
 
+            #[allow(unused)]
             #[cfg(feature = "base-bench")]
             let engine_client = {
                 let block_dir = flags
@@ -191,6 +192,7 @@ impl Command {
                 .await
             };
 
+            #[allow(unused)]
             #[cfg(feature = "bench")]
             let engine_client = {
                 let block_dir = flags
