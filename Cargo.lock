@@ -5409,8 +5409,8 @@ dependencies = [
  "ethereum_ssz",
  "serde",
  "serde_json",
+ "tokio",
  "toml",
- "tracing",
 ]
 
 [[package]]

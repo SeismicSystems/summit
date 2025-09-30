@@ -3,21 +3,30 @@ use std::sync::Mutex;
 
 use crate::routes::RpcRoutes;
 use futures::channel::oneshot;
+use summit_types::consensus_state_query::ConsensusStateQuery;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 pub struct RpcState {
     key_path: String,
+    consensus_state_query: ConsensusStateQuery,
 }
 
 impl RpcState {
-    pub fn new(key_path: String) -> Self {
-        Self { key_path }
+    pub fn new(key_path: String, consensus_state_query: ConsensusStateQuery) -> Self {
+        Self {
+            key_path,
+            consensus_state_query,
+        }
     }
 }
 
-pub async fn start_rpc_server(key_path: String, port: u16) -> anyhow::Result<()> {
-    let state = RpcState::new(key_path);
+pub async fn start_rpc_server(
+    consensus_state_query: ConsensusStateQuery,
+    key_path: String,
+    port: u16,
+) -> anyhow::Result<()> {
+    let state = RpcState::new(key_path, consensus_state_query);
 
     let server = RpcRoutes::mount(state);
 

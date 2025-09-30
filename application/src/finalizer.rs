@@ -33,10 +33,12 @@ use std::{
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
+use summit_types::consensus_state_query::{ConsensusStateQuery, ConsensusStateQueryMailbox};
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
 use summit_types::{
     Block, BlockAuxData, BlockEnvelope, Digest, FinalizedHeader, PublicKey, Signature,
+    consensus_state_query,
 };
 use tracing::{info, warn};
 
@@ -67,6 +69,8 @@ pub struct Finalizer<
     db: FinalizerState<R>,
 
     state: ConsensusState,
+
+    state_query_mailbox: ConsensusStateQueryMailbox,
 
     validator_onboarding_limit_per_block: usize,
 
@@ -104,6 +108,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     ) -> (
         Self,
         FinalizerMailbox,
+        ConsensusStateQuery,
         mpsc::Sender<(u64, oneshot::Sender<()>)>,
         mpsc::Sender<AuxDataRequest>,
     ) {
@@ -125,6 +130,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
         let (tx_finalizer, rx_finalizer_mailbox) = mpsc::channel(1); // todo(dalton) there should only ever be one message in this channel since we block but lets verify this
 
+        let (state_query, state_query_mailbox) = consensus_state_query::new(1000);
+
         let mut finalizer = Self {
             context,
             height_notifier: HeightNotifier::new(),
@@ -136,6 +143,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             rx_finalizer_mailbox,
             db,
             state: ConsensusState::default(),
+            state_query_mailbox,
             validator_onboarding_limit_per_block,
             validator_minimum_stake,
             validator_withdrawal_period,
@@ -155,6 +163,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         (
             finalizer,
             FinalizerMailbox::new(tx_finalizer),
+            state_query,
             tx_height_notify,
             tx_aux_data,
         )

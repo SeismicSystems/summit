@@ -83,7 +83,8 @@ fn test_checkpoint_created() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -223,7 +224,8 @@ fn test_previous_header_hash_matches() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =

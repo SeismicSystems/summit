@@ -26,6 +26,7 @@ use std::{
 use tracing::{error, info, warn};
 
 use summit_syncer::ingress::Mailbox as SyncerMailbox;
+use summit_types::consensus_state_query::ConsensusStateQuery;
 use summit_types::{Block, BlockAuxData, Digest};
 
 type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
@@ -70,7 +71,10 @@ pub struct Actor<
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
     Actor<R, C>
 {
-    pub async fn new(context: R, cfg: ApplicationConfig<C>) -> (Self, Mailbox, FinalizerMailbox) {
+    pub async fn new(
+        context: R,
+        cfg: ApplicationConfig<C>,
+    ) -> (Self, Mailbox, FinalizerMailbox, ConsensusStateQuery) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
 
         let genesis_hash = cfg.genesis_hash;
@@ -80,22 +84,23 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             finalized_block_hash: genesis_hash.into(),
         }));
 
-        let (finalizer, finalizer_mailbox, tx_height_notify, tx_aux_data) = Finalizer::new(
-            context.with_label("finalizer"),
-            cfg.engine_client.clone(),
-            cfg.registry,
-            forkchoice.clone(),
-            cfg.partition_prefix,
-            cfg.validator_onboarding_limit_per_block,
-            cfg.validator_minimum_stake,
-            cfg.validator_withdrawal_period,
-            cfg.validator_max_withdrawals_per_block,
-            cfg.epoch_num_blocks,
-            genesis_hash,
-            cfg.protocol_version,
-            cfg.buffer_pool,
-        )
-        .await;
+        let (finalizer, finalizer_mailbox, consensus_state_query, tx_height_notify, tx_aux_data) =
+            Finalizer::new(
+                context.with_label("finalizer"),
+                cfg.engine_client.clone(),
+                cfg.registry,
+                forkchoice.clone(),
+                cfg.partition_prefix,
+                cfg.validator_onboarding_limit_per_block,
+                cfg.validator_minimum_stake,
+                cfg.validator_withdrawal_period,
+                cfg.validator_max_withdrawals_per_block,
+                cfg.epoch_num_blocks,
+                genesis_hash,
+                cfg.protocol_version,
+                cfg.buffer_pool,
+            )
+            .await;
 
         (
             Self {
@@ -111,6 +116,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             },
             Mailbox::new(tx),
             finalizer_mailbox,
+            consensus_state_query,
         )
     }
 

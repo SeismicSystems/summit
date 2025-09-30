@@ -107,7 +107,8 @@ fn test_deposit_request_single() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -290,7 +291,8 @@ fn test_deposit_request_top_up() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -485,7 +487,8 @@ fn test_deposit_and_withdrawal_request_single() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -694,7 +697,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -901,7 +905,8 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -1123,7 +1128,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -1332,7 +1338,8 @@ fn test_deposit_request_invalid_signature() {
                 signer,
                 validators.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =

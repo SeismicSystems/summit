@@ -155,7 +155,8 @@ pub fn run_until_height(
                 validators.clone(),
             );
 
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let (engine, _consensus_state_query) =
+                Engine::new(context.with_label(&uid), config).await;
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =

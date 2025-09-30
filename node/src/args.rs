@@ -155,17 +155,18 @@ impl Command {
             let cloned_token = cancel_token.clone();
 
             // use the context async move to spawn a new runtime
-            let key_path = flags.key_path.clone();
             let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
-            let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                if let Err(e) =
-                    start_rpc_server_for_genesis(genesis_sender, rpc_port, cloned_token).await
-                {
-                    error!("RPC server failed: {}", e);
-                }
-            });
+            let _rpc_handle = context
+                .with_label("rpc_genesis")
+                .spawn(move |_context| async move {
+                    let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+                    if let Err(e) =
+                        start_rpc_server_for_genesis(genesis_sender, rpc_port, cloned_token).await
+                    {
+                        error!("RPC server failed: {}", e);
+                    }
+                });
 
             // Wait for genesis if needed
             let _ = genesis_rx.await;
@@ -312,10 +313,20 @@ impl Command {
             // Create network
             let p2p = network.start();
             // create engine
-            let engine = Engine::new(context.with_label("engine"), config).await;
+            let (engine, consensus_state_query) =
+                Engine::new(context.with_label("engine"), config).await;
 
             // Start engine
             let engine = engine.start(pending, resolver, broadcaster, backfiller);
+
+            // Start RPC server
+            let key_path = flags.key_path.clone();
+            let rpc_port = flags.rpc_port;
+            let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+                if let Err(e) = start_rpc_server(consensus_state_query, key_path, rpc_port).await {
+                    error!("RPC server failed: {}", e);
+                }
+            });
 
             // Wait for any task to error
             if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
@@ -334,10 +345,9 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
         let cancel_token = CancellationToken::new();
         let cloned_token = cancel_token.clone();
         // use the context async move to spawn a new runtime
-        let key_path = flags.key_path.clone();
         let rpc_port = flags.rpc_port;
         let genesis_path = flags.genesis_path.clone();
-        let rpc_handle = context
+        let _rpc_handle = context
             .with_label("rpc_genesis")
             .spawn(move |_context| async move {
                 let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
@@ -426,10 +436,22 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
         // Create network
         let p2p = network.start();
         // create engine
-        let engine = Engine::new(context.with_label("engine"), config).await;
+        let (engine, consensus_state_query) =
+            Engine::new(context.with_label("engine"), config).await;
 
         // Start engine
         let engine = engine.start(pending, resolver, broadcaster, backfiller);
+
+        // Start RPC server
+        let key_path = flags.key_path.clone();
+        let rpc_port = flags.rpc_port;
+        let rpc_handle = context
+            .with_label("rpc_genesis")
+            .spawn(move |_context| async move {
+                if let Err(e) = start_rpc_server(consensus_state_query, key_path, rpc_port).await {
+                    error!("RPC server failed: {}", e);
+                }
+            });
 
         // Wait for any task to error
         if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {

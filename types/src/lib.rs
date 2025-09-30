@@ -2,6 +2,7 @@ pub mod account;
 mod block;
 pub mod checkpoint;
 pub mod consensus_state;
+pub mod consensus_state_query;
 pub mod execution_request;
 pub mod genesis;
 pub mod header;
