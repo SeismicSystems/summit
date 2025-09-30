@@ -270,11 +270,13 @@ impl MockEngineState {
 }
 
 impl EngineClient for MockEngineClient {
+    #[allow(unused)]
     async fn start_building_block(
         &self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
+        #[cfg(any(feature = "bench", feature = "base-bench"))] height: u64,
     ) -> Option<PayloadId> {
         let mut state = self.state.lock().unwrap();
 
@@ -599,7 +601,13 @@ mod tests {
         };
 
         let payload_id = client
-            .start_building_block(genesis_state, 1000, vec![])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
         let envelope = client.get_payload(payload_id).await;
@@ -661,7 +669,13 @@ mod tests {
         };
 
         let payload_id = client1
-            .start_building_block(genesis_state, 1000, vec![])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
         let envelope = client1.get_payload(payload_id).await;
@@ -736,7 +750,13 @@ mod tests {
             };
 
             let payload_id = producer
-                .start_building_block(fork_choice, (round * 1000) as u64, vec![])
+                .start_building_block(
+                    fork_choice,
+                    (round * 1000) as u64,
+                    vec![],
+                    #[cfg(any(feature = "bench", feature = "base-bench"))]
+                    round,
+                )
                 .await
                 .unwrap();
             let envelope = producer.get_payload(payload_id).await;
@@ -817,7 +837,13 @@ mod tests {
         };
 
         let payload_id = client1
-            .start_building_block(genesis_state, 1000, vec![withdrawal.clone()])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![withdrawal.clone()],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
 
@@ -895,7 +921,13 @@ mod tests {
 
         // Client1 builds block A
         let payload_id_a = client1
-            .start_building_block(genesis_state, 1000, vec![])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
         let envelope_a = client1.get_payload(payload_id_a).await;
@@ -903,7 +935,13 @@ mod tests {
 
         // Client2 builds block B (different from A due to client_id in hash)
         let payload_id_b = client2
-            .start_building_block(genesis_state, 1000, vec![])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
         let envelope_b = client2.get_payload(payload_id_b).await;
