@@ -19,6 +19,7 @@ use std::{
     num::NonZeroU32,
 };
 use summit_application::engine_client::EngineClient;
+use summit_types::checkpoint::Checkpoint;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
 use summit_types::{Digest, PrivateKey, PublicKey};
 
@@ -154,6 +155,7 @@ pub fn run_until_height(
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
 
             let (engine, consensus_state_query) =
@@ -392,6 +394,7 @@ pub fn get_default_engine_config<C: EngineClient>(
     namespace: String,
     signer: PrivateKey,
     participants: Vec<PublicKey>,
+    checkpoint: Option<Checkpoint>,
 ) -> EngineConfig<C> {
     EngineConfig {
         engine_client,
@@ -413,5 +416,6 @@ pub fn get_default_engine_config<C: EngineClient>(
         _max_fetch_size: 1024 * 512,
         fetch_concurrent: 10,
         fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(10).unwrap()),
+        checkpoint,
     }
 }

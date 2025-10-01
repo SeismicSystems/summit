@@ -2,6 +2,7 @@ use commonware_runtime::buffer::PoolRef;
 
 use crate::Registry;
 use crate::engine_client::EngineClient;
+use summit_types::checkpoint::Checkpoint;
 
 #[derive(Clone)]
 pub struct ApplicationConfig<C: EngineClient> {
@@ -33,4 +34,7 @@ pub struct ApplicationConfig<C: EngineClient> {
     pub protocol_version: u32,
 
     pub buffer_pool: PoolRef,
+
+    /// Optional checkpoint to initialize the finalizer with
+    pub checkpoint: Option<Checkpoint>,
 }

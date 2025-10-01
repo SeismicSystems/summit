@@ -227,6 +227,7 @@ impl Command {
                 peers.clone(),
                 flags.db_prefix.clone(),
                 &genesis,
+                None,
             )
             .unwrap();
 
@@ -386,6 +387,7 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
             peers.clone(),
             flags.db_prefix.clone(),
             &genesis,
+            None,
         )
         .unwrap();
 

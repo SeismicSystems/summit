@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::PrivateKey;
 use summit_types::consensus_state::ConsensusState;
+use summit_types::checkpoint::Checkpoint;
 
 #[test_traced("INFO")]
 fn test_checkpoint_created() {
@@ -84,6 +85,7 @@ fn test_checkpoint_created() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
@@ -235,6 +237,7 @@ fn test_previous_header_hash_matches() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
@@ -326,6 +329,95 @@ fn test_previous_header_hash_matches() {
                 .is_ok()
         );
 
+        context.auditor().state()
+    });
+}
+
+
+#[test_traced("INFO")]
+fn test_engine_with_checkpoint() {
+    // Test that an Engine instance can be initialized with a pre-created checkpoint
+    // and properly load the consensus state from it
+    let link = Link {
+        latency: 80.0,
+        jitter: 10.0,
+        success_rate: 1.0,
+    };
+    // Create context
+    let cfg = deterministic::Config::default().with_seed(42);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        // Create simulated network
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+            },
+        );
+        // Start network
+        network.start();
+        
+        // Create a single validator
+        let signer = PrivateKey::from_seed(100);
+        let validators = vec![signer.public_key()];
+        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        
+        // Link validator
+        common::link_validators(&mut oracle, &validators, link, None).await;
+        
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+        
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        
+        // Create and populate a consensus state
+        let mut consensus_state = ConsensusState::default();
+        consensus_state.set_latest_height(50); // Set a specific height
+        
+        // Create a checkpoint from the consensus state
+        let checkpoint = Checkpoint::new(&consensus_state);
+        
+        // Configure engine with the checkpoint
+        let public_key = signer.public_key();
+        let uid = format!("validator-{public_key}");
+        let namespace = String::from("_SEISMIC_BFT");
+        let engine_client = engine_client_network.create_client(uid.clone());
+        
+        let config = get_default_engine_config(
+            engine_client,
+            uid.clone(),
+            genesis_hash,
+            namespace,
+            signer,
+            validators.clone(),
+            Some(checkpoint.clone()),
+        );
+        
+        let (engine, consensus_state_query) =
+            Engine::new(context.with_label(&uid), config).await;
+        
+        // Get networking
+        let (pending, resolver, broadcast, backfill) =
+            registrations.remove(&public_key).unwrap();
+        
+        // Start engine
+        engine.start(pending, resolver, broadcast, backfill);
+        
+        // Wait a bit for initialization
+        context.sleep(Duration::from_millis(500)).await;
+        
+        // Verify the consensus state was initialized from the checkpoint (height 50)
+        let current_height = consensus_state_query
+            .get_latest_height()
+            .await;
+        
+        // The finalizer should have been initialized with our checkpoint at height 50
+        // Since consensus is running, the height might be >= 50
+        assert!(current_height >= consensus_state.latest_height, "Expected height >= {}, got {}", consensus_state.latest_height, current_height);
+        
         context.auditor().state()
     });
 }

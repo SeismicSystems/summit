@@ -107,6 +107,7 @@ fn test_deposit_request_single() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
@@ -293,6 +294,7 @@ fn test_deposit_request_top_up() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
@@ -491,6 +493,7 @@ fn test_deposit_and_withdrawal_request_single() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
@@ -703,6 +706,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
@@ -913,6 +917,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
@@ -1138,6 +1143,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;
@@ -1350,6 +1356,7 @@ fn test_deposit_request_invalid_signature() {
                 namespace,
                 signer,
                 validators.clone(),
+                None,
             );
             let (engine, consensus_state_query) =
                 Engine::new(context.with_label(&uid), config).await;

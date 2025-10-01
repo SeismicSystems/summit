@@ -1,12 +1,12 @@
 use std::{num::NonZeroU32, time::Duration};
 
+use crate::keys::read_ed_key_from_path;
 use anyhow::{Context, Result};
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
 use summit_application::engine_client::EngineClient;
+use summit_types::checkpoint::Checkpoint;
 use summit_types::{Genesis, PrivateKey, PublicKey};
-
-use crate::keys::read_ed_key_from_path;
 
 /* DEFAULTS */
 pub const PENDING_CHANNEL: u32 = 0;
@@ -46,6 +46,8 @@ pub struct EngineConfig<C: EngineClient> {
 
     pub namespace: String,
     pub genesis_hash: [u8; 32],
+
+    pub checkpoint: Option<Checkpoint>,
 }
 
 impl<C: EngineClient> EngineConfig<C> {
@@ -55,6 +57,7 @@ impl<C: EngineClient> EngineConfig<C> {
         participants: Vec<PublicKey>,
         db_prefix: String,
         genesis: &Genesis,
+        checkpoint: Option<Checkpoint>,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,
@@ -79,6 +82,7 @@ impl<C: EngineClient> EngineConfig<C> {
                 .map(|hash_bytes| hash_bytes.try_into())
                 .expect("bad eth_genesis_hash")
                 .expect("bad eth_genesis_hash"),
+            checkpoint,
         })
     }
 }

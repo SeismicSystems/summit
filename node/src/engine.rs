@@ -91,6 +91,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                     epoch_num_blocks: EPOCH_NUM_BLOCKS,
                     protocol_version: PROTOCOL_VERSION,
                     buffer_pool: buffer_pool.clone(),
+                    checkpoint: cfg.checkpoint,
                 },
             )
             .await;
