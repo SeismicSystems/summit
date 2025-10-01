@@ -102,7 +102,7 @@ pub struct RunFlags {
     /// Path to the genesis file
     #[arg(
         long,
-        default_value_t = String::from("./example_genesis_.toml")
+        default_value_t = String::from("./example_genesis.toml")
     )]
     pub genesis_path: String,
 }
