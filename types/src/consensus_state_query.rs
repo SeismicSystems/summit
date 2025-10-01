@@ -4,10 +4,12 @@ use futures::channel::{mpsc, oneshot};
 
 pub enum ConsensusStateRequest {
     GetCheckpoint,
+    GetLatestHeight,
 }
 
 pub enum ConsensusStateResponse {
     Checkpoint(Option<Checkpoint>),
+    LatestHeight(u64),
 }
 
 /// Used to send queries to the application finalizer to query the consensus state.
@@ -41,7 +43,9 @@ impl ConsensusStateQuery {
         let res = rx
             .await
             .expect("consensus state query response sender dropped");
-        let ConsensusStateResponse::Checkpoint(maybe_checkpoint) = res;
+        let ConsensusStateResponse::Checkpoint(maybe_checkpoint) = res else {
+            unreachable!("request and response variants must match");
+        };
         maybe_checkpoint
     }
 
@@ -53,7 +57,23 @@ impl ConsensusStateQuery {
         let res = rx
             .await
             .expect("consensus state query response sender dropped");
-        let ConsensusStateResponse::Checkpoint(maybe_checkpoint) = res;
+        let ConsensusStateResponse::Checkpoint(maybe_checkpoint) = res else {
+            unreachable!("request and response variants must match");
+        };
         maybe_checkpoint
+    }
+
+    pub async fn get_latest_height(&self) -> u64 {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetLatestHeight;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::LatestHeight(height) = res else {
+            unreachable!("request and response variants must match");
+        };
+        height
     }
 }
