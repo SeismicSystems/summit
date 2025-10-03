@@ -109,7 +109,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         genesis_hash: [u8; 32],
         protocol_version: u32,
         buffer_pool: PoolRef,
-        checkpoint: Option<Checkpoint>,
+        initial_state: Option<ConsensusState>,
     ) -> (
         Self,
         FinalizerMailbox,
@@ -160,11 +160,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             ),
         };
 
-        // Try to load state from checkpoint (highest priority) or database
-        if let Some(checkpoint) = checkpoint {
-            // Use checkpoint to initialize consensus state
-            let state = ConsensusState::try_from(&checkpoint)
-                .expect("failed to load consensus state from checkpoint");
+        // Try to load state from initial_state (highest priority) or database
+        if let Some(state) = initial_state {
             finalizer.state = state;
         } else if let Some(loaded_state) = finalizer.db.get_latest_consensus_state().await {
             finalizer.state = loaded_state;

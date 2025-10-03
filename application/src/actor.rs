@@ -99,7 +99,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 genesis_hash,
                 cfg.protocol_version,
                 cfg.buffer_pool,
-                cfg.checkpoint,
+                cfg.initial_state,
             )
             .await;
 

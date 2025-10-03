@@ -76,6 +76,17 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
         let registry = Registry::new(cfg.participants.clone());
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
+        // Convert checkpoint to ConsensusState if provided
+        let initial_state = cfg.checkpoint.as_ref().map(|checkpoint| {
+            summit_types::consensus_state::ConsensusState::try_from(checkpoint)
+                .expect("failed to load consensus state from checkpoint")
+        });
+
+        let sync_height = initial_state
+            .as_ref()
+            .map(|state| state.latest_height)
+            .unwrap_or(0);
+
         // create application
         let (application, application_mailbox, finalizer_mailbox, consensus_state_query) =
             summit_application::Actor::new(
@@ -93,7 +104,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                     epoch_num_blocks: EPOCH_NUM_BLOCKS,
                     protocol_version: PROTOCOL_VERSION,
                     buffer_pool: buffer_pool.clone(),
-                    checkpoint: cfg.checkpoint,
+                    initial_state,
                 },
             )
             .await;
@@ -164,7 +175,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 syncer_mailbox,
                 simplex,
                 finalizer_mailbox,
-                sync_height: 0,
+                sync_height,
             },
             consensus_state_query,
         )

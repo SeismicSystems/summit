@@ -2,7 +2,7 @@ use commonware_runtime::buffer::PoolRef;
 
 use crate::Registry;
 use crate::engine_client::EngineClient;
-use summit_types::checkpoint::Checkpoint;
+use summit_types::consensus_state::ConsensusState;
 
 #[derive(Clone)]
 pub struct ApplicationConfig<C: EngineClient> {
@@ -35,6 +35,6 @@ pub struct ApplicationConfig<C: EngineClient> {
 
     pub buffer_pool: PoolRef,
 
-    /// Optional checkpoint to initialize the finalizer with
-    pub checkpoint: Option<Checkpoint>,
+    /// Optional initial state to initialize the finalizer with
+    pub initial_state: Option<ConsensusState>,
 }
