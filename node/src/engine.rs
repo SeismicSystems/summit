@@ -65,6 +65,8 @@ pub struct Engine<
         summit_syncer::Mailbox,
         Registry,
     >,
+
+    sync_height: u64,
 }
 
 impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: EngineClient>
@@ -162,6 +164,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 syncer_mailbox,
                 simplex,
                 finalizer_mailbox,
+                sync_height: 0,
             },
             consensus_state_query,
         )
@@ -230,6 +233,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
             self.buffer_mailbox,
             backfill_network,
             self.finalizer_mailbox,
+            self.sync_height,
         );
         // start simplex
         let simplex_handle = self.simplex.start(voter_network, resolver_network);

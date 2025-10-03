@@ -172,8 +172,9 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
             impl Receiver<PublicKey = PublicKey>,
         ),
         app: impl Reporter<Activity = BlockEnvelope>,
+        sync_height: u64,
     ) -> Handle<()> {
-        self.context.spawn_ref()(self.run(buffer, backfill, app))
+        self.context.spawn_ref()(self.run(buffer, backfill, app, sync_height))
     }
 
     pub async fn run(
@@ -184,6 +185,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
             impl Receiver<PublicKey = PublicKey>,
         ),
         app: impl Reporter<Activity = BlockEnvelope>,
+        sync_height: u64,
     ) {
         let (orchestrator_sender, mut orchestrator_mailbox) = mpsc::channel(2); // buffer to send processed while moving forward
         let orchestrator = Orchestrator::new(orchestrator_sender);
@@ -197,6 +199,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
             orchestrator,
             rx_finalizer,
             self.epoch_num_blocks,
+            sync_height,
         )
         .await;
 
@@ -433,6 +436,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             requested_blocks.retain(|height| *height > next);
                         },
                         Orchestration::Repair { next, result } => {
+                            // While this should never happen, if the height is less than the sync
+                            // height, then we don't need to repair.
+                            if next < sync_height {
+                                continue;
+                            }
+
                             // Find next gap
                             let (_, start_next) = self.blocks.next_gap(next);
                             let Some(start_next) = start_next else {

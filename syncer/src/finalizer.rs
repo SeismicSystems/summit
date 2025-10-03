@@ -33,6 +33,9 @@ pub struct Finalizer<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activit
 
     // Number of blocks per epoch
     epoch_num_blocks: u64,
+
+    // The lowest height from which to begin syncing if no metadata exists.
+    sync_height: u64,
 }
 
 impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = BlockEnvelope>>
@@ -46,6 +49,7 @@ impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = BlockEnvelop
         orchestrator: Orchestrator,
         notifier_rx: mpsc::Receiver<()>,
         epoch_num_blocks: u64,
+        sync_height: u64,
     ) -> Self {
         // Initialize metadata
         let metadata = Metadata::init(
@@ -64,14 +68,24 @@ impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = BlockEnvelop
             notifier_rx,
             metadata,
             epoch_num_blocks,
+            sync_height,
         }
     }
 
     /// Run the finalizer, which continuously fetches and processes finalized blocks.
     pub async fn run(mut self) {
         // Initialize last indexed from metadata store.
-        // If the key does not exist, we assume the genesis block (height 0) has been indexed.
-        let mut latest = *self.metadata.get(&LATEST_KEY).unwrap_or(&0);
+
+        // Ensure metadata (and `latest`) stores the max of the existing value and `sync_height`.
+        let current = self.metadata.get(&LATEST_KEY).copied();
+        let desired = current.map_or(self.sync_height, |h| h.max(self.sync_height));
+        if current != Some(desired) {
+            if let Err(e) = self.metadata.put_sync(LATEST_KEY.clone(), desired).await {
+                error!("failed to update metadata: {e}");
+                return;
+            }
+        }
+        let mut latest = desired;
 
         // The main loop to process finalized blocks. This loop will hot-spin until a block is
         // available, at which point it will process it and continue. If a block is not available,
