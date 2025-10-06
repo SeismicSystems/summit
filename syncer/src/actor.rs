@@ -446,27 +446,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                             // Find next gap
                             let (_, start_next) = self.blocks.next_gap(next);
-
-                            // when next_gap(next) returns (_, None), then
-                            // 1. next is within the last range which means the block exists, so we don't have to do anything
-                            // 2. next is after all ranges which means the block doesn't exist, so we have to request it
-                            // 3. blocks db is empty, so we have a gap starting at next
                             let start_next = if let Some(start_next) = start_next {
                                 start_next
                             } else {
-                                // Check if the block at `next` actually exists
-                                let block_exists = self.blocks.get(Identifier::Index(next)).await.expect("Failed to check block").is_some();
-                                if block_exists {
-                                    debug!(next, public_key = ?self.public_key, "no gap found, block exists");
-                                    result.send(true).expect("Failed to send repair result");
-                                    continue;
-                                } else {
-                                    // Block doesn't exist, treat this as a gap starting at next
-                                    debug!(next, public_key = ?self.public_key, "block missing, treating as gap");
-                                    next
-                                }
+                                // No gap found by next_gap, but block might still be missing (empty db case)
+                                next
                             };
-                            debug!(next, start_next, public_key = ?self.public_key, "found gap");
 
                             // If we are at some height greater than genesis and start_next > next,
                             // attempt to repair the parent of the gapped block
@@ -498,8 +483,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             }
 
                             // Enqueue next items (by index)
-                            let range = next..std::cmp::min(start_next, next + 20);
-                            debug!(range.start, range.end, "requesting missing finalized blocks");
+                            let range_end = if start_next == next {
+                                next + 1
+                            } else {
+                                std::cmp::min(start_next, next + 20)
+                            };
+                            let range = next..range_end;
                             for height in range {
                                 // Check if we've already requested
                                 if requested_blocks.contains(&height) {

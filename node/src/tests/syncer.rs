@@ -14,7 +14,7 @@ use crate::test_harness::common::get_default_engine_config;
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 
 #[test_traced("INFO")]
-fn test_node_joins_later() {
+fn test_node_joins_later_no_checkpoint() {
     // Creates a network of 5 nodes, and starts only 4 of them.
     // The last node starts after 10 blocks, to ensure that the block backfilling
     // in the syncer works.
