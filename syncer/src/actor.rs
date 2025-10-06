@@ -61,6 +61,7 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
     activity_timeout: u64,
     namespace: String,
     epoch_num_blocks: u64,
+    partition_prefix: String,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Actor<R> {
@@ -159,6 +160,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 activity_timeout: config.activity_timeout,
                 namespace: config.namespace,
                 epoch_num_blocks: config.epoch_num_blocks,
+                partition_prefix: config.partition_prefix,
             },
             Mailbox::new(tx),
         )
@@ -194,7 +196,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
         // start the finalizer
         let finalizer = Finalizer::new(
             self.context.with_label("syncer-finalizer"),
-            "syncer-finalizer-metadata".into(),
+            self.partition_prefix.clone(),
             app,
             orchestrator,
             rx_finalizer,
@@ -414,6 +416,9 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         Orchestration::Get { next, result } => {
                             // Check if in blocks
                             let block = self.blocks.get(Identifier::Index(next)).await.expect("Failed to get finalized block");
+                            if block.is_none() {
+                                warn!(next, public_key = ?self.public_key, "ORCHESTRATION: Get returned None for block");
+                            }
                             result.send(block).expect("Failed to send block");
                         },
                         Orchestration::GetWithFinalization { next, result } => {
@@ -444,14 +449,32 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                             // Find next gap
                             let (_, start_next) = self.blocks.next_gap(next);
-                            let Some(start_next) = start_next else {
-                                result.send(false).expect("Failed to send repair result");
-                                continue;
-                            };
 
-                            // If we are at some height greater than genesis, attempt to repair the parent
-                            if next > 0 {
-                                // Get gapped block
+                            // when next_gap(next) returns (_, None), then
+                            // 1. next is within the last range which means the block exists, so we don't have to do anything
+                            // 2. next is after all ranges which means the block doesn't exist, so we have to request it
+                            // 3. blocks db is empty, so we have a gap starting at next
+                            let start_next = if let Some(start_next) = start_next {
+                                start_next
+                            } else {
+                                // Check if the block at `next` actually exists
+                                let block_exists = self.blocks.get(Identifier::Index(next)).await.expect("Failed to check block").is_some();
+                                if block_exists {
+                                    debug!(next, public_key = ?self.public_key, "no gap found, block exists");
+                                    result.send(true).expect("Failed to send repair result");
+                                    continue;
+                                } else {
+                                    // Block doesn't exist, treat this as a gap starting at next
+                                    debug!(next, public_key = ?self.public_key, "block missing, treating as gap");
+                                    next
+                                }
+                            };
+                            debug!(next, start_next, public_key = ?self.public_key, "found gap");
+
+                            // If we are at some height greater than genesis and start_next > next,
+                            // attempt to repair the parent of the gapped block
+                            if next > 0 && start_next > next {
+                                // Get gapped block (the first block after the gap)
                                 let gapped_block = self.blocks.get(Identifier::Index(start_next)).await.expect("Failed to get finalized block").expect("Gapped block missing");
 
                                 // Attempt to repair one block from other sources

@@ -55,7 +55,7 @@ impl<R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = BlockEnvelop
         let metadata = Metadata::init(
             context.with_label("metadata"),
             metadata::Config {
-                partition: format!("{partition_prefix}-metadata"),
+                partition: format!("{partition_prefix}-syncer-finalizer-metadata"),
                 codec_config: (),
             },
         )
