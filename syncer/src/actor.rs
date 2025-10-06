@@ -416,9 +416,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         Orchestration::Get { next, result } => {
                             // Check if in blocks
                             let block = self.blocks.get(Identifier::Index(next)).await.expect("Failed to get finalized block");
-                            if block.is_none() {
-                                warn!(next, public_key = ?self.public_key, "ORCHESTRATION: Get returned None for block");
-                            }
                             result.send(block).expect("Failed to send block");
                         },
                         Orchestration::GetWithFinalization { next, result } => {

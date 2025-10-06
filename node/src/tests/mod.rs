@@ -1,5 +1,6 @@
 mod checkpointing;
 mod execution_requests;
+mod syncer;
 
 use crate::test_harness::common::run_until_height;
 use commonware_macros::test_traced;
