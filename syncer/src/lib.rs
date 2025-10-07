@@ -5,7 +5,6 @@ use commonware_runtime::buffer::PoolRef;
 pub use ingress::*;
 use summit_types::PublicKey;
 pub mod coordinator;
-pub mod finalizer;
 pub mod handler;
 pub mod key;
 

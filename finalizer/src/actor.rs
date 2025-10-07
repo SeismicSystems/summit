@@ -612,7 +612,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 header_hash: prev_header_hash,
                 added_validators: self.state.added_validators.clone(),
                 removed_validators: self.state.removed_validators.clone(),
-                forkchoice: self.forkchoice.clone(),
+                forkchoice: self.forkchoice,
             }
         } else {
             BlockAuxData {
@@ -621,7 +621,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 header_hash: [0; 32].into(),
                 added_validators: vec![],
                 removed_validators: vec![],
-                forkchoice: self.forkchoice.clone(),
+                forkchoice: self.forkchoice,
             }
         };
         let _ = sender.send(aux_data);
