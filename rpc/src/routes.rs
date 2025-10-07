@@ -58,7 +58,11 @@ impl RpcRoutes {
     }
 
     async fn handle_get_checkpoint(State(state): State<Arc<RpcState>>) -> Result<String, String> {
-        let maybe_checkpoint = state.consensus_state_query.get_latest_checkpoint().await;
+        let maybe_checkpoint = state
+            .finalizer_mailbox
+            .clone()
+            .get_latest_checkpoint()
+            .await;
         let Some(checkpoint) = maybe_checkpoint else {
             return Err("checkpoint not found".into());
         };

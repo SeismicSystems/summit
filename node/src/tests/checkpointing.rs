@@ -87,9 +87,8 @@ fn test_checkpoint_created() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -149,6 +148,7 @@ fn test_checkpoint_created() {
 
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
         let checkpoint = consensus_state_query
+            .clone()
             .get_latest_checkpoint()
             .await
             .expect("failed to query checkpoint");
@@ -239,9 +239,8 @@ fn test_previous_header_hash_matches() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -316,6 +315,7 @@ fn test_previous_header_hash_matches() {
 
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
         let checkpoint = consensus_state_query
+            .clone()
             .get_latest_checkpoint()
             .await
             .expect("failed to query checkpoint");
@@ -395,8 +395,8 @@ fn test_single_engine_with_checkpoint() {
             Some(checkpoint.clone()),
         );
 
-        let (engine, consensus_state_query) = Engine::new(context.with_label(&uid), config).await;
-
+        let engine = Engine::new(context.with_label(&uid), config).await;
+        let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Get networking
         let (pending, resolver, broadcast, backfill) = registrations.remove(&public_key).unwrap();
 
@@ -407,7 +407,7 @@ fn test_single_engine_with_checkpoint() {
         context.sleep(Duration::from_millis(500)).await;
 
         // Verify the consensus state was initialized from the checkpoint (height 50)
-        let current_height = consensus_state_query.get_latest_height().await;
+        let current_height = finalizer_mailbox.get_latest_height().await;
 
         // The finalizer should have been initialized with our checkpoint at height 50
         // Since consensus is running, the height might be >= 50
@@ -497,9 +497,8 @@ fn test_node_joins_later_with_checkpoint() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -512,7 +511,7 @@ fn test_node_joins_later_with_checkpoint() {
         // Wait for the validators to checkpoint
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
         let checkpoint = loop {
-            if let Some(checkpoint) = consensus_state_query.get_latest_checkpoint().await {
+            if let Some(checkpoint) = consensus_state_query.clone().get_latest_checkpoint().await {
                 break checkpoint;
             }
             context.sleep(Duration::from_secs(1)).await;
@@ -537,7 +536,7 @@ fn test_node_joins_later_with_checkpoint() {
             validators.clone(),
             Some(checkpoint),
         );
-        let (engine, _consensus_state_query) = Engine::new(context.with_label(&uid), config).await;
+        let engine = Engine::new(context.with_label(&uid), config).await;
 
         // Get networking
         let (pending, resolver, broadcast, backfill) = registrations.remove(&public_key).unwrap();

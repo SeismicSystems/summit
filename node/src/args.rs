@@ -20,13 +20,13 @@ use std::{
     num::NonZeroU32,
     str::FromStr as _,
 };
-use summit_application::engine_client::RethEngineClient;
 #[cfg(feature = "base-bench")]
-use summit_application::engine_client::base_benchmarking::HistoricalEngineClient;
-#[cfg(feature = "bench")]
-use summit_application::engine_client::benchmarking::EthereumHistoricalEngineClient;
+use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 
-use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
+#[cfg(feature = "bench")]
+use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
+
+use summit_types::{Genesis, PublicKey, RethEngineClient, utils::get_expanded_path};
 use tracing::{Level, error};
 
 pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
@@ -314,8 +314,9 @@ impl Command {
             // Create network
             let p2p = network.start();
             // create engine
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label("engine"), config).await;
+            let engine = Engine::new(context.with_label("engine"), config).await;
+
+            let finalizer_mailbox = engine.finalizer_mailbox.clone();
 
             // Start engine
             let engine = engine.start(pending, resolver, broadcaster, backfiller);
@@ -324,7 +325,7 @@ impl Command {
             let key_path = flags.key_path.clone();
             let rpc_port = flags.rpc_port;
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                if let Err(e) = start_rpc_server(consensus_state_query, key_path, rpc_port).await {
+                if let Err(e) = start_rpc_server(finalizer_mailbox, key_path, rpc_port).await {
                     error!("RPC server failed: {}", e);
                 }
             });
@@ -438,9 +439,9 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
         // Create network
         let p2p = network.start();
         // create engine
-        let (engine, consensus_state_query) =
-            Engine::new(context.with_label("engine"), config).await;
+        let engine = Engine::new(context.with_label("engine"), config).await;
 
+        let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Start engine
         let engine = engine.start(pending, resolver, broadcaster, backfiller);
 
@@ -450,7 +451,7 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
         let rpc_handle = context
             .with_label("rpc_genesis")
             .spawn(move |_context| async move {
-                if let Err(e) = start_rpc_server(consensus_state_query, key_path, rpc_port).await {
+                if let Err(e) = start_rpc_server(finalizer_mailbox, key_path, rpc_port).await {
                     error!("RPC server failed: {}", e);
                 }
             });

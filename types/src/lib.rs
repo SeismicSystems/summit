@@ -3,13 +3,15 @@ mod block;
 pub mod checkpoint;
 pub mod consensus_state;
 pub mod consensus_state_query;
+pub mod engine_client;
 pub mod execution_request;
 pub mod genesis;
 pub mod header;
 pub mod utils;
 pub mod withdrawal;
-
+use alloy_rpc_types_engine::ForkchoiceState;
 pub use block::*;
+pub use engine_client::*;
 pub use genesis::*;
 pub use header::*;
 use withdrawal::PendingWithdrawal;
@@ -27,6 +29,7 @@ pub struct BlockAuxData {
     pub header_hash: Digest,
     pub added_validators: Vec<PublicKey>,
     pub removed_validators: Vec<PublicKey>,
+    pub forkchoice: ForkchoiceState,
 }
 
 pub type PublicKey = commonware_cryptography::ed25519::PublicKey;

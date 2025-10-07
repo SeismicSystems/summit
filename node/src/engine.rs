@@ -6,16 +6,17 @@ use commonware_p2p::{Receiver, Sender};
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_utils::NZUsize;
+use futures::channel::mpsc;
 use futures::future::try_join_all;
 use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use std::num::NonZero;
 use summit_application::ApplicationConfig;
-use summit_application::engine_client::EngineClient;
-use summit_application::finalizer::FinalizerMailbox;
-use summit_application::registry::Registry;
-use summit_types::consensus_state_query::ConsensusStateQuery;
-use summit_types::{Block, Digest, PrivateKey, PublicKey};
+use summit_finalizer::actor::Finalizer;
+use summit_finalizer::registry::Registry;
+use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
+use summit_syncer::Orchestrator;
+use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
 use tracing::{error, warn};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -54,8 +55,9 @@ pub struct Engine<
     buffer_mailbox: buffered::Mailbox<PublicKey, Block>,
     syncer: summit_syncer::Actor<E>,
     syncer_mailbox: summit_syncer::Mailbox,
-    finalizer_mailbox: FinalizerMailbox,
-
+    finalizer: Finalizer<E, C>,
+    pub finalizer_mailbox: FinalizerMailbox,
+    orchestrator: Orchestrator,
     simplex: Simplex<
         E,
         PrivateKey,
@@ -72,7 +74,7 @@ pub struct Engine<
 impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: EngineClient>
     Engine<E, C>
 {
-    pub async fn new(context: E, cfg: EngineConfig<C>) -> (Self, ConsensusStateQuery) {
+    pub async fn new(context: E, cfg: EngineConfig<C>) -> Self {
         let registry = Registry::new(cfg.participants.clone());
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
@@ -88,26 +90,16 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
             .unwrap_or(0);
 
         // create application
-        let (application, application_mailbox, finalizer_mailbox, consensus_state_query) =
-            summit_application::Actor::new(
-                context.with_label("application"),
-                ApplicationConfig {
-                    engine_client: cfg.engine_client,
-                    registry: registry.clone(),
-                    mailbox_size: cfg.mailbox_size,
-                    partition_prefix: cfg.partition_prefix.clone(),
-                    genesis_hash: cfg.genesis_hash,
-                    validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
-                    validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
-                    validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
-                    validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
-                    epoch_num_blocks: EPOCH_NUM_BLOCKS,
-                    protocol_version: PROTOCOL_VERSION,
-                    buffer_pool: buffer_pool.clone(),
-                    initial_state,
-                },
-            )
-            .await;
+        let (application, application_mailbox) = summit_application::Actor::new(
+            context.with_label("application"),
+            ApplicationConfig {
+                engine_client: cfg.engine_client.clone(),
+                mailbox_size: cfg.mailbox_size,
+                partition_prefix: cfg.partition_prefix.clone(),
+                genesis_hash: cfg.genesis_hash,
+            },
+        )
+        .await;
 
         // create the buffer
         let (buffer, buffer_mailbox) = buffered::Engine::new(
@@ -130,11 +122,31 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
             backfill_quota: cfg.backfill_quota,
             activity_timeout: cfg.activity_timeout,
             namespace: cfg.namespace.clone(),
-            epoch_num_blocks: EPOCH_NUM_BLOCKS,
             buffer_pool: buffer_pool.clone(),
         };
-        let (syncer, syncer_mailbox) =
+        let (syncer, syncer_mailbox, orchestrator) =
             summit_syncer::Actor::new(context.with_label("syncer"), syncer_config).await;
+
+        // create finalizer
+        let (finalizer, finalizer_mailbox) = Finalizer::new(
+            context.with_label("finalizer"),
+            FinalizerConfig {
+                mailbox_size: cfg.mailbox_size,
+                db_prefix: cfg.partition_prefix.clone(),
+                engine_client: cfg.engine_client,
+                registry: registry.clone(),
+                epoch_num_of_blocks: EPOCH_NUM_BLOCKS,
+                validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
+                validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
+                validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
+                validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
+                buffer_pool: buffer_pool.clone(),
+                genesis_hash: cfg.genesis_hash,
+                initial_state,
+                protocol_version: PROTOCOL_VERSION,
+            },
+        )
+        .await;
 
         // create simplex
         let simplex = Simplex::new(
@@ -165,20 +177,19 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
             },
         );
 
-        (
-            Self {
-                context,
-                application,
-                buffer,
-                buffer_mailbox,
-                syncer,
-                syncer_mailbox,
-                simplex,
-                finalizer_mailbox,
-                sync_height,
-            },
-            consensus_state_query,
-        )
+        Self {
+            context,
+            application,
+            buffer,
+            buffer_mailbox,
+            syncer,
+            syncer_mailbox,
+            simplex,
+            finalizer,
+            finalizer_mailbox,
+            orchestrator,
+            sync_height,
+        }
     }
 
     /// Start the `simplex` consensus engine.
@@ -236,16 +247,19 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
         ),
     ) {
         // start the application
-        let app_handle = self.application.start(self.syncer_mailbox);
+        let app_handle = self
+            .application
+            .start(self.syncer_mailbox, self.finalizer_mailbox);
         // start the buffer
         let buffer_handle = self.buffer.start(broadcast_network);
+        let (tx_finalizer_notify, rx_finalizer_notify) = mpsc::channel(2);
+        let finalizer_handle =
+            self.finalizer
+                .start(self.orchestrator, self.sync_height, rx_finalizer_notify);
         // start the syncer
-        let syncer_handle = self.syncer.start(
-            self.buffer_mailbox,
-            backfill_network,
-            self.finalizer_mailbox,
-            self.sync_height,
-        );
+        let syncer_handle =
+            self.syncer
+                .start(self.buffer_mailbox, backfill_network, tx_finalizer_notify);
         // start simplex
         let simplex_handle = self.simplex.start(voter_network, resolver_network);
 
@@ -253,6 +267,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
         if let Err(e) = try_join_all(vec![
             app_handle,
             buffer_handle,
+            finalizer_handle,
             syncer_handle,
             simplex_handle,
         ])

@@ -5305,6 +5305,7 @@ dependencies = [
  "sha3",
  "socket2 0.6.0",
  "summit-application",
+ "summit-finalizer",
  "summit-rpc",
  "summit-syncer",
  "summit-types",
@@ -5346,6 +5347,32 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "summit-finalizer",
+ "summit-syncer",
+ "summit-types",
+ "tracing",
+]
+
+[[package]]
+name = "summit-finalizer"
+version = "0.0.0"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "bytes",
+ "commonware-codec",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-resolver",
+ "commonware-runtime",
+ "commonware-storage",
+ "commonware-utils",
+ "futures",
+ "governor",
+ "metrics",
+ "prometheus-client",
+ "rand 0.8.5",
  "summit-syncer",
  "summit-types",
  "tracing",
@@ -5364,6 +5391,7 @@ dependencies = [
  "ethereum_ssz",
  "futures",
  "serde",
+ "summit-finalizer",
  "summit-types",
  "tokio",
  "tokio-util",
@@ -5399,7 +5427,9 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "alloy-provider",
  "alloy-rpc-types-engine",
+ "alloy-transport-ipc",
  "anyhow",
  "bytes",
  "commonware-codec",
@@ -5412,6 +5442,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "tracing",
 ]
 
 [[package]]

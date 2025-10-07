@@ -18,10 +18,9 @@ use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
 };
-use summit_application::engine_client::EngineClient;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
-use summit_types::{Digest, PrivateKey, PublicKey};
+use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
@@ -158,9 +157,8 @@ pub fn run_until_height(
                 None,
             );
 
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =

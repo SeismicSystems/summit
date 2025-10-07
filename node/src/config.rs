@@ -4,9 +4,8 @@ use crate::keys::read_ed_key_from_path;
 use anyhow::{Context, Result};
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
-use summit_application::engine_client::EngineClient;
 use summit_types::checkpoint::Checkpoint;
-use summit_types::{Genesis, PrivateKey, PublicKey};
+use summit_types::{EngineClient, Genesis, PrivateKey, PublicKey};
 
 /* DEFAULTS */
 pub const PENDING_CHANNEL: u32 = 0;

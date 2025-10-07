@@ -24,9 +24,9 @@ use alloy_rpc_types_engine::{
 };
 use tracing::{error, warn};
 
+use crate::Block;
 use alloy_transport_ipc::IpcConnect;
 use std::future::Future;
-use summit_types::Block;
 
 pub trait EngineClient: Clone + Send + Sync + 'static {
     fn start_building_block(

@@ -10,8 +10,7 @@ use alloy_rpc_types_engine::{
 use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use summit_application::engine_client::EngineClient;
-use summit_types::Block;
+use summit_types::{Block, EngineClient};
 
 #[derive(Clone)]
 pub struct MockEngineClient {

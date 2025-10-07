@@ -109,9 +109,8 @@ fn test_deposit_request_single() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -296,9 +295,8 @@ fn test_deposit_request_top_up() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -495,9 +493,8 @@ fn test_deposit_and_withdrawal_request_single() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -708,9 +705,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -919,9 +915,8 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -1145,9 +1140,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -1358,9 +1352,8 @@ fn test_deposit_request_invalid_signature() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =

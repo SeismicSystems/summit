@@ -20,8 +20,9 @@ required-features = ["bench"]
 [dependencies]
 summit-types.workspace = true
 summit-application = { workspace = true, features = [] }
-summit-rpc = { path = "../rpc" }
+summit-rpc.workspace = true
 summit-syncer.workspace = true
+summit-finalizer.workspace = true
 
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true

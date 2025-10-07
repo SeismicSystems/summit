@@ -1,5 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use crate::engine::{EPOCH_NUM_BLOCKS, Engine};
+use crate::test_harness::common;
+use crate::test_harness::common::get_default_engine_config;
+use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_macros::test_traced;
 use commonware_p2p::simulated;
@@ -7,11 +9,9 @@ use commonware_p2p::simulated::{Link, Network};
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
 use commonware_utils::from_hex_formatted;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use summit_types::PrivateKey;
-use crate::engine::{Engine, EPOCH_NUM_BLOCKS};
-use crate::test_harness::common;
-use crate::test_harness::common::get_default_engine_config;
-use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 
 #[test_traced("INFO")]
 fn test_node_joins_later_no_checkpoint() {
@@ -88,9 +88,8 @@ fn test_node_joins_later_no_checkpoint() {
                 validators.clone(),
                 None,
             );
-            let (engine, consensus_state_query) =
-                Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, consensus_state_query);
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
             let (pending, resolver, broadcast, backfill) =
@@ -103,7 +102,7 @@ fn test_node_joins_later_no_checkpoint() {
         // Wait for the validators to checkpoint
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
         let _checkpoint = loop {
-            if let Some(checkpoint) = consensus_state_query.get_latest_checkpoint().await {
+            if let Some(checkpoint) = consensus_state_query.clone().get_latest_checkpoint().await {
                 break checkpoint;
             }
             context.sleep(Duration::from_secs(1)).await;
@@ -128,7 +127,7 @@ fn test_node_joins_later_no_checkpoint() {
             validators.clone(),
             None,
         );
-        let (engine, _consensus_state_query) = Engine::new(context.with_label(&uid), config).await;
+        let engine = Engine::new(context.with_label(&uid), config).await;
 
         // Get networking
         let (pending, resolver, broadcast, backfill) = registrations.remove(&public_key).unwrap();

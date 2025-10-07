@@ -1,10 +1,7 @@
 use crate::{
     ApplicationConfig,
-    engine_client::EngineClient,
-    finalizer::{Finalizer, FinalizerMailbox},
     ingress::{Mailbox, Message},
 };
-use alloy_rpc_types_engine::ForkchoiceState;
 use anyhow::{Result, anyhow};
 use commonware_macros::select;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
@@ -23,13 +20,11 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use summit_finalizer::FinalizerMailbox;
 use tracing::{error, info, warn};
 
 use summit_syncer::ingress::Mailbox as SyncerMailbox;
-use summit_types::consensus_state_query::ConsensusStateQuery;
-use summit_types::{Block, BlockAuxData, Digest};
-
-type AuxDataRequest = (u64, oneshot::Sender<BlockAuxData>);
+use summit_types::{Block, Digest, EngineClient};
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
 struct ChannelClosedFuture<'a, T> {
@@ -60,74 +55,35 @@ pub struct Actor<
     context: R,
     mailbox: mpsc::Receiver<Message>,
     engine_client: C,
-    forkchoice: Arc<Mutex<ForkchoiceState>>,
     built_block: Arc<Mutex<Option<Block>>>,
-    finalizer: Option<Finalizer<R, C>>,
-    tx_height_notify: mpsc::Sender<(u64, oneshot::Sender<()>)>,
-    tx_aux_data: mpsc::Sender<AuxDataRequest>,
     genesis_hash: [u8; 32],
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
     Actor<R, C>
 {
-    pub async fn new(
-        context: R,
-        cfg: ApplicationConfig<C>,
-    ) -> (Self, Mailbox, FinalizerMailbox, ConsensusStateQuery) {
+    pub async fn new(context: R, cfg: ApplicationConfig<C>) -> (Self, Mailbox) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
 
         let genesis_hash = cfg.genesis_hash;
-        let forkchoice = Arc::new(Mutex::new(ForkchoiceState {
-            head_block_hash: genesis_hash.into(),
-            safe_block_hash: genesis_hash.into(),
-            finalized_block_hash: genesis_hash.into(),
-        }));
-
-        let (finalizer, finalizer_mailbox, consensus_state_query, tx_height_notify, tx_aux_data) =
-            Finalizer::new(
-                context.with_label("finalizer"),
-                cfg.engine_client.clone(),
-                cfg.registry,
-                forkchoice.clone(),
-                cfg.partition_prefix,
-                cfg.validator_onboarding_limit_per_block,
-                cfg.validator_minimum_stake,
-                cfg.validator_withdrawal_period,
-                cfg.validator_max_withdrawals_per_block,
-                cfg.epoch_num_blocks,
-                genesis_hash,
-                cfg.protocol_version,
-                cfg.buffer_pool,
-                cfg.initial_state,
-            )
-            .await;
 
         (
             Self {
                 context,
                 mailbox: rx,
                 engine_client: cfg.engine_client,
-                forkchoice,
                 built_block: Arc::new(Mutex::new(None)),
-                finalizer: Some(finalizer),
-                tx_height_notify,
-                tx_aux_data,
                 genesis_hash,
             },
             Mailbox::new(tx),
-            finalizer_mailbox,
-            consensus_state_query,
         )
     }
 
-    pub fn start(mut self, syncer: SyncerMailbox) -> Handle<()> {
-        self.context.spawn_ref()(self.run(syncer))
+    pub fn start(mut self, syncer: SyncerMailbox, finalizer: FinalizerMailbox) -> Handle<()> {
+        self.context.spawn_ref()(self.run(syncer, finalizer))
     }
 
-    pub async fn run(mut self, mut syncer: SyncerMailbox) {
-        self.finalizer.take().expect("no finalizer").start();
-
+    pub async fn run(mut self, mut syncer: SyncerMailbox, mut finalizer: FinalizerMailbox) {
         let rand_id: u8 = rand::random();
         while let Some(message) = self.mailbox.next().await {
             match message {
@@ -144,7 +100,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                     let built = self.built_block.clone();
                     select! {
-                            res = self.handle_proposal(parent, &mut syncer, view) => {
+                            res = self.handle_proposal(parent, &mut syncer,&mut finalizer, view) => {
                                 match res {
                                     Ok(block) => {
                                         // store block
@@ -237,6 +193,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         &mut self,
         parent: (u64, Digest),
         syncer: &mut summit_syncer::Mailbox,
+        finalizer: &mut FinalizerMailbox,
         view: View,
     ) -> Result<Block> {
         // Get the parent block
@@ -249,32 +206,23 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         let parent = parent_request.await.unwrap();
 
         // now that we have the parent additionally await for that to be executed by the finalizer
-        let (tx, rx) = oneshot::channel();
-        self.tx_height_notify
-            .try_send((parent.height(), tx))
-            .expect("finalizer dropped");
-
+        let rx = finalizer.notify_at_height(parent.height()).await;
         // await for notification
         rx.await.expect("Finalizer dropped");
 
         // Request aux data (withdrawals, checkpoint hash, header hash)
-        let (tx, rx) = oneshot::channel();
-        self.tx_aux_data
-            .try_send((parent.height() + 1, tx))
-            .expect("finalizer dropped");
+        let aux_data = finalizer
+            .get_aux_data(parent.height() + 1)
+            .await
+            .await
+            .expect("Finalizer dropped");
 
-        // await response
-        let aux_data = rx.await.expect("finalizer dropped");
         let pending_withdrawals = aux_data.withdrawals;
         let checkpoint_hash = aux_data.checkpoint_hash;
 
         let mut current = self.context.current().epoch_millis();
         if current <= parent.timestamp() {
             current = parent.timestamp() + 1;
-        }
-        let forkchoice_clone;
-        {
-            forkchoice_clone = *self.forkchoice.lock().expect("poisoned");
         }
 
         // Add pending withdrawals to the block
@@ -283,13 +231,18 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             #[cfg(any(feature = "bench", feature = "base-bench"))]
             {
                 self.engine_client
-                    .start_building_block(forkchoice_clone, current, withdrawals, parent.height())
+                    .start_building_block(
+                        aux_data.forkchoice,
+                        current,
+                        withdrawals,
+                        parent.height(),
+                    )
                     .await
             }
             #[cfg(not(any(feature = "bench", feature = "base-bench")))]
             {
                 self.engine_client
-                    .start_building_block(forkchoice_clone, current, withdrawals)
+                    .start_building_block(aux_data.forkchoice, current, withdrawals)
                     .await
             }
         }

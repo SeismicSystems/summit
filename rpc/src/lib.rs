@@ -3,30 +3,30 @@ use std::sync::Mutex;
 
 use crate::routes::RpcRoutes;
 use futures::channel::oneshot;
-use summit_types::consensus_state_query::ConsensusStateQuery;
+use summit_finalizer::FinalizerMailbox;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 pub struct RpcState {
     key_path: String,
-    consensus_state_query: ConsensusStateQuery,
+    finalizer_mailbox: FinalizerMailbox,
 }
 
 impl RpcState {
-    pub fn new(key_path: String, consensus_state_query: ConsensusStateQuery) -> Self {
+    pub fn new(key_path: String, finalizer_mailbox: FinalizerMailbox) -> Self {
         Self {
             key_path,
-            consensus_state_query,
+            finalizer_mailbox,
         }
     }
 }
 
 pub async fn start_rpc_server(
-    consensus_state_query: ConsensusStateQuery,
+    finalizer_mailbox: FinalizerMailbox,
     key_path: String,
     port: u16,
 ) -> anyhow::Result<()> {
-    let state = RpcState::new(key_path, consensus_state_query);
+    let state = RpcState::new(key_path, finalizer_mailbox);
 
     let server = RpcRoutes::mount(state);
 

@@ -8,6 +8,7 @@ name = "summit_rpc"
 path = "src/lib.rs"
 
 [dependencies]
+summit-finalizer.workspace = true
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tokio-util.workspace = true

@@ -26,7 +26,5 @@ pub struct Config {
 
     pub namespace: String,
 
-    pub epoch_num_blocks: u64,
-
     pub buffer_pool: PoolRef,
 }
