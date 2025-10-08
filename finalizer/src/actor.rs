@@ -232,95 +232,96 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
             // Add validators that deposited to the validator set
             self.process_execution_requests(&block, new_height).await;
+        }
 
-            #[cfg(debug_assertions)]
-            {
-                let gauge: Gauge = Gauge::default();
-                gauge.set(new_height as i64);
-                self.context.register("height", "chain height", gauge);
-            }
-            self.state.set_latest_height(new_height);
+        #[cfg(debug_assertions)]
+        {
+            let gauge: Gauge = Gauge::default();
+            gauge.set(new_height as i64);
+            self.context.register("height", "chain height", gauge);
+        }
+        self.state.set_latest_height(new_height);
 
-            // Periodically persist state to database as a blob
-            // We build the checkpoint one height before the epoch end which
-            // allows the validators to sign the checkpoint hash in the last block
-            // of the epoch
-            if is_penultimate_block_of_epoch(new_height, self.epoch_num_of_blocks) {
-                let checkpoint = Checkpoint::new(&self.state);
-                self.state.pending_checkpoint = Some(checkpoint);
-            }
+        // Periodically persist state to database as a blob
+        // We build the checkpoint one height before the epoch end which
+        // allows the validators to sign the checkpoint hash in the last block
+        // of the epoch
+        if is_penultimate_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+            let checkpoint = Checkpoint::new(&self.state);
+            self.state.pending_checkpoint = Some(checkpoint);
+        }
 
-            // Store finalizes checkpoint to database
-            if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
-                let view = block.view();
-                if let Some(finalized) = finalized {
-                    // The finalized signatures should always be included on the last block
-                    // of the epoch. However, there is an edge case, where the block after
-                    // last block of the epoch arrived out of order.
-                    // This is not critical and will likely never happen on all validators
-                    // at the same time.
-                    // TODO(matthias): figure out a good solution for making checkpoints available
-                    debug_assert!(block.header.digest == finalized.proposal.payload);
+        // Store finalizes checkpoint to database
+        if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+            let view = block.view();
+            if let Some(finalized) = finalized {
+                // The finalized signatures should always be included on the last block
+                // of the epoch. However, there is an edge case, where the block after
+                // last block of the epoch arrived out of order.
+                // This is not critical and will likely never happen on all validators
+                // at the same time.
+                // TODO(matthias): figure out a good solution for making checkpoints available
+                debug_assert!(block.header.digest == finalized.proposal.payload);
 
-                    // Store the finalized block header in the database
-                    let finalized_header = FinalizedHeader {
-                        header: block.header,
-                        finalized,
-                    };
-                    self.db
-                        .store_finalized_header(new_height, &finalized_header)
-                        .await;
-
-                    #[cfg(debug_assertions)]
-                    {
-                        let gauge: Gauge = Gauge::default();
-                        gauge.set(new_height as i64);
-                        self.context.register(
-                            format!("<header>{}</header><prev_header>{}</prev_header>_finalized_header_stored",
-                                    hex::encode(finalized_header.header.digest), hex::encode(finalized_header.header.prev_epoch_header_hash)),
-                            "chain height",
-                            gauge
-                        );
-                    }
-                }
-
-                // Add and remove validators for the next epoch
-                if !self.state.added_validators.is_empty()
-                    || !self.state.removed_validators.is_empty()
-                {
-                    self.registry.update_registry(
-                        // TODO(matthias): do we still need the DELTA?
-                        //block.view() + REGISTRY_CHANGE_VIEW_DELTA,
-                        view,
-                        std::mem::take(&mut self.state.added_validators),
-                        std::mem::take(&mut self.state.removed_validators),
-                    );
-                }
-
-                let checkpoint = self
-                    .state
-                    .pending_checkpoint
-                    .as_ref()
-                    .expect("this checkpoint was stored last height");
-                self.db.store_finalized_checkpoint(checkpoint).await;
-                self.db.store_consensus_state(new_height, &self.state).await;
-                // This will commit all changes to the state db
-                self.db.commit().await;
+                // Store the finalized block header in the database
+                let finalized_header = FinalizedHeader {
+                    header: block.header,
+                    finalized,
+                };
+                self.db
+                    .store_finalized_header(new_height, &finalized_header)
+                    .await;
 
                 #[cfg(debug_assertions)]
                 {
                     let gauge: Gauge = Gauge::default();
                     gauge.set(new_height as i64);
-                    self.context
-                        .register("consensus_state_stored", "chain height", gauge);
+                    self.context.register(
+                        format!("<header>{}</header><prev_header>{}</prev_header>_finalized_header_stored",
+                                hex::encode(finalized_header.header.digest), hex::encode(finalized_header.header.prev_epoch_header_hash)),
+                        "chain height",
+                        gauge
+                    );
                 }
             }
 
-            self.height_notify_up_to(new_height);
-            let _ = notifier.send(());
+            // Add and remove validators for the next epoch
+            if !self.state.added_validators.is_empty()
+                || !self.state.removed_validators.is_empty()
+            {
+                self.registry.update_registry(
+                    // TODO(matthias): do we still need the DELTA?
+                    //block.view() + REGISTRY_CHANGE_VIEW_DELTA,
+                    view,
+                    std::mem::take(&mut self.state.added_validators),
+                    std::mem::take(&mut self.state.removed_validators),
+                );
+            }
 
-            info!(new_height, "finalized block");
+            // This pending checkpoint should always exist, because it was created at the previous height.
+            // The only case where the pending checkpoint doesn't exist here is if the node checkpointed.
+            // The checkpoint is created at the penultimate block of the epoch, and finalized at the last
+            // block. So if a node checkpoints, it will start at the height of the penultimate block.
+            // TODO(matthias): verify this
+            if let Some(checkpoint) = &self.state.pending_checkpoint {
+                self.db.store_finalized_checkpoint(checkpoint).await;
+            }
+            self.db.store_consensus_state(new_height, &self.state).await;
+            // This will commit all changes to the state db
+            self.db.commit().await;
+
+            #[cfg(debug_assertions)]
+            {
+                let gauge: Gauge = Gauge::default();
+                gauge.set(new_height as i64);
+                self.context
+                    .register("consensus_state_stored", "chain height", gauge);
+            }
         }
+
+        self.height_notify_up_to(new_height);
+        let _ = notifier.send(());
+        info!(new_height, "finalized block");
     }
 
     async fn parse_execution_requests(&mut self, block: &Block, new_height: u64) {
