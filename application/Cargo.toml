@@ -13,12 +13,9 @@ anyhow.workspace = true
 tracing.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
-commonware-codec.workspace = true
 commonware-runtime.workspace = true
 commonware-macros.workspace = true
 commonware-utils.workspace = true
-commonware-storage.workspace = true
-commonware-resolver.workspace = true
 
 futures.workspace = true
 alloy-provider.workspace = true
@@ -35,21 +32,6 @@ alloy-transport-ipc.workspace = true
 # commonware depends on it, so we have to build it anyway.
 prometheus-client = "0.22.3"
 
-# For metrics - activate with `prom` feature
-metrics = { version = "0.24.0", optional = true }
-
-# only for benchmarking
-serde_json = { workspace = true, optional = true }
-op-alloy-network = { version = "0.19.1", optional = true }
-serde = { workspace = true, optional = true }
-op-alloy-rpc-types-engine = { version = "0.19.1", optional = true }
-ethereum_ssz = { workspace = true, optional = true }
-
-[dev-dependencies]
-alloy-primitives.workspace = true
-alloy-eips.workspace = true
-
 [features]
-prom = ["metrics"]
-base-bench = ["op-alloy-network", "op-alloy-rpc-types-engine", "serde", "serde_json"]
-bench = ["serde", "serde_json", "ethereum_ssz"]
+base-bench = []
+bench = []

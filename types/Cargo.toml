@@ -27,6 +27,10 @@ tracing.workspace = true
 bytes.workspace = true
 serde_json = { workspace = true, optional = true }
 
+# for benchmarking
+op-alloy-network = { version = "0.19.1", optional = true }
+op-alloy-rpc-types-engine = { version = "0.19.1", optional = true }
+
 [features]
-base-bench = ["serde_json"]
+base-bench = ["op-alloy-network", "op-alloy-rpc-types-engine","serde_json"]
 bench = ["serde_json"]

@@ -10,6 +10,8 @@ use commonware_storage::translator::TwoCap;
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
 use futures::{StreamExt as _, select};
+#[cfg(feature = "prom")]
+use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;

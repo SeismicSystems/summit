@@ -309,11 +309,11 @@ impl ssz::Decode for FinalizedHeader {
         let finalized_bytes: Vec<u8> = decoder.decode_next()?;
 
         let header = Header::from_ssz_bytes(&header_bytes)
-            .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{:?}", e)))?;
+            .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
         let mut finalized_buf = finalized_bytes.as_slice();
         let finalized = Finalization::read_cfg(&mut finalized_buf, &finalized_bytes.len())
-            .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{:?}", e)))?;
+            .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
         // Ensure the finalization is for the header
         if finalized.proposal.payload != header.digest {

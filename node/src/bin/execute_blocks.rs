@@ -3,11 +3,11 @@ use anyhow::Result;
 use clap::{Arg, Command};
 use commonware_utils::from_hex_formatted;
 use std::path::PathBuf;
-use summit_application::engine_client::EngineClient;
+use summit_types::engine_client::EngineClient;
 #[cfg(feature = "base-bench")]
-use summit_application::engine_client::base_benchmarking::HistoricalEngineClient;
+use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 #[cfg(feature = "bench")]
-use summit_application::engine_client::benchmarking::EthereumHistoricalEngineClient;
+use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 use summit_types::{Block, Digest};
 
 #[cfg(all(feature = "base-bench", not(feature = "bench")))]

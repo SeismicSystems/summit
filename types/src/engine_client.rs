@@ -120,6 +120,8 @@ impl EngineClient for RethEngineClient {
 #[cfg(feature = "base-bench")]
 pub mod base_benchmarking {
     use crate::engine_client::EngineClient;
+    use crate::utils::benchmarking::BlockIndex;
+    use crate::{Block, Digest};
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
     use alloy_primitives::{B256, FixedBytes, U256};
@@ -133,8 +135,6 @@ pub mod base_benchmarking {
     use serde::{Deserialize, Serialize};
     use std::fs;
     use std::path::PathBuf;
-    use summit_types::utils::benchmarking::BlockIndex;
-    use summit_types::{Block, Digest};
 
     #[derive(Clone)]
     pub struct HistoricalEngineClient {
@@ -318,6 +318,7 @@ pub mod base_benchmarking {
 #[cfg(feature = "bench")]
 pub mod benchmarking {
     use crate::engine_client::EngineClient;
+    use crate::{Block, Digest};
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
     use alloy_primitives::{B256, FixedBytes, U256};
@@ -330,7 +331,6 @@ pub mod benchmarking {
     use serde::{Deserialize, Serialize};
     use std::fs;
     use std::path::PathBuf;
-    use summit_types::{Block, Digest};
 
     #[derive(Clone)]
     pub struct EthereumHistoricalEngineClient {
