@@ -115,6 +115,11 @@ impl MockEngineClient {
         withdrawals
     }
 
+    /// Load a checkpoint
+    pub fn load_checkpoint(&self, hash: FixedBytes<32>, block: ExecutionPayloadV3) {
+        self.state.lock().unwrap().canonical_blocks.insert(hash, block);
+    }
+
     #[allow(unused)]
     /// Check if a block exists in canonical chain
     pub fn has_block(&self, block_hash: FixedBytes<32>) -> bool {
