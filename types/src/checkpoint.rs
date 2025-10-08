@@ -154,6 +154,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            last_executed_block: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -246,6 +247,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            last_executed_block: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -278,6 +280,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            last_executed_block: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -377,6 +380,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            last_executed_block: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -414,6 +418,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            last_executed_block: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -457,6 +462,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            last_executed_block: None,
         };
 
         let checkpoint = Checkpoint::new(&original_state);
@@ -495,6 +501,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            last_executed_block: None,
         };
 
         let mut checkpoint = Checkpoint::new(&original_state);
@@ -570,6 +577,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            last_executed_block: None,
         };
 
         let checkpoint = Checkpoint::new(&original_state);
