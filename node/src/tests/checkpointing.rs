@@ -158,7 +158,7 @@ fn test_checkpoint_created() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
@@ -325,7 +325,7 @@ fn test_previous_header_hash_matches() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
@@ -527,6 +527,14 @@ fn test_node_joins_later_with_checkpoint() {
 
         let engine_client = engine_client_network.create_client(uid.clone());
 
+        // This corresponds to snapshotting Reth
+        let consensus_state = ConsensusState::try_from(&checkpoint).unwrap();
+        let from_block = consensus_state.latest_height + 1;
+        let payload = consensus_state.last_executed_block.unwrap();
+        let eth_hash = payload.payload_inner.payload_inner.block_hash.into();
+
+        engine_client.load_checkpoint(eth_hash, payload);
+
         let config = get_default_engine_config(
             engine_client,
             uid.clone(),
@@ -596,7 +604,7 @@ fn test_node_joins_later_with_checkpoint() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(Some(from_block), Some(stop_height))
                 .is_ok()
         );
 

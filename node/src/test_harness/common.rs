@@ -216,7 +216,7 @@ pub fn run_until_height(
             // Check that all nodes have the same canonical chain
             assert!(
                 engine_client_network
-                    .verify_consensus(Some(stop_height))
+                    .verify_consensus(None, Some(stop_height))
                     .is_ok()
             );
         }
