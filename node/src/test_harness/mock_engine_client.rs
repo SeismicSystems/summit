@@ -117,7 +117,19 @@ impl MockEngineClient {
 
     /// Load a checkpoint
     pub fn load_checkpoint(&self, hash: FixedBytes<32>, block: ExecutionPayloadV3) {
-        self.state.lock().unwrap().canonical_blocks.insert(hash, block);
+        let mut state = self.state.lock().unwrap();
+        let block_number = block.payload_inner.payload_inner.block_number;
+
+        state.canonical_blocks.insert(hash, block.clone());
+        state.canonical_by_number.insert(block_number, hash);
+        state.current_head = hash;
+        state.next_block_number = block_number + 1;
+
+        let status = PayloadStatus::new(PayloadStatusEnum::Valid, Some(hash));
+        state.known_blocks.insert(hash, status.clone());
+        state
+            .validated_blocks
+            .insert(hash, block);
     }
 
     #[allow(unused)]
@@ -342,6 +354,7 @@ impl EngineClient for MockEngineClient {
     }
 
     async fn check_payload(&self, block: &Block) -> PayloadStatus {
+        println!("check_payload: {}", block.payload.payload_inner.payload_inner.block_hash);
         let mut state = self.state.lock().unwrap();
 
         if state.force_invalid {
@@ -358,6 +371,7 @@ impl EngineClient for MockEngineClient {
 
         // Check if parent exists in our canonical chain
         if !state.canonical_blocks.contains_key(&parent_hash) {
+            println!("############################# PARENT {parent_hash} NOT FOUND for {}", block.payload.payload_inner.payload_inner.block_hash);
             let status = PayloadStatus::new(
                 PayloadStatusEnum::Invalid {
                     validation_error: "Parent block not found".to_string(),
@@ -378,6 +392,7 @@ impl EngineClient for MockEngineClient {
     }
 
     async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+        println!("check_payload: {}", fork_choice_state.head_block_hash);
         let mut state = self.state.lock().unwrap();
 
         // Update current head
