@@ -182,6 +182,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         let payload_status = self.engine_client.check_payload(&block).await;
         let new_height = block.height();
 
+
         // Verify withdrawal requests that were included in the block
         // Make sure that the included withdrawals match the expected withdrawals
         let expected_withdrawals: Vec<Withdrawal> =
@@ -194,11 +195,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             } else {
                 vec![]
             };
+
         if payload_status.is_valid()
             && block.payload.payload_inner.withdrawals == expected_withdrawals
         {
             let eth_hash = block.eth_block_hash();
-
             info!(
                 "Commiting block 0x{} for height {}",
                 hex(&eth_hash),
@@ -226,6 +227,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             self.engine_client.commit_hash(forkchoice).await;
 
             self.state.forkchoice = forkchoice;
+            self.state.last_executed_block = Some(block.payload.clone());
 
             // Parse execution requests
             self.parse_execution_requests(&block, new_height).await;

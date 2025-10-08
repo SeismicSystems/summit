@@ -181,7 +181,7 @@ fn test_deposit_request_single() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
@@ -372,7 +372,7 @@ fn test_deposit_request_top_up() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
@@ -577,7 +577,7 @@ fn test_deposit_and_withdrawal_request_single() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
@@ -794,7 +794,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
@@ -1009,7 +1009,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
@@ -1243,7 +1243,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
@@ -1414,7 +1414,7 @@ fn test_deposit_request_invalid_signature() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 

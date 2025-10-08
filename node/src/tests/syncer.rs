@@ -187,7 +187,7 @@ fn test_node_joins_later_no_checkpoint() {
         // Check that all nodes have the same canonical chain
         assert!(
             engine_client_network
-                .verify_consensus(Some(stop_height))
+                .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
 
