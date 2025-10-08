@@ -600,7 +600,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         success_rate: 0.98,
     };
     // Create context
-    let cfg = deterministic::Config::default().with_seed(2);
+    let cfg = deterministic::Config::default().with_seed(3);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         // Create simulated network
