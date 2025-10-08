@@ -4,6 +4,7 @@ use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::PendingWithdrawal;
 use alloy_eips::eip4895::Withdrawal;
+use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, Write};
 use std::collections::{HashMap, VecDeque};
@@ -18,11 +19,15 @@ pub struct ConsensusState {
     pub pending_checkpoint: Option<Checkpoint>,
     pub added_validators: Vec<PublicKey>,
     pub removed_validators: Vec<PublicKey>,
+    pub forkchoice: ForkchoiceState,
 }
 
 impl ConsensusState {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(forkchoice: ForkchoiceState) -> Self {
+        Self {
+            forkchoice,
+            ..Default::default()
+        }
     }
 
     // State variable operations
@@ -127,6 +132,9 @@ impl EncodeSize for ConsensusState {
         + self.added_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
         + 4 // removed_validators length
         + self.removed_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
+        + 32 // forkchoice.head_block_hash
+        + 32 // forkchoice.safe_block_hash
+        + 32 // forkchoice.finalized_block_hash
     }
 }
 
@@ -180,6 +188,20 @@ impl Read for ConsensusState {
             removed_validators.push(PublicKey::read_cfg(buf, &())?);
         }
 
+        // Read forkchoice
+        let mut head_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut head_block_hash);
+        let mut safe_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut safe_block_hash);
+        let mut finalized_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut finalized_block_hash);
+
+        let forkchoice = ForkchoiceState {
+            head_block_hash: head_block_hash.into(),
+            safe_block_hash: safe_block_hash.into(),
+            finalized_block_hash: finalized_block_hash.into(),
+        };
+
         Ok(Self {
             latest_height,
             next_withdrawal_index,
@@ -189,6 +211,7 @@ impl Read for ConsensusState {
             pending_checkpoint,
             added_validators,
             removed_validators,
+            forkchoice,
         })
     }
 }
@@ -233,6 +256,11 @@ impl Write for ConsensusState {
         for validator in &self.removed_validators {
             validator.write(buf);
         }
+
+        // Write forkchoice
+        buf.put_slice(self.forkchoice.head_block_hash.as_slice());
+        buf.put_slice(self.forkchoice.safe_block_hash.as_slice());
+        buf.put_slice(self.forkchoice.finalized_block_hash.as_slice());
     }
 }
 
@@ -301,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_serialization_deserialization_empty() {
-        let original_state = ConsensusState::new();
+        let original_state = ConsensusState::default();
 
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
@@ -327,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_serialization_deserialization_populated() {
-        let mut original_state = ConsensusState::new();
+        let mut original_state = ConsensusState::default();
 
         original_state.set_latest_height(42);
         original_state.next_withdrawal_index = 5;
@@ -381,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_encode_size_accuracy() {
-        let mut state = ConsensusState::new();
+        let mut state = ConsensusState::default();
 
         state.set_latest_height(42);
         state.next_withdrawal_index = 5;
@@ -405,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_account_operations() {
-        let mut state = ConsensusState::new();
+        let mut state = ConsensusState::default();
         let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
 
@@ -434,7 +462,7 @@ mod tests {
     #[test]
     fn test_try_from_checkpoint() {
         // Create a populated ConsensusState
-        let mut original_state = ConsensusState::new();
+        let mut original_state = ConsensusState::default();
         original_state.set_latest_height(100);
         original_state.next_withdrawal_index = 42;
 

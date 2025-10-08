@@ -153,6 +153,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            forkchoice: Default::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -244,6 +245,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            forkchoice: Default::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -275,6 +277,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            forkchoice: Default::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -373,6 +376,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            forkchoice: Default::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -409,6 +413,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            forkchoice: Default::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -451,6 +456,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            forkchoice: Default::default(),
         };
 
         let checkpoint = Checkpoint::new(&original_state);
@@ -488,6 +494,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            forkchoice: Default::default(),
         };
 
         let mut checkpoint = Checkpoint::new(&original_state);
@@ -562,6 +569,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            forkchoice: Default::default(),
         };
 
         let checkpoint = Checkpoint::new(&original_state);

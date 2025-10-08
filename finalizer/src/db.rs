@@ -310,7 +310,7 @@ mod tests {
             let mut db = create_test_db_with_context("test_consensus_state", context).await;
 
             // Create a test consensus state
-            let mut consensus_state = ConsensusState::new();
+            let mut consensus_state = ConsensusState::default();
             consensus_state.set_latest_height(42);
 
             // Test that no state exists initially
@@ -334,7 +334,7 @@ mod tests {
             assert_eq!(latest.get_latest_height(), 42);
 
             // Store a newer state
-            let mut newer_state = ConsensusState::new();
+            let mut newer_state = ConsensusState::default();
             newer_state.set_latest_height(100);
             db.store_consensus_state(100, &newer_state).await;
             db.commit().await;
@@ -579,10 +579,10 @@ mod tests {
             let mut db = create_test_db_with_context("test_checkpoint", context).await;
 
             // Create test consensus states with different heights to ensure different digests
-            let mut finalized_state1 = ConsensusState::new();
+            let mut finalized_state1 = ConsensusState::default();
             finalized_state1.set_latest_height(100);
 
-            let mut finalized_state2 = ConsensusState::new();
+            let mut finalized_state2 = ConsensusState::default();
             finalized_state2.set_latest_height(200);
 
             // Create test checkpoints

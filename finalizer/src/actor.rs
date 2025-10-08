@@ -47,7 +47,6 @@ pub struct Finalizer<
     registry: Registry,
     db: FinalizerState<R>,
     state: ConsensusState,
-    forkchoice: ForkchoiceState,
     genesis_hash: [u8; 32],
     validator_max_withdrawals_per_block: usize,
     epoch_num_of_blocks: u64,
@@ -78,17 +77,17 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
         let state = if let Some(state) = cfg.initial_state {
             state
+        } else if let Some(state) = db.get_latest_consensus_state().await {
+            state
         } else {
-            db.get_latest_consensus_state().await.unwrap_or_default()
+            let forkchoice = ForkchoiceState {
+                head_block_hash: cfg.genesis_hash.into(),
+                safe_block_hash: cfg.genesis_hash.into(),
+                finalized_block_hash: cfg.genesis_hash.into(),
+            };
+            ConsensusState::new(forkchoice)
         };
 
-        // todo(dalton) We need to pull the last header and get the most recent forkchoice hash. Saving for followup PR
-        // db.get_most_recent_finalized_header();
-        let forkchoice = ForkchoiceState {
-            head_block_hash: cfg.genesis_hash.into(),
-            safe_block_hash: cfg.genesis_hash.into(),
-            finalized_block_hash: cfg.genesis_hash.into(),
-        };
         (
             Self {
                 context,
@@ -100,7 +99,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 db,
                 state,
                 validator_max_withdrawals_per_block: cfg.validator_max_withdrawals_per_block,
-                forkchoice,
                 genesis_hash: cfg.genesis_hash,
                 protocol_version_digest: commonware_cryptography::sha256::hash(
                     &cfg.protocol_version.to_le_bytes(),
@@ -227,7 +225,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
             self.engine_client.commit_hash(forkchoice).await;
 
-            self.forkchoice = forkchoice;
+            self.state.forkchoice = forkchoice;
 
             // Parse execution requests
             self.parse_execution_requests(&block, new_height).await;
@@ -614,7 +612,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 header_hash: prev_header_hash,
                 added_validators: self.state.added_validators.clone(),
                 removed_validators: self.state.removed_validators.clone(),
-                forkchoice: self.forkchoice,
+                forkchoice: self.state.forkchoice,
             }
         } else {
             BlockAuxData {
@@ -623,7 +621,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 header_hash: [0; 32].into(),
                 added_validators: vec![],
                 removed_validators: vec![],
-                forkchoice: self.forkchoice,
+                forkchoice: self.state.forkchoice,
             }
         };
         let _ = sender.send(aux_data);
