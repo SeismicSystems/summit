@@ -25,6 +25,8 @@ use commonware_storage::{
 use commonware_utils::NZU64;
 use futures::{StreamExt as _, channel::mpsc};
 use governor::Quota;
+#[cfg(feature = "prom")]
+use metrics::histogram;
 use rand::Rng;
 use summit_types::{Block, Digest, Finalized, Notarized, PublicKey, Signature};
 use tracing::{debug, warn};
@@ -240,6 +242,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         payload,
                         response,
                     } => {
+                        #[cfg(feature = "prom")]
+                        let get_start = std::time::Instant::now();
+
+                        #[cfg(feature = "prom")]
+                        let buffer_lookup_start = std::time::Instant::now();
+
                         // Check if in buffer
                         if let Some(buffered) = buffer
                             .get(None, payload, Some(payload))
@@ -249,8 +257,26 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         {
                             debug!(height = buffered.height(), "found block in buffer");
                             let _ = response.send(buffered);
+
+                            #[cfg(feature = "prom")]
+                            {
+                                let buffer_lookup_duration = buffer_lookup_start.elapsed().as_micros() as f64;
+                                histogram!("syncer_get_buffer_lookup_micros").record(buffer_lookup_duration);
+                                histogram!("syncer_get_total_micros").record(get_start.elapsed().as_micros() as f64);
+                                histogram!("syncer_get_location").record(0.0); // 0 = buffer
+                            }
+
                             continue;
                         }
+
+                        #[cfg(feature = "prom")]
+                        {
+                            let buffer_lookup_duration = buffer_lookup_start.elapsed().as_micros() as f64;
+                            histogram!("syncer_get_buffer_lookup_micros").record(buffer_lookup_duration);
+                        }
+
+                        #[cfg(feature = "prom")]
+                        let verified_lookup_start = std::time::Instant::now();
 
                         // check verified blocks
                         if let Some(block) = self
@@ -261,29 +287,91 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         {
                             debug!(height = block.height(), "found block in verified");
                             let _ = response.send(block);
+
+                            #[cfg(feature = "prom")]
+                            {
+                                let verified_lookup_duration = verified_lookup_start.elapsed().as_micros() as f64;
+                                histogram!("syncer_get_verified_lookup_micros").record(verified_lookup_duration);
+                                histogram!("syncer_get_total_micros").record(get_start.elapsed().as_micros() as f64);
+                                histogram!("syncer_get_location").record(1.0); // 1 = verified
+                            }
+
                             continue;
                         }
+
+                        #[cfg(feature = "prom")]
+                        {
+                            let verified_lookup_duration = verified_lookup_start.elapsed().as_micros() as f64;
+                            histogram!("syncer_get_verified_lookup_micros").record(verified_lookup_duration);
+                        }
+
+                        #[cfg(feature = "prom")]
+                        let notarized_lookup_start = std::time::Instant::now();
 
                         // check notarized blocks
                         if let Some(notarization) = self.notarized.get(Identifier::Key(&payload)).await.expect("Failed to get notarized block"){
                             let block = notarization.block;
                             debug!(height = block.height(), "found block in notarized");
                             let _ = response.send(block);
+
+                            #[cfg(feature = "prom")]
+                            {
+                                let notarized_lookup_duration = notarized_lookup_start.elapsed().as_micros() as f64;
+                                histogram!("syncer_get_notarized_lookup_micros").record(notarized_lookup_duration);
+                                histogram!("syncer_get_total_micros").record(get_start.elapsed().as_micros() as f64);
+                                histogram!("syncer_get_location").record(2.0); // 2 = notarized
+                            }
+
                             continue;
 
                         }
+
+                        #[cfg(feature = "prom")]
+                        {
+                            let notarized_lookup_duration = notarized_lookup_start.elapsed().as_micros() as f64;
+                            histogram!("syncer_get_notarized_lookup_micros").record(notarized_lookup_duration);
+                        }
+
+                        #[cfg(feature = "prom")]
+                        let finalized_lookup_start = std::time::Instant::now();
 
                         // check finalized blocks
                         if let Some(block) = self.blocks.get(Identifier::Key(&payload)).await.expect("Failed to get finalized block") {
                             debug!(height = block.height(), "found block in finalized");
                             let _ = response.send(block);
+
+                            #[cfg(feature = "prom")]
+                            {
+                                let finalized_lookup_duration = finalized_lookup_start.elapsed().as_micros() as f64;
+                                histogram!("syncer_get_finalized_lookup_micros").record(finalized_lookup_duration);
+                                histogram!("syncer_get_total_micros").record(get_start.elapsed().as_micros() as f64);
+                                histogram!("syncer_get_location").record(3.0); // 3 = finalized
+                            }
+
                             continue;
+                        }
+
+                        #[cfg(feature = "prom")]
+                        {
+                            let finalized_lookup_duration = finalized_lookup_start.elapsed().as_micros() as f64;
+                            histogram!("syncer_get_finalized_lookup_micros").record(finalized_lookup_duration);
+                            histogram!("syncer_get_location").record(4.0); // 4 = not found
                         }
 
                         // Fetch from network if notarized (view is non-nil)
                         if let Some(view) = view {
                             debug!(view, ?payload, "required block missing");
+
+                            #[cfg(feature = "prom")]
+                            let resolver_fetch_start = std::time::Instant::now();
+
                             resolver.fetch(MultiIndex::new(Value::Notarized(view))).await;
+
+                            #[cfg(feature = "prom")]
+                            {
+                                let resolver_fetch_duration = resolver_fetch_start.elapsed().as_micros() as f64;
+                                histogram!("syncer_resolver_fetch_micros").record(resolver_fetch_duration);
+                            }
                         }
 
                         buffer
@@ -383,7 +471,17 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                         debug!(view, "notarized block missing");
                         outstanding_notarize.insert(view);
+
+                        #[cfg(feature = "prom")]
+                        let resolver_fetch_start = std::time::Instant::now();
+
                         resolver.fetch(MultiIndex::new(Value::Notarized(view))).await;
+
+                        #[cfg(feature = "prom")]
+                        {
+                            let resolver_fetch_duration = resolver_fetch_start.elapsed().as_micros() as f64;
+                            histogram!("syncer_resolver_fetch_micros").record(resolver_fetch_duration);
+                        }
 
                     }
                 }
