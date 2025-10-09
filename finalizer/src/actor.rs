@@ -177,10 +177,21 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         envelope: BlockEnvelope,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
+        #[cfg(feature = "prom")]
+        let block_processing_start = Instant::now();
+
         let BlockEnvelope { block, finalized } = envelope;
         // check the payload
+        #[cfg(feature = "prom")]
+        let payload_check_start = Instant::now();
         let payload_status = self.engine_client.check_payload(&block).await;
         let new_height = block.height();
+
+        #[cfg(feature = "prom")]
+        {
+            let payload_check_duration = payload_check_start.elapsed().as_millis() as f64;
+            histogram!("payload_check_duration_millis").record(payload_check_duration);
+        }
 
         // Verify withdrawal requests that were included in the block
         // Make sure that the included withdrawals match the expected withdrawals
@@ -229,10 +240,26 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             self.state.last_executed_block = Some(block.payload.clone());
 
             // Parse execution requests
+            #[cfg(feature = "prom")]
+            let parse_requests_start = Instant::now();
             self.parse_execution_requests(&block, new_height).await;
+            #[cfg(feature = "prom")]
+            {
+                let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
+                histogram!("parse_execution_requests_duration_millis")
+                    .record(parse_requests_duration);
+            }
 
             // Add validators that deposited to the validator set
+            #[cfg(feature = "prom")]
+            let process_requests_start = Instant::now();
             self.process_execution_requests(&block, new_height).await;
+            #[cfg(feature = "prom")]
+            {
+                let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
+                histogram!("process_execution_requests_duration_millis")
+                    .record(process_requests_duration);
+            }
         }
 
         #[cfg(debug_assertions)]
@@ -248,8 +275,19 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         // allows the validators to sign the checkpoint hash in the last block
         // of the epoch
         if is_penultimate_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+            #[cfg(feature = "prom")]
+            let checkpoint_creation_start = Instant::now();
+
             let checkpoint = Checkpoint::new(&self.state);
             self.state.pending_checkpoint = Some(checkpoint);
+
+            #[cfg(feature = "prom")]
+            {
+                let checkpoint_creation_duration =
+                    checkpoint_creation_start.elapsed().as_millis() as f64;
+                histogram!("checkpoint_creation_duration_millis")
+                    .record(checkpoint_creation_duration);
+            }
         }
 
         // Store finalizes checkpoint to database
@@ -298,6 +336,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 );
             }
 
+            #[cfg(feature = "prom")]
+            let db_operations_start = Instant::now();
             // This pending checkpoint should always exist, because it was created at the previous height.
             // The only case where the pending checkpoint doesn't exist here is if the node checkpointed.
             // The checkpoint is created at the penultimate block of the epoch, and finalized at the last
@@ -309,6 +349,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             self.db.store_consensus_state(new_height, &self.state).await;
             // This will commit all changes to the state db
             self.db.commit().await;
+            #[cfg(feature = "prom")]
+            {
+                let db_operations_duration = db_operations_start.elapsed().as_millis() as f64;
+                histogram!("database_operations_duration_millis").record(db_operations_duration);
+            }
 
             #[cfg(debug_assertions)]
             {
@@ -317,6 +362,15 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 self.context
                     .register("consensus_state_stored", "chain height", gauge);
             }
+        }
+
+        #[cfg(feature = "prom")]
+        {
+            let total_block_processing_duration =
+                block_processing_start.elapsed().as_millis() as f64;
+            histogram!("total_block_processing_duration_millis")
+                .record(total_block_processing_duration);
+            counter!("blocks_processed_total").increment(1);
         }
 
         self.height_notify_up_to(new_height);

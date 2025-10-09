@@ -23,6 +23,8 @@ use std::{
 use summit_finalizer::FinalizerMailbox;
 use tracing::{error, info, warn};
 
+#[cfg(feature = "prom")]
+use metrics::histogram;
 use summit_syncer::ingress::Mailbox as SyncerMailbox;
 use summit_types::{Block, Digest, EngineClient};
 
@@ -196,7 +198,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         finalizer: &mut FinalizerMailbox,
         view: View,
     ) -> Result<Block> {
-        // Get the parent block
+        #[cfg(feature = "prom")]
+        let proposal_start = std::time::Instant::now();
+
+        // STEP 1: Get the parent block
+        #[cfg(feature = "prom")]
+        let parent_fetch_start = std::time::Instant::now();
         let parent_request = if parent.1 == self.genesis_hash.into() {
             Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
         } else {
@@ -205,17 +212,40 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
         let parent = parent_request.await.unwrap();
 
+        #[cfg(feature = "prom")]
+        {
+            let parent_fetch_duration = parent_fetch_start.elapsed().as_millis() as f64;
+            histogram!("handle_proposal_parent_fetch_duration_millis")
+                .record(parent_fetch_duration);
+        }
+
+        // STEP 2: Wait for finalizer notification
+        #[cfg(feature = "prom")]
+        let finalizer_wait_start = std::time::Instant::now();
         // now that we have the parent additionally await for that to be executed by the finalizer
         let rx = finalizer.notify_at_height(parent.height()).await;
         // await for notification
         rx.await.expect("Finalizer dropped");
+        #[cfg(feature = "prom")]
+        {
+            let finalizer_wait_duration = finalizer_wait_start.elapsed().as_millis() as f64;
+            histogram!("handle_proposal_finalizer_wait_duration_millis")
+                .record(finalizer_wait_duration);
+        }
 
-        // Request aux data (withdrawals, checkpoint hash, header hash)
+        // STEP 3: Request aux data (withdrawals, checkpoint hash, header hash)
+        #[cfg(feature = "prom")]
+        let aux_data_start = std::time::Instant::now();
         let aux_data = finalizer
             .get_aux_data(parent.height() + 1)
             .await
             .await
             .expect("Finalizer dropped");
+        #[cfg(feature = "prom")]
+        {
+            let aux_data_duration = aux_data_start.elapsed().as_millis() as f64;
+            histogram!("handle_proposal_aux_data_duration_millis").record(aux_data_duration);
+        }
 
         let pending_withdrawals = aux_data.withdrawals;
         let checkpoint_hash = aux_data.checkpoint_hash;
@@ -224,6 +254,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         if current <= parent.timestamp() {
             current = parent.timestamp() + 1;
         }
+
+        // STEP 4: Start building block (Engine Client)
+        #[cfg(feature = "prom")]
+        let start_building_start = std::time::Instant::now();
 
         // Add pending withdrawals to the block
         let withdrawals = pending_withdrawals.into_iter().map(|w| w.inner).collect();
@@ -248,10 +282,28 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         }
         .ok_or(anyhow!("Unable to build payload"))?;
 
+        #[cfg(feature = "prom")]
+        {
+            let start_building_duration = start_building_start.elapsed().as_millis() as f64;
+            histogram!("handle_proposal_start_building_duration_millis")
+                .record(start_building_duration);
+        }
+
         self.context.sleep(Duration::from_millis(50)).await;
 
+        // STEP 5: Get payload (Engine Client)
+        #[cfg(feature = "prom")]
+        let get_payload_start = std::time::Instant::now();
         let payload_envelope = self.engine_client.get_payload(payload_id).await;
+        #[cfg(feature = "prom")]
+        {
+            let get_payload_duration = get_payload_start.elapsed().as_millis() as f64;
+            histogram!("handle_proposal_get_payload_duration_millis").record(get_payload_duration);
+        }
 
+        // STEP 6: Compute block digest
+        #[cfg(feature = "prom")]
+        let compute_digest_start = std::time::Instant::now();
         let block = Block::compute_digest(
             parent.digest(),
             parent.height() + 1,
@@ -266,6 +318,18 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             aux_data.removed_validators,
         );
 
+        #[cfg(feature = "prom")]
+        {
+            let compute_digest_duration = compute_digest_start.elapsed().as_millis() as f64;
+            histogram!("handle_proposal_compute_digest_duration_millis")
+                .record(compute_digest_duration);
+        }
+
+        #[cfg(feature = "prom")]
+        {
+            let proposal_duration = proposal_start.elapsed().as_millis() as f64;
+            histogram!("handle_proposal_duration_millis").record(proposal_duration);
+        }
         Ok(block)
     }
 }
