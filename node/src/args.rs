@@ -379,6 +379,38 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
 
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
+
+        #[allow(unused)]
+        #[cfg(feature = "base-bench")]
+        let engine_client = {
+            let block_dir = flags
+                .bench_block_dir
+                .as_ref()
+                .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+                .expect("bench_block_dir is required when using bench feature");
+            HistoricalEngineClient::new(
+                engine_ipc_path.to_string_lossy().to_string(),
+                block_dir,
+            )
+                .await
+        };
+
+        #[allow(unused)]
+        #[cfg(feature = "bench")]
+        let engine_client = {
+            let block_dir = flags
+                .bench_block_dir
+                .as_ref()
+                .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+                .expect("bench_block_dir is required when using bench feature");
+            EthereumHistoricalEngineClient::new(
+                engine_ipc_path.to_string_lossy().to_string(),
+                block_dir,
+            )
+                .await
+        };
+
+        #[cfg(not(any(feature = "bench", feature = "base-bench")))]
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
