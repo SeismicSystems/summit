@@ -10,7 +10,8 @@ node3_port = 8542
 
 */
 use std::{
-    io::{BufRead as _, BufReader},
+    fs,
+    io::{BufRead as _, BufReader, Write as _},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     str::FromStr as _,
@@ -33,10 +34,18 @@ struct Args {
     #[cfg(any(feature = "base-bench", feature = "bench"))]
     #[arg(long)]
     pub bench_block_dir: Option<String>,
+    /// Path to the log directory
+    #[arg(long)]
+    pub log_dir: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Create log directory if specified
+    if let Some(ref log_dir) = args.log_dir {
+        fs::create_dir_all(log_dir)?;
+    }
 
     let cfg = tokio::Config::default()
         .with_tcp_nodelay(Some(true))
@@ -90,12 +99,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Get stdout handle
                 let stdout = reth.stdout().expect("Failed to get stdout");
 
+                let log_dir = args.log_dir.clone();
                 context.clone().spawn(async move |_| {
                     let reader = BufReader::new(stdout);
+                    let mut log_file = log_dir.as_ref().map(|dir| {
+                        fs::File::create(format!("{}/node{}.log", dir, x))
+                            .expect("Failed to create log file")
+                    });
+
                     for line in reader.lines() {
                         match line {
-                            Ok(_line) => {
-                                //println!("[Node {}] {}", x, line);
+                            Ok(line) => {
+                                if let Some(ref mut file) = log_file {
+                                    writeln!(file, "[Node {}] {}", x, line)
+                                        .expect("Failed to write to log file");
+                                }
                             }
                             Err(_e) => {
                                 //   eprintln!("[Node {}] Error reading line: {}", x, e);
@@ -137,8 +155,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Start our consensus engine
-                println!("******** STARTING CONSENSUS ENGINE FOR NODE {x}");
-                println!("PROM: {}", flags.prom_port);
                 let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags);
                 consensus_handles.push(handle);
             }
