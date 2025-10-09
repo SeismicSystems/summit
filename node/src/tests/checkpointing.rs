@@ -551,10 +551,6 @@ fn test_node_joins_later_with_checkpoint() {
         // This corresponds to snapshotting Reth
         let consensus_state = ConsensusState::try_from(&checkpoint).unwrap();
         let from_block = consensus_state.latest_height + 1;
-        let payload = consensus_state.last_executed_block.unwrap();
-        let eth_hash = payload.payload_inner.payload_inner.block_hash.into();
-
-        engine_client.load_checkpoint(eth_hash, payload);
 
         let config = get_default_engine_config(
             engine_client,
