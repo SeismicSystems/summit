@@ -29,6 +29,10 @@ struct Args {
     nodes: u16,
     #[arg[long]]
     only_reth: bool,
+    /// Path to the directory containing historical blocks for benchmarking
+    #[cfg(any(feature = "base-bench", feature = "bench"))]
+    #[arg(long)]
+    pub bench_block_dir: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = tokio::Config::default()
         .with_tcp_nodelay(Some(true))
-        .with_worker_threads(16)
+        .with_worker_threads(8)
         .with_storage_directory(PathBuf::from("testnet/stores"))
         .with_catch_panics(false);
     let executor = tokio::Runner::new(cfg);
@@ -77,7 +81,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .arg(format!("1744{x}"))
                     .arg("--auth-ipc")
                     .arg("--auth-ipc.path")
-                    .arg(format!("/tmp/reth_engine_api{x}.ipc"));
+                    .arg(format!("/tmp/reth_engine_api{x}.ipc"))
+                    .arg("--metrics")
+                    .arg(format!("0.0.0.0:{}", 9001 + x));
 
                 let mut reth = reth_builder.spawn();
 
@@ -122,9 +128,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if args.only_reth {
                     continue;
                 }
+                #[allow(unused_mut)]
+                let mut flags = get_node_flags(x.into());
+
+                #[cfg(any(feature = "base-bench", feature = "bench"))]
+                {
+                    flags.bench_block_dir = args.bench_block_dir.clone();
+                }
+
                 // Start our consensus engine
                 println!("******** STARTING CONSENSUS ENGINE FOR NODE {x}");
-                let flags = get_node_flags(x.into());
+                println!("PROM: {}", flags.prom_port);
                 let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags);
                 consensus_handles.push(handle);
             }
