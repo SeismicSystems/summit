@@ -53,6 +53,30 @@ pub async fn link_validators(
     }
 }
 
+pub async fn join_validator(
+    oracle: &mut Oracle<PublicKey>,
+    validator: &PublicKey,
+    existing_validators: &[PublicKey],
+    link: Link,
+) {
+    for existing in existing_validators {
+        // Skip self
+        if existing == validator {
+            continue;
+        }
+
+        // Add links in both directions
+        oracle
+            .add_link(validator.clone(), existing.clone(), link.clone())
+            .await
+            .unwrap();
+        oracle
+            .add_link(existing.clone(), validator.clone(), link.clone())
+            .await
+            .unwrap();
+    }
+}
+
 pub async fn register_validators(
     oracle: &mut Oracle<PublicKey>,
     validators: &[PublicKey],

@@ -216,7 +216,9 @@ impl Read for ConsensusState {
         let last_executed_block = if last_executed_block_len > 0 {
             let mut data = vec![0u8; last_executed_block_len];
             buf.copy_to_slice(&mut data);
-            Some(ssz::Decode::from_ssz_bytes(&data).map_err(|_| Error::Invalid("ConsensusState", "Failed to decode last_executed_block"))?)
+            Some(ssz::Decode::from_ssz_bytes(&data).map_err(|_| {
+                Error::Invalid("ConsensusState", "Failed to decode last_executed_block")
+            })?)
         } else {
             None
         };
@@ -466,9 +468,18 @@ mod tests {
         let decoded_block = decoded_state.last_executed_block.unwrap();
         assert_eq!(decoded_block.payload_inner.payload_inner.block_number, 42);
         assert_eq!(decoded_block.payload_inner.payload_inner.gas_used, 21000);
-        assert_eq!(decoded_block.payload_inner.payload_inner.timestamp, 1234567890);
-        assert_eq!(decoded_block.payload_inner.payload_inner.parent_hash, B256::from([1u8; 32]));
-        assert_eq!(decoded_block.payload_inner.payload_inner.block_hash, B256::from([6u8; 32]));
+        assert_eq!(
+            decoded_block.payload_inner.payload_inner.timestamp,
+            1234567890
+        );
+        assert_eq!(
+            decoded_block.payload_inner.payload_inner.parent_hash,
+            B256::from([1u8; 32])
+        );
+        assert_eq!(
+            decoded_block.payload_inner.payload_inner.block_hash,
+            B256::from([6u8; 32])
+        );
         assert_eq!(decoded_block.blob_gas_used, 0);
         assert_eq!(decoded_block.excess_blob_gas, 0);
     }
