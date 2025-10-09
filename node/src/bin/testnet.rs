@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = tokio::Config::default()
         .with_tcp_nodelay(Some(true))
-        .with_worker_threads(8)
+        .with_worker_threads(16)
         .with_storage_directory(PathBuf::from("testnet/stores"))
         .with_catch_panics(false);
     let executor = tokio::Runner::new(cfg);
