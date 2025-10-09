@@ -48,10 +48,13 @@ fn test_node_joins_later_no_checkpoint() {
         }
         validators.sort();
         signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
 
-        // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        // Separate initial validators from late joiner
+        let initial_validators = &validators[..validators.len() - 1];
+
+        // Register and link only initial validators
+        let mut registrations = common::register_validators(&mut oracle, initial_validators).await;
+        common::link_validators(&mut oracle, initial_validators, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -108,8 +111,19 @@ fn test_node_joins_later_no_checkpoint() {
             context.sleep(Duration::from_secs(1)).await;
         };
 
-        // Now start the final validator
+        // Now register and join the final validator to the network
         let public_key = signer_joining_later.public_key();
+
+        // Register the late joining validator
+        let late_registrations =
+            common::register_validators(&mut oracle, &[public_key.clone()]).await;
+
+        // Join the validator to the network
+        common::join_validator(&mut oracle, &public_key, initial_validators, link).await;
+
+        // Allow p2p connections to establish before starting engine
+        context.sleep(Duration::from_millis(100)).await;
+
         public_keys.insert(public_key.clone());
 
         // Configure engine
@@ -129,8 +143,9 @@ fn test_node_joins_later_no_checkpoint() {
         );
         let engine = Engine::new(context.with_label(&uid), config).await;
 
-        // Get networking
-        let (pending, resolver, broadcast, backfill) = registrations.remove(&public_key).unwrap();
+        // Get networking from late registrations
+        let (pending, resolver, broadcast, backfill) =
+            late_registrations.into_iter().next().unwrap().1;
 
         // Start engine
         engine.start(pending, resolver, broadcast, backfill);

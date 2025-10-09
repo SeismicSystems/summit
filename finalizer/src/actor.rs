@@ -182,7 +182,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         let payload_status = self.engine_client.check_payload(&block).await;
         let new_height = block.height();
 
-
         // Verify withdrawal requests that were included in the block
         // Make sure that the included withdrawals match the expected withdrawals
         let expected_withdrawals: Vec<Withdrawal> =
@@ -288,8 +287,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             }
 
             // Add and remove validators for the next epoch
-            if !self.state.added_validators.is_empty()
-                || !self.state.removed_validators.is_empty()
+            if !self.state.added_validators.is_empty() || !self.state.removed_validators.is_empty()
             {
                 self.registry.update_registry(
                     // TODO(matthias): do we still need the DELTA?
