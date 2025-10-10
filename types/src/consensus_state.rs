@@ -20,12 +20,14 @@ pub struct ConsensusState {
     pub added_validators: Vec<PublicKey>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
+    pub blob: Vec<u8>,
 }
 
 impl ConsensusState {
     pub fn new(forkchoice: ForkchoiceState) -> Self {
         Self {
             forkchoice,
+            blob: vec![0; 47021],
             ..Default::default()
         }
     }
@@ -212,6 +214,7 @@ impl Read for ConsensusState {
             added_validators,
             removed_validators,
             forkchoice,
+            blob: vec![0; 47021],
         })
     }
 }

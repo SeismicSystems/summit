@@ -313,6 +313,40 @@ pub mod base_benchmarking {
             )
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::fs;
+        use std::path::PathBuf;
+
+        #[test]
+        fn test_ethereum_block_data_payload_size() {
+            // Update this path to point to an actual block file
+            let file_path = PathBuf::from("/home/matthias/Documents/blocks/block-1000");
+
+            // Skip test if file doesn't exist
+            if !file_path.exists() {
+                println!("Skipping test: block file not found at {}", file_path.display());
+                return;
+            }
+
+            let data = fs::read(&file_path)
+                .expect("failed to read block file");
+
+            let block_data: ExecutionPayloadV3 =
+                ssz::Decode::from_ssz_bytes(&data).expect("failed to decode block file");
+
+            // Serialize the ExecutionPayloadV3 to calculate its size
+            let payload_json = serde_json::to_string(&block_data)
+                .expect("Failed to serialize ExecutionPayloadV3");
+            let size_bytes = payload_json.len();
+
+            println!("ExecutionPayloadV3 size: {} bytes", size_bytes);
+            println!("ExecutionPayloadV3 size: {} KB", size_bytes / 1024);
+            println!("ExecutionPayloadV3 size: {} MB", size_bytes / (1024 * 1024));
+        }
+    }
 }
 
 #[cfg(feature = "bench")]
