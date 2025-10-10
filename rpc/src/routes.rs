@@ -24,6 +24,7 @@ impl RpcRoutes {
             .route("/health", get(Self::handle_health_check))
             .route("/get_public_key", get(Self::handle_get_pub_key))
             .route("/get_checkpoint", get(Self::handle_get_checkpoint))
+            .route("/get_latest_height", get(Self::handle_latest_height))
             .with_state(state)
     }
 
@@ -69,6 +70,10 @@ impl RpcRoutes {
 
         let encoded = checkpoint.as_ssz_bytes();
         Ok(hex(&encoded))
+    }
+
+    async fn handle_latest_height(State(state): State<Arc<RpcState>>) -> Result<String, String> {
+        Ok(state.finalizer_mailbox.get_latest_height().await.to_string())
     }
 
     async fn handle_send_genesis(
