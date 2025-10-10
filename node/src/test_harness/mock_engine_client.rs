@@ -116,18 +116,42 @@ impl MockEngineClient {
     }
 
     /// Load a checkpoint
-    pub fn load_checkpoint(&self, hash: FixedBytes<32>, block: ExecutionPayloadV3) {
+    pub fn load_checkpoint(&self, block_number: u64, hash: FixedBytes<32>) {
         let mut state = self.state.lock().unwrap();
-        let block_number = block.payload_inner.payload_inner.block_number;
 
-        state.canonical_blocks.insert(hash, block.clone());
+        // Create a dummy block for the checkpoint
+        let dummy_block = ExecutionPayloadV3 {
+            payload_inner: alloy_rpc_types_engine::ExecutionPayloadV2 {
+                payload_inner: alloy_rpc_types_engine::ExecutionPayloadV1 {
+                    parent_hash: B256::ZERO,
+                    fee_recipient: alloy_primitives::Address::ZERO,
+                    state_root: B256::ZERO,
+                    receipts_root: B256::ZERO,
+                    logs_bloom: alloy_primitives::Bloom::ZERO,
+                    prev_randao: B256::ZERO,
+                    block_number,
+                    gas_limit: 30000000,
+                    gas_used: 0,
+                    timestamp: 0,
+                    extra_data: alloy_primitives::Bytes::new(),
+                    base_fee_per_gas: alloy_primitives::U256::from(1000000000u64),
+                    block_hash: hash,
+                    transactions: Vec::new().into(),
+                },
+                withdrawals: Vec::new().into(),
+            },
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+        };
+
+        state.canonical_blocks.insert(hash, dummy_block.clone());
         state.canonical_by_number.insert(block_number, hash);
         state.current_head = hash;
         state.next_block_number = block_number + 1;
 
         let status = PayloadStatus::new(PayloadStatusEnum::Valid, Some(hash));
         state.known_blocks.insert(hash, status.clone());
-        state.validated_blocks.insert(hash, block);
+        state.validated_blocks.insert(hash, dummy_block);
     }
 
     #[allow(unused)]
