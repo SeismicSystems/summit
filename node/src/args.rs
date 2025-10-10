@@ -26,7 +26,9 @@ use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 #[cfg(feature = "bench")]
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
-use summit_types::{Genesis, PublicKey, RethEngineClient, utils::get_expanded_path};
+#[cfg(not(any(feature = "bench", feature = "base-bench")))]
+use summit_types::RethEngineClient;
+use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
 pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
@@ -137,6 +139,12 @@ impl Command {
     }
 
     pub fn run_node(&self, flags: &RunFlags) {
+        // Initialize tokio-console subscriber if feature is enabled
+        #[cfg(feature = "tokio-console")]
+        {
+            console_subscriber::init();
+        }
+
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
         let signer = expect_signer(&flags.key_path);
 
@@ -388,10 +396,7 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
                 .as_ref()
                 .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
                 .expect("bench_block_dir is required when using bench feature");
-            HistoricalEngineClient::new(
-                engine_ipc_path.to_string_lossy().to_string(),
-                block_dir,
-            )
+            HistoricalEngineClient::new(engine_ipc_path.to_string_lossy().to_string(), block_dir)
                 .await
         };
 
@@ -407,7 +412,7 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
                 engine_ipc_path.to_string_lossy().to_string(),
                 block_dir,
             )
-                .await
+            .await
         };
 
         #[cfg(not(any(feature = "bench", feature = "base-bench")))]

@@ -12,16 +12,13 @@ node3_port = 8542
 use std::{
     fs,
     io::{BufRead as _, BufReader, Write as _},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
-    str::FromStr as _,
 };
 
 use alloy_node_bindings::Reth;
 use clap::Parser;
 use commonware_runtime::{Metrics as _, Runner as _, Spawner as _, tokio};
 use summit::args::{RunFlags, run_node_with_runtime};
-use tracing::Level;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -40,6 +37,14 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tokio-console subscriber if feature is enabled
+    #[cfg(feature = "tokio-console")]
+    {
+        console_subscriber::ConsoleLayer::builder()
+            .retention(std::time::Duration::from_secs(60))
+            .init();
+    }
+
     let args = Args::parse();
 
     // Create log directory if specified
@@ -56,18 +61,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     executor.start(|context| {
         async move {
-            // Configure telemetry
-            let log_level = Level::from_str("info").expect("Invalid log level");
-            tokio::telemetry::init(
-                context.with_label("metrics"),
-                tokio::telemetry::Logging {
-                    level: log_level,
-                    // todo: dont know what this does
-                    json: false,
-                },
-                Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 6969)),
-                None,
-            );
+            // Configure telemetry (skip if tokio-console is enabled)
+            #[cfg(not(feature = "tokio-console"))]
+            {
+                use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+                use std::str::FromStr as _;
+                use tracing::Level;
+
+                let log_level = Level::from_str("info").expect("Invalid log level");
+                tokio::telemetry::init(
+                    context.with_label("metrics"),
+                    tokio::telemetry::Logging {
+                        level: log_level,
+                        // todo: dont know what this does
+                        json: false,
+                    },
+                    Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 6969)),
+                    None,
+                );
+            }
 
             // Vector to hold all the join handles
             let mut handles = Vec::new();
