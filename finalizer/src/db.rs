@@ -104,7 +104,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     pub async fn store_consensus_state(&mut self, height: u64, state: &ConsensusState) {
         let key = Self::make_consensus_state_key(height);
         self.store
-            .update(key, Value::ConsensusState(state.clone()))
+            .update(key, Value::ConsensusState(Box::new(state.clone())))
             .await
             .expect("failed to store consensus state");
 
@@ -123,7 +123,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
             .await
             .expect("failed to get consensus state")
         {
-            Some(state)
+            Some(*state)
         } else {
             None
         }
@@ -220,7 +220,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
 #[derive(Clone)]
 enum Value {
     U64(u64),
-    ConsensusState(ConsensusState),
+    ConsensusState(Box<ConsensusState>),
     Checkpoint(Checkpoint),
     FinalizedHeader(Box<FinalizedHeader>),
 }
@@ -243,7 +243,10 @@ impl Read for Value {
         let value_type = buf.get_u8();
         match value_type {
             0x01 => Ok(Self::U64(buf.get_u64())),
-            0x05 => Ok(Self::ConsensusState(ConsensusState::read_cfg(buf, &())?)),
+            0x05 => Ok(Self::ConsensusState(Box::new(ConsensusState::read_cfg(
+                buf,
+                &(),
+            )?))),
             0x06 => Ok(Self::Checkpoint(Checkpoint::read_cfg(buf, &())?)),
             0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::read_cfg(
                 buf,

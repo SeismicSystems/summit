@@ -237,7 +237,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             self.engine_client.commit_hash(forkchoice).await;
 
             self.state.forkchoice = forkchoice;
-            self.state.last_executed_block = Some(block.payload.clone());
 
             // Parse execution requests
             #[cfg(feature = "prom")]

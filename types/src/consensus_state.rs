@@ -4,7 +4,7 @@ use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::PendingWithdrawal;
 use alloy_eips::eip4895::Withdrawal;
-use alloy_rpc_types_engine::{ExecutionPayloadV3, ForkchoiceState};
+use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, Write};
 use std::collections::{HashMap, VecDeque};
@@ -20,7 +20,6 @@ pub struct ConsensusState {
     pub added_validators: Vec<PublicKey>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
-    pub last_executed_block: Option<ExecutionPayloadV3>,
 }
 
 impl ConsensusState {
@@ -119,13 +118,6 @@ impl ConsensusState {
 
 impl EncodeSize for ConsensusState {
     fn encode_size(&self) -> usize {
-        let last_executed_block_size = if let Some(block) = &self.last_executed_block {
-            let serialized = ssz::Encode::as_ssz_bytes(block);
-            4 + serialized.len() // length prefix + data
-        } else {
-            4 // just the length prefix (0)
-        };
-
         8 // latest_height
         + 8 // next_withdrawal_index
         + 4 // deposit_queue length
@@ -143,7 +135,6 @@ impl EncodeSize for ConsensusState {
         + 32 // forkchoice.head_block_hash
         + 32 // forkchoice.safe_block_hash
         + 32 // forkchoice.finalized_block_hash
-        + last_executed_block_size
     }
 }
 
@@ -211,18 +202,6 @@ impl Read for ConsensusState {
             finalized_block_hash: finalized_block_hash.into(),
         };
 
-        // Read last_executed_block
-        let last_executed_block_len = buf.get_u32() as usize;
-        let last_executed_block = if last_executed_block_len > 0 {
-            let mut data = vec![0u8; last_executed_block_len];
-            buf.copy_to_slice(&mut data);
-            Some(ssz::Decode::from_ssz_bytes(&data).map_err(|_| {
-                Error::Invalid("ConsensusState", "Failed to decode last_executed_block")
-            })?)
-        } else {
-            None
-        };
-
         Ok(Self {
             latest_height,
             next_withdrawal_index,
@@ -233,7 +212,6 @@ impl Read for ConsensusState {
             added_validators,
             removed_validators,
             forkchoice,
-            last_executed_block,
         })
     }
 }
@@ -283,15 +261,6 @@ impl Write for ConsensusState {
         buf.put_slice(self.forkchoice.head_block_hash.as_slice());
         buf.put_slice(self.forkchoice.safe_block_hash.as_slice());
         buf.put_slice(self.forkchoice.finalized_block_hash.as_slice());
-
-        // Write last_executed_block
-        if let Some(block) = &self.last_executed_block {
-            let serialized = ssz::Encode::as_ssz_bytes(block);
-            buf.put_u32(serialized.len() as u32);
-            buf.put_slice(&serialized);
-        } else {
-            buf.put_u32(0);
-        }
     }
 }
 
@@ -312,8 +281,7 @@ mod tests {
     use crate::withdrawal::PendingWithdrawal;
 
     use alloy_eips::eip4895::Withdrawal;
-    use alloy_primitives::{Address, B256, Bloom, U256};
-    use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3};
+    use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
@@ -409,31 +377,6 @@ mod tests {
         original_state.set_account(pubkey1, account1);
         original_state.set_account(pubkey2, account2);
 
-        // Add a populated ExecutionPayloadV3
-        original_state.last_executed_block = Some(ExecutionPayloadV3 {
-            payload_inner: ExecutionPayloadV2 {
-                payload_inner: ExecutionPayloadV1 {
-                    parent_hash: B256::from([1u8; 32]),
-                    fee_recipient: Address::from([2u8; 20]),
-                    state_root: B256::from([3u8; 32]),
-                    receipts_root: B256::from([4u8; 32]),
-                    logs_bloom: Bloom::ZERO,
-                    prev_randao: B256::from([5u8; 32]),
-                    block_number: 42,
-                    gas_limit: 30000000,
-                    gas_used: 21000,
-                    timestamp: 1234567890,
-                    extra_data: vec![].into(),
-                    base_fee_per_gas: U256::from(1000000000),
-                    block_hash: B256::from([6u8; 32]),
-                    transactions: vec![].into(),
-                },
-                withdrawals: vec![].into(),
-            },
-            blob_gas_used: 0,
-            excess_blob_gas: 0,
-        });
-
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
@@ -462,26 +405,6 @@ mod tests {
         let decoded_account2 = decoded_state.validator_accounts.get(&pubkey2).unwrap();
         assert_eq!(decoded_account2.balance, 64000000000);
         assert_eq!(decoded_account2.last_deposit_index, 2);
-
-        // Verify last_executed_block was encoded and decoded correctly
-        assert!(decoded_state.last_executed_block.is_some());
-        let decoded_block = decoded_state.last_executed_block.unwrap();
-        assert_eq!(decoded_block.payload_inner.payload_inner.block_number, 42);
-        assert_eq!(decoded_block.payload_inner.payload_inner.gas_used, 21000);
-        assert_eq!(
-            decoded_block.payload_inner.payload_inner.timestamp,
-            1234567890
-        );
-        assert_eq!(
-            decoded_block.payload_inner.payload_inner.parent_hash,
-            B256::from([1u8; 32])
-        );
-        assert_eq!(
-            decoded_block.payload_inner.payload_inner.block_hash,
-            B256::from([6u8; 32])
-        );
-        assert_eq!(decoded_block.blob_gas_used, 0);
-        assert_eq!(decoded_block.excess_blob_gas, 0);
     }
 
     #[test]
