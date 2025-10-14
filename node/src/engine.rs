@@ -41,7 +41,7 @@ const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 100;
 #[cfg(debug_assertions)]
 pub const EPOCH_NUM_BLOCKS: u64 = 10;
 #[cfg(not(debug_assertions))]
-const EPOCH_NUM_BLOCKS: u64 = 1000;
+const EPOCH_NUM_BLOCKS: u64 = 100;
 const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 //
 

@@ -8,6 +8,10 @@ name = "testnet"
 path = "src/bin/testnet.rs"
 
 [[bin]]
+name = "checkpointing"
+path = "src/bin/checkpointing.rs"
+
+[[bin]]
 name = "block-fetcher"
 path = "src/bin/block_fetcher.rs"
 required-features = ["bench"]
@@ -51,6 +55,9 @@ alloy-rpc-client.workspace = true
 alloy-rpc-types-engine = { version = "1.0.9", features = ["serde"] }
 op-alloy-consensus = { version = "0.19.1", default-features = false, features = ["alloy-compat"] }
 tracing-subscriber = "0.3.19"
+reqwest.workspace = true
+ssz.workspace = true
+sha2.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -91,6 +98,7 @@ reth-tasks = { git = "https://github.com/SeismicSystems/seismic-reth.git", branc
 socket2.workspace = true
 tokio = { workspace = true, features = ["full", "rt-multi-thread", "time"] }
 alloy-signer.workspace = true
+alloy = "1.0.23"
 
 [features]
 prom = [
