@@ -36,11 +36,10 @@ use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::DepositRequest;
 use tracing::Level;
 
+const NUM_NODES: u16 = 4;
+
 #[derive(Parser, Debug)]
 struct Args {
-    /// Number of nodes you want to run for this test
-    #[arg(long, default_value_t = 4)]
-    nodes: u16,
     /// Path to the directory containing historical blocks for benchmarking
     #[cfg(any(feature = "base-bench", feature = "bench"))]
     #[arg(long)]
@@ -102,10 +101,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut consensus_handles = Vec::new();
             // let mut read_threads = Vec::new();
 
-            // Start only 3 nodes initially (the 4th will join later after checkpoint)
-            let initial_nodes = 3;
-
-            for x in 0..initial_nodes {
+            // Start all nodes at the beginning
+            for x in 0..NUM_NODES {
                 // Start Reth
                 println!("******* STARTING RETH FOR NODE {x}");
 
@@ -283,13 +280,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Retrieve checkpoint from first node
             println!("Retrieving checkpoint from node 0");
-            let checkpoint = loop {
+            let checkpoint_state = loop {
                 match get_checkpoint(node0_rpc_port).await {
                     Ok(Some(checkpoint)) => {
                         let state = ConsensusState::try_from(&checkpoint)
                             .expect("Failed to parse checkpoint");
                         println!("Retrieved checkpoint at height {}", state.latest_height);
-                        break checkpoint;
+                        break state;
                     }
                     Ok(None) => {
                         println!("Checkpoint not yet available");
@@ -302,108 +299,124 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             // Start the joining Reth node
-            //let x = initial_nodes;
-            //println!("******* STARTING RETH FOR NODE {} (joining node)", x);
-            //let data_dir = format!("{}/node{}/data/reth_db", args.data_dir, x);
-            //fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+            let x = NUM_NODES;
+            println!("******* STARTING RETH FOR NODE {} (joining node)", x);
+            let data_dir = format!("{}/node{}/data/reth_db", args.data_dir, x);
+            fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
-            //// Copy db and static_files from node0 to initialize the joining node
-            //let source_node = 0;
-            //let source_data_dir = format!("{}/node{}/data/reth_db", args.data_dir, source_node);
+            // Copy db and static_files from node0 to initialize the joining node
+            let source_node = 0;
+            let source_data_dir = format!("{}/node{}/data/reth_db", args.data_dir, source_node);
 
-            //println!("Copying db from node{} to node{}", source_node, x);
-            //let source_db = format!("{}/db", source_data_dir);
-            //let dest_db = format!("{}/db", data_dir);
-            //copy_dir_all(&source_db, &dest_db).expect("Failed to copy db directory");
+            println!("Copying db from node{} to node{}", source_node, x);
+            let source_db = format!("{}/db", source_data_dir);
+            let dest_db = format!("{}/db", data_dir);
+            copy_dir_all(&source_db, &dest_db).expect("Failed to copy db directory");
 
-            //println!("Copying static_files from node{} to node{}", source_node, x);
-            //let source_static = format!("{}/static_files", source_data_dir);
-            //let dest_static = format!("{}/static_files", data_dir);
-            //copy_dir_all(&source_static, &dest_static).expect("Failed to copy static_files directory");
+            println!("Copying static_files from node{} to node{}", source_node, x);
+            let source_static = format!("{}/static_files", source_data_dir);
+            let dest_static = format!("{}/static_files", data_dir);
+            copy_dir_all(&source_static, &dest_static).expect("Failed to copy static_files directory");
 
-            //let reth_builder = Reth::new()
-            //    .instance(x + 1)
-            //    .keep_stdout()
-            //    .data_dir(data_dir)
-            //    .arg("--enclave.mock-server")
-            //    .arg("--enclave.endpoint-port")
-            //    .arg(format!("1744{x}"))
-            //    .arg("--auth-ipc")
-            //    .arg("--auth-ipc.path")
-            //    .arg(format!("/tmp/reth_engine_api{x}.ipc"))
-            //    .arg("--metrics")
-            //    .arg(format!("0.0.0.0:{}", 9001 + x));
+            // Delete lock files
+            let db_lock = format!("{}/lock", dest_db);
+            let static_files_lock = format!("{}/lock", dest_static);
+            let mdbx_lock = format!("{}/mdbx.lck", dest_db);
+            let _ = fs::remove_file(&db_lock); // Ignore error if lock doesn't exist
+            let _ = fs::remove_file(&static_files_lock); // Ignore error if lock doesn't exist
+            let _ = fs::remove_file(&mdbx_lock); // Ignore error if lock doesn't exist
+            println!("Deleted lock files for node{}", x);
 
-            //let mut reth = reth_builder.spawn();
+            let reth_builder = Reth::new()
+                .instance(x + 1)
+                .keep_stdout()
+                .data_dir(data_dir)
+                .arg("--enclave.mock-server")
+                .arg("--enclave.endpoint-port")
+                .arg(format!("1744{x}"))
+                .arg("--auth-ipc")
+                .arg("--auth-ipc.path")
+                .arg(format!("/tmp/reth_engine_api{x}.ipc"))
+                .arg("--metrics")
+                .arg(format!("0.0.0.0:{}", 9001 + x));
 
-            //let stdout = reth.stdout().expect("Failed to get stdout");
+            let mut reth = reth_builder.spawn();
 
-            //let log_dir = args.log_dir.clone();
-            //context.clone().spawn(async move |_| {
-            //    let reader = BufReader::new(stdout);
-            //    let mut log_file = log_dir.as_ref().map(|dir| {
-            //        fs::File::create(format!("{}/node{}.log", dir, x))
-            //            .expect("Failed to create log file")
-            //    });
+            let stdout = reth.stdout().expect("Failed to get stdout");
 
-            //    for line in reader.lines() {
-            //        match line {
-            //            Ok(line) => {
-            //                if let Some(ref mut file) = log_file {
-            //                    writeln!(file, "[Node {}] {}", x, line)
-            //                        .expect("Failed to write to log file");
-            //                }
-            //            }
-            //            Err(_e) => {}
-            //        }
-            //    }
-            //});
+            let log_dir = args.log_dir.clone();
+            context.clone().spawn(async move |_| {
+                let reader = BufReader::new(stdout);
+                let mut log_file = log_dir.as_ref().map(|dir| {
+                    fs::File::create(format!("{}/node{}.log", dir, x))
+                        .expect("Failed to create log file")
+                });
 
-            //println!("Node {} rpc address: {}", x, reth.http_port());
-            //handles.push(reth);
+                for line in reader.lines() {
+                    match line {
+                        Ok(line) => {
+                            if let Some(ref mut file) = log_file {
+                                writeln!(file, "[Node {}] {}", x, line)
+                                    .expect("Failed to write to log file");
+                            }
+                        }
+                        Err(_e) => {}
+                    }
+                }
+            });
 
-            //// Start the 4th consensus node with checkpoint
-            //#[allow(unused_mut)]
-            //let mut flags = get_node_flags(x.into());
+            println!("Node {} rpc address: {}", x, reth.http_port());
+            handles.push(reth);
 
-            //#[cfg(any(feature = "base-bench", feature = "bench"))]
-            //{
-            //    flags.bench_block_dir = args.bench_block_dir.clone();
-            //}
+            // Start the 4th consensus node with checkpoint
+            #[allow(unused_mut)]
+            let mut flags = get_node_flags(x.into());
 
-            //println!("Starting consensus engine for node 3 with checkpoint");
-            //let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags, Some(checkpoint));
-            //consensus_handles.push(handle);
+            #[cfg(any(feature = "base-bench", feature = "bench"))]
+            {
+                flags.bench_block_dir = args.bench_block_dir.clone();
+            }
 
-            //// Wait for all nodes to continue making progress
-            //println!("Waiting for all {} nodes to reach height {}", args.nodes, args.stop_height);
-            //loop {
-            //    let mut all_ready = true;
-            //    for idx in 0..args.nodes {
-            //        let rpc_port = get_node_flags(idx as usize).rpc_port;
-            //        match get_latest_height(rpc_port).await {
-            //            Ok(height) => {
-            //                if height < args.stop_height {
-            //                    all_ready = false;
-            //                    println!("Node {} at height {}", idx, height);
-            //                }
-            //            }
-            //            Err(e) => {
-            //                all_ready = false;
-            //                println!("Node {} error: {}", idx, e);
-            //            }
-            //        }
-            //    }
-            //    if all_ready {
-            //        println!("All nodes have reached target height!");
-            //        break;
-            //    }
-            //    context.sleep(std::time::Duration::from_secs(2)).await;
-            //}
+            let signer_path = format!("{}/node{}/data/key.pem", args.data_dir, x);
+            let encoded_priv_key = ed25519_private_key.to_string();
+            fs::write(&signer_path, encoded_priv_key).expect("Unable to write private key to disk");
+            flags.key_path = signer_path;
+            
+            flags.ip = Some("127.0.0.1:26640".to_string());
 
-            //println!("Test completed successfully!");
+            println!("Starting consensus engine for node 3 with checkpoint");
+            let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags, Some(checkpoint_state));
+            consensus_handles.push(handle);
 
-            //// Keep running
+            // Wait for all nodes to continue making progress
+            println!("Waiting for all {} nodes to reach height {}", NUM_NODES, args.stop_height);
+            loop {
+                let mut all_ready = true;
+                for idx in 0..NUM_NODES {
+                    let rpc_port = get_node_flags(idx as usize).rpc_port;
+                    match get_latest_height(rpc_port).await {
+                        Ok(height) => {
+                            if height < args.stop_height {
+                                all_ready = false;
+                                println!("Node {} at height {}", idx, height);
+                            }
+                        }
+                        Err(e) => {
+                            all_ready = false;
+                            println!("Node {} error: {}", idx, e);
+                        }
+                    }
+                }
+                if all_ready {
+                    println!("All nodes have reached target height!");
+                    break;
+                }
+                context.sleep(std::time::Duration::from_secs(2)).await;
+            }
+
+            println!("Test completed successfully!");
+
+            // Keep running
             //if let Err(e) = futures::future::try_join_all(consensus_handles).await {
             //    tracing::error!("Failed: {:?}", e);
             //}
@@ -641,6 +654,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(any(feature = "base-bench", feature = "bench"))]
         bench_block_dir: None,
+        ip: None,
     }
 }
 

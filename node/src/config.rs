@@ -4,7 +4,7 @@ use crate::keys::read_ed_key_from_path;
 use anyhow::{Context, Result};
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
-use summit_types::checkpoint::Checkpoint;
+use summit_types::consensus_state::ConsensusState;
 use summit_types::{EngineClient, Genesis, PrivateKey, PublicKey};
 
 /* DEFAULTS */
@@ -46,7 +46,7 @@ pub struct EngineConfig<C: EngineClient> {
     pub namespace: String,
     pub genesis_hash: [u8; 32],
 
-    pub checkpoint: Option<Checkpoint>,
+    pub checkpoint: Option<ConsensusState>,
 }
 
 impl<C: EngineClient> EngineConfig<C> {
@@ -56,7 +56,7 @@ impl<C: EngineClient> EngineConfig<C> {
         participants: Vec<PublicKey>,
         db_prefix: String,
         genesis: &Genesis,
-        checkpoint: Option<Checkpoint>,
+        checkpoint: Option<ConsensusState>,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,

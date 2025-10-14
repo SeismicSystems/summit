@@ -20,6 +20,7 @@ use std::{
     num::NonZeroU32,
     str::FromStr as _,
 };
+use commonware_codec::ReadExt;
 #[cfg(feature = "base-bench")]
 use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 
@@ -28,7 +29,7 @@ use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
-use summit_types::checkpoint::Checkpoint;
+use summit_types::consensus_state::ConsensusState;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
@@ -194,6 +195,7 @@ impl Command {
                 .map(|v| v.try_into().expect("Invalid validator in genesis"))
                 .collect();
             committee.sort();
+
             let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
 
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
@@ -358,7 +360,7 @@ impl Command {
 pub fn run_node_with_runtime(
     context: tokio::Context,
     flags: RunFlags,
-    checkpoint: Option<Checkpoint>,
+    checkpoint: Option<ConsensusState>,
 ) -> Handle<()> {
     context.spawn(async move |context| {
         let signer = expect_signer(&flags.key_path);
@@ -396,7 +398,16 @@ pub fn run_node_with_runtime(
             .collect();
         committee.sort();
 
-        let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
+        // If a checkpoint is provided, we use the peers from the checkpoint.
+        // Otherwise we read the peers from the genesis.
+        let peers: Vec<PublicKey> = if let Some(state) = &checkpoint {
+            state.validator_accounts.keys().map(|v| {
+                let mut key_bytes = &v[..];
+                PublicKey::read(&mut key_bytes).expect("failed to parse public key")
+            }).collect()
+        } else {
+            committee.iter().map(|v| v.0.clone()).collect()
+        };
 
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
