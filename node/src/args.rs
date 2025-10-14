@@ -107,6 +107,9 @@ pub struct RunFlags {
         default_value_t = String::from("./example_genesis.toml")
     )]
     pub genesis_path: String,
+    /// IP address for this node (optional, will use genesis if not provided)
+    #[arg(long)]
+    pub ip: Option<String>,
 }
 
 impl Command {
@@ -239,16 +242,21 @@ impl Command {
             )
             .unwrap();
 
-            let our_ip = committee
-                .iter()
-                .find_map(|v| {
-                    if v.0 == config.signer.public_key() {
-                        Some(v.1)
-                    } else {
-                        None
-                    }
-                })
-                .expect("This node is not on the committee");
+            let our_ip = if let Some(ref ip_str) = flags.ip {
+                ip_str.parse::<SocketAddr>()
+                    .expect("Invalid IP address format")
+            } else {
+                committee
+                    .iter()
+                    .find_map(|v| {
+                        if v.0 == config.signer.public_key() {
+                            Some(v.1)
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("This node is not on the committee")
+            };
 
             // Configure telemetry
             let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
@@ -429,16 +437,21 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
         )
         .unwrap();
 
-        let our_ip = committee
-            .iter()
-            .find_map(|v| {
-                if v.0 == config.signer.public_key() {
-                    Some(v.1)
-                } else {
-                    None
-                }
-            })
-            .expect("This node is not on the committee");
+        let our_ip = if let Some(ref ip_str) = flags.ip {
+            ip_str.parse::<SocketAddr>()
+                .expect("Invalid IP address format")
+        } else {
+            committee
+                .iter()
+                .find_map(|v| {
+                    if v.0 == config.signer.public_key() {
+                        Some(v.1)
+                    } else {
+                        None
+                    }
+                })
+                .expect("This node is not on the committee")
+        };
 
         // configure network
 
