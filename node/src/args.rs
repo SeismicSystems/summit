@@ -28,9 +28,9 @@ use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
+use summit_types::checkpoint::Checkpoint;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
-use summit_types::checkpoint::Checkpoint;
 
 pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
@@ -347,7 +347,11 @@ impl Command {
     }
 }
 
-pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags, checkpoint: Option<Checkpoint>) -> Handle<()> {
+pub fn run_node_with_runtime(
+    context: tokio::Context,
+    flags: RunFlags,
+    checkpoint: Option<Checkpoint>,
+) -> Handle<()> {
     context.spawn(async move |context| {
         let signer = expect_signer(&flags.key_path);
 

@@ -167,7 +167,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Start our consensus engine
-                let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags, None);
+                let handle =
+                    run_node_with_runtime(context.with_label(&format!("node{x}")), flags, None);
                 consensus_handles.push(handle);
             }
 

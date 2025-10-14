@@ -73,7 +73,11 @@ impl RpcRoutes {
     }
 
     async fn handle_latest_height(State(state): State<Arc<RpcState>>) -> Result<String, String> {
-        Ok(state.finalizer_mailbox.get_latest_height().await.to_string())
+        Ok(state
+            .finalizer_mailbox
+            .get_latest_height()
+            .await
+            .to_string())
     }
 
     async fn handle_send_genesis(

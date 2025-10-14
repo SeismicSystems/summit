@@ -9,6 +9,19 @@ node3_port = 8542
 
 
 */
+use alloy::hex::FromHex;
+use alloy::network::{EthereumWallet, TransactionBuilder};
+use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
+use alloy::rpc::types::TransactionRequest;
+use alloy::signers::local::PrivateKeySigner;
+use alloy_node_bindings::Reth;
+use alloy_primitives::{Address, U256, keccak256};
+use clap::Parser;
+use commonware_cryptography::{PrivateKeyExt, Signer, ed25519::PrivateKey};
+use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio};
+use commonware_utils::from_hex_formatted;
+use sha2::{Digest, Sha256};
+use ssz::Decode;
 use std::{
     fs,
     io::{BufRead as _, BufReader, Write as _},
@@ -16,25 +29,12 @@ use std::{
     path::PathBuf,
     str::FromStr as _,
 };
-use alloy::hex::FromHex;
-use alloy_node_bindings::Reth;
-use clap::Parser;
-use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio};
 use summit::args::{RunFlags, run_node_with_runtime};
 use summit::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
-use tracing::Level;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
-use commonware_utils::from_hex_formatted;
-use ssz::Decode;
-use alloy_primitives::{Address, U256, keccak256};
-use alloy::network::{EthereumWallet, TransactionBuilder};
-use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
-use alloy::signers::local::PrivateKeySigner;
-use alloy::rpc::types::TransactionRequest;
-use sha2::{Sha256, Digest};
-use commonware_cryptography::{ed25519::PrivateKey, PrivateKeyExt, Signer};
 use summit_types::execution_request::DepositRequest;
+use tracing::Level;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -156,7 +156,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
 
-
                 let _auth_port = reth.auth_port().unwrap();
 
                 println!("Node {} rpc address: {}", x, reth.http_port());
@@ -172,7 +171,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Start our consensus engine
-                let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags, None);
+                let handle =
+                    run_node_with_runtime(context.with_label(&format!("node{x}")), flags, None);
                 consensus_handles.push(handle);
             }
 
@@ -195,7 +195,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .connect_http(node0_url.parse().expect("Invalid URL"));
 
             // Deposit contract address (you'll need to set this to the actual address)
-            let deposit_contract = Address::from_hex("0x00000000219ab540356cBB839Cbe05303d7705Fa").unwrap();
+            let deposit_contract =
+                Address::from_hex("0x00000000219ab540356cBB839Cbe05303d7705Fa").unwrap();
 
             // Create test deposit parameters
             // Generate a deterministic ed25519 key pair and get the public key
@@ -209,7 +210,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             withdrawal_credentials[0] = 0x01; // ETH1 withdrawal prefix
             // Bytes 1-11 remain zero
             // Set the last 20 bytes to the withdrawal address (using the same address as the sender)
-            let withdrawal_address = Address::from_hex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap();
+            let withdrawal_address =
+                Address::from_hex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap();
             withdrawal_credentials[12..32].copy_from_slice(withdrawal_address.as_slice());
 
             // Generate a random BLS signature (96 bytes) - for testing purposes only
@@ -224,9 +226,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 index: 0, // not included in the signature
             };
 
-            let protocol_version_digest = commonware_cryptography::sha256::hash(
-                &PROTOCOL_VERSION.to_le_bytes(),
-            );
+            let protocol_version_digest =
+                commonware_cryptography::sha256::hash(&PROTOCOL_VERSION.to_le_bytes());
             let message = deposit_request.as_message(protocol_version_digest);
             //let signature: [u8; 64] = ed25519_private_key.sign(None, &message).as_ref().try_into().unwrap();
             let signature = ed25519_private_key.sign(None, &message);
@@ -234,14 +235,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             padded_signature[32..96].copy_from_slice(signature.as_ref());
 
             /*
-                pub struct DepositRequest {
-                    pub pubkey: PublicKey,                // Validator ED25519 public key
-                    pub withdrawal_credentials: [u8; 32], // Either hash of the BLS pubkey, or Ethereum address
-                    pub amount: u64,                      // Amount in gwei
-                    pub signature: [u8; 64],              // ED signature
-                    pub index: u64,
-                }
-             */
+               pub struct DepositRequest {
+                   pub pubkey: PublicKey,                // Validator ED25519 public key
+                   pub withdrawal_credentials: [u8; 32], // Either hash of the BLS pubkey, or Ethereum address
+                   pub amount: u64,                      // Amount in gwei
+                   pub signature: [u8; 64],              // ED signature
+                   pub index: u64,
+               }
+            */
 
             // Convert VALIDATOR_MINIMUM_STAKE (in gwei) to wei
             let deposit_amount = U256::from(amount) * U256::from(1_000_000_000u64); // gwei to wei
@@ -254,10 +255,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &withdrawal_credentials,
                 &padded_signature,
                 0, // nonce
-            ).await.expect("failed to send deposit transaction");
+            )
+            .await
+            .expect("failed to send deposit transaction");
 
             // Wait for nodes to reach checkpoint height
-            println!("Waiting for nodes to reach checkpoint height {}", args.checkpoint_height);
+            println!(
+                "Waiting for nodes to reach checkpoint height {}",
+                args.checkpoint_height
+            );
             let node0_rpc_port = get_node_flags(0).rpc_port;
             loop {
                 match get_latest_height(node0_rpc_port).await {
@@ -445,8 +451,7 @@ async fn get_checkpoint(rpc_port: u16) -> Result<Option<Checkpoint>, Box<dyn std
     match response {
         Ok(resp) if resp.status().is_success() => {
             let hex_str = resp.text().await?;
-            let bytes = from_hex_formatted(&hex_str)
-                .ok_or("Failed to decode hex")?;
+            let bytes = from_hex_formatted(&hex_str).ok_or("Failed to decode hex")?;
             let checkpoint = Checkpoint::from_ssz_bytes(&bytes)
                 .map_err(|e| format!("Failed to decode checkpoint: {:?}", e))?;
             Ok(Some(checkpoint))
@@ -472,7 +477,12 @@ where
     padded_pubkey[16..48].copy_from_slice(ed25519_pubkey);
 
     // Compute the correct deposit data root for this transaction
-    let deposit_data_root = compute_deposit_data_root(ed25519_pubkey, withdrawal_credentials, deposit_amount, signature);
+    let deposit_data_root = compute_deposit_data_root(
+        ed25519_pubkey,
+        withdrawal_credentials,
+        deposit_amount,
+        signature,
+    );
 
     // Create deposit function call data: deposit(bytes,bytes,bytes,bytes32)
     let function_selector = &keccak256("deposit(bytes,bytes,bytes,bytes32)")[0..4];
@@ -480,8 +490,9 @@ where
 
     // ABI encode parameters - calculate offsets for 4 parameters (3 dynamic + 1 fixed)
     let offset_to_pubkey = 4 * 32;
-    let offset_to_withdrawal_creds = offset_to_pubkey + 32 + ((padded_pubkey.len() + 31) / 32) * 32;
-    let offset_to_signature = offset_to_withdrawal_creds + 32 + ((withdrawal_credentials.len() + 31) / 32) * 32;
+    let offset_to_withdrawal_creds = offset_to_pubkey + 32 + padded_pubkey.len().div_ceil(32) * 32;
+    let offset_to_signature =
+        offset_to_withdrawal_creds + 32 + withdrawal_credentials.len().div_ceil(32) * 32;
 
     // Add parameter offsets
     let mut offset_bytes = vec![0u8; 32];
@@ -539,7 +550,7 @@ where
                 Err(e) => panic!("Transaction failed: {e}"),
             }
         }
-        Err(e) => panic!("Error sending transaction: {}", e)
+        Err(e) => panic!("Error sending transaction: {}", e),
     }
 }
 
@@ -567,8 +578,8 @@ fn compute_deposit_data_root(
 
     // 1. pubkey_root = sha256(padded_pubkey || bytes16(0))
     let mut hasher = Sha256::new();
-    hasher.update(&padded_pubkey);
-    hasher.update(&[0u8; 16]); // bytes16(0)
+    hasher.update(padded_pubkey);
+    hasher.update([0u8; 16]); // bytes16(0)
     let pubkey_root = hasher.finalize();
 
     // 2. signature_root = sha256(sha256(signature[0:64]) || sha256(signature[64:96] || bytes32(0)))
@@ -578,12 +589,12 @@ fn compute_deposit_data_root(
 
     let mut hasher = Sha256::new();
     hasher.update(&signature[64..96]);
-    hasher.update(&[0u8; 32]); // bytes32(0)
+    hasher.update([0u8; 32]); // bytes32(0)
     let sig_part2 = hasher.finalize();
 
     let mut hasher = Sha256::new();
-    hasher.update(&sig_part1);
-    hasher.update(&sig_part2);
+    hasher.update(sig_part1);
+    hasher.update(sig_part2);
     let signature_root = hasher.finalize();
 
     // 3. Convert amount to 8-byte little-endian (gwei)
@@ -593,24 +604,25 @@ fn compute_deposit_data_root(
 
     // 4. node = sha256(sha256(pubkey_root || withdrawal_credentials) || sha256(amount || bytes24(0) || signature_root))
     let mut hasher = Sha256::new();
-    hasher.update(&pubkey_root);
+    hasher.update(pubkey_root);
     hasher.update(withdrawal_credentials);
     let left_node = hasher.finalize();
 
     let mut hasher = Sha256::new();
-    hasher.update(&amount_bytes);
-    hasher.update(&[0u8; 24]); // bytes24(0)
-    hasher.update(&signature_root);
+    hasher.update(amount_bytes);
+    hasher.update([0u8; 24]); // bytes24(0)
+    hasher.update(signature_root);
     let right_node = hasher.finalize();
 
     let mut hasher = Sha256::new();
-    hasher.update(&left_node);
-    hasher.update(&right_node);
+    hasher.update(left_node);
+    hasher.update(right_node);
     let deposit_data_root = hasher.finalize();
 
     let digest_bytes: &[u8] = deposit_data_root.as_ref();
-    let result: [u8; 32] = digest_bytes.try_into().expect("SHA-256 digest is always 32 bytes");
-    result
+    digest_bytes
+        .try_into()
+        .expect("SHA-256 digest is always 32 bytes")
 }
 
 fn get_node_flags(node: usize) -> RunFlags {
@@ -631,7 +643,6 @@ fn get_node_flags(node: usize) -> RunFlags {
         bench_block_dir: None,
     }
 }
-
 
 /*
 This test only works if the deposit contract is deployed. The contract can be added as a pre-deploy to the Reth genesis like this:
