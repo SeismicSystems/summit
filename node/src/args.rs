@@ -202,7 +202,7 @@ impl Command {
             committee.sort();
 
             let initial_state = get_initial_state(&genesis, &committee, None);
-            let peers: Vec<PublicKey> = initial_state
+            let mut peers: Vec<PublicKey> = initial_state
                 .validator_accounts
                 .keys()
                 .map(|v| {
@@ -210,6 +210,7 @@ impl Command {
                     PublicKey::read(&mut key_bytes).expect("failed to parse public key")
                 })
                 .collect();
+            peers.sort();
 
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
                 .expect("failed to expand engine ipc path");
@@ -425,7 +426,7 @@ pub fn run_node_with_runtime(
         //    committee.iter().map(|v| v.0.clone()).collect()
         //};
 
-        let peers: Vec<PublicKey> = initial_state
+        let mut peers: Vec<PublicKey> = initial_state
             .validator_accounts
             .keys()
             .map(|v| {
@@ -433,6 +434,7 @@ pub fn run_node_with_runtime(
                 PublicKey::read(&mut key_bytes).expect("failed to parse public key")
             })
             .collect();
+        peers.sort();
 
         //let mut peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
         //if let Some(state) = &checkpoint {
