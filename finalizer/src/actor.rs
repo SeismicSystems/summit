@@ -55,6 +55,7 @@ pub struct Finalizer<
     validator_minimum_stake: u64,     // in gwei
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
+    public_key: PublicKey,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
@@ -76,17 +77,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
         let db = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
 
-        let state = if let Some(state) = cfg.initial_state {
-            state
-        } else if let Some(state) = db.get_latest_consensus_state().await {
+        // Check if the state exists in the database. Otherwise, use the initial state.
+        // The initial state could be from the genesis or a checkpoint.
+        // If we want to load a checkpoint, we have to make sure that the DB is cleared.
+        let state = if let Some(state) = db.get_latest_consensus_state().await {
             state
         } else {
-            let forkchoice = ForkchoiceState {
-                head_block_hash: cfg.genesis_hash.into(),
-                safe_block_hash: cfg.genesis_hash.into(),
-                finalized_block_hash: cfg.genesis_hash.into(),
-            };
-            ConsensusState::new(forkchoice)
+            cfg.initial_state
         };
 
         (
@@ -107,6 +104,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 validator_minimum_stake: cfg.validator_minimum_stake,
                 validator_withdrawal_period: cfg.validator_withdrawal_period,
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
+                public_key: cfg.public_key,
             },
             FinalizerMailbox::new(tx),
         )

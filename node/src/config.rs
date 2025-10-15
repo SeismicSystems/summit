@@ -46,7 +46,7 @@ pub struct EngineConfig<C: EngineClient> {
     pub namespace: String,
     pub genesis_hash: [u8; 32],
 
-    pub checkpoint: Option<ConsensusState>,
+    pub initial_state: ConsensusState,
 }
 
 impl<C: EngineClient> EngineConfig<C> {
@@ -56,7 +56,7 @@ impl<C: EngineClient> EngineConfig<C> {
         participants: Vec<PublicKey>,
         db_prefix: String,
         genesis: &Genesis,
-        checkpoint: Option<ConsensusState>,
+        initial_state: ConsensusState,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,
@@ -81,7 +81,7 @@ impl<C: EngineClient> EngineConfig<C> {
                 .map(|hash_bytes| hash_bytes.try_into())
                 .expect("bad eth_genesis_hash")
                 .expect("bad eth_genesis_hash"),
-            checkpoint,
+            initial_state,
         })
     }
 }

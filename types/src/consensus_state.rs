@@ -26,6 +26,7 @@ impl ConsensusState {
     pub fn new(forkchoice: ForkchoiceState) -> Self {
         Self {
             forkchoice,
+            latest_height: 0,
             ..Default::default()
         }
     }

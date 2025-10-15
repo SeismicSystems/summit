@@ -1,5 +1,5 @@
 use commonware_runtime::buffer::PoolRef;
-use summit_types::{EngineClient, consensus_state::ConsensusState};
+use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 
 use crate::registry::Registry;
 
@@ -16,8 +16,10 @@ pub struct FinalizerConfig<C: EngineClient> {
     pub validator_onboarding_limit_per_block: usize,
     pub buffer_pool: PoolRef,
     pub genesis_hash: [u8; 32],
-    /// Optional initial state to initialize the finalizer with
-    pub initial_state: Option<ConsensusState>,
+    /// Initial state to initialize the finalizer with
+    pub initial_state: ConsensusState,
     /// Protocol version for the consensus protocol
     pub protocol_version: u32,
+    /// Public key of this node
+    pub public_key: PublicKey,
 }

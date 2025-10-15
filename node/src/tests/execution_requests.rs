@@ -1,6 +1,6 @@
 use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
-use crate::test_harness::common::get_default_engine_config;
+use crate::test_harness::common::{get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use alloy_primitives::{Address, hex};
 use commonware_cryptography::{PrivateKeyExt, Signer};
@@ -85,6 +85,8 @@ fn test_deposit_request_single() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
+        // Set the validator balance to 0
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -107,7 +109,7 @@ fn test_deposit_request_single() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -271,6 +273,8 @@ fn test_deposit_request_top_up() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
+        // Set the validator balance to 0
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -293,7 +297,7 @@ fn test_deposit_request_top_up() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -385,7 +389,7 @@ fn test_deposit_and_withdrawal_request_single() {
     // Adds a deposit request to the block at height 5, and then adds a withdrawal request
     // to the block at height 7.
     // It is verified that the validator balance is correctly decremented after the withdrawal,
-    // and that the withdrawal request that is send to the execution layer matches the
+    // and that the withdrawal request that is sent to the execution layer matches the
     // withdrawal request (execution request) that was initially added to block 7.
     let n = 10;
     let link = Link {
@@ -433,7 +437,7 @@ fn test_deposit_and_withdrawal_request_single() {
 
         // Create a single deposit request using the helper
         let (test_deposit, _) = common::create_deposit_request(
-            1,
+            n as u64, // use a private key seed that doesn't exist on the consensus state
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
@@ -455,7 +459,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
-        // The deposit request will processed after 10 blocks because `EPOCH_NUM_BLOCKS`
+        // The deposit request will be processed after 10 blocks because `EPOCH_NUM_BLOCKS`
         // is set to 10 in debug mode.
         // The withdrawal request should be added after block 10, otherwise it will be ignored, because
         // the account doesn't exist yet.
@@ -469,6 +473,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -491,7 +496,7 @@ fn test_deposit_and_withdrawal_request_single() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -639,7 +644,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
         // Create a single deposit request using the helper
         let (test_deposit, _) = common::create_deposit_request(
-            1,
+            n as u64,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
@@ -681,6 +686,13 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -703,7 +715,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -891,6 +903,13 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -913,7 +932,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -1116,6 +1135,13 @@ fn test_deposit_and_withdrawal_request_multiple() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -1138,7 +1164,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -1328,6 +1354,13 @@ fn test_deposit_request_invalid_signature() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -1350,7 +1383,7 @@ fn test_deposit_request_invalid_signature() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());

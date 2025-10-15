@@ -78,12 +78,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
         let registry = Registry::new(cfg.participants.clone());
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
-        // Get initial state from checkpoint if provided
-
-        let sync_height = cfg.checkpoint
-            .as_ref()
-            .map(|state| state.latest_height)
-            .unwrap_or(0);
+        let sync_height = cfg.initial_state.latest_height;
 
         // create application
         let (application, application_mailbox) = summit_application::Actor::new(
@@ -138,8 +133,9 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                 buffer_pool: buffer_pool.clone(),
                 genesis_hash: cfg.genesis_hash,
-                initial_state: cfg.checkpoint,
+                initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
+                public_key: cfg.signer.public_key(),
             },
         )
         .await;

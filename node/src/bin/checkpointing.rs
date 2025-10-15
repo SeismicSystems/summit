@@ -317,7 +317,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Copying static_files from node{} to node{}", source_node, x);
             let source_static = format!("{}/static_files", source_data_dir);
             let dest_static = format!("{}/static_files", data_dir);
-            copy_dir_all(&source_static, &dest_static).expect("Failed to copy static_files directory");
+            copy_dir_all(&source_static, &dest_static)
+                .expect("Failed to copy static_files directory");
 
             // Delete lock files
             let db_lock = format!("{}/lock", dest_db);
@@ -385,11 +386,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             flags.ip = Some("127.0.0.1:26640".to_string());
 
             println!("Starting consensus engine for node 3 with checkpoint");
-            let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags, Some(checkpoint_state));
+            let handle = run_node_with_runtime(
+                context.with_label(&format!("node{x}")),
+                flags,
+                Some(checkpoint_state),
+            );
             consensus_handles.push(handle);
 
             // Wait for all nodes to continue making progress
-            println!("Waiting for all {} nodes to reach height {}", num_nodes, args.stop_height);
+            println!(
+                "Waiting for all {} nodes to reach height {}",
+                num_nodes, args.stop_height
+            );
             loop {
                 let mut all_ready = true;
                 for idx in 0..num_nodes {

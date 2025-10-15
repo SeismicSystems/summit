@@ -30,11 +30,17 @@ impl ValidatorStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatorAccount {
-    pub withdrawal_credentials: Address, // Ethereum address
-    pub balance: u64,                    // Balance in gwei
-    pub pending_withdrawal_amount: u64,  // Sum of pending withdrawals in gwei
+    // Ethereum address for withdrawals
+    pub withdrawal_credentials: Address,
+    // Balance in gwei
+    pub balance: u64,
+    // Sum of pending withdrawals in gwei
+    pub pending_withdrawal_amount: u64,
+    // Validator status
     pub status: ValidatorStatus,
-    pub last_deposit_index: u64, // Last deposit request index
+    // The index from the last deposit request.
+    // The index is incremented by the deposit contract.
+    pub last_deposit_index: u64,
 }
 
 impl TryFrom<&[u8]> for ValidatorAccount {

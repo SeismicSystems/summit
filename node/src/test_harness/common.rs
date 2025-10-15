@@ -1,10 +1,11 @@
 use commonware_cryptography::{PrivateKeyExt, Signer};
 
-use crate::engine::PROTOCOL_VERSION;
+use crate::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, B256, Bytes};
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::Write;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
 use commonware_runtime::{
@@ -18,7 +19,8 @@ use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
 };
-use summit_types::checkpoint::Checkpoint;
+use summit_types::account::{ValidatorAccount, ValidatorStatus};
+use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
 use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
 
@@ -156,6 +158,13 @@ pub fn run_until_height(
             .try_into()
             .expect("failed to convert genesis hash");
         let engine_client_network = MockEngineNetwork::new(genesis_hash);
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -178,7 +187,7 @@ pub fn run_until_height(
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
 
             let engine = Engine::new(context.with_label(&uid), config).await;
@@ -251,6 +260,48 @@ pub fn run_until_height(
 
 pub fn get_domain() -> Digest {
     commonware_cryptography::sha256::hash(&PROTOCOL_VERSION.to_le_bytes())
+}
+
+pub fn get_initial_state(
+    genesis_hash: [u8; 32],
+    committee: &Vec<PublicKey>,
+    withdrawal_credentials: Option<&Vec<Address>>,
+    checkpoint: Option<ConsensusState>,
+    balance: u64,
+) -> ConsensusState {
+    let addresses = vec![Address::ZERO; committee.len()];
+    let addresses = withdrawal_credentials.unwrap_or(&addresses);
+    let genesis_hash: B256 = genesis_hash.into();
+    checkpoint.unwrap_or_else(|| {
+        let forkchoice = ForkchoiceState {
+            head_block_hash: genesis_hash,
+            safe_block_hash: genesis_hash,
+            finalized_block_hash: genesis_hash,
+        };
+        let mut state = ConsensusState::new(forkchoice);
+        // Add the genesis nodes to the consensus state with the minimum stake balance.
+        for (pubkey, address) in committee.iter().zip(addresses.iter()) {
+            let pubkey_bytes: [u8; 32] = pubkey
+                .as_ref()
+                .try_into()
+                .expect("Public key must be 32 bytes");
+            let account = ValidatorAccount {
+                // TODO(matthias): we have to add a withdrawal address to the genesis
+                withdrawal_credentials: *address,
+                balance,
+                pending_withdrawal_amount: 0,
+                status: ValidatorStatus::Active,
+                // TODO(matthias): this index is comes from the deposit contract.
+                // Since there is no deposit transaction for the genesis nodes, the index will still be
+                // 0 for the deposit contract. Right now we only use this index to avoid counting the same deposit request twice.
+                // Since we set the index to 0 here, we cannot rely on the uniqueness. The first actual deposit request will have
+                // index 0 as well.
+                last_deposit_index: 0,
+            };
+            state.validator_accounts.insert(pubkey_bytes, account);
+        }
+        state
+    })
 }
 
 /// Parse a substring from a metric name using XML-like tags
@@ -416,7 +467,7 @@ pub fn get_default_engine_config<C: EngineClient>(
     namespace: String,
     signer: PrivateKey,
     participants: Vec<PublicKey>,
-    checkpoint: Option<Checkpoint>,
+    initial_state: ConsensusState,
 ) -> EngineConfig<C> {
     EngineConfig {
         engine_client,
@@ -438,6 +489,6 @@ pub fn get_default_engine_config<C: EngineClient>(
         _max_fetch_size: 1024 * 512,
         fetch_concurrent: 10,
         fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(10).unwrap()),
-        checkpoint,
+        initial_state,
     }
 }
