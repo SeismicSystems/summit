@@ -35,6 +35,7 @@ use crate::{
 };
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
+const REGISTRY_CHANGE_VIEW_DELTA: u64 = 5;
 
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -327,9 +328,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             if !self.state.added_validators.is_empty() || !self.state.removed_validators.is_empty()
             {
                 self.registry.update_registry(
-                    // TODO(matthias): do we still need the DELTA?
-                    //block.view() + REGISTRY_CHANGE_VIEW_DELTA,
-                    view,
+                    // We add a delta to the view because the views are initialized with fixed-size
+                    // arrays in Simplex. Adding a validator to an ongoing view can cause an
+                    // out-of-bounds array access.
+                    view + REGISTRY_CHANGE_VIEW_DELTA,
                     std::mem::take(&mut self.state.added_validators),
                     std::mem::take(&mut self.state.removed_validators),
                 );

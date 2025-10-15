@@ -300,6 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Start the joining Reth node
             let x = NUM_NODES;
+            let num_nodes = NUM_NODES + 1;
             println!("******* STARTING RETH FOR NODE {} (joining node)", x);
             let data_dir = format!("{}/node{}/data/reth_db", args.data_dir, x);
             fs::create_dir_all(&data_dir).expect("Failed to create data directory");
@@ -381,7 +382,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let encoded_priv_key = ed25519_private_key.to_string();
             fs::write(&signer_path, encoded_priv_key).expect("Unable to write private key to disk");
             flags.key_path = signer_path;
-            
             flags.ip = Some("127.0.0.1:26640".to_string());
 
             println!("Starting consensus engine for node 3 with checkpoint");
@@ -389,10 +389,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             consensus_handles.push(handle);
 
             // Wait for all nodes to continue making progress
-            println!("Waiting for all {} nodes to reach height {}", NUM_NODES, args.stop_height);
+            println!("Waiting for all {} nodes to reach height {}", num_nodes, args.stop_height);
             loop {
                 let mut all_ready = true;
-                for idx in 0..NUM_NODES {
+                for idx in 0..num_nodes {
                     let rpc_port = get_node_flags(idx as usize).rpc_port;
                     match get_latest_height(rpc_port).await {
                         Ok(height) => {

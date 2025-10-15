@@ -400,14 +400,21 @@ pub fn run_node_with_runtime(
 
         // If a checkpoint is provided, we use the peers from the checkpoint.
         // Otherwise we read the peers from the genesis.
-        let peers: Vec<PublicKey> = if let Some(state) = &checkpoint {
-            state.validator_accounts.keys().map(|v| {
+        //let peers: Vec<PublicKey> = if let Some(state) = &checkpoint {
+        //    state.validator_accounts.keys().map(|v| {
+        //        let mut key_bytes = &v[..];
+        //        PublicKey::read(&mut key_bytes).expect("failed to parse public key")
+        //    }).collect()
+        //} else {
+        //    committee.iter().map(|v| v.0.clone()).collect()
+        //};
+        let mut peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
+        if let Some(state) = &checkpoint {
+            state.validator_accounts.keys().for_each(|v| {
                 let mut key_bytes = &v[..];
-                PublicKey::read(&mut key_bytes).expect("failed to parse public key")
-            }).collect()
-        } else {
-            committee.iter().map(|v| v.0.clone()).collect()
-        };
+                peers.push(PublicKey::read(&mut key_bytes).expect("failed to parse public key"));
+            })
+        }
 
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
