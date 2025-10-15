@@ -309,13 +309,29 @@ impl Command {
             }
 
             // configure network
+            // Build peer committee with addresses for discovery network
+            let peer_committee: Vec<(PublicKey, SocketAddr)> = peers
+                .iter()
+                .filter_map(|peer| {
+                    // First check if peer is in genesis committee
+                    if let Some((_, addr)) = committee.iter().find(|(pubkey, _)| pubkey == peer) {
+                        return Some((peer.clone(), *addr));
+                    }
+                    // If not in committee but it's us, use our_ip
+                    if peer == &config.signer.public_key() {
+                        return Some((peer.clone(), our_ip));
+                    }
+                    // Otherwise, we don't know the address for this peer
+                    None
+                })
+                .collect();
 
             let mut p2p_cfg = authenticated::discovery::Config::aggressive(
                 config.signer.clone(),
                 genesis.namespace.as_bytes(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
                 our_ip,
-                committee.clone(),
+                peer_committee.clone(),
                 genesis.max_message_size_bytes as usize,
             );
             p2p_cfg.mailbox_size = config.mailbox_size;
@@ -326,7 +342,7 @@ impl Command {
 
             // Provide authorized peers
             oracle
-                .register(0, committee.into_iter().map(|(key, _)| key).collect())
+                .register(0, peers.clone())
                 .await;
 
             // Register pending channel
@@ -505,23 +521,44 @@ pub fn run_node_with_runtime(
                 .expect("This node is not on the committee")
         };
 
-        // configure network
+        // Provide authorized peers
+        // If a peer is in the committee, use that address. Otherwise, use our_ip if it's our key.
+        let peer_addresses: Vec<(PublicKey, SocketAddr)> = peers
+            .iter()
+            .filter_map(|peer| {
+                // First check if peer is in genesis committee
+                if let Some((_, addr)) = committee.iter().find(|(pubkey, _)| pubkey == peer) {
+                    return Some((peer.clone(), *addr));
+                }
+                // If not in committee but it's us, use our_ip
+                if peer == &config.signer.public_key() {
+                    return Some((peer.clone(), our_ip));
+                }
+                // Otherwise, we don't know the address for this peer
+                None
+            })
+            .collect();
 
-        let mut p2p_cfg = authenticated::lookup::Config::aggressive(
+
+        // configure network
+        let mut p2p_cfg = authenticated::discovery::Config::aggressive(
             config.signer.clone(),
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
             our_ip,
+            peer_addresses.clone(),
             genesis.max_message_size_bytes as usize,
         );
         p2p_cfg.mailbox_size = config.mailbox_size;
 
         // Start p2p
         let (mut network, mut oracle) =
-            authenticated::lookup::Network::new(context.with_label("network"), p2p_cfg);
+            authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
         // Provide authorized peers
-        oracle.register(0, committee).await;
+        oracle
+            .register(0, peers.clone())
+            .await;
 
         // Register pending channel
         let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
