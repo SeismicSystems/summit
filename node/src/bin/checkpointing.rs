@@ -385,7 +385,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             flags.key_path = signer_path;
             flags.ip = Some("127.0.0.1:26640".to_string());
 
-            println!("Starting consensus engine for node 3 with checkpoint");
+            println!("Starting consensus engine for node {} with checkpoint", ed25519_private_key.public_key());
             let handle = run_node_with_runtime(
                 context.with_label(&format!("node{x}")),
                 flags,

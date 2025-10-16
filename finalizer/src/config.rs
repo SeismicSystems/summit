@@ -1,9 +1,10 @@
-use commonware_runtime::buffer::PoolRef;
+use commonware_p2p::authenticated;
+use commonware_runtime::{Metrics, Spawner, buffer::PoolRef};
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 
 use crate::registry::Registry;
 
-pub struct FinalizerConfig<C: EngineClient> {
+pub struct FinalizerConfig<E: Spawner + Metrics, C: EngineClient> {
     pub mailbox_size: usize,
     pub db_prefix: String,
     pub engine_client: C,
@@ -22,4 +23,6 @@ pub struct FinalizerConfig<C: EngineClient> {
     pub protocol_version: u32,
     /// Public key of this node
     pub public_key: PublicKey,
+    /// Oracle for registering new peers dynamically
+    pub oracle: authenticated::discovery::Oracle<E, PublicKey>,
 }

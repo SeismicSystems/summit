@@ -5,6 +5,7 @@ use alloy_primitives::hex;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_cryptography::Verifier as _;
+use commonware_p2p::authenticated;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::{NZU64, NZUsize, hex};
@@ -56,12 +57,13 @@ pub struct Finalizer<
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
     public_key: PublicKey,
+    oracle: authenticated::discovery::Oracle<R, PublicKey>,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
     Finalizer<R, C>
 {
-    pub async fn new(context: R, cfg: FinalizerConfig<C>) -> (Self, FinalizerMailbox) {
+    pub async fn new(context: R, cfg: FinalizerConfig<R, C>) -> (Self, FinalizerMailbox) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
         let state_cfg = StateConfig {
             log_journal_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
@@ -105,6 +107,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 validator_withdrawal_period: cfg.validator_withdrawal_period,
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
                 public_key: cfg.public_key,
+                oracle: cfg.oracle,
             },
             FinalizerMailbox::new(tx),
         )
@@ -180,11 +183,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         let block_processing_start = Instant::now();
 
         let BlockEnvelope { block, finalized } = envelope;
+        let new_height = block.height();
+
         // check the payload
         #[cfg(feature = "prom")]
         let payload_check_start = Instant::now();
         let payload_status = self.engine_client.check_payload(&block).await;
-        let new_height = block.height();
 
         #[cfg(feature = "prom")]
         {
@@ -325,6 +329,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             // Add and remove validators for the next epoch
             if !self.state.added_validators.is_empty() || !self.state.removed_validators.is_empty()
             {
+                // Register the new validator with the oracle so existing nodes know about it
+                if !self.state.added_validators.is_empty() {
+                    self.oracle.register(view, self.state.added_validators.clone()).await;
+                }
                 self.registry.update_registry(
                     // We add a delta to the view because the views are initialized with fixed-size
                     // arrays in Simplex. Adding a validator to an ongoing view can cause an

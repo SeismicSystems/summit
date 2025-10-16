@@ -2,6 +2,8 @@ use std::{num::NonZeroU32, time::Duration};
 
 use crate::keys::read_ed_key_from_path;
 use anyhow::{Context, Result};
+use commonware_p2p::authenticated;
+use commonware_runtime::{Metrics, Spawner};
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
 use summit_types::consensus_state::ConsensusState;
@@ -17,13 +19,13 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const FETCH_CONCURRENT: usize = 4;
 const MAX_FETCH_COUNT: usize = 16;
 const MAX_FETCH_SIZE: usize = 512 * 1024;
-const MAILBOX_SIZE: usize = 16384;
+pub const MAILBOX_SIZE: usize = 16384;
 const DEQUE_SIZE: usize = 10;
 pub const MESSAGE_BACKLOG: usize = 16384;
 const BACKFILL_QUOTA: u32 = 10; // in seconds
 const FETCH_RATE_P2P: u32 = 128; // in seconds
 
-pub struct EngineConfig<C: EngineClient> {
+pub struct EngineConfig<E: Spawner + Metrics, C: EngineClient> {
     pub engine_client: C,
     pub partition_prefix: String,
     pub signer: PrivateKey,
@@ -47,9 +49,10 @@ pub struct EngineConfig<C: EngineClient> {
     pub genesis_hash: [u8; 32],
 
     pub initial_state: ConsensusState,
+    pub oracle: authenticated::discovery::Oracle<E, PublicKey>,
 }
 
-impl<C: EngineClient> EngineConfig<C> {
+impl<E: Spawner + Metrics, C: EngineClient> EngineConfig<E, C> {
     pub fn get_engine_config(
         engine_client: C,
         signer: PrivateKey,
@@ -57,6 +60,7 @@ impl<C: EngineClient> EngineConfig<C> {
         db_prefix: String,
         genesis: &Genesis,
         initial_state: ConsensusState,
+        oracle: authenticated::discovery::Oracle<E, PublicKey>,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,
@@ -82,6 +86,7 @@ impl<C: EngineClient> EngineConfig<C> {
                 .expect("bad eth_genesis_hash")
                 .expect("bad eth_genesis_hash"),
             initial_state,
+            oracle,
         })
     }
 }
