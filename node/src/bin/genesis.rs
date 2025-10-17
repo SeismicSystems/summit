@@ -1,16 +1,53 @@
 use clap::Parser;
-use commonware_codec::Encode as _;
+use commonware_codec::{DecodeExt, Encode as _};
 use commonware_cryptography::bls12381::{
     dkg::ops,
     primitives::{poly, variant::MinPk},
 };
-use commonware_utils::{hex, quorum};
+use commonware_utils::{from_hex, hex, quorum};
 use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use summit::config::{GenesisConfig, Validator};
+use summit_types::PublicKey;
 
 const DEFAULT_GENESIS_FILE: &'static str = "./example_genesis.toml";
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GenesisConfig {
+    eth_genesis_hash: String,
+    leader_timeout_ms: u64,
+    notarization_timeout_ms: u64,
+    nullify_timeout_ms: u64,
+    activity_timeout_views: u64,
+    skip_timeout_views: u64,
+    max_message_size_bytes: u64,
+    namespace: String,
+    pub identity: String,
+    pub validators: Vec<Validator>,
+}
+
+impl GenesisConfig {
+    pub fn load(path: &str) -> Result<GenesisConfig, Box<dyn std::error::Error>> {
+        let genesis_content = std::fs::read_to_string(path)?;
+        let genesis_config: GenesisConfig = toml::from_str(&genesis_content)?;
+        Ok(genesis_config)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Validator {
+    pub public_key: String,
+    pub ip_address: String,
+}
+
+impl Validator {
+    pub fn ed25519_pubkey(&self) -> PublicKey {
+        let pubkey_bytes = from_hex(&self.public_key).unwrap();
+        let pubkey = PublicKey::decode(&pubkey_bytes[..]).unwrap();
+        pubkey
+    }
+}
 
 #[derive(Parser, Debug)]
 struct Args {
