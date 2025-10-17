@@ -117,7 +117,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
         let syncer_config = summit_syncer::Config {
             partition_prefix: cfg.partition_prefix.clone(),
             public_key: cfg.signer.public_key(),
-            participants: cfg.participants,
+            registry: registry.clone(),
             mailbox_size: cfg.mailbox_size,
             backfill_quota: cfg.backfill_quota,
             activity_timeout: cfg.activity_timeout,

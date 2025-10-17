@@ -4,6 +4,8 @@ pub mod ingress;
 use commonware_runtime::buffer::PoolRef;
 pub use ingress::*;
 use summit_types::PublicKey;
+use summit_types::registry::Registry;
+
 pub mod coordinator;
 pub mod handler;
 pub mod key;
@@ -14,7 +16,7 @@ pub struct Config {
 
     pub public_key: PublicKey,
 
-    pub participants: Vec<PublicKey>,
+    pub registry: Registry,
 
     /// Number of messages from consensus to hold in our backlog
     /// before blocking.
