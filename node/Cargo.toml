@@ -12,6 +12,10 @@ name = "genesis"
 path = "src/bin/genesis.rs"
 
 [[bin]]
+name = "stake-and-checkpoint"
+path = "src/bin/stake_and_checkpoint.rs"
+
+[[bin]]
 name = "block-fetcher"
 path = "src/bin/block_fetcher.rs"
 required-features = ["bench"]
@@ -45,6 +49,11 @@ dirs.workspace = true
 
 tokio = { version = "1.45.1", features = ["sync"] }
 tokio-util.workspace = true
+
+# stake and checkpoint bin deps
+alloy = "1.0.23"
+ethereum_ssz.workspace = true
+reqwest.workspace = true
 
 # testnet bin deps
 alloy-node-bindings.workspace = true
