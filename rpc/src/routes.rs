@@ -7,10 +7,11 @@ use axum::{
 };
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::Signer;
-use commonware_utils::from_hex_formatted;
+use commonware_utils::{from_hex_formatted, hex};
+use ssz::Encode;
 use summit_types::{PrivateKey, utils::get_expanded_path};
 
-use crate::{PathSender, RpcState};
+use crate::{GenesisRpcState, PathSender, RpcState};
 
 pub(crate) struct RpcRoutes;
 
@@ -22,8 +23,16 @@ impl RpcRoutes {
         Router::new()
             .route("/health", get(Self::handle_health_check))
             .route("/get_public_key", get(Self::handle_get_pub_key))
+            .route("/get_checkpoint", get(Self::handle_get_checkpoint))
+            .with_state(state)
+    }
+
+    pub fn mount_for_genesis(state: GenesisRpcState) -> Router {
+        // todo(dalton): Add cors
+        let state = Arc::new(state);
+
+        Router::new()
             .route("/send_genesis", post(Self::handle_send_genesis))
-            .route("/send_share", post(Self::handle_send_share))
             .with_state(state)
     }
 
@@ -48,19 +57,25 @@ impl RpcRoutes {
         Ok(pk)
     }
 
+    async fn handle_get_checkpoint(State(state): State<Arc<RpcState>>) -> Result<String, String> {
+        let maybe_checkpoint = state
+            .finalizer_mailbox
+            .clone()
+            .get_latest_checkpoint()
+            .await;
+        let Some(checkpoint) = maybe_checkpoint else {
+            return Err("checkpoint not found".into());
+        };
+
+        let encoded = checkpoint.as_ssz_bytes();
+        Ok(hex(&encoded))
+    }
+
     async fn handle_send_genesis(
-        State(state): State<Arc<RpcState>>,
+        State(state): State<Arc<GenesisRpcState>>,
         body: String,
     ) -> Result<String, String> {
         Self::handle_send_file(&state.genesis, body, "genesis")
-    }
-
-    /// NOTE: this is a temporary function until we move to aggregate BLS
-    async fn handle_send_share(
-        State(state): State<Arc<RpcState>>,
-        body: String,
-    ) -> Result<String, String> {
-        Self::handle_send_file(&state.share, body, "share")
     }
 
     fn handle_send_file(
@@ -81,9 +96,13 @@ impl RpcRoutes {
         // Signal that file is ready
         if let Some(sender) = sender.lock().expect("poisoned").take() {
             let _ = sender.send(());
-            Ok(format!("{kind} file written and node notified"))
+            Ok(format!(
+                "{kind} file written at location {path} and node notified"
+            ))
         } else {
-            Ok(format!("{kind} file written (no notification needed)"))
+            Ok(format!(
+                "{kind} file written at location {path} (no notification needed)"
+            ))
         }
     }
 }

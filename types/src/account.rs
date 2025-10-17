@@ -1,7 +1,6 @@
-use crate::PublicKey;
 use alloy_primitives::Address;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, Encode, Error, FixedSize, Read, Write};
+use commonware_codec::{Error, FixedSize, Read, Write};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidatorStatus {
@@ -31,8 +30,6 @@ impl ValidatorStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatorAccount {
-    pub ed25519_pubkey: PublicKey, // Validator ED25519 public key
-    //pub bls_pubkey: [u8; 48],           // Validator BLS public key
     pub withdrawal_credentials: Address, // Ethereum address
     pub balance: u64,                    // Balance in gwei
     pub pending_withdrawal_amount: u64,  // Sum of pending withdrawals in gwei
@@ -45,48 +42,40 @@ impl TryFrom<&[u8]> for ValidatorAccount {
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         // ValidatorAccount data is exactly 77 bytes
-        // Format: ed25519_pubkey(32) + withdrawal_credentials(20) + balance(8) + pending_withdrawal_amount(8) + status(1) + last_deposit_index(8) = 77 bytes
+        // Format: withdrawal_credentials(20) + balance(8) + pending_withdrawal_amount(8) + status(1) + last_deposit_index(8) = 77 bytes
 
-        if bytes.len() != 77 {
-            return Err("ValidatorAccount must be exactly 77 bytes");
+        if bytes.len() != 45 {
+            return Err("ValidatorAccount must be exactly 45 bytes");
         }
 
-        // Extract ed25519_pubkey (32 bytes)
-        let ed25519_pubkey_bytes: [u8; 32] = bytes[0..32]
-            .try_into()
-            .map_err(|_| "Failed to parse ed25519_pubkey")?;
-        let ed25519_pubkey = PublicKey::decode(&ed25519_pubkey_bytes[..])
-            .map_err(|_| "Invalid ed25519 public key")?;
-
         // Extract withdrawal_credentials (20 bytes)
-        let withdrawal_credentials_bytes: [u8; 20] = bytes[32..52]
+        let withdrawal_credentials_bytes: [u8; 20] = bytes[0..20]
             .try_into()
             .map_err(|_| "Failed to parse withdrawal_credentials")?;
         let withdrawal_credentials = Address::from(withdrawal_credentials_bytes);
 
         // Extract balance (8 bytes, little-endian u64)
-        let balance_bytes: [u8; 8] = bytes[52..60]
+        let balance_bytes: [u8; 8] = bytes[20..28]
             .try_into()
             .map_err(|_| "Failed to parse balance")?;
         let balance = u64::from_le_bytes(balance_bytes);
 
         // Extract pending_withdrawal_amount (8 bytes, little-endian u64)
-        let pending_withdrawal_amount_bytes: [u8; 8] = bytes[60..68]
+        let pending_withdrawal_amount_bytes: [u8; 8] = bytes[28..36]
             .try_into()
             .map_err(|_| "Failed to parse pending_withdrawal_amount")?;
         let pending_withdrawal_amount = u64::from_le_bytes(pending_withdrawal_amount_bytes);
 
         // Extract status (1 byte)
-        let status = ValidatorStatus::from_u8(bytes[68])?;
+        let status = ValidatorStatus::from_u8(bytes[36])?;
 
         // Extract last_deposit_index (8 bytes, little-endian u64)
-        let last_deposit_index_bytes: [u8; 8] = bytes[69..77]
+        let last_deposit_index_bytes: [u8; 8] = bytes[37..45]
             .try_into()
             .map_err(|_| "Failed to parse last_deposit_index")?;
         let last_deposit_index = u64::from_le_bytes(last_deposit_index_bytes);
 
         Ok(ValidatorAccount {
-            ed25519_pubkey,
             withdrawal_credentials,
             balance,
             pending_withdrawal_amount,
@@ -98,7 +87,6 @@ impl TryFrom<&[u8]> for ValidatorAccount {
 
 impl Write for ValidatorAccount {
     fn write(&self, buf: &mut impl BufMut) {
-        buf.put(&self.ed25519_pubkey.encode()[..]);
         buf.put(&self.withdrawal_credentials.0[..]);
         buf.put(&self.balance.to_le_bytes()[..]);
         buf.put(&self.pending_withdrawal_amount.to_le_bytes()[..]);
@@ -108,21 +96,16 @@ impl Write for ValidatorAccount {
 }
 
 impl FixedSize for ValidatorAccount {
-    const SIZE: usize = 77; // 32 + 20 + 8 + 8 + 1 + 8
+    const SIZE: usize = 45; // 20 + 8 + 8 + 1 + 8
 }
 
 impl Read for ValidatorAccount {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        if buf.remaining() < 77 {
+        if buf.remaining() < 45 {
             return Err(Error::Invalid("ValidatorAccount", "Insufficient bytes"));
         }
-
-        let mut ed25519_pubkey_bytes = [0u8; 32];
-        buf.copy_to_slice(&mut ed25519_pubkey_bytes);
-        let ed25519_pubkey = PublicKey::decode(&ed25519_pubkey_bytes[..])
-            .map_err(|_| Error::Invalid("ValidatorAccount", "Invalid ed25519 public key"))?;
 
         let mut withdrawal_credentials_bytes = [0u8; 20];
         buf.copy_to_slice(&mut withdrawal_credentials_bytes);
@@ -145,7 +128,6 @@ impl Read for ValidatorAccount {
         let last_deposit_index = u64::from_le_bytes(last_deposit_index_bytes);
 
         Ok(ValidatorAccount {
-            ed25519_pubkey,
             withdrawal_credentials,
             balance,
             pending_withdrawal_amount,
@@ -164,7 +146,6 @@ mod tests {
     #[test]
     fn test_validator_account_codec() {
         let account = ValidatorAccount {
-            ed25519_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
             withdrawal_credentials: Address::from([2u8; 20]),
             balance: 32000000000u64,                  // 32 ETH in gwei
             pending_withdrawal_amount: 1000000000u64, // 1 ETH in gwei
@@ -175,7 +156,7 @@ mod tests {
         // Test Write
         let mut buf = BytesMut::new();
         account.write(&mut buf);
-        assert_eq!(buf.len(), 77); // 32 + 20 + 8 + 8 + 1 + 8
+        assert_eq!(buf.len(), ValidatorAccount::SIZE); // 20 + 8 + 8 + 1 + 8
 
         // Test Read
         let decoded = ValidatorAccount::read(&mut buf.as_ref()).unwrap();
@@ -185,7 +166,6 @@ mod tests {
     #[test]
     fn test_validator_account_try_from() {
         let account = ValidatorAccount {
-            ed25519_pubkey: PublicKey::decode(&[3u8; 32][..]).unwrap(),
             withdrawal_credentials: Address::from([4u8; 20]),
             balance: 64000000000u64,                  // 64 ETH in gwei
             pending_withdrawal_amount: 2000000000u64, // 2 ETH in gwei
@@ -205,7 +185,7 @@ mod tests {
     #[test]
     fn test_validator_account_insufficient_bytes() {
         let mut buf = BytesMut::new();
-        buf.put(&[0u8; 76][..]); // One byte short
+        buf.put(&[0u8; 44][..]); // One byte short
 
         let result = ValidatorAccount::read(&mut buf.as_ref());
         assert!(result.is_err());
@@ -224,7 +204,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "ValidatorAccount must be exactly 77 bytes"
+            "ValidatorAccount must be exactly 45 bytes"
         );
     }
 
@@ -235,7 +215,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "ValidatorAccount must be exactly 77 bytes"
+            "ValidatorAccount must be exactly 45 bytes"
         );
     }
 
@@ -243,7 +223,6 @@ mod tests {
     fn test_validator_account_roundtrip_compatibility() {
         // Test that our Codec implementation is compatible with TryFrom<&[u8]>
         let account = ValidatorAccount {
-            ed25519_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
             withdrawal_credentials: Address::from([6u8; 20]),
             balance: 128000000000u64,                 // 128 ETH in gwei
             pending_withdrawal_amount: 4000000000u64, // 4 ETH in gwei
@@ -267,10 +246,9 @@ mod tests {
 
     #[test]
     fn test_validator_account_fixed_size() {
-        assert_eq!(ValidatorAccount::SIZE, 77);
+        assert_eq!(ValidatorAccount::SIZE, 45);
 
         let account = ValidatorAccount {
-            ed25519_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
             withdrawal_credentials: Address::ZERO,
             balance: 0,
             pending_withdrawal_amount: 0,
@@ -287,7 +265,6 @@ mod tests {
     fn test_validator_account_field_ordering() {
         // Test that fields are encoded/decoded in the correct order
         let account = ValidatorAccount {
-            ed25519_pubkey: PublicKey::decode(&[0xAAu8; 32][..]).unwrap(),
             withdrawal_credentials: Address::from([
                 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
                 0xff, 0x00, 0x01, 0x02, 0x03, 0x04,
@@ -303,12 +280,9 @@ mod tests {
 
         let bytes = buf.as_ref();
 
-        // Check ed25519_pubkey (first 32 bytes)
-        assert_eq!(&bytes[0..32], &[0xAAu8; 32]);
-
-        // Check withdrawal_credentials (next 20 bytes)
+        // Check withdrawal_credentials (first 20 bytes)
         assert_eq!(
-            &bytes[32..52],
+            &bytes[0..20],
             &[
                 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
                 0xff, 0x00, 0x01, 0x02, 0x03, 0x04
@@ -316,16 +290,16 @@ mod tests {
         );
 
         // Check balance (next 8 bytes, little-endian)
-        assert_eq!(&bytes[52..60], &0x0123456789abcdefu64.to_le_bytes());
+        assert_eq!(&bytes[20..28], &0x0123456789abcdefu64.to_le_bytes());
 
         // Check pending_withdrawal_amount (next 8 bytes, little-endian)
-        assert_eq!(&bytes[60..68], &0xfedcba9876543210u64.to_le_bytes());
+        assert_eq!(&bytes[28..36], &0xfedcba9876543210u64.to_le_bytes());
 
         // Check status (next 1 byte)
-        assert_eq!(bytes[68], 2); // SubmittedExitRequest = 2
+        assert_eq!(bytes[36], 2); // SubmittedExitRequest = 2
 
         // Check last_deposit_index (last 8 bytes, little-endian)
-        assert_eq!(&bytes[69..77], &0xa1b2c3d4e5f60708u64.to_le_bytes());
+        assert_eq!(&bytes[37..45], &0xa1b2c3d4e5f60708u64.to_le_bytes());
 
         // Verify roundtrip
         let decoded = ValidatorAccount::read(&mut buf.as_ref()).unwrap();
@@ -362,7 +336,6 @@ mod tests {
         let mut buf = BytesMut::new();
 
         // Create a buffer with valid data except for an invalid status byte
-        buf.put(&[1u8; 32][..]); // ed25519_pubkey
         buf.put(&[2u8; 20][..]); // withdrawal_credentials
         buf.put(&1000u64.to_le_bytes()[..]); // balance
         buf.put(&100u64.to_le_bytes()[..]); // pending_withdrawal_amount

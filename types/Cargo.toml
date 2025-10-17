@@ -8,17 +8,30 @@ commonware-cryptography.workspace = true
 commonware-consensus.workspace = true
 commonware-codec.workspace = true
 commonware-utils.workspace = true
+commonware-resolver.workspace = true
 
 alloy-rpc-types-engine.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
+alloy-provider.workspace = true
+alloy-transport-ipc.workspace = true
 
+futures.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 ethereum_ssz.workspace = true
-ethereum_ssz_derive.workspace = true
 serde.workspace = true
 toml.workspace = true
+tracing.workspace = true
 
 bytes.workspace = true
+serde_json = { workspace = true, optional = true }
+
+# for benchmarking
+op-alloy-network = { version = "0.19.1", optional = true }
+op-alloy-rpc-types-engine = { version = "0.19.1", optional = true }
+
+[features]
+base-bench = ["op-alloy-network", "op-alloy-rpc-types-engine","serde_json"]
+bench = ["serde_json"]

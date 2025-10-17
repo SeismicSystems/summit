@@ -4,10 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "dkg_testnet"
-path = "src/bin/dkg_testnet.rs"
-
-[[bin]]
 name = "testnet"
 path = "src/bin/testnet.rs"
 
@@ -15,10 +11,22 @@ path = "src/bin/testnet.rs"
 name = "genesis"
 path = "src/bin/genesis.rs"
 
+[[bin]]
+name = "block-fetcher"
+path = "src/bin/block_fetcher.rs"
+required-features = ["bench"]
+
+[[bin]]
+name = "execute-blocks"
+path = "src/bin/execute_blocks.rs"
+required-features = ["bench"]
+
 [dependencies]
 summit-types.workspace = true
-summit-application.workspace = true
-summit-rpc = { path = "../rpc" }
+summit-application = { workspace = true, features = [] }
+summit-rpc.workspace = true
+summit-syncer.workspace = true
+summit-finalizer.workspace = true
 
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true
@@ -36,16 +44,18 @@ clap.workspace = true
 dirs.workspace = true
 
 tokio = { version = "1.45.1", features = ["sync"] }
+tokio-util.workspace = true
 
-# testnet bin deps 
+# testnet bin deps
 alloy-node-bindings.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
 alloy-network = { workspace = true }
 alloy-primitives.workspace = true
-alloy-rpc-types = { workspace = true }
+alloy-provider = { version = "1.0.30", features = ["reqwest-rustls-tls"] }
+alloy-rpc-client.workspace = true
+alloy-rpc-types-engine = { version = "1.0.9", features = ["serde"] }
+op-alloy-consensus = { version = "0.19.1", default-features = false, features = ["alloy-compat"] }
+tracing-subscriber = "0.3.19"
 
-ethereum_ssz.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -62,7 +72,8 @@ metrics-exporter-prometheus = { version = "0.16.0", default-features = false, op
 metrics-process = { version = "2.1.0", optional = true }
 metrics-util = { default-features = false, version = "0.19.0", optional = true }
 jsonrpsee-server = { version = "0.25.1", optional = true }
-tower = { version = "0.5.2", optional = true }
+tower = { version = "0.5.2", optional = false }
+console-subscriber = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 tikv-jemalloc-ctl = { version = "0.6", optional = true, features = ["stats"] }
@@ -83,6 +94,7 @@ reqwest.workspace = true
 reth-tasks = { git = "https://github.com/SeismicSystems/seismic-reth.git", branch = "seismic" }
 socket2.workspace = true
 tokio = { workspace = true, features = ["full", "rt-multi-thread", "time"] }
+alloy-signer.workspace = true
 
 [features]
 prom = [
@@ -96,6 +108,8 @@ prom = [
   "http",
   "eyre",
   "procfs",
-  "tower",
 ]
+tokio-console = ["console-subscriber"]
 jemalloc = ["dep:tikv-jemalloc-ctl"]
+base-bench = ["summit-application/base-bench", "summit-types/base-bench"]
+bench = ["summit-application/bench", "summit-types/bench"]

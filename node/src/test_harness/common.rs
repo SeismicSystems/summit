@@ -1,32 +1,26 @@
-use commonware_cryptography::{
-    PrivateKeyExt, Signer,
-    bls12381::{
-        dkg::ops,
-        primitives::{group::Share, poly::Poly, variant::MinPk},
-    },
-};
+use commonware_cryptography::{Hasher, PrivateKeyExt, Sha256, Signer};
 
+use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, Bytes};
-use alloy_signer::k256::elliptic_curve::rand_core::OsRng;
 use commonware_codec::Write;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
     deterministic::{self, Runner},
 };
-use commonware_utils::{from_hex_formatted, quorum};
+use commonware_utils::from_hex_formatted;
 use governor::Quota;
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
 };
-use summit_application::engine_client::EngineClient;
+use summit_types::checkpoint::Checkpoint;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
-use summit_types::{Identity, PrivateKey, PublicKey};
+use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
@@ -59,6 +53,30 @@ pub async fn link_validators(
     }
 }
 
+pub async fn join_validator(
+    oracle: &mut Oracle<PublicKey>,
+    validator: &PublicKey,
+    existing_validators: &[PublicKey],
+    link: Link,
+) {
+    for existing in existing_validators {
+        // Skip self
+        if existing == validator {
+            continue;
+        }
+
+        // Add links in both directions
+        oracle
+            .add_link(validator.clone(), existing.clone(), link.clone())
+            .await
+            .unwrap();
+        oracle
+            .add_link(existing.clone(), validator.clone(), link.clone())
+            .await
+            .unwrap();
+    }
+}
+
 pub async fn register_validators(
     oracle: &mut Oracle<PublicKey>,
     validators: &[PublicKey],
@@ -69,26 +87,22 @@ pub async fn register_validators(
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
-        (Sender<PublicKey>, Receiver<PublicKey>),
     ),
 > {
     let mut registrations = HashMap::new();
     for validator in validators.iter() {
         let (pending_sender, pending_receiver) =
             oracle.register(validator.clone(), 0).await.unwrap();
-        let (recovered_sender, recovered_receiver) =
-            oracle.register(validator.clone(), 1).await.unwrap();
         let (resolver_sender, resolver_receiver) =
-            oracle.register(validator.clone(), 2).await.unwrap();
+            oracle.register(validator.clone(), 1).await.unwrap();
         let (broadcast_sender, broadcast_receiver) =
-            oracle.register(validator.clone(), 3).await.unwrap();
+            oracle.register(validator.clone(), 2).await.unwrap();
         let (backfill_sender, backfill_receiver) =
-            oracle.register(validator.clone(), 4).await.unwrap();
+            oracle.register(validator.clone(), 3).await.unwrap();
         registrations.insert(
             validator.clone(),
             (
                 (pending_sender, pending_receiver),
-                (recovered_sender, recovered_receiver),
                 (resolver_sender, resolver_receiver),
                 (broadcast_sender, broadcast_receiver),
                 (backfill_sender, backfill_receiver),
@@ -106,7 +120,6 @@ pub fn run_until_height(
     verify_consensus: bool,
 ) -> String {
     // Create context
-    let threshold = quorum(n);
     let cfg = deterministic::Config::default().with_seed(seed);
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
@@ -144,11 +157,9 @@ pub fn run_until_height(
             .expect("failed to convert genesis hash");
         let engine_client_network = MockEngineNetwork::new(genesis_hash);
 
-        // Derive threshold
-        let (polynomial, shares) = ops::generate_shares::<_, MinPk>(&mut OsRng, None, n, threshold);
-
         // Create instances
         let mut public_keys = HashSet::new();
+        let mut consensus_state_queries = HashMap::new();
         for (idx, signer) in signers.into_iter().enumerate() {
             // Create signer context
             let public_key = signer.public_key();
@@ -166,28 +177,23 @@ pub fn run_until_height(
                 genesis_hash,
                 namespace,
                 signer,
-                polynomial.clone(),
-                shares[idx].clone(),
                 validators.clone(),
+                None,
             );
 
-            let engine = Engine::new(
-                context.with_label(&uid),
-                config,
-                oracle.control(public_key.clone()),
-            )
-            .await;
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, broadcast, backfill) =
+            let (pending, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, recovered, resolver, broadcast, backfill);
+            engine.start(pending, resolver, broadcast, backfill);
         }
 
         // Poll metrics
-        let mut num_nodes_finished = 0;
+        let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -211,11 +217,11 @@ pub fn run_until_height(
                 }
 
                 // If ends with contiguous_height, ensure it is at least required_container
-                if metric.ends_with("_marshal_processed_height") {
+                if metric.ends_with("finalizer_height") {
                     let value = value.parse::<u64>().unwrap();
-                    if value >= stop_height {
-                        num_nodes_finished += 1;
-                        if num_nodes_finished == n {
+                    if value == stop_height {
+                        nodes_finished.insert(metric.to_string());
+                        if nodes_finished.len() as u32 == n {
                             success = true;
                             break;
                         }
@@ -234,13 +240,17 @@ pub fn run_until_height(
             // Check that all nodes have the same canonical chain
             assert!(
                 engine_client_network
-                    .verify_consensus(Some(stop_height))
+                    .verify_consensus(None, Some(stop_height))
                     .is_ok()
             );
         }
 
         context.auditor().state()
     })
+}
+
+pub fn get_domain() -> Digest {
+    Sha256::hash(&PROTOCOL_VERSION.to_le_bytes())
 }
 
 /// Parse a substring from a metric name using XML-like tags
@@ -269,46 +279,81 @@ pub fn parse_metric_substring(metric: &str, tag: &str) -> Option<String> {
     Some(metric[substring_start..end].to_string())
 }
 
-/// Create a single DepositRequest for testing
+/// Extracts the validator id from a metric string.
 ///
 /// # Arguments
-/// * `seed` - The seed value used to generate deterministic but unique keys
-/// * `amount` - The deposit amount in gwei
+/// * `metric` - The metric name to parse from
 ///
 /// # Returns
-/// * `DepositRequest` - A single deposit request with valid test data
-pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
-    // Create valid Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20-byte address
-    let mut withdrawal_credentials = [0u8; 32];
-    withdrawal_credentials[0] = 0x01; // Eth1 withdrawal prefix
-    // Use seed-based address pattern for the last 20 bytes
-    for j in 0..20 {
-        withdrawal_credentials[12 + j] = ((seed + j as u64) % 256) as u8;
-    }
+/// * `Some(String)` if the validator id is contained in the string
+/// * `None` if the validator if doesn't exist
+/// ```
+pub fn extract_validator_id(metric: &str) -> Option<String> {
+    let end = metric.find("_")?;
+    Some(metric[..end].to_string())
+}
 
-    // Create deterministic but seed-based keys
-    // Generate a valid ED25519 private key using the seed
-    let ed25519_private_key = PrivateKey::from_seed(seed);
-    let ed25519_pubkey = ed25519_private_key.public_key();
+/// Create a single DepositRequest for testing with a valid ED25519 signature
+///
+/// This function creates a test deposit request with all required fields, including
+/// a cryptographically valid signature that can be verified against the deposit message.
+///
+/// # Arguments
+/// * `index` - The deposit index value used for generating deterministic keys and in the signature
+/// * `amount` - The deposit amount in gwei  
+/// * `domain` - The domain value used in the signature (typically genesis hash)
+/// * `private_key` - Optional ED25519 private key to use; if None, generates deterministic key from index
+/// * `withdrawal_credentials` - Optional withdrawal credentials; if None, generates Eth1 format credentials
+///
+/// # Returns
+/// * `(DepositRequest, PrivateKey)` - A tuple containing:
+///   - `DepositRequest` - A complete deposit request with valid signature
+///   - `PrivateKey` - The private key used to sign the request (for further testing)
+pub fn create_deposit_request(
+    index: u64,
+    amount: u64,
+    domain: Digest,
+    private_key: Option<PrivateKey>,
+    withdrawal_credentials: Option<[u8; 32]>,
+) -> (DepositRequest, PrivateKey) {
+    let withdrawal_credentials = if let Some(withdrawal_credentials) = withdrawal_credentials {
+        withdrawal_credentials
+    } else {
+        // Create valid Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20-byte address
+        let mut withdrawal_credentials = [0u8; 32];
+        withdrawal_credentials[0] = 0x01; // Eth1 withdrawal prefix
+        // Use seed-based address pattern for the last 20 bytes
+        for j in 0..20 {
+            withdrawal_credentials[12 + j] = ((index + j as u64) % 256) as u8;
+        }
+        withdrawal_credentials
+    };
 
-    let mut bls_pubkey = [0u8; 48];
-    for j in 0..48 {
-        bls_pubkey[j] = ((seed + j as u64 + 33) % 256) as u8;
-    }
+    let ed25519_private_key = if let Some(private_key) = private_key {
+        private_key
+    } else {
+        // Create deterministic but seed-based keys
+        // Generate a valid ED25519 private key using the seed
+        PrivateKey::from_seed(index)
+    };
 
-    let mut signature = [0u8; 96];
-    for j in 0..96 {
-        signature[j] = ((seed + j as u64 + 81) % 256) as u8;
-    }
+    let pubkey = ed25519_private_key.public_key();
 
-    DepositRequest {
-        ed25519_pubkey,
-        bls_pubkey,
+    let mut deposit = DepositRequest {
+        pubkey,
         withdrawal_credentials,
         amount,
-        signature,
-        index: seed,
-    }
+        signature: [0u8; 64],
+        index,
+    };
+
+    // Create the message to sign: hash of pubkey + withdrawal_credentials + amount
+    let message = deposit.as_message(domain);
+
+    //// Generate a valid ED25519 signature
+    let signature_bytes = ed25519_private_key.sign(None, &message);
+    deposit.signature.copy_from_slice(&signature_bytes);
+    (deposit, ed25519_private_key)
 }
 
 /// Create a single WithdrawalRequest for testing
@@ -322,7 +367,7 @@ pub fn create_deposit_request(seed: u64, amount: u64) -> DepositRequest {
 /// * `WithdrawalRequest` - A withdrawal request with the specified data
 pub fn create_withdrawal_request(
     source_address: Address,
-    validator_pubkey: [u8; 48],
+    validator_pubkey: [u8; 32],
     amount: u64,
 ) -> WithdrawalRequest {
     WithdrawalRequest {
@@ -360,8 +405,6 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 /// * `genesis_hash` - 32-byte array representing the genesis block hash
 /// * `namespace` - String namespace identifier (typically "_SEISMIC_BFT")
 /// * `signer` - Private key for signing operations
-/// * `polynomial` - BLS12-381 polynomial for threshold cryptography
-/// * `share` - BLS12-381 cryptographic share for threshold operations
 /// * `participants` - Vector of participant public keys
 ///
 /// # Returns
@@ -372,9 +415,8 @@ pub fn get_default_engine_config<C: EngineClient>(
     genesis_hash: [u8; 32],
     namespace: String,
     signer: PrivateKey,
-    polynomial: Poly<Identity>,
-    share: Share,
     participants: Vec<PublicKey>,
+    checkpoint: Option<Checkpoint>,
 ) -> EngineConfig<C> {
     EngineConfig {
         engine_client,
@@ -382,8 +424,6 @@ pub fn get_default_engine_config<C: EngineClient>(
         genesis_hash,
         namespace,
         signer,
-        polynomial,
-        share,
         participants,
         mailbox_size: 1024,
         deque_size: 10,
@@ -398,5 +438,6 @@ pub fn get_default_engine_config<C: EngineClient>(
         _max_fetch_size: 1024 * 512,
         fetch_concurrent: 10,
         fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(10).unwrap()),
+        checkpoint,
     }
 }

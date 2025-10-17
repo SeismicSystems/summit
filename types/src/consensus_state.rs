@@ -1,9 +1,12 @@
+use crate::PublicKey;
 use crate::account::ValidatorAccount;
+use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::PendingWithdrawal;
 use alloy_eips::eip4895::Withdrawal;
+use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Error, Read, Write};
+use commonware_codec::{DecodeExt, EncodeSize, Error, Read, Write};
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Debug, Default)]
@@ -12,12 +15,19 @@ pub struct ConsensusState {
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
     pub withdrawal_queue: VecDeque<PendingWithdrawal>,
-    pub validator_accounts: HashMap<[u8; 48], ValidatorAccount>,
+    pub validator_accounts: HashMap<[u8; 32], ValidatorAccount>,
+    pub pending_checkpoint: Option<Checkpoint>,
+    pub added_validators: Vec<PublicKey>,
+    pub removed_validators: Vec<PublicKey>,
+    pub forkchoice: ForkchoiceState,
 }
 
 impl ConsensusState {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(forkchoice: ForkchoiceState) -> Self {
+        Self {
+            forkchoice,
+            ..Default::default()
+        }
     }
 
     // State variable operations
@@ -36,12 +46,16 @@ impl ConsensusState {
     }
 
     // Account operations
-    pub fn get_account(&self, pubkey: &[u8; 48]) -> Option<&ValidatorAccount> {
+    pub fn get_account(&self, pubkey: &[u8; 32]) -> Option<&ValidatorAccount> {
         self.validator_accounts.get(pubkey)
     }
 
-    pub fn set_account(&mut self, pubkey: [u8; 48], account: ValidatorAccount) {
+    pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
         self.validator_accounts.insert(pubkey, account);
+    }
+
+    pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
+        self.validator_accounts.remove(pubkey)
     }
 
     // Deposit queue operations
@@ -69,7 +83,7 @@ impl ConsensusState {
                 amount: request.amount,
             },
             withdrawal_height,
-            bls_pubkey: request.validator_pubkey,
+            pubkey: request.validator_pubkey,
         };
 
         self.push_withdrawal(pending_withdrawal);
@@ -112,6 +126,15 @@ impl EncodeSize for ConsensusState {
         + self.withdrawal_queue.iter().map(|req| req.encode_size()).sum::<usize>()
         + 4 // validator_accounts length
         + self.validator_accounts.iter().map(|(key, account)| key.len() + account.encode_size()).sum::<usize>()
+        + 1 // pending_checkpoint presence flag
+        + self.pending_checkpoint.as_ref().map_or(0, |cp| cp.encode_size())
+        + 4 // added_validators length
+        + self.added_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
+        + 4 // removed_validators length
+        + self.removed_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
+        + 32 // forkchoice.head_block_hash
+        + 32 // forkchoice.safe_block_hash
+        + 32 // forkchoice.finalized_block_hash
     }
 }
 
@@ -137,11 +160,47 @@ impl Read for ConsensusState {
         let validator_accounts_len = buf.get_u32() as usize;
         let mut validator_accounts = HashMap::with_capacity(validator_accounts_len);
         for _ in 0..validator_accounts_len {
-            let mut key = [0u8; 48];
+            let mut key = [0u8; 32];
             buf.copy_to_slice(&mut key);
             let account = ValidatorAccount::read_cfg(buf, &())?;
             validator_accounts.insert(key, account);
         }
+
+        // Read pending_checkpoint
+        let has_pending_checkpoint = buf.get_u8() != 0;
+        let pending_checkpoint = if has_pending_checkpoint {
+            Some(Checkpoint::read_cfg(buf, &())?)
+        } else {
+            None
+        };
+
+        // Read added_validators
+        let added_validators_len = buf.get_u32() as usize;
+        let mut added_validators = Vec::with_capacity(added_validators_len);
+        for _ in 0..added_validators_len {
+            added_validators.push(PublicKey::read_cfg(buf, &())?);
+        }
+
+        // Read removed_validators
+        let removed_validators_len = buf.get_u32() as usize;
+        let mut removed_validators = Vec::with_capacity(removed_validators_len);
+        for _ in 0..removed_validators_len {
+            removed_validators.push(PublicKey::read_cfg(buf, &())?);
+        }
+
+        // Read forkchoice
+        let mut head_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut head_block_hash);
+        let mut safe_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut safe_block_hash);
+        let mut finalized_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut finalized_block_hash);
+
+        let forkchoice = ForkchoiceState {
+            head_block_hash: head_block_hash.into(),
+            safe_block_hash: safe_block_hash.into(),
+            finalized_block_hash: finalized_block_hash.into(),
+        };
 
         Ok(Self {
             latest_height,
@@ -149,6 +208,10 @@ impl Read for ConsensusState {
             deposit_queue,
             withdrawal_queue,
             validator_accounts,
+            pending_checkpoint,
+            added_validators,
+            removed_validators,
+            forkchoice,
         })
     }
 }
@@ -173,6 +236,39 @@ impl Write for ConsensusState {
             buf.put_slice(key);
             account.write(buf);
         }
+
+        // Write pending_checkpoint
+        if let Some(checkpoint) = &self.pending_checkpoint {
+            buf.put_u8(1); // has checkpoint
+            checkpoint.write(buf);
+        } else {
+            buf.put_u8(0); // no checkpoint
+        }
+
+        // Write added_validators
+        buf.put_u32(self.added_validators.len() as u32);
+        for validator in &self.added_validators {
+            validator.write(buf);
+        }
+
+        // Write removed_validators
+        buf.put_u32(self.removed_validators.len() as u32);
+        for validator in &self.removed_validators {
+            validator.write(buf);
+        }
+
+        // Write forkchoice
+        buf.put_slice(self.forkchoice.head_block_hash.as_slice());
+        buf.put_slice(self.forkchoice.safe_block_hash.as_slice());
+        buf.put_slice(self.forkchoice.finalized_block_hash.as_slice());
+    }
+}
+
+impl TryFrom<Checkpoint> for ConsensusState {
+    type Error = Error;
+
+    fn try_from(checkpoint: Checkpoint) -> Result<Self, Self::Error> {
+        ConsensusState::decode(checkpoint.data)
     }
 }
 
@@ -183,6 +279,7 @@ mod tests {
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
     use crate::withdrawal::PendingWithdrawal;
+
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
@@ -195,11 +292,10 @@ mod tests {
         }
 
         DepositRequest {
-            bls_pubkey: [index as u8; 48],
-            ed25519_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
+            pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
             withdrawal_credentials,
             amount,
-            signature: [index as u8; 96],
+            signature: [index as u8; 64],
             index,
         }
     }
@@ -217,13 +313,12 @@ mod tests {
                 amount,
             },
             withdrawal_height,
-            bls_pubkey: [index as u8; 48],
+            pubkey: [index as u8; 32],
         }
     }
 
     fn create_test_validator_account(index: u64, balance: u64) -> ValidatorAccount {
         ValidatorAccount {
-            ed25519_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
             withdrawal_credentials: Address::from([index as u8; 20]),
             balance,
             pending_withdrawal_amount: 0,
@@ -234,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_serialization_deserialization_empty() {
-        let original_state = ConsensusState::new();
+        let original_state = ConsensusState::default();
 
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
@@ -260,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_serialization_deserialization_populated() {
-        let mut original_state = ConsensusState::new();
+        let mut original_state = ConsensusState::default();
 
         original_state.set_latest_height(42);
         original_state.next_withdrawal_index = 5;
@@ -275,8 +370,8 @@ mod tests {
         original_state.push_withdrawal(withdrawal1);
         original_state.push_withdrawal(withdrawal2);
 
-        let pubkey1 = [1u8; 48];
-        let pubkey2 = [2u8; 48];
+        let pubkey1 = [1u8; 32];
+        let pubkey2 = [2u8; 32];
         let account1 = create_test_validator_account(1, 32000000000);
         let account2 = create_test_validator_account(2, 64000000000);
         original_state.set_account(pubkey1, account1);
@@ -292,9 +387,7 @@ mod tests {
         );
 
         assert_eq!(decoded_state.deposit_queue.len(), 2);
-        assert_eq!(decoded_state.deposit_queue[0].index, 1);
         assert_eq!(decoded_state.deposit_queue[0].amount, 32000000000);
-        assert_eq!(decoded_state.deposit_queue[1].index, 2);
         assert_eq!(decoded_state.deposit_queue[1].amount, 16000000000);
 
         assert_eq!(decoded_state.withdrawal_queue.len(), 2);
@@ -316,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_encode_size_accuracy() {
-        let mut state = ConsensusState::new();
+        let mut state = ConsensusState::default();
 
         state.set_latest_height(42);
         state.next_withdrawal_index = 5;
@@ -327,7 +420,7 @@ mod tests {
         let withdrawal = create_test_withdrawal(1, 16000000000, 100);
         state.push_withdrawal(withdrawal);
 
-        let pubkey = [1u8; 48];
+        let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
         state.set_account(pubkey, account);
 
@@ -336,5 +429,88 @@ mod tests {
         let actual_size = actual_encoded.len();
 
         assert_eq!(predicted_size, actual_size);
+    }
+
+    #[test]
+    fn test_account_operations() {
+        let mut state = ConsensusState::default();
+        let pubkey = [1u8; 32];
+        let account = create_test_validator_account(1, 32000000000);
+
+        // Test that account doesn't exist initially
+        assert!(state.get_account(&pubkey).is_none());
+
+        // Test setting account
+        state.set_account(pubkey, account.clone());
+        let retrieved_account = state.get_account(&pubkey);
+        assert!(retrieved_account.is_some());
+        assert_eq!(retrieved_account.unwrap().balance, account.balance);
+
+        // Test removing account
+        let removed_account = state.remove_account(&pubkey);
+        assert!(removed_account.is_some());
+        assert_eq!(removed_account.unwrap().balance, account.balance);
+
+        // Test that account no longer exists
+        assert!(state.get_account(&pubkey).is_none());
+
+        // Test removing non-existent account
+        let non_existent = state.remove_account(&pubkey);
+        assert!(non_existent.is_none());
+    }
+
+    #[test]
+    fn test_try_from_checkpoint() {
+        // Create a populated ConsensusState
+        let mut original_state = ConsensusState::default();
+        original_state.set_latest_height(100);
+        original_state.next_withdrawal_index = 42;
+
+        // Add some data
+        let deposit = create_test_deposit_request(1, 32000000000);
+        original_state.push_deposit(deposit);
+
+        let withdrawal = create_test_withdrawal(1, 16000000000, 50);
+        original_state.push_withdrawal(withdrawal);
+
+        let pubkey = [1u8; 32];
+        let account = create_test_validator_account(1, 32000000000);
+        original_state.set_account(pubkey, account);
+
+        // Convert to checkpoint
+        let checkpoint = Checkpoint::new(&original_state);
+
+        // Convert back to ConsensusState
+        let restored_state: ConsensusState = checkpoint
+            .try_into()
+            .expect("Failed to convert checkpoint back to ConsensusState");
+
+        // Verify the data matches
+        assert_eq!(restored_state.latest_height, original_state.latest_height);
+        assert_eq!(
+            restored_state.next_withdrawal_index,
+            original_state.next_withdrawal_index
+        );
+        assert_eq!(
+            restored_state.deposit_queue.len(),
+            original_state.deposit_queue.len()
+        );
+        assert_eq!(
+            restored_state.withdrawal_queue.len(),
+            original_state.withdrawal_queue.len()
+        );
+        assert_eq!(
+            restored_state.validator_accounts.len(),
+            original_state.validator_accounts.len()
+        );
+
+        // Check specific values
+        assert_eq!(restored_state.deposit_queue[0].amount, 32000000000);
+        assert_eq!(restored_state.withdrawal_queue[0].inner.amount, 16000000000);
+        assert_eq!(restored_state.withdrawal_queue[0].withdrawal_height, 50);
+
+        let restored_account = restored_state.get_account(&pubkey).unwrap();
+        assert_eq!(restored_account.balance, 32000000000);
+        assert_eq!(restored_account.last_deposit_index, 1);
     }
 }

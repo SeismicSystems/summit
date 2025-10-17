@@ -1,46 +1,30 @@
-use std::ops::Deref as _;
-
+use crate::{Header, PublicKey, Signature};
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
 use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
+use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Error, FixedSize as _, Read, ReadExt as _, Write};
+use commonware_codec::{EncodeSize, Error, Read, ReadExt as _, Write};
 use commonware_consensus::Block as Bl;
 use commonware_consensus::{
     Viewable,
-    threshold_simplex::types::{Finalization, Notarization},
+    simplex::types::{Finalization, Notarization},
 };
-use commonware_cryptography::{
-    Committable, Digestible, Hasher, Sha256, bls12381::primitives::variant::MinPk, sha256::Digest,
-};
+use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
-    pub parent: Digest,
-
-    pub height: u64,
-
-    pub timestamp: u64,
-
-    // consensus view from threshold simplex when this block was created
-    pub view: u64,
-
+    pub header: Header,
     pub payload: ExecutionPayloadV3,
-
     pub execution_requests: Vec<AlloyBytes>,
-
-    pub block_value: U256,
-
-    // precomputed digest of this block
-    pub digest: Digest,
 }
 
 impl Block {
     pub fn eth_block_hash(&self) -> [u8; 32] {
         // if genesis return your own digest
-        if self.height == 0 {
-            self.digest.as_ref().try_into().unwrap()
+        if self.header.height == 0 {
+            self.header.digest.as_ref().try_into().unwrap()
         } else {
             self.payload.payload_inner.payload_inner.block_hash.into()
         }
@@ -50,6 +34,7 @@ impl Block {
         self.payload.payload_inner.payload_inner.parent_hash.into()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_digest(
         parent: Digest,
         height: u64,
@@ -58,50 +43,140 @@ impl Block {
         execution_requests: Vec<AlloyBytes>,
         block_value: U256,
         view: u64,
+        checkpoint_hash: Option<Digest>,
+        prev_epoch_header_hash: Digest,
+        added_validators: Vec<PublicKey>,
+        removed_validators: Vec<PublicKey>,
     ) -> Self {
+        let payload_ssz = payload.as_ssz_bytes();
         let mut hasher = Sha256::new();
-        hasher.update(&parent);
-        hasher.update(&height.to_be_bytes());
-        hasher.update(&timestamp.to_be_bytes());
-        hasher.update(&payload.as_ssz_bytes());
-        hasher.update(&execution_requests.as_ssz_bytes());
-        hasher.update(&block_value.as_ssz_bytes());
-        hasher.update(&view.to_be_bytes());
-        let digest = hasher.finalize();
+        hasher.update(&payload_ssz);
+        let payload_hash = hasher.finalize();
 
-        Self {
+        let execution_request_hash = if !execution_requests.is_empty() {
+            let execution_requests_ssz = execution_requests.as_ssz_bytes();
+            let mut hasher = Sha256::new();
+            hasher.update(&execution_requests_ssz);
+            hasher.finalize()
+        } else {
+            [0; 32].into()
+        };
+
+        let checkpoint_hash = if let Some(checkpoint_hash) = checkpoint_hash {
+            checkpoint_hash
+        } else {
+            [0; 32].into()
+        };
+
+        let header = Header::compute_digest(
             parent,
             height,
             timestamp,
+            view,
+            payload_hash,
+            execution_request_hash,
+            checkpoint_hash,
+            prev_epoch_header_hash,
+            block_value,
+            added_validators,
+            removed_validators,
+        );
+
+        Self {
+            header,
             payload,
             execution_requests,
-            block_value,
-            view,
-            digest,
         }
     }
 
+    pub fn new_with_verify(
+        header: Header,
+        payload: ExecutionPayloadV3,
+        execution_requests: Vec<AlloyBytes>,
+    ) -> Result<Self> {
+        let payload_ssz = payload.as_ssz_bytes();
+        let mut hasher = Sha256::new();
+        hasher.update(&payload_ssz);
+        let payload_hash = hasher.finalize();
+
+        let execution_request_hash = if !execution_requests.is_empty() {
+            let execution_requests_ssz = execution_requests.as_ssz_bytes();
+            let mut hasher = Sha256::new();
+            hasher.update(&execution_requests_ssz);
+            hasher.finalize()
+        } else {
+            [0; 32].into()
+        };
+
+        if payload_hash != header.payload_hash {
+            return Err(anyhow!("Payload hash mismatch"));
+        }
+        if execution_request_hash != header.execution_request_hash {
+            return Err(anyhow!("Execution request hash mismatch"));
+        }
+        Ok(Self {
+            header,
+            payload,
+            execution_requests,
+        })
+    }
+
     pub fn genesis(genesis_hash: [u8; 32]) -> Self {
-        Self {
-            execution_requests: Default::default(),
-            digest: genesis_hash.into(),
+        let payload = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
+        let payload_ssz = payload.as_ssz_bytes();
+        let mut hasher = Sha256::new();
+        hasher.update(&payload_ssz);
+        let payload_hash = hasher.finalize();
+
+        let header = Header {
             parent: genesis_hash.into(),
             height: 0,
             timestamp: 0,
-            payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
-            block_value: U256::ZERO,
             view: 1,
+            payload_hash,
+            execution_request_hash: [0; 32].into(),
+            checkpoint_hash: [0; 32].into(),
+            prev_epoch_header_hash: [0; 32].into(),
+            block_value: U256::ZERO,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
+            digest: genesis_hash.into(),
+        };
+        Self {
+            header,
+            payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
+            execution_requests: Default::default(),
         }
+    }
+
+    pub fn parent(&self) -> Digest {
+        self.header.parent
+    }
+
+    pub fn height(&self) -> u64 {
+        self.header.height
+    }
+
+    pub fn digest(&self) -> Digest {
+        self.header.digest
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        self.header.timestamp
+    }
+
+    pub fn view(&self) -> u64 {
+        self.header.view
     }
 }
 
 impl Bl for Block {
     fn height(&self) -> u64 {
-        self.height
+        self.header.height
     }
 
     fn parent(&self) -> Self::Commitment {
-        self.parent
+        self.header.parent
     }
 }
 
@@ -109,7 +184,7 @@ impl Viewable for Block {
     type View = u64;
 
     fn view(&self) -> commonware_consensus::simplex::types::View {
-        self.view
+        self.header.view
     }
 }
 
@@ -119,41 +194,22 @@ impl ssz::Encode for Block {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len()
-            + <u64 as ssz::Encode>::ssz_fixed_len() * 3
-            + <ExecutionPayloadV3 as ssz::Encode>::ssz_fixed_len()
-            + <Vec<AlloyBytes> as ssz::Encode>::ssz_fixed_len()
-            + <U256 as ssz::Encode>::ssz_fixed_len();
+        // All three fields are variable-length, so we only need offsets
+        let offset = ssz::BYTES_PER_LENGTH_OFFSET * 3; // 3 variable-length fields
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
 
-        // todo: safe unwrap unless we change digest size. Reason for this is because Digest.0 is private in commonware and it only derefs into [u8] instead of the [u8; DIGEST_LENGTH] that we want
-        let fixed_sized_digest: [u8; 32] = self
-            .parent
-            .deref()
-            .try_into()
-            .expect("Safe unwrap unless we change digest size");
-
-        encoder.append(&fixed_sized_digest);
-        encoder.append(&self.height);
-        encoder.append(&self.timestamp);
-        encoder.append(&self.view);
+        encoder.append(&self.header);
         encoder.append(&self.payload);
         encoder.append(&self.execution_requests);
-        encoder.append(&self.block_value);
-
         encoder.finalize();
     }
 
     fn ssz_bytes_len(&self) -> usize {
-        Digest::SIZE
-            + self.height.ssz_bytes_len()
-            + self.timestamp.ssz_bytes_len()
-            + self.view.ssz_bytes_len()
+        self.header.ssz_bytes_len()
             + self.payload.ssz_bytes_len()
             + self.execution_requests.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET
-            + self.block_value.ssz_bytes_len()
+            + ssz::BYTES_PER_LENGTH_OFFSET * 3 // 3 variable-length fields need 3 offsets
     }
 }
 
@@ -164,40 +220,24 @@ impl ssz::Decode for Block {
 
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
         let mut builder = ssz::SszDecoderBuilder::new(bytes);
-        builder.register_type::<[u8; 32]>()?;
-        builder.register_type::<u64>()?;
-        builder.register_type::<u64>()?;
-        builder.register_type::<u64>()?;
+        builder.register_type::<Header>()?;
         builder.register_type::<ExecutionPayloadV3>()?;
         builder.register_type::<Vec<AlloyBytes>>()?;
-        builder.register_type::<U256>()?;
 
         let mut decoder = builder.build()?;
 
-        let parent: [u8; 32] = decoder.decode_next()?;
-        let height = decoder.decode_next()?;
-        let timestamp = decoder.decode_next()?;
-        let view = decoder.decode_next()?;
+        let header: Header = decoder.decode_next()?;
         let payload = decoder.decode_next()?;
         let execution_requests = decoder.decode_next()?;
-        let block_value = decoder.decode_next()?;
 
-        let block = Self::compute_digest(
-            parent.into(),
-            height,
-            timestamp,
-            payload,
-            execution_requests,
-            block_value,
-            view,
-        );
-        Ok(block)
+        Self::new_with_verify(header, payload, execution_requests)
+            .map_err(|e| ssz::DecodeError::BytesInvalid(e.to_string()))
     }
 }
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
-        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET * 2
+        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
     }
 }
 
@@ -205,20 +245,23 @@ impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
         let ssz_bytes = &*self.as_ssz_bytes();
         let bytes_len = ssz_bytes.len() as u32;
+
         buf.put(&bytes_len.to_be_bytes()[..]);
-        buf.put(&*self.as_ssz_bytes());
+        buf.put(ssz_bytes);
     }
 }
 
 impl Read for Block {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-        let len = buf.get_u32();
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let len: u32 = buf.get_u32();
+        if len > buf.remaining() as u32 {
+            return Err(Error::Invalid("Block", "improper encoded length"));
+        }
 
-        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk()).map_err(|_| {
-            commonware_codec::Error::Invalid("Block", "Unable to decode bytes for block")
-        })
+        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk())
+            .map_err(|_| Error::Invalid("Block", "Unable to decode bytes for block"))
     }
 }
 
@@ -226,7 +269,7 @@ impl Digestible for Block {
     type Digest = Digest;
 
     fn digest(&self) -> Digest {
-        self.digest
+        self.header.digest
     }
 }
 
@@ -234,18 +277,18 @@ impl Committable for Block {
     type Commitment = Digest;
 
     fn commitment(&self) -> Digest {
-        self.digest
+        self.header.digest
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notarized {
-    pub proof: Notarization<MinPk, Digest>,
+    pub proof: Notarization<Signature, Digest>,
     pub block: Block,
 }
 
 impl Notarized {
-    pub fn new(proof: Notarization<MinPk, Digest>, block: Block) -> Self {
+    pub fn new(proof: Notarization<Signature, Digest>, block: Block) -> Self {
         Self { proof, block }
     }
 }
@@ -261,7 +304,7 @@ impl Read for Notarized {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Notarization::<MinPk, Digest>::read_cfg(buf, &())?; // todo: get a test on this to make sure buf.remaining is safe
+        let proof = Notarization::<Signature, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -283,12 +326,12 @@ impl EncodeSize for Notarized {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finalized {
-    pub proof: Finalization<MinPk, Digest>,
+    pub proof: Finalization<Signature, Digest>,
     pub block: Block,
 }
 
 impl Finalized {
-    pub fn new(proof: Finalization<MinPk, Digest>, block: Block) -> Self {
+    pub fn new(proof: Finalization<Signature, Digest>, block: Block) -> Self {
         Self { proof, block }
     }
 }
@@ -304,7 +347,7 @@ impl Read for Finalized {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Finalization::<MinPk, Digest>::read_cfg(buf, &())?;
+        let proof = Finalization::<Signature, Digest>::read_cfg(buf, &buf.remaining())?;
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -324,14 +367,39 @@ impl EncodeSize for Finalized {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockEnvelope {
+    pub block: Block,
+    pub finalized: Option<Finalization<Signature, Digest>>,
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use alloy_primitives::{Bytes as AlloyBytes, U256, hex};
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
     use commonware_codec::{DecodeExt as _, Encode as _};
+
+    fn create_test_public_key(seed: u8) -> PublicKey {
+        let test_keys = [
+            hex!("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"),
+            hex!("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"),
+            hex!("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"),
+            hex!("278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e"),
+            hex!("ec172b93ad5e563bf4932c70e1245034c35467ef2efd4d64ebf819683467e2bf"),
+        ];
+
+        let key_bytes = test_keys[seed as usize % test_keys.len()];
+        PublicKey::decode(&key_bytes[..]).expect("Valid test key from known vectors")
+    }
+
+    fn create_test_validators() -> (Vec<PublicKey>, Vec<PublicKey>) {
+        let added = vec![create_test_public_key(20), create_test_public_key(21)];
+        let removed = vec![create_test_public_key(30)];
+        (added, removed)
+    }
     #[test]
-    fn test_encode_decode() {
+    fn test_block_encode_decode() {
         let first_transaction_raw = AlloyBytes::from_static(
             &hex!(
                 "b9017e02f9017a8501a1f0ff438211cc85012a05f2008512a05f2000830249f094d5409474fd5a725eab2ac9a8b26ca6fb51af37ef80b901040cc7326300000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000001bdd2ed4b616c800000000000000000000000000001e9ee781dd4b97bdef92e5d1785f73a1f931daa20000000000000000000000007a40026a3b9a41754a95eec8c92c6b99886f440c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020000000000000000000000009ae80eb647dd09968488fa1d7e412bf8558a0b7a0000000000000000000000000f9815537d361cb02befd9918c95c97d4d8a4a2bc001a0ba8f1928bb0efc3fcd01524a2039a9a2588fa567cd9a7cc18217e05c615e9d69a0544bfd11425ac7748e76b3795b57a5563e2b0eff47b5428744c62ff19ccfc305"
@@ -366,6 +434,7 @@ mod test {
             excess_blob_gas: 0x580000,
         };
 
+        let (added_validators, removed_validators) = create_test_validators();
         let block = Block::compute_digest(
             [27u8; 32].into(),
             27,
@@ -374,6 +443,10 @@ mod test {
             vec![Default::default()],
             U256::ZERO,
             42,
+            Some([0u8; 32].into()),
+            [0u8; 32].into(),
+            added_validators,
+            removed_validators,
         );
 
         let encoded = block.encode();
@@ -409,6 +482,7 @@ mod test {
             excess_blob_gas: 0x580000,
         };
 
+        let (added_validators, removed_validators) = create_test_validators();
         let block = Block::compute_digest(
             [27u8; 32].into(),
             27,
@@ -417,6 +491,10 @@ mod test {
             Vec::new(),
             U256::ZERO,
             42,
+            Some([0u8; 32].into()),
+            [0u8; 32].into(),
+            added_validators,
+            removed_validators,
         );
 
         let encoded = block.encode();
@@ -433,5 +511,26 @@ mod test {
         let bytes = block.encode();
 
         Block::decode(bytes).unwrap();
+    }
+
+    #[test]
+    fn test_block_encode_size() {
+        let block = Block::genesis([0; 32]);
+
+        let ssz_len = block.ssz_bytes_len();
+        let encode_len = block.encode_size();
+        let actual_encoded = block.encode();
+
+        // Also check pure SSZ encoding
+        let pure_ssz = block.as_ssz_bytes();
+
+        assert_eq!(
+            pure_ssz.len(),
+            ssz_len,
+            "SSZ calculation should match actual SSZ encoding"
+        );
+        // The Write implementation adds a 4-byte length prefix
+        assert_eq!(actual_encoded.len(), pure_ssz.len() + 4);
+        assert_eq!(actual_encoded.len(), encode_len);
     }
 }

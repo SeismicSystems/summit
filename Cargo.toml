@@ -1,5 +1,5 @@
 [workspace]
-members = [ "application", "node", "rpc", "types"]
+members = [ "application", "node", "rpc", "types", "syncer", "finalizer"]
 resolver = "3"
 
 [workspace.package]
@@ -10,17 +10,20 @@ edition = "2024"
 # Our crates
 summit-types = { path = "types" }
 summit-application = { path = "application" }
+summit-syncer = {path = "syncer"}
+summit-finalizer = {path = "finalizer"}
+summit-rpc = {path = "rpc"}
 
-commonware-consensus = "0.0.58"
-commonware-cryptography = "0.0.58"
-commonware-storage = "0.0.58"
-commonware-runtime = "0.0.58"
-commonware-codec = "0.0.58"
-commonware-p2p = "0.0.58"
-commonware-broadcast = "0.0.58"
-commonware-utils = "0.0.58"
-commonware-resolver = "0.0.58"
-commonware-macros = "0.0.58"
+commonware-consensus = "0.0.62"
+commonware-cryptography = "0.0.62"
+commonware-storage = "0.0.62"
+commonware-runtime = "0.0.62"
+commonware-codec = "0.0.62"
+commonware-p2p = "0.0.62"
+commonware-broadcast = "0.0.62"
+commonware-utils = "0.0.62"
+commonware-resolver = "0.0.62"
+commonware-macros = "0.0.62"
 
 alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }
@@ -46,6 +49,8 @@ reqwest = "0.12"
 socket2 = "0.6"
 tower = "0.5.2"
 tokio = "1.46.0"
+tokio-util = "0.7.16"
+console-subscriber = "0.4"
 
 ethereum_ssz = "0.9.0"
 ethereum_ssz_derive = "0.9.0"

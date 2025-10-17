@@ -1,7 +1,7 @@
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_share, expect_signer,
+        RESOLVER_CHANNEL, expect_signer,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -10,7 +10,8 @@ use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
 use commonware_p2p::authenticated;
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
-use summit_rpc::{PathSender, start_rpc_server};
+use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
+use tokio_util::sync::CancellationToken;
 
 use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
@@ -19,12 +20,18 @@ use std::{
     num::NonZeroU32,
     str::FromStr as _,
 };
-use summit_application::engine_client::RethEngineClient;
+#[cfg(feature = "base-bench")]
+use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
+
+#[cfg(feature = "bench")]
+use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
+
+#[cfg(not(any(feature = "bench", feature = "base-bench")))]
+use summit_types::RethEngineClient;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
 pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
-pub const DEFAULT_SHARE_PATH: &str = "~/.seismic/consensus/share.pem";
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
 pub const DEFAULT_ENGINE_IPC_PATH: &str = "/tmp/reth_engine_api.ipc";
@@ -58,15 +65,16 @@ pub struct RunFlags {
     /// Path to your private key or where you want it generated
     #[arg(long, default_value_t = DEFAULT_KEY_PATH.into())]
     pub key_path: String,
-    /// path to this nodes polynomial share
-    #[arg(long, default_value_t = DEFAULT_SHARE_PATH.into())]
-    pub share_path: String,
     /// Path to the folder we will keep the consensus DB
     #[arg(long, default_value_t = DEFAULT_DB_FOLDER.into())]
     pub store_path: String,
     /// Path to the engine IPC socket
     #[arg(long, default_value_t = DEFAULT_ENGINE_IPC_PATH.into())]
     pub engine_ipc_path: String,
+    /// Path to the directory containing historical blocks for benchmarking
+    #[cfg(any(feature = "base-bench", feature = "bench"))]
+    #[arg(long)]
+    pub bench_block_dir: Option<String>,
     /// Port Consensus runs on
     #[arg(long, default_value_t = 18551)]
     pub port: u16,
@@ -131,6 +139,12 @@ impl Command {
     }
 
     pub fn run_node(&self, flags: &RunFlags) {
+        // Initialize tokio-console subscriber if feature is enabled
+        #[cfg(feature = "tokio-console")]
+        {
+            console_subscriber::init();
+        }
+
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
         let signer = expect_signer(&flags.key_path);
 
@@ -143,29 +157,30 @@ impl Command {
         let executor = tokio::Runner::new(cfg);
 
         executor.start(|context| async move {
-            let (share_tx, share_rx) = oneshot::channel();
             let (genesis_tx, genesis_rx) = oneshot::channel();
 
+            let cancel_token = CancellationToken::new();
+            let cloned_token = cancel_token.clone();
+
             // use the context async move to spawn a new runtime
-            let key_path = flags.key_path.clone();
-            let share_path = flags.share_path.clone();
             let genesis_path = flags.genesis_path.clone();
             let rpc_port = flags.rpc_port;
-            let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let share_sender = Command::check_sender(share_path, share_tx);
-                let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                if let Err(e) =
-                    start_rpc_server(key_path, share_sender, genesis_sender, rpc_port).await
-                {
-                    error!("RPC server failed: {}", e);
-                }
-            });
-
-            let _ = share_rx.await;
-            let share = expect_share(&flags.share_path);
+            let _rpc_handle = context
+                .with_label("rpc_genesis")
+                .spawn(move |_context| async move {
+                    let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+                    if let Err(e) =
+                        start_rpc_server_for_genesis(genesis_sender, rpc_port, cloned_token).await
+                    {
+                        error!("RPC server failed: {}", e);
+                    }
+                });
 
             // Wait for genesis if needed
             let _ = genesis_rx.await;
+            // Shut down the genesis rpc server after receiving the genesis file
+            cancel_token.cancel();
+
             let genesis =
                 Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
@@ -179,17 +194,48 @@ impl Command {
 
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
                 .expect("failed to expand engine ipc path");
+
+            #[allow(unused)]
+            #[cfg(feature = "base-bench")]
+            let engine_client = {
+                let block_dir = flags
+                    .bench_block_dir
+                    .as_ref()
+                    .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+                    .expect("bench_block_dir is required when using bench feature");
+                HistoricalEngineClient::new(
+                    engine_ipc_path.to_string_lossy().to_string(),
+                    block_dir,
+                )
+                .await
+            };
+
+            #[allow(unused)]
+            #[cfg(feature = "bench")]
+            let engine_client = {
+                let block_dir = flags
+                    .bench_block_dir
+                    .as_ref()
+                    .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+                    .expect("bench_block_dir is required when using bench feature");
+                EthereumHistoricalEngineClient::new(
+                    engine_ipc_path.to_string_lossy().to_string(),
+                    block_dir,
+                )
+                .await
+            };
+
+            #[cfg(not(any(feature = "bench", feature = "base-bench")))]
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-            // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
             let config = EngineConfig::get_engine_config(
                 engine_client,
                 signer,
-                share,
                 peers.clone(),
                 flags.db_prefix.clone(),
                 &genesis,
+                None,
             )
             .unwrap();
 
@@ -261,10 +307,6 @@ impl Command {
             let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
             let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
-            // Register recovered channel
-            let recovered_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-            let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
-
             // Register resolver channel
             let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
             let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
@@ -280,10 +322,21 @@ impl Command {
             // Create network
             let p2p = network.start();
             // create engine
-            let engine = Engine::new(context.with_label("engine"), config, oracle).await;
+            let engine = Engine::new(context.with_label("engine"), config).await;
+
+            let finalizer_mailbox = engine.finalizer_mailbox.clone();
 
             // Start engine
-            let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+            let engine = engine.start(pending, resolver, broadcaster, backfiller);
+
+            // Start RPC server
+            let key_path = flags.key_path.clone();
+            let rpc_port = flags.rpc_port;
+            let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+                if let Err(e) = start_rpc_server(finalizer_mailbox, key_path, rpc_port).await {
+                    error!("RPC server failed: {}", e);
+                }
+            });
 
             // Wait for any task to error
             if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
@@ -293,35 +346,32 @@ impl Command {
     }
 }
 
-pub fn run_node_with_runtime(
-    context: commonware_runtime::tokio::Context,
-    flags: RunFlags,
-) -> Handle<()> {
+pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle<()> {
     context.spawn(async move |context| {
         let signer = expect_signer(&flags.key_path);
 
-        let (share_tx, share_rx) = oneshot::channel();
         let (genesis_tx, genesis_rx) = oneshot::channel();
 
+        let cancel_token = CancellationToken::new();
+        let cloned_token = cancel_token.clone();
         // use the context async move to spawn a new runtime
-        let key_path = flags.key_path.clone();
-        let share_path = flags.share_path.clone();
         let rpc_port = flags.rpc_port;
         let genesis_path = flags.genesis_path.clone();
-        let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let share_sender = Command::check_sender(share_path, share_tx);
-            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-            if let Err(e) = start_rpc_server(key_path, share_sender, genesis_sender, rpc_port).await
-            {
-                tracing::error!("RPC server failed: {}", e);
-            }
-        });
-
-        let _ = share_rx.await;
-        let share = expect_share(&flags.share_path);
+        let _rpc_handle = context
+            .with_label("rpc_genesis")
+            .spawn(move |_context| async move {
+                let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+                if let Err(e) =
+                    start_rpc_server_for_genesis(genesis_sender, rpc_port, cloned_token).await
+                {
+                    error!("RPC server failed: {}", e);
+                }
+            });
 
         // Wait for genesis if needed
         let _ = genesis_rx.await;
+        // Shut down the genesis rpc server after receiving the genesis file
+        cancel_token.cancel();
 
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
@@ -337,17 +387,45 @@ pub fn run_node_with_runtime(
 
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
+
+        #[allow(unused)]
+        #[cfg(feature = "base-bench")]
+        let engine_client = {
+            let block_dir = flags
+                .bench_block_dir
+                .as_ref()
+                .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+                .expect("bench_block_dir is required when using bench feature");
+            HistoricalEngineClient::new(engine_ipc_path.to_string_lossy().to_string(), block_dir)
+                .await
+        };
+
+        #[allow(unused)]
+        #[cfg(feature = "bench")]
+        let engine_client = {
+            let block_dir = flags
+                .bench_block_dir
+                .as_ref()
+                .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+                .expect("bench_block_dir is required when using bench feature");
+            EthereumHistoricalEngineClient::new(
+                engine_ipc_path.to_string_lossy().to_string(),
+                block_dir,
+            )
+            .await
+        };
+
+        #[cfg(not(any(feature = "bench", feature = "base-bench")))]
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-        // let engine_client = RethEngineClient::new(engine_url.clone(), &engine_jwt);
         let config = EngineConfig::get_engine_config(
             engine_client,
             signer,
-            share,
             peers.clone(),
             flags.db_prefix.clone(),
             &genesis,
+            None,
         )
         .unwrap();
 
@@ -384,10 +462,6 @@ pub fn run_node_with_runtime(
         let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
         let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
-        // Register recovered channel
-        let recovered_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-        let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
-
         // Register resolver channel
         let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
         let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
@@ -402,10 +476,38 @@ pub fn run_node_with_runtime(
         // Create network
         let p2p = network.start();
         // create engine
-        let engine = Engine::new(context.with_label("engine"), config, oracle).await;
+        let engine = Engine::new(context.with_label("engine"), config).await;
 
+        let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Start engine
-        let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+        let engine = engine.start(pending, resolver, broadcaster, backfiller);
+
+        // Start prometheus endpoint
+        #[cfg(feature = "prom")]
+        {
+            use crate::prom::hooks::Hooks;
+            use crate::prom::server::{MetricServer, MetricServerConfig};
+            use std::net::SocketAddr;
+
+            let hooks = Hooks::builder().build();
+
+            let listen_addr = format!("0.0.0.0:{}", flags.prom_port)
+                .parse::<SocketAddr>()
+                .unwrap();
+            let config = MetricServerConfig::new(listen_addr, hooks);
+            MetricServer::new(config).serve().await.unwrap();
+        }
+
+        // Start RPC server
+        let key_path = flags.key_path.clone();
+        let rpc_port = flags.rpc_port;
+        let rpc_handle = context
+            .with_label("rpc_genesis")
+            .spawn(move |_context| async move {
+                if let Err(e) = start_rpc_server(finalizer_mailbox, key_path, rpc_port).await {
+                    error!("RPC server failed: {}", e);
+                }
+            });
 
         // Wait for any task to error
         if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {

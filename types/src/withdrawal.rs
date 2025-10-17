@@ -7,7 +7,7 @@ use commonware_codec::{Error, FixedSize, Read, Write};
 pub struct PendingWithdrawal {
     pub inner: Withdrawal,
     pub withdrawal_height: u64,
-    pub bls_pubkey: [u8; 48],
+    pub pubkey: [u8; 32],
 }
 
 impl TryFrom<&[u8]> for PendingWithdrawal {
@@ -15,10 +15,10 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         // PendingWithdrawal data is exactly 100 bytes
-        // Format: index(8) + validator_index(8) + address(20) + amount(8) + withdrawal_height(8) + bls_pubkey(48) = 100 bytes
+        // Format: index(8) + validator_index(8) + address(20) + amount(8) + withdrawal_height(8) + bls_pubkey(32) = 84 bytes
 
-        if bytes.len() != 100 {
-            return Err("PendingWithdrawal must be exactly 100 bytes");
+        if bytes.len() != 84 {
+            return Err("PendingWithdrawal must be exactly 84 bytes");
         }
 
         // Extract index (8 bytes, little-endian u64)
@@ -52,7 +52,7 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
         let withdrawal_height = u64::from_le_bytes(withdrawal_height_bytes);
 
         // Extract bls_pubkey (48 bytes)
-        let bls_pubkey: [u8; 48] = bytes[52..100]
+        let pubkey: [u8; 32] = bytes[52..84]
             .try_into()
             .map_err(|_| "Failed to parse bls_pubkey")?;
 
@@ -64,7 +64,7 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
                 amount,
             },
             withdrawal_height,
-            bls_pubkey,
+            pubkey,
         })
     }
 }
@@ -76,19 +76,19 @@ impl Write for PendingWithdrawal {
         buf.put(&self.inner.address.0[..]);
         buf.put(&self.inner.amount.to_le_bytes()[..]);
         buf.put(&self.withdrawal_height.to_le_bytes()[..]);
-        buf.put(&self.bls_pubkey[..]);
+        buf.put(&self.pubkey[..]);
     }
 }
 
 impl FixedSize for PendingWithdrawal {
-    const SIZE: usize = 100; // 8 + 8 + 20 + 8 + 8 + 48 (added bls_pubkey)
+    const SIZE: usize = 84; // 8 + 8 + 20 + 8 + 8 + 32 (added ed key)
 }
 
 impl Read for PendingWithdrawal {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        if buf.remaining() < 100 {
+        if buf.remaining() < 84 {
             return Err(Error::Invalid("PendingWithdrawal", "Insufficient bytes"));
         }
 
@@ -112,8 +112,8 @@ impl Read for PendingWithdrawal {
         buf.copy_to_slice(&mut withdrawal_height_bytes);
         let withdrawal_height = u64::from_le_bytes(withdrawal_height_bytes);
 
-        let mut bls_pubkey = [0u8; 48];
-        buf.copy_to_slice(&mut bls_pubkey);
+        let mut pubkey = [0u8; 32];
+        buf.copy_to_slice(&mut pubkey);
 
         Ok(PendingWithdrawal {
             inner: Withdrawal {
@@ -123,7 +123,7 @@ impl Read for PendingWithdrawal {
                 amount,
             },
             withdrawal_height,
-            bls_pubkey,
+            pubkey,
         })
     }
 }
@@ -144,13 +144,13 @@ mod tests {
                 amount: 16000000000u64, // 16 ETH in gwei
             },
             withdrawal_height: 100,
-            bls_pubkey: [42u8; 48],
+            pubkey: [42u8; 32],
         };
 
         // Test Write
         let mut buf = BytesMut::new();
         withdrawal.write(&mut buf);
-        assert_eq!(buf.len(), 100); // 8 + 8 + 20 + 8 + 8 + 48
+        assert_eq!(buf.len(), 84); // 8 + 8 + 20 + 8 + 8 + 32
 
         // Test Read
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();
@@ -167,7 +167,7 @@ mod tests {
                 amount: 32000000000u64, // 32 ETH in gwei
             },
             withdrawal_height: 200,
-            bls_pubkey: [2u8; 48],
+            pubkey: [2u8; 32],
         };
 
         // Encode with Write
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn test_pending_withdrawal_insufficient_bytes() {
         let mut buf = BytesMut::new();
-        buf.put(&[0u8; 99][..]); // One byte short
+        buf.put(&[0u8; 83][..]); // One byte short
 
         let result = PendingWithdrawal::read(&mut buf.as_ref());
         assert!(result.is_err());
@@ -201,7 +201,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 100 bytes"
+            "PendingWithdrawal must be exactly 84 bytes"
         );
     }
 
@@ -212,7 +212,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 100 bytes"
+            "PendingWithdrawal must be exactly 84 bytes"
         );
     }
 
@@ -227,7 +227,7 @@ mod tests {
                 amount: 64000000000u64, // 64 ETH in gwei
             },
             withdrawal_height: 300,
-            bls_pubkey: [3u8; 48],
+            pubkey: [3u8; 32],
         };
 
         // Encode with Codec
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_pending_withdrawal_fixed_size() {
-        assert_eq!(PendingWithdrawal::SIZE, 100);
+        assert_eq!(PendingWithdrawal::SIZE, 84);
 
         let withdrawal = PendingWithdrawal {
             inner: Withdrawal {
@@ -256,7 +256,7 @@ mod tests {
                 amount: 0,
             },
             withdrawal_height: 0,
-            bls_pubkey: [0u8; 48],
+            pubkey: [0u8; 32],
         };
 
         let mut buf = BytesMut::new();
@@ -278,7 +278,7 @@ mod tests {
                 amount: 0xa1b2c3d4e5f60708u64,
             },
             withdrawal_height: 500,
-            bls_pubkey: [5u8; 48],
+            pubkey: [5u8; 32],
         };
 
         let mut buf = BytesMut::new();
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(&bytes[44..52], &500u64.to_le_bytes());
 
         // Check bls_pubkey (last 48 bytes)
-        assert_eq!(&bytes[52..100], &[5u8; 48]);
+        assert_eq!(&bytes[52..84], &[5u8; 32]);
 
         // Verify roundtrip
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();

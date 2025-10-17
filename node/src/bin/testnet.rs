@@ -10,17 +10,15 @@ node3_port = 8542
 
 */
 use std::{
-    io::{BufRead as _, BufReader},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    fs,
+    io::{BufRead as _, BufReader, Write as _},
     path::PathBuf,
-    str::FromStr as _,
 };
 
 use alloy_node_bindings::Reth;
 use clap::Parser;
 use commonware_runtime::{Metrics as _, Runner as _, Spawner as _, tokio};
 use summit::args::{RunFlags, run_node_with_runtime};
-use tracing::Level;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -29,10 +27,30 @@ struct Args {
     nodes: u16,
     #[arg[long]]
     only_reth: bool,
+    /// Path to the directory containing historical blocks for benchmarking
+    #[cfg(any(feature = "base-bench", feature = "bench"))]
+    #[arg(long)]
+    pub bench_block_dir: Option<String>,
+    /// Path to the log directory
+    #[arg(long)]
+    pub log_dir: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tokio-console subscriber if feature is enabled
+    #[cfg(feature = "tokio-console")]
+    {
+        console_subscriber::ConsoleLayer::builder()
+            .retention(std::time::Duration::from_secs(60))
+            .init();
+    }
+
     let args = Args::parse();
+
+    // Create log directory if specified
+    if let Some(ref log_dir) = args.log_dir {
+        fs::create_dir_all(log_dir)?;
+    }
 
     let cfg = tokio::Config::default()
         .with_tcp_nodelay(Some(true))
@@ -43,18 +61,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     executor.start(|context| {
         async move {
-            // Configure telemetry
-            let log_level = Level::from_str("info").expect("Invalid log level");
-            tokio::telemetry::init(
-                context.with_label("metrics"),
-                tokio::telemetry::Logging {
-                    level: log_level,
-                    // todo: dont know what this does
-                    json: false,
-                },
-                Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 6969)),
-                None,
-            );
+            // Configure telemetry (skip if tokio-console is enabled)
+            #[cfg(not(feature = "tokio-console"))]
+            {
+                use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+                use std::str::FromStr as _;
+                use tracing::Level;
+
+                let log_level = Level::from_str("info").expect("Invalid log level");
+                tokio::telemetry::init(
+                    context.with_label("metrics"),
+                    tokio::telemetry::Logging {
+                        level: log_level,
+                        // todo: dont know what this does
+                        json: false,
+                    },
+                    Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 6969)),
+                    None,
+                );
+            }
 
             // Vector to hold all the join handles
             let mut handles = Vec::new();
@@ -77,19 +102,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .arg(format!("1744{x}"))
                     .arg("--auth-ipc")
                     .arg("--auth-ipc.path")
-                    .arg(format!("/tmp/reth_engine_api{x}.ipc"));
+                    .arg(format!("/tmp/reth_engine_api{x}.ipc"))
+                    .arg("--metrics")
+                    .arg(format!("0.0.0.0:{}", 9001 + x));
 
                 let mut reth = reth_builder.spawn();
 
                 // Get stdout handle
                 let stdout = reth.stdout().expect("Failed to get stdout");
 
+                let log_dir = args.log_dir.clone();
                 context.clone().spawn(async move |_| {
                     let reader = BufReader::new(stdout);
+                    let mut log_file = log_dir.as_ref().map(|dir| {
+                        fs::File::create(format!("{}/node{}.log", dir, x))
+                            .expect("Failed to create log file")
+                    });
+
                     for line in reader.lines() {
                         match line {
-                            Ok(_line) => {
-                                //println!("[Node {}] {}", x, line);
+                            Ok(line) => {
+                                if let Some(ref mut file) = log_file {
+                                    writeln!(file, "[Node {}] {}", x, line)
+                                        .expect("Failed to write to log file");
+                                }
                             }
                             Err(_e) => {
                                 //   eprintln!("[Node {}] Error reading line: {}", x, e);
@@ -122,9 +158,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if args.only_reth {
                     continue;
                 }
+                #[allow(unused_mut)]
+                let mut flags = get_node_flags(x.into());
+
+                #[cfg(any(feature = "base-bench", feature = "bench"))]
+                {
+                    flags.bench_block_dir = args.bench_block_dir.clone();
+                }
+
                 // Start our consensus engine
-                println!("******** STARTING CONSENSUS ENGINE FOR NODE {x}");
-                let flags = get_node_flags(x.into());
                 let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags);
                 consensus_handles.push(handle);
             }
@@ -151,7 +193,6 @@ fn get_node_flags(node: usize) -> RunFlags {
 
     RunFlags {
         key_path: format!("{path}key.pem"),
-        share_path: format!("{path}share.pem"),
         store_path: format!("{path}db"),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,
@@ -161,5 +202,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         db_prefix: format!("{node}-quarts"),
         genesis_path: "./example_genesis.toml".into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
+        #[cfg(any(feature = "base-bench", feature = "bench"))]
+        bench_block_dir: None,
     }
 }

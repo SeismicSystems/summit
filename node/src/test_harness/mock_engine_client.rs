@@ -10,8 +10,7 @@ use alloy_rpc_types_engine::{
 use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use summit_application::engine_client::EngineClient;
-use summit_types::Block;
+use summit_types::{Block, EngineClient};
 
 #[derive(Clone)]
 pub struct MockEngineClient {
@@ -114,6 +113,45 @@ impl MockEngineClient {
             }
         }
         withdrawals
+    }
+
+    /// Load a checkpoint
+    pub fn load_checkpoint(&self, block_number: u64, hash: FixedBytes<32>) {
+        let mut state = self.state.lock().unwrap();
+
+        // Create a dummy block for the checkpoint
+        let dummy_block = ExecutionPayloadV3 {
+            payload_inner: alloy_rpc_types_engine::ExecutionPayloadV2 {
+                payload_inner: alloy_rpc_types_engine::ExecutionPayloadV1 {
+                    parent_hash: B256::ZERO,
+                    fee_recipient: alloy_primitives::Address::ZERO,
+                    state_root: B256::ZERO,
+                    receipts_root: B256::ZERO,
+                    logs_bloom: alloy_primitives::Bloom::ZERO,
+                    prev_randao: B256::ZERO,
+                    block_number,
+                    gas_limit: 30000000,
+                    gas_used: 0,
+                    timestamp: 0,
+                    extra_data: alloy_primitives::Bytes::new(),
+                    base_fee_per_gas: alloy_primitives::U256::from(1000000000u64),
+                    block_hash: hash,
+                    transactions: Vec::new().into(),
+                },
+                withdrawals: Vec::new().into(),
+            },
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+        };
+
+        state.canonical_blocks.insert(hash, dummy_block.clone());
+        state.canonical_by_number.insert(block_number, hash);
+        state.current_head = hash;
+        state.next_block_number = block_number + 1;
+
+        let status = PayloadStatus::new(PayloadStatusEnum::Valid, Some(hash));
+        state.known_blocks.insert(hash, status.clone());
+        state.validated_blocks.insert(hash, dummy_block);
     }
 
     #[allow(unused)]
@@ -270,11 +308,13 @@ impl MockEngineState {
 }
 
 impl EngineClient for MockEngineClient {
+    #[allow(unused)]
     async fn start_building_block(
         &self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
+        #[cfg(any(feature = "bench", feature = "base-bench"))] height: u64,
     ) -> Option<PayloadId> {
         let mut state = self.state.lock().unwrap();
 
@@ -509,18 +549,23 @@ impl MockEngineNetwork {
     }
 
     /// Check if all clients have the same canonical chain (consensus)
-    pub fn verify_consensus(&self, until_block: Option<u64>) -> Result<(), String> {
+    pub fn verify_consensus(
+        &self,
+        from_block: Option<u64>,
+        until_block: Option<u64>,
+    ) -> Result<(), String> {
         let clients = self.get_clients();
 
         if clients.len() < 2 {
             return Ok(());
         }
 
+        let from_height = from_block.unwrap_or(0);
         let reference_height = until_block.unwrap_or(clients[0].get_chain_height());
         let reference_chain: Vec<(u64, _)> = clients[0]
             .get_canonical_chain()
             .into_iter()
-            .filter(|(height, _)| *height <= reference_height)
+            .filter(|(height, _)| *height >= from_height && *height <= reference_height)
             .collect();
 
         for client in clients.iter().skip(1) {
@@ -528,7 +573,7 @@ impl MockEngineNetwork {
             let client_chain: Vec<(u64, _)> = client
                 .get_canonical_chain()
                 .into_iter()
-                .filter(|(height, _)| *height <= client_height)
+                .filter(|(height, _)| *height >= from_height && *height <= client_height)
                 .collect();
 
             if client_height != reference_height {
@@ -557,7 +602,7 @@ impl MockEngineNetwork {
 
     /// Get consensus height (all clients must agree)
     pub fn get_consensus_height(&self) -> Result<u64, String> {
-        self.verify_consensus(None)?;
+        self.verify_consensus(None, None)?;
 
         let clients = self.get_clients();
         if clients.is_empty() {
@@ -599,7 +644,13 @@ mod tests {
         };
 
         let payload_id = client
-            .start_building_block(genesis_state, 1000, vec![])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
         let envelope = client.get_payload(payload_id).await;
@@ -629,7 +680,7 @@ mod tests {
         let client3 = network.create_client("client3".to_string());
 
         // All should start in consensus at height 0
-        assert!(network.verify_consensus(None).is_ok());
+        assert!(network.verify_consensus(None, None).is_ok());
         assert_eq!(network.get_consensus_height().unwrap(), 0);
 
         // All clients should have identical genesis chains
@@ -651,7 +702,7 @@ mod tests {
         let client2 = network.create_client("client2".to_string());
 
         // Start in consensus
-        assert!(network.verify_consensus(None).is_ok());
+        assert!(network.verify_consensus(None, None).is_ok());
 
         // Client1 builds and commits a block
         let genesis_state = ForkchoiceState {
@@ -661,7 +712,13 @@ mod tests {
         };
 
         let payload_id = client1
-            .start_building_block(genesis_state, 1000, vec![])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
         let envelope = client1.get_payload(payload_id).await;
@@ -678,20 +735,23 @@ mod tests {
         // Now clients are diverged
         assert_eq!(client1.get_chain_height(), 1);
         assert_eq!(client2.get_chain_height(), 0);
-        assert!(network.verify_consensus(None).is_err());
+        assert!(network.verify_consensus(None, None).is_err());
 
         // Simulate consensus: client2 receives the block through Engine API
         // First, client2 validates the block (like receiving it from network)
-        let block_for_validation = Block {
-            payload: block1.clone(),
-            digest: summit_types::Digest::from([1u8; 32]), // Mock digest
-            parent: summit_types::Digest::from([0u8; 32]), // Genesis digest
-            height: 1,
-            timestamp: 1000,
-            block_value: alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
-            execution_requests: Vec::new(),
-            view: 1,
-        };
+        let block_for_validation = Block::compute_digest(
+            summit_types::Digest::from([0u8; 32]), // Genesis digest
+            1,
+            1000,
+            block1.clone(),
+            Vec::new(),
+            alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
+            1,
+            None,
+            [0u8; 32].into(),
+            Vec::new(), // added_validators
+            Vec::new(), // removed_validators
+        );
 
         // Client2 checks the payload (validates it)
         let validation_result = client2.check_payload(&block_for_validation).await;
@@ -702,7 +762,7 @@ mod tests {
 
         // Now they should be in consensus again
         assert_eq!(client2.get_chain_height(), 1);
-        assert!(network.verify_consensus(None).is_ok());
+        assert!(network.verify_consensus(None, None).is_ok());
         assert_eq!(network.get_consensus_height().unwrap(), 1);
     }
 
@@ -733,7 +793,13 @@ mod tests {
             };
 
             let payload_id = producer
-                .start_building_block(fork_choice, (round * 1000) as u64, vec![])
+                .start_building_block(
+                    fork_choice,
+                    (round * 1000) as u64,
+                    vec![],
+                    #[cfg(any(feature = "bench", feature = "base-bench"))]
+                    round,
+                )
                 .await
                 .unwrap();
             let envelope = producer.get_payload(payload_id).await;
@@ -752,16 +818,19 @@ mod tests {
             for client in [&client1, &client2, &client3] {
                 if client.client_id() != producer.client_id() {
                     // Each client validates the block (like receiving it from network)
-                    let block_for_validation = summit_types::Block {
-                        payload: new_block.clone(),
-                        digest: summit_types::Digest::from([round as u8; 32]), // Mock digest
-                        parent: summit_types::Digest::from([(round - 1) as u8; 32]), // Parent digest
-                        height: round as u64,
-                        timestamp: (round * 1000) as u64,
-                        block_value: U256::from(1_000_000_000_000_000_000u64),
-                        execution_requests: Vec::new(),
-                        view: 1,
-                    };
+                    let block_for_validation = summit_types::Block::compute_digest(
+                        summit_types::Digest::from([(round - 1) as u8; 32]), // Parent digest
+                        round as u64,
+                        (round * 1000) as u64,
+                        new_block.clone(),
+                        Vec::new(),
+                        U256::from(1_000_000_000_000_000_000u64),
+                        1,
+                        None,
+                        [0u8; 32].into(),
+                        Vec::new(), // added_validators
+                        Vec::new(), // removed_validators
+                    );
 
                     // Client validates the block
                     let validation_result = client.check_payload(&block_for_validation).await;
@@ -773,7 +842,7 @@ mod tests {
             }
 
             // All should be in consensus at height `round`
-            assert!(network.verify_consensus(None).is_ok());
+            assert!(network.verify_consensus(None, None).is_ok());
             assert_eq!(network.get_consensus_height().unwrap(), round as u64);
 
             current_head = new_block.payload_inner.payload_inner.block_hash;
@@ -811,7 +880,13 @@ mod tests {
         };
 
         let payload_id = client1
-            .start_building_block(genesis_state, 1000, vec![withdrawal.clone()])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![withdrawal.clone()],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
 
@@ -841,16 +916,19 @@ mod tests {
         client1.commit_hash(new_fork_choice).await;
 
         // Simulate network propagation to client2
-        let block_for_validation = Block {
-            payload: block.clone(),
-            digest: summit_types::Digest::from([1u8; 32]),
-            parent: summit_types::Digest::from([0u8; 32]),
-            height: 1,
-            timestamp: 1000,
-            block_value: alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
-            execution_requests: Vec::new(),
-            view: 1,
-        };
+        let block_for_validation = Block::compute_digest(
+            summit_types::Digest::from([0u8; 32]),
+            1,
+            1000,
+            block.clone(),
+            Vec::new(),
+            alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
+            1,
+            None,
+            [0u8; 32].into(),
+            Vec::new(), // added_validators
+            Vec::new(), // removed_validators
+        );
 
         client2.check_payload(&block_for_validation).await;
         client2.commit_hash(new_fork_choice).await;
@@ -875,7 +953,7 @@ mod tests {
         let client3 = network.create_client("client3".to_string());
 
         // Start in consensus
-        assert!(network.verify_consensus(None).is_ok());
+        assert!(network.verify_consensus(None, None).is_ok());
 
         // Create conflicting blocks on different clients
         let genesis_state = ForkchoiceState {
@@ -886,7 +964,13 @@ mod tests {
 
         // Client1 builds block A
         let payload_id_a = client1
-            .start_building_block(genesis_state, 1000, vec![])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
         let envelope_a = client1.get_payload(payload_id_a).await;
@@ -894,7 +978,13 @@ mod tests {
 
         // Client2 builds block B (different from A due to client_id in hash)
         let payload_id_b = client2
-            .start_building_block(genesis_state, 1000, vec![])
+            .start_building_block(
+                genesis_state,
+                1000,
+                vec![],
+                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                0,
+            )
             .await
             .unwrap();
         let envelope_b = client2.get_payload(payload_id_b).await;
@@ -923,7 +1013,7 @@ mod tests {
         client2.commit_hash(fork_choice_b).await;
 
         // Now consensus should fail - clients have different blocks at height 1
-        assert!(network.verify_consensus(None).is_err());
+        assert!(network.verify_consensus(None, None).is_err());
 
         // Heights are same but chains differ
         assert_eq!(client1.get_chain_height(), 1);

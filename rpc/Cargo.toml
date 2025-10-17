@@ -8,14 +8,17 @@ name = "summit_rpc"
 path = "src/lib.rs"
 
 [dependencies]
+summit-finalizer.workspace = true
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
+tokio-util.workspace = true
 futures.workspace = true
 axum = { version = "0.8.4"}
 summit-types = { workspace = true }
 commonware-cryptography = { workspace = true }
 commonware-utils = { workspace = true }
 commonware-codec = { workspace = true }
+ethereum_ssz.workspace = true
 dirs = "5.0.1"
 serde = { workspace = true }
 tracing.workspace = true

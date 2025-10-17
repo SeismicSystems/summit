@@ -1,0 +1,6 @@
+# Cargo configuration for the project
+
+# Enable tokio_unstable flag when building with tokio-console feature
+# This is required for tokio-console to work properly
+[build]
+rustflags = ["--cfg", "tokio_unstable"]
