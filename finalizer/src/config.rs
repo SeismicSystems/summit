@@ -17,7 +17,7 @@ pub struct FinalizerConfig<C: EngineClient> {
     pub buffer_pool: PoolRef,
     pub genesis_hash: [u8; 32],
     /// Optional initial state to initialize the finalizer with
-    pub initial_state: Option<ConsensusState>,
+    pub initial_state: ConsensusState,
     /// Protocol version for the consensus protocol
     pub protocol_version: u32,
 }

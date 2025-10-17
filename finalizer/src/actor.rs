@@ -73,17 +73,13 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
         let db = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
 
-        let state = if let Some(state) = cfg.initial_state {
-            state
-        } else if let Some(state) = db.get_latest_consensus_state().await {
+        // Check if the state exists in the database. Otherwise, use the initial state.
+        // The initial state could be from the genesis or a checkpoint.
+        // If we want to load a checkpoint, we have to make sure that the DB is cleared.
+        let state = if let Some(state) = db.get_latest_consensus_state().await {
             state
         } else {
-            let forkchoice = ForkchoiceState {
-                head_block_hash: cfg.genesis_hash.into(),
-                safe_block_hash: cfg.genesis_hash.into(),
-                finalized_block_hash: cfg.genesis_hash.into(),
-            };
-            ConsensusState::new(forkchoice)
+            cfg.initial_state
         };
 
         (

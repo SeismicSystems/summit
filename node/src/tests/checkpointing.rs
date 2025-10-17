@@ -1,6 +1,6 @@
-use crate::engine::{EPOCH_NUM_BLOCKS, Engine};
+use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
-use crate::test_harness::common::get_default_engine_config;
+use crate::test_harness::common::{get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_macros::test_traced;
@@ -62,6 +62,13 @@ fn test_checkpoint_created() {
         let stop_height = EPOCH_NUM_BLOCKS + 1;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -84,7 +91,7 @@ fn test_checkpoint_created() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -214,6 +221,13 @@ fn test_previous_header_hash_matches() {
         let stop_height = EPOCH_NUM_BLOCKS + 1;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -236,7 +250,7 @@ fn test_previous_header_hash_matches() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -390,7 +404,7 @@ fn test_single_engine_with_checkpoint() {
             namespace,
             signer,
             validators.clone(),
-            Some(consensus_state),
+            consensus_state,
         );
 
         let engine = Engine::new(context.with_label(&uid), config).await;
@@ -470,6 +484,13 @@ fn test_node_joins_later_with_checkpoint() {
             .expect("failed to convert genesis hash");
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -496,7 +517,7 @@ fn test_node_joins_later_with_checkpoint() {
                 namespace,
                 signer,
                 validators.clone(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -560,7 +581,7 @@ fn test_node_joins_later_with_checkpoint() {
             namespace,
             signer_joining_later,
             validators.clone(),
-            Some(consensus_state),
+            consensus_state,
         );
         let engine = Engine::new(context.with_label(&uid), config).await;
 
@@ -682,6 +703,13 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             .expect("failed to convert genesis hash");
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -708,7 +736,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
                 namespace,
                 signer,
                 initial_validators.to_vec(),
-                None,
+                initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
@@ -772,7 +800,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             namespace,
             signer_joining_later,
             initial_validators.to_vec(),
-            Some(consensus_state),
+            consensus_state,
         );
         let engine = Engine::new(context.with_label(&uid), config).await;
 

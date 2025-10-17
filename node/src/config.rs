@@ -45,7 +45,7 @@ pub struct EngineConfig<C: EngineClient> {
     pub namespace: String,
     pub genesis_hash: [u8; 32],
 
-    pub initial_state: Option<ConsensusState>,
+    pub initial_state: ConsensusState,
 }
 
 impl<C: EngineClient> EngineConfig<C> {
@@ -55,7 +55,7 @@ impl<C: EngineClient> EngineConfig<C> {
         participants: Vec<PublicKey>,
         db_prefix: String,
         genesis: &Genesis,
-        initial_state: Option<ConsensusState>,
+        initial_state: ConsensusState,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,

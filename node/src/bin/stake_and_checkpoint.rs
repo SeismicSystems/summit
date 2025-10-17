@@ -17,10 +17,10 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_node_bindings::Reth;
 use alloy_primitives::{Address, U256, keccak256};
 use clap::Parser;
-use commonware_cryptography::{PrivateKeyExt, Signer, ed25519::PrivateKey, Hasher};
+use commonware_cryptography::Sha256;
+use commonware_cryptography::{Hasher, PrivateKeyExt, Signer, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio};
 use commonware_utils::from_hex_formatted;
-use commonware_cryptography::Sha256;
 use ssz::Decode;
 use std::{
     fs,
@@ -252,8 +252,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &padded_signature,
                 0, // nonce
             )
-                .await
-                .expect("failed to send deposit transaction");
+            .await
+            .expect("failed to send deposit transaction");
 
             // Wait for nodes to reach checkpoint height
             println!(
@@ -384,7 +384,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             flags.key_path = signer_path;
             flags.ip = Some("127.0.0.1:26640".to_string());
 
-            println!("Starting consensus engine for node {} with checkpoint", ed25519_private_key.public_key());
+            println!(
+                "Starting consensus engine for node {} with checkpoint",
+                ed25519_private_key.public_key()
+            );
             let handle = run_node_with_runtime(
                 context.with_label(&format!("node{x}")),
                 flags,

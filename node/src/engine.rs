@@ -78,11 +78,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
         let registry = Registry::new(cfg.participants.clone());
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
-        let sync_height = cfg
-            .initial_state
-            .as_ref()
-            .map(|state| state.latest_height)
-            .unwrap_or(0);
+        let sync_height = cfg.initial_state.latest_height;
 
         // create application
         let (application, application_mailbox) = summit_application::Actor::new(

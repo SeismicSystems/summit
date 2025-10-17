@@ -13,7 +13,10 @@ use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
 
+use alloy_primitives::{Address, B256};
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::ReadExt;
+use commonware_utils::from_hex_formatted;
 use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
 use std::{
@@ -27,8 +30,10 @@ use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 #[cfg(feature = "bench")]
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
+use crate::engine::VALIDATOR_MINIMUM_STAKE;
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
+use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
@@ -195,7 +200,17 @@ impl Command {
                 .map(|v| v.try_into().expect("Invalid validator in genesis"))
                 .collect();
             committee.sort();
-            let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
+
+            let initial_state = get_initial_state(&genesis, &committee, None);
+            let mut peers: Vec<PublicKey> = initial_state
+                .validator_accounts
+                .keys()
+                .map(|v| {
+                    let mut key_bytes = &v[..];
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key")
+                })
+                .collect();
+            peers.sort();
 
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
                 .expect("failed to expand engine ipc path");
@@ -240,7 +255,7 @@ impl Command {
                 peers.clone(),
                 flags.db_prefix.clone(),
                 &genesis,
-                None,
+                initial_state,
             )
             .unwrap();
 
@@ -398,20 +413,18 @@ pub fn run_node_with_runtime(
             .collect();
         committee.sort();
 
-        // If a checkpoint is provided, we use the peers from the checkpoint.
-        // Otherwise, we read the peers from the genesis.
-        let peers: Vec<PublicKey> = if let Some(state) = &checkpoint {
-            state
-                .validator_accounts
-                .keys()
-                .map(|v| {
-                    let mut key_bytes = &v[..];
-                    PublicKey::read(&mut key_bytes).expect("failed to parse public key")
-                })
-                .collect()
-        } else {
-            committee.iter().map(|v| v.0.clone()).collect()
-        };
+        let initial_state = get_initial_state(&genesis, &committee, checkpoint);
+        let mut peers: Vec<PublicKey> = initial_state
+            .validator_accounts
+            .keys()
+            .map(|v| {
+                let mut key_bytes = &v[..];
+                PublicKey::read(&mut key_bytes).expect("failed to parse public key")
+            })
+            .collect();
+        peers.sort();
+
+        let mut networking_peers = peers.clone();
 
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
@@ -447,13 +460,14 @@ pub fn run_node_with_runtime(
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
+        let our_public_key = signer.public_key();
         let config = EngineConfig::get_engine_config(
             engine_client,
             signer,
-            peers.clone(),
+            peers,
             flags.db_prefix.clone(),
             &genesis,
-            None,
+            initial_state,
         )
         .unwrap();
 
@@ -474,23 +488,34 @@ pub fn run_node_with_runtime(
                 .expect("This node is not on the committee")
         };
 
-        // configure network
+        // If our public key is not in the peer list, we add it for the networking
+        if !networking_peers.iter().any(|key| key == &our_public_key) {
+            networking_peers.push(our_public_key.clone());
+            networking_peers.sort();
+        }
 
-        let mut p2p_cfg = authenticated::lookup::Config::aggressive(
+        if !committee.iter().any(|(key, _)| key == &our_public_key) {
+            committee.push((our_public_key, our_ip));
+            committee.sort();
+        }
+
+        // configure network
+        let mut p2p_cfg = authenticated::discovery::Config::aggressive(
             config.signer.clone(),
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
             our_ip,
+            committee,
             genesis.max_message_size_bytes as usize,
         );
         p2p_cfg.mailbox_size = config.mailbox_size;
 
         // Start p2p
         let (mut network, mut oracle) =
-            authenticated::lookup::Network::new(context.with_label("network"), p2p_cfg);
+            authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
         // Provide authorized peers
-        oracle.register(0, committee).await;
+        oracle.register(0, networking_peers).await;
 
         // Register pending channel
         let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
@@ -547,5 +572,47 @@ pub fn run_node_with_runtime(
         if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
             error!(?e, "task failed");
         }
+    })
+}
+
+fn get_initial_state(
+    genesis: &Genesis,
+    committee: &Vec<(PublicKey, SocketAddr)>,
+    checkpoint: Option<ConsensusState>,
+) -> ConsensusState {
+    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+        .map(|hash_bytes| hash_bytes.try_into())
+        .expect("bad eth_genesis_hash")
+        .expect("bad eth_genesis_hash");
+    let genesis_hash: B256 = genesis_hash.into();
+    checkpoint.unwrap_or_else(|| {
+        let forkchoice = ForkchoiceState {
+            head_block_hash: genesis_hash,
+            safe_block_hash: genesis_hash,
+            finalized_block_hash: genesis_hash,
+        };
+        let mut state = ConsensusState::new(forkchoice);
+        // Add the genesis nodes to the consensus state with the minimum stake balance.
+        for (pubkey, _) in committee {
+            let pubkey_bytes: [u8; 32] = pubkey
+                .as_ref()
+                .try_into()
+                .expect("Public key must be 32 bytes");
+            let account = ValidatorAccount {
+                // TODO(matthias): we have to add a withdrawal address to the genesis
+                withdrawal_credentials: Address::ZERO,
+                balance: VALIDATOR_MINIMUM_STAKE,
+                pending_withdrawal_amount: 0,
+                status: ValidatorStatus::Active,
+                // TODO(matthias): this index is comes from the deposit contract.
+                // Since there is no deposit transaction for the genesis nodes, the index will still be
+                // 0 for the deposit contract. Right now we only use this index to avoid counting the same deposit request twice.
+                // Since we set the index to 0 here, we cannot rely on the uniqueness. The first actual deposit request will have
+                // index 0 as well.
+                last_deposit_index: 0,
+            };
+            state.validator_accounts.insert(pubkey_bytes, account);
+        }
+        state
     })
 }
