@@ -12,7 +12,6 @@ use commonware_utils::from_hex_formatted;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::PrivateKey;
-use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 
 #[test_traced("INFO")]
@@ -376,14 +375,13 @@ fn test_single_engine_with_checkpoint() {
         let mut consensus_state = ConsensusState::default();
         consensus_state.set_latest_height(50); // Set a specific height
 
-        // Create a checkpoint from the consensus state
-        let checkpoint = Checkpoint::new(&consensus_state);
-
         // Configure engine with the checkpoint
         let public_key = signer.public_key();
         let uid = format!("validator-{public_key}");
         let namespace = String::from("_SEISMIC_BFT");
         let engine_client = engine_client_network.create_client(uid.clone());
+
+        let latest_height = consensus_state.latest_height;
 
         let config = get_default_engine_config(
             engine_client,
@@ -392,7 +390,7 @@ fn test_single_engine_with_checkpoint() {
             namespace,
             signer,
             validators.clone(),
-            Some(checkpoint.clone()),
+            Some(consensus_state),
         );
 
         let engine = Engine::new(context.with_label(&uid), config).await;
@@ -412,9 +410,9 @@ fn test_single_engine_with_checkpoint() {
         // The finalizer should have been initialized with our checkpoint at height 50
         // Since consensus is running, the height might be >= 50
         assert!(
-            current_height >= consensus_state.latest_height,
+            current_height >= latest_height,
             "Expected height >= {}, got {}",
-            consensus_state.latest_height,
+            latest_height,
             current_height
         );
 
@@ -562,7 +560,7 @@ fn test_node_joins_later_with_checkpoint() {
             namespace,
             signer_joining_later,
             validators.clone(),
-            Some(checkpoint),
+            Some(consensus_state),
         );
         let engine = Engine::new(context.with_label(&uid), config).await;
 
@@ -774,7 +772,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             namespace,
             signer_joining_later,
             initial_validators.to_vec(),
-            Some(checkpoint),
+            Some(consensus_state),
         );
         let engine = Engine::new(context.with_label(&uid), config).await;
 

@@ -13,6 +13,7 @@ use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
 
+use commonware_codec::ReadExt;
 use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
 use std::{
@@ -28,6 +29,7 @@ use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
+use summit_types::consensus_state::ConsensusState;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
@@ -243,7 +245,8 @@ impl Command {
             .unwrap();
 
             let our_ip = if let Some(ref ip_str) = flags.ip {
-                ip_str.parse::<SocketAddr>()
+                ip_str
+                    .parse::<SocketAddr>()
                     .expect("Invalid IP address format")
             } else {
                 committee
@@ -354,7 +357,11 @@ impl Command {
     }
 }
 
-pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle<()> {
+pub fn run_node_with_runtime(
+    context: tokio::Context,
+    flags: RunFlags,
+    checkpoint: Option<ConsensusState>,
+) -> Handle<()> {
     context.spawn(async move |context| {
         let signer = expect_signer(&flags.key_path);
 
@@ -391,7 +398,20 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
             .collect();
         committee.sort();
 
-        let peers: Vec<PublicKey> = committee.iter().map(|v| v.0.clone()).collect();
+        // If a checkpoint is provided, we use the peers from the checkpoint.
+        // Otherwise, we read the peers from the genesis.
+        let peers: Vec<PublicKey> = if let Some(state) = &checkpoint {
+            state
+                .validator_accounts
+                .keys()
+                .map(|v| {
+                    let mut key_bytes = &v[..];
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key")
+                })
+                .collect()
+        } else {
+            committee.iter().map(|v| v.0.clone()).collect()
+        };
 
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
@@ -438,7 +458,8 @@ pub fn run_node_with_runtime(context: tokio::Context, flags: RunFlags) -> Handle
         .unwrap();
 
         let our_ip = if let Some(ref ip_str) = flags.ip {
-            ip_str.parse::<SocketAddr>()
+            ip_str
+                .parse::<SocketAddr>()
                 .expect("Invalid IP address format")
         } else {
             committee

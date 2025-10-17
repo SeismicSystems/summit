@@ -78,13 +78,8 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
         let registry = Registry::new(cfg.participants.clone());
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
-        // Convert checkpoint to ConsensusState if provided
-        let initial_state = cfg.checkpoint.as_ref().map(|checkpoint| {
-            summit_types::consensus_state::ConsensusState::try_from(checkpoint)
-                .expect("failed to load consensus state from checkpoint")
-        });
-
-        let sync_height = initial_state
+        let sync_height = cfg
+            .initial_state
             .as_ref()
             .map(|state| state.latest_height)
             .unwrap_or(0);
@@ -142,7 +137,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                 buffer_pool: buffer_pool.clone(),
                 genesis_hash: cfg.genesis_hash,
-                initial_state,
+                initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
             },
         )

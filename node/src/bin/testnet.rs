@@ -167,7 +167,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Start our consensus engine
-                let handle = run_node_with_runtime(context.with_label(&format!("node{x}")), flags);
+                let handle =
+                    run_node_with_runtime(context.with_label(&format!("node{x}")), flags, None);
                 consensus_handles.push(handle);
             }
 
@@ -204,5 +205,6 @@ fn get_node_flags(node: usize) -> RunFlags {
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(any(feature = "base-bench", feature = "bench"))]
         bench_block_dir: None,
+        ip: None,
     }
 }

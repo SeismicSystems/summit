@@ -18,7 +18,7 @@ use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
 };
-use summit_types::checkpoint::Checkpoint;
+use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
 use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
 
@@ -416,7 +416,7 @@ pub fn get_default_engine_config<C: EngineClient>(
     namespace: String,
     signer: PrivateKey,
     participants: Vec<PublicKey>,
-    checkpoint: Option<Checkpoint>,
+    initial_state: Option<ConsensusState>,
 ) -> EngineConfig<C> {
     EngineConfig {
         engine_client,
@@ -438,6 +438,6 @@ pub fn get_default_engine_config<C: EngineClient>(
         _max_fetch_size: 1024 * 512,
         fetch_concurrent: 10,
         fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(10).unwrap()),
-        checkpoint,
+        initial_state,
     }
 }

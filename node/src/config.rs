@@ -4,9 +4,8 @@ use crate::keys::read_ed_key_from_path;
 use anyhow::{Context, Result};
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
-use summit_types::checkpoint::Checkpoint;
+use summit_types::consensus_state::ConsensusState;
 use summit_types::{EngineClient, Genesis, PrivateKey, PublicKey};
-
 /* DEFAULTS */
 pub const PENDING_CHANNEL: u32 = 0;
 pub const RESOLVER_CHANNEL: u32 = 1;
@@ -46,7 +45,7 @@ pub struct EngineConfig<C: EngineClient> {
     pub namespace: String,
     pub genesis_hash: [u8; 32],
 
-    pub checkpoint: Option<Checkpoint>,
+    pub initial_state: Option<ConsensusState>,
 }
 
 impl<C: EngineClient> EngineConfig<C> {
@@ -56,7 +55,7 @@ impl<C: EngineClient> EngineConfig<C> {
         participants: Vec<PublicKey>,
         db_prefix: String,
         genesis: &Genesis,
-        checkpoint: Option<Checkpoint>,
+        initial_state: Option<ConsensusState>,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,
@@ -81,7 +80,7 @@ impl<C: EngineClient> EngineConfig<C> {
                 .map(|hash_bytes| hash_bytes.try_into())
                 .expect("bad eth_genesis_hash")
                 .expect("bad eth_genesis_hash"),
-            checkpoint,
+            initial_state,
         })
     }
 }
