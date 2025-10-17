@@ -1,10 +1,8 @@
 use clap::Parser;
-use commonware_codec::{Encode as _};
-use commonware_cryptography::{
-    bls12381::{
-        dkg::ops,
-        primitives::{poly, variant::MinPk},
-    },
+use commonware_codec::Encode as _;
+use commonware_cryptography::bls12381::{
+    dkg::ops,
+    primitives::{poly, variant::MinPk},
 };
 use commonware_utils::{hex, quorum};
 use rand::rngs::OsRng;
@@ -29,8 +27,7 @@ struct Args {
 
 fn parse_validators(
     validators_path: &String,
-) -> Result<Vec<Validator>, Box<dyn std::error::Error>>
-{
+) -> Result<Vec<Validator>, Box<dyn std::error::Error>> {
     let rdr = std::fs::File::open(validators_path)?;
     let mut validators: Vec<Validator> = serde_json::from_reader(rdr)?;
     // NOTE: (important!)
