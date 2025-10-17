@@ -1,4 +1,4 @@
-use commonware_cryptography::{PrivateKeyExt, Signer};
+use commonware_cryptography::{Hasher, PrivateKeyExt, Sha256, Signer};
 
 use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
@@ -250,7 +250,7 @@ pub fn run_until_height(
 }
 
 pub fn get_domain() -> Digest {
-    commonware_cryptography::sha256::hash(&PROTOCOL_VERSION.to_le_bytes())
+    Sha256::hash(&PROTOCOL_VERSION.to_le_bytes())
 }
 
 /// Parse a substring from a metric name using XML-like tags

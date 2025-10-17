@@ -211,7 +211,7 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     // Commit all pending changes to the database
     pub async fn commit(&mut self) {
         self.store
-            .commit()
+            .commit(None)
             .await
             .expect("failed to commit to database");
     }

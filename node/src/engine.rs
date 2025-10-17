@@ -158,7 +158,6 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 reporter: syncer_mailbox.clone(),
                 supervisor: registry,
                 partition: format!("{}-summit", cfg.partition_prefix),
-                compression: None,
                 mailbox_size: cfg.mailbox_size,
                 namespace: cfg.namespace.clone().as_bytes().to_vec(),
                 replay_buffer: REPLAY_BUFFER,

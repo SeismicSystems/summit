@@ -24,8 +24,8 @@ fn test_deposit_request_single() {
     // and withdrawal credentials were added correctly.
     let n = 10;
     let link = Link {
-        latency: 80.0,
-        jitter: 10.0,
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
         success_rate: 0.98,
     };
     // Create context
@@ -195,8 +195,8 @@ fn test_deposit_request_top_up() {
     // validator balance is the sum of the amounts of both deposit requests.
     let n = 10;
     let link = Link {
-        latency: 80.0,
-        jitter: 10.0,
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
         success_rate: 0.98,
     };
     // Create context
@@ -389,8 +389,8 @@ fn test_deposit_and_withdrawal_request_single() {
     // withdrawal request (execution request) that was initially added to block 7.
     let n = 10;
     let link = Link {
-        latency: 80.0,
-        jitter: 10.0,
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
         success_rate: 0.98,
     };
     // Create context
@@ -595,8 +595,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
     // is no balance left.
     let n = 10;
     let link = Link {
-        latency: 80.0,
-        jitter: 10.0,
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
         success_rate: 0.98,
     };
     // Create context
@@ -811,8 +811,8 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
     // The balance should still increase and the withdrawal should work as well.
     let n = 10;
     let link = Link {
-        latency: 80.0,
-        jitter: 10.0,
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
         success_rate: 0.98,
     };
     // Create context
@@ -1024,8 +1024,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
     // (from different public keys).
     let n = 10;
     let link = Link {
-        latency: 80.0,
-        jitter: 10.0,
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
         success_rate: 0.98,
     };
     // Create context
@@ -1257,8 +1257,8 @@ fn test_deposit_request_invalid_signature() {
     // verifies that the request is rejected.
     let n = 10;
     let link = Link {
-        latency: 80.0,
-        jitter: 10.0,
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
         success_rate: 0.98,
     };
     // Create context
