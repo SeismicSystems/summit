@@ -5,4 +5,3 @@ pub use config::*;
 pub mod actor;
 pub mod block_fetcher;
 pub mod db;
-pub mod registry;

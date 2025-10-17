@@ -1,3 +1,5 @@
+use crate::db::{Config as StateConfig, FinalizerState};
+use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage, block_fetcher::BlockFetcher};
 use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
 #[cfg(debug_assertions)]
@@ -23,16 +25,11 @@ use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
 use summit_types::execution_request::ExecutionRequest;
+use summit_types::registry::Registry;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
 use summit_types::{BlockEnvelope, EngineClient, consensus_state::ConsensusState};
 use tracing::{info, warn};
-
-use crate::db::{Config as StateConfig, FinalizerState};
-use crate::{
-    FinalizerConfig, FinalizerMailbox, FinalizerMessage, block_fetcher::BlockFetcher,
-    registry::Registry,
-};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 

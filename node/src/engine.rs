@@ -13,9 +13,9 @@ use rand::{CryptoRng, Rng};
 use std::num::NonZero;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
-use summit_finalizer::registry::Registry;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
 use summit_syncer::Orchestrator;
+use summit_types::registry::Registry;
 use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
 use tracing::{error, warn};
 

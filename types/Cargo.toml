@@ -8,6 +8,7 @@ commonware-cryptography.workspace = true
 commonware-consensus.workspace = true
 commonware-codec.workspace = true
 commonware-utils.workspace = true
+commonware-resolver.workspace = true
 
 alloy-rpc-types-engine.workspace = true
 alloy-eips.workspace = true

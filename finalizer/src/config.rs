@@ -1,7 +1,7 @@
 use commonware_runtime::buffer::PoolRef;
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 
-use crate::registry::Registry;
+use summit_types::registry::Registry;
 
 pub struct FinalizerConfig<C: EngineClient> {
     pub mailbox_size: usize,

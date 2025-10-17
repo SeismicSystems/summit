@@ -1,8 +1,8 @@
+use crate::PublicKey;
 use commonware_consensus::{Supervisor as Su, simplex::types::View};
 use commonware_resolver::p2p;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-use summit_types::PublicKey;
 use tracing::warn;
 
 #[derive(Default, Clone, Debug)]
@@ -175,7 +175,7 @@ mod tests {
     fn create_test_pubkeys(count: usize) -> Vec<PublicKey> {
         (0..count)
             .map(|i| {
-                let private_key = summit_types::PrivateKey::from_seed(i as u64);
+                let private_key = crate::PrivateKey::from_seed(i as u64);
                 private_key.public_key()
             })
             .collect()
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_update_registry_add_participant() {
         let registry = create_test_registry(2);
-        let new_participant = summit_types::PrivateKey::from_seed(99).public_key();
+        let new_participant = crate::PrivateKey::from_seed(99).public_key();
 
         // Add participant to view 1
         registry.update_registry(1, vec![new_participant.clone()], vec![]);
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn test_update_registry_remove_nonexistent_participant() {
         let registry = create_test_registry(2);
-        let nonexistent_participant = summit_types::PrivateKey::from_seed(999).public_key();
+        let nonexistent_participant = crate::PrivateKey::from_seed(999).public_key();
 
         // Try to remove non-existent participant - should log warning but not fail
         registry.update_registry(1, vec![], vec![nonexistent_participant]);
@@ -307,7 +307,7 @@ mod tests {
         assert_eq!(registry.participants(0).unwrap(), original_participants);
 
         // Add participant to create view 3
-        let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
+        let new_participant = crate::PrivateKey::from_seed(100).public_key();
         registry.update_registry(3, vec![new_participant.clone()], vec![]);
 
         // Views 0, 1, 2 should still use original participants (largest view <= requested)
@@ -337,7 +337,7 @@ mod tests {
         }
 
         // Test non-existing participant
-        let non_participant = summit_types::PrivateKey::from_seed(999).public_key();
+        let non_participant = crate::PrivateKey::from_seed(999).public_key();
         assert_eq!(registry.is_participant(0, &non_participant), None);
 
         // Test with view that uses latest available participants
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(registry.peer_set_id(), 0);
 
         // Add participant to create view 1
-        let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
+        let new_participant = crate::PrivateKey::from_seed(100).public_key();
         registry.update_registry(1, vec![new_participant], vec![]);
 
         // Peer set ID should now be 1
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(initial_peers.len(), 2);
 
         // Add participant
-        let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
+        let new_participant = crate::PrivateKey::from_seed(100).public_key();
         registry.update_registry(1, vec![new_participant.clone()], vec![]);
 
         // Peers should now reflect the latest view
@@ -404,8 +404,8 @@ mod tests {
         let registry = create_test_registry(2);
 
         // Add participants to different views
-        let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
-        let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
+        let participant_a = crate::PrivateKey::from_seed(100).public_key();
+        let participant_b = crate::PrivateKey::from_seed(101).public_key();
 
         registry.update_registry(3, vec![participant_a.clone()], vec![]);
         registry.update_registry(7, vec![participant_b.clone()], vec![]);
@@ -431,7 +431,7 @@ mod tests {
         let original_participants = registry.participants(0).unwrap().clone();
 
         // Add participant to view 1
-        let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
+        let new_participant = crate::PrivateKey::from_seed(100).public_key();
         registry.update_registry(1, vec![new_participant.clone()], vec![]);
 
         // Original view should remain unchanged
@@ -517,8 +517,8 @@ mod tests {
         let registry = create_test_registry(2);
 
         // Add participants to sparse views: 0, 3, 7
-        let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
-        let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
+        let participant_a = crate::PrivateKey::from_seed(100).public_key();
+        let participant_b = crate::PrivateKey::from_seed(101).public_key();
 
         registry.update_registry(3, vec![participant_a.clone()], vec![]);
         registry.update_registry(7, vec![participant_b.clone()], vec![]);
@@ -555,7 +555,7 @@ mod tests {
         let registry = create_test_registry(4);
 
         // Add participant at view 2
-        let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
+        let new_participant = crate::PrivateKey::from_seed(100).public_key();
         registry.update_registry(2, vec![new_participant.clone()], vec![]);
 
         // Leader for view 0-1 should use 4-participant set from view 0
@@ -590,7 +590,7 @@ mod tests {
         let original_participants = registry.participants(0).unwrap().clone();
 
         // Add participant at view 3
-        let new_participant = summit_types::PrivateKey::from_seed(100).public_key();
+        let new_participant = crate::PrivateKey::from_seed(100).public_key();
         registry.update_registry(3, vec![new_participant.clone()], vec![]);
 
         // Original participants should be found in all views
@@ -631,8 +631,8 @@ mod tests {
         assert_eq!(registry.peer_set_id(), 0);
 
         // Add participants to different views
-        let participant_a = summit_types::PrivateKey::from_seed(100).public_key();
-        let participant_b = summit_types::PrivateKey::from_seed(101).public_key();
+        let participant_a = crate::PrivateKey::from_seed(100).public_key();
+        let participant_b = crate::PrivateKey::from_seed(101).public_key();
 
         registry.update_registry(5, vec![participant_a], vec![]);
         assert_eq!(registry.peer_set_id(), 5);
@@ -689,8 +689,8 @@ mod tests {
         let original_participants = registry.participants(0).unwrap().clone();
 
         // Create new participants to add and remove existing ones
-        let new_participant_a = summit_types::PrivateKey::from_seed(200).public_key();
-        let new_participant_b = summit_types::PrivateKey::from_seed(201).public_key();
+        let new_participant_a = crate::PrivateKey::from_seed(200).public_key();
+        let new_participant_b = crate::PrivateKey::from_seed(201).public_key();
         let participant_to_remove = original_participants[0].clone();
 
         // Add two participants and remove one in a single operation

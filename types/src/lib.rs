@@ -7,8 +7,10 @@ pub mod engine_client;
 pub mod execution_request;
 pub mod genesis;
 pub mod header;
+pub mod registry;
 pub mod utils;
 pub mod withdrawal;
+
 use alloy_rpc_types_engine::ForkchoiceState;
 pub use block::*;
 pub use engine_client::*;
