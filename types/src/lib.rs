@@ -8,6 +8,8 @@ pub mod execution_request;
 pub mod genesis;
 pub mod header;
 pub mod registry;
+#[cfg(feature = "e2e")]
+pub mod reth;
 pub mod utils;
 pub mod withdrawal;
 
