@@ -318,11 +318,26 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             // Add and remove validators for the next epoch
             if !self.state.added_validators.is_empty() || !self.state.removed_validators.is_empty()
             {
+                // TODO(matthias): we can probably find a way to do this without iterating over the joining validators
+                // Activate validators that staked this epoch.
+                for key in self.state.added_validators.iter() {
+                    let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+                    let account = self
+                        .state
+                        .validator_accounts
+                        .get_mut(&key_bytes)
+                        .expect(
+                            "only validators with accounts are added to the added_validators queue",
+                        );
+                    account.status = ValidatorStatus::Active;
+                }
+                // TODO(matthias): remove keys in removed_validators from state or set inactive?
                 self.registry.update_registry(
                     // We add a delta to the view because the views are initialized with fixed-size
                     // arrays in Simplex. Adding a validator to an ongoing view can cause an
                     // out-of-bounds array access.
                     view + REGISTRY_CHANGE_VIEW_DELTA,
+                    //view,
                     std::mem::take(&mut self.state.added_validators),
                     std::mem::take(&mut self.state.removed_validators),
                 );
@@ -530,7 +545,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             ), // Take last 20 bytes
                             balance: request.amount,
                             pending_withdrawal_amount: 0,
-                            status: ValidatorStatus::Active,
+                            status: ValidatorStatus::Inactive,
                             last_deposit_index: request.index,
                         };
                         self.state
