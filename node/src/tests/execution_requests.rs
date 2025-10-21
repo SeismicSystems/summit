@@ -888,7 +888,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
-        // The deposit request will processed after 10 blocks because `EPOCH_NUM_BLOCKS`
+        // The deposit request will be processed after 10 blocks because `EPOCH_NUM_BLOCKS`
         // is set to 10 in debug mode.
         // The withdrawal request should be added after block 10, otherwise it will be ignored, because
         // the account doesn't exist yet.
@@ -983,16 +983,14 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                 if metric.ends_with("withdrawal_validator_balance") {
                     let balance = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
-                        let creds =
-                            common::parse_metric_substring(metric, "creds").expect("creds missing");
-                        assert_eq!(creds, hex::encode(test_withdrawal.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
-                        assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
-                        processed_requests.insert(metric.to_string());
-                    } else {
-                        println!("{}: {} (failed to parse pubkey)", metric, value);
-                    }
+                    let ed_pubkey_hex = common::parse_metric_substring(metric, "pubkey")
+                        .expect(&format!("{}: {} (failed to parse pubkey)", metric, value));
+                    let creds =
+                        common::parse_metric_substring(metric, "creds").expect("creds missing");
+                    assert_eq!(creds, hex::encode(test_withdrawal.source_address));
+                    assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
+                    assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
+                    processed_requests.insert(metric.to_string());
                 }
                 if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;

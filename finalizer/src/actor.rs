@@ -430,11 +430,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 .get_account(&withdrawal_request.validator_pubkey)
                                 .cloned()
                             {
-                                // Check that the validator is active and hasn't submitted an exit request
+                                // If the validator already submitted an exit request, we skip this withdrawal request
                                 if matches!(
                                     account.status,
-                                    ValidatorStatus::Inactive
-                                        | ValidatorStatus::SubmittedExitRequest
+                                    ValidatorStatus::SubmittedExitRequest
                                 ) {
                                     continue; // Skip this withdrawal request
                                 }
