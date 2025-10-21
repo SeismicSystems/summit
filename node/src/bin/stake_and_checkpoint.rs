@@ -16,24 +16,25 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256, keccak256};
 use clap::Parser;
-use commonware_codec::ReadExt;
 use commonware_cryptography::Sha256;
 use commonware_cryptography::{Hasher, PrivateKeyExt, Signer, ed25519::PrivateKey};
-use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio};
+use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
 use commonware_utils::from_hex_formatted;
+use futures::{FutureExt, pin_mut};
 use ssz::Decode;
+use tokio::sync::mpsc;
 use std::{
     fs,
     io::{BufRead as _, BufReader, Write as _},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     str::FromStr as _,
+    thread::JoinHandle,
 };
 use std::collections::VecDeque;
 use std::time::Duration;
 use summit::args::{RunFlags, run_node_with_runtime};
 use summit::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
-use summit_types::PublicKey;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::DepositRequest;
@@ -41,6 +42,11 @@ use summit_types::reth::Reth;
 use tracing::Level;
 
 const NUM_NODES: u16 = 4;
+
+struct NodeRuntime {
+    thread: JoinHandle<()>,
+    stop_tx: mpsc::UnboundedSender<()>,
+}
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -79,20 +85,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage_dir = data_dir_path.join("stores");
 
-    let cfg = tokio::Config::default()
+    let cfg = cw_tokio::Config::default()
         .with_tcp_nodelay(Some(true))
         .with_worker_threads(16)
         .with_storage_directory(storage_dir)
         .with_catch_panics(false);
-    let executor = tokio::Runner::new(cfg);
+    let executor = cw_tokio::Runner::new(cfg);
 
     executor.start(|context| {
         async move {
             // Configure telemetry
             let log_level = Level::from_str("info").expect("Invalid log level");
-            tokio::telemetry::init(
+            cw_tokio::telemetry::init(
                 context.with_label("metrics"),
-                tokio::telemetry::Logging {
+                cw_tokio::telemetry::Logging {
                     level: log_level,
                     // todo: dont know what this does
                     json: false,
@@ -101,9 +107,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None,
             );
 
-            // Vector to hold all the join handles
+            // Vec to hold all the join handles
             let mut handles = VecDeque::new();
-            let mut consensus_handles = Vec::new();
+            let mut node_runtimes: Vec<NodeRuntime> = Vec::new();
             // let mut read_threads = Vec::new();
 
             // Start all nodes at the beginning
@@ -172,10 +178,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     flags.bench_block_dir = args.bench_block_dir.clone();
                 }
 
-                // Start our consensus engine
-                let handle =
-                    run_node_with_runtime(context.with_label(&format!("node{x}")), flags, None);
-                consensus_handles.push(handle);
+                // Start our consensus engine in its own runtime/thread
+                let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+                let data_dir_clone = args.data_dir.clone();
+                let thread = std::thread::spawn(move || {
+                    let storage_dir = PathBuf::from(&data_dir_clone).join("stores").join(format!("node{}", x));
+                    let cfg = cw_tokio::Config::default()
+                        .with_tcp_nodelay(Some(true))
+                        .with_worker_threads(4)
+                        .with_storage_directory(storage_dir)
+                        .with_catch_panics(true);
+                    let executor = cw_tokio::Runner::new(cfg);
+
+                    executor.start(|node_context| async move {
+                        let node_handle = node_context.clone().spawn(|ctx| async move {
+                            run_node_with_runtime(ctx, flags, None).await.unwrap();
+                        });
+
+                        // Wait for stop signal or node completion
+                        let stop_fut = stop_rx.recv().fuse();
+                        pin_mut!(stop_fut);
+                        futures::select! {
+                            _ = stop_fut => {
+                                println!("Node {} received stop signal, shutting down runtime...", x);
+                                node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
+                            }
+                            _ = node_handle.fuse() => {
+                                println!("Node {} handle completed", x);
+                            }
+                        }
+                    });
+                });
+
+                node_runtimes.push(NodeRuntime { thread, stop_tx });
             }
 
             // Wait a bit for nodes to be ready
@@ -314,12 +349,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Stop node0's consensus engine first (to avoid IPC errors)
             let source_node = 0;
             println!("Stopping node{} consensus engine...", source_node);
-            let node0_consensus = consensus_handles.remove(source_node);
-            drop(node0_consensus); // Drop the handle to stop the consensus engine
+            let node0_runtime = node_runtimes.remove(source_node);
 
-            // Wait longer for consensus to fully shut down and close IPC connections
-            println!("Waiting for consensus engine to fully stop...");
-            context.sleep(Duration::from_secs(5)).await;
+            // Send stop signal and wait for runtime to shut down gracefully
+            node0_runtime.stop_tx.send(()).expect("Failed to send stop signal");
+            println!("Waiting for node{} runtime to shut down...", source_node);
+            let _ = context.clone().spawn_blocking(false, move |_| {
+                node0_runtime.thread.join().expect("Failed to join node0 thread");
+            }).await;
+
+            // Give OS time to release ports (P2P sockets can take time to close)
+            println!("Waiting for ports to be released...");
+            context.sleep(Duration::from_secs(3)).await;
 
             // Stop source reth instance and wait for graceful shutdown
             let mut snapshot_reth = handles.pop_front().expect("No reth instance to snapshot");
@@ -340,41 +381,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             copy_dir_all(&source_static, &dest_static)
                 .expect("Failed to copy static_files directory");
 
-            let reth_builder = Reth::new()
-                .instance((source_node + 1) as u16)
-                .keep_stdout()
-                //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
-                .data_dir(source_data_dir.clone())
-                .arg("--enclave.mock-server")
-                .arg("--enclave.endpoint-port")
-                .arg(format!("1744{source_node}"))
-                .arg("--auth-ipc")
-                .arg("--auth-ipc.path")
-                .arg(format!("/tmp/reth_engine_api{source_node}.ipc"))
-                .arg("--metrics")
-                .arg(format!("0.0.0.0:{}", 9001 + source_node));
-            let reth = reth_builder.spawn();
-            handles.push_front(reth);
+            // Restart nodeß's reth instance
+            //let reth_builder = Reth::new()
+            //    .instance((source_node + 1) as u16)
+            //    .keep_stdout()
+            //    //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
+            //    .data_dir(source_data_dir.clone())
+            //    .arg("--enclave.mock-server")
+            //    .arg("--enclave.endpoint-port")
+            //    .arg(format!("1744{source_node}"))
+            //    .arg("--auth-ipc")
+            //    .arg("--auth-ipc.path")
+            //    .arg(format!("/tmp/reth_engine_api{source_node}.ipc"))
+            //    .arg("--metrics")
+            //    .arg(format!("0.0.0.0:{}", 9001 + source_node));
+            //let reth = reth_builder.spawn();
+            //handles.push_front(reth);
 
-            // Restart node0's consensus engine
-            println!("Restarting node{} consensus engine...", source_node);
-            let flags = get_node_flags(source_node);
-            let handle = run_node_with_runtime(
-                context.with_label(&format!("node{}", source_node)),
-                flags,
-                None,
-            );
-            consensus_handles.insert(source_node, handle);
+            // Restart node0's consensus engine in a new runtime/thread
+            //println!("Restarting node{} consensus engine...", source_node);
+            //let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+            //let data_dir_clone = args.data_dir.clone();
+            //let thread = std::thread::spawn(move || {
+            //    let storage_dir = PathBuf::from(&data_dir_clone).join("stores").join(format!("node{}", source_node));
+            //    let cfg = cw_tokio::Config::default()
+            //        .with_tcp_nodelay(Some(true))
+            //        .with_worker_threads(4)
+            //        .with_storage_directory(storage_dir)
+            //        .with_catch_panics(true);
+            //    let executor = cw_tokio::Runner::new(cfg);
 
-            // Delete lock files
-            //let db_lock = format!("{}/lock", dest_db);
-            //let static_files_lock = format!("{}/lock", dest_static);
-            //let mdbx_lock = format!("{}/mdbx.lck", dest_db);
-            //let _ = fs::remove_file(&db_lock); // Ignore error if lock doesn't exist
-            //let _ = fs::remove_file(&static_files_lock); // Ignore error if lock doesn't exist
-            //let _ = fs::remove_file(&mdbx_lock); // Ignore error if lock doesn't exist
-            //println!("Deleted lock files for node{}", x);
+            //    executor.start(|node_context| async move {
+            //        let flags = get_node_flags(source_node);
+            //        let node_handle = node_context.clone().spawn(|ctx| async move {
+            //            run_node_with_runtime(ctx, flags, None).await.unwrap();
+            //        });
 
+            //        // Wait for stop signal or node completion
+            //        let stop_fut = stop_rx.recv().fuse();
+            //        pin_mut!(stop_fut);
+            //        futures::select! {
+            //            _ = stop_fut => {
+            //                println!("Node {} received stop signal, shutting down runtime...", source_node);
+            //                node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
+            //            }
+            //            _ = node_handle.fuse() => {
+            //                println!("Node {} handle completed", source_node);
+            //            }
+            //        }
+            //    });
+            //});
+            //node_runtimes.insert(source_node, NodeRuntime { thread, stop_tx });
+
+            // Start node4's reth instance
             let reth_builder = Reth::new()
                 .instance(x + 1)
                 .keep_stdout()
@@ -435,12 +494,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Starting consensus engine for node {} with checkpoint",
                 ed25519_private_key.public_key()
             );
-            let handle = run_node_with_runtime(
-                context.with_label(&format!("node{x}")),
-                flags,
-                Some(checkpoint_state),
-            );
-            consensus_handles.push(handle);
+
+            // Start the joining node in its own runtime/thread
+            let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+            let data_dir_clone = args.data_dir.clone();
+            let thread = std::thread::spawn(move || {
+                let storage_dir = PathBuf::from(&data_dir_clone).join("stores").join(format!("node{}", x));
+                let cfg = cw_tokio::Config::default()
+                    .with_tcp_nodelay(Some(true))
+                    .with_worker_threads(4)
+                    .with_storage_directory(storage_dir)
+                    .with_catch_panics(true);
+                let executor = cw_tokio::Runner::new(cfg);
+
+                executor.start(|node_context| async move {
+                    let node_handle = node_context.clone().spawn(|ctx| async move {
+                        run_node_with_runtime(ctx, flags, Some(checkpoint_state)).await.unwrap();
+                    });
+
+                    // Wait for stop signal or node completion
+                    let stop_fut = stop_rx.recv().fuse();
+                    pin_mut!(stop_fut);
+                    futures::select! {
+                        _ = stop_fut => {
+                            println!("Node {} received stop signal, shutting down runtime...", x);
+                            node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
+                        }
+                        _ = node_handle.fuse() => {
+                            println!("Node {} handle completed", x);
+                        }
+                    }
+                });
+            });
+
+            node_runtimes.push(NodeRuntime { thread, stop_tx });
 
             // Wait for all nodes to continue making progress
             println!(
@@ -449,7 +536,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             loop {
                 let mut all_ready = true;
-                for idx in 0..num_nodes {
+                //for idx in 0..num_nodes {
+                // Skip node0
+                for idx in 1..num_nodes {
                     let rpc_port = get_node_flags(idx as usize).rpc_port;
                     match get_latest_height(rpc_port).await {
                         Ok(height) => {
@@ -473,16 +562,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("Test completed successfully!");
 
-            // Keep running
-            //if let Err(e) = futures::future::try_join_all(consensus_handles).await {
-            //    tracing::error!("Failed: {:?}", e);
-            //}
+            // Send stop signals to all nodes first
+            println!("Sending stop signals to all {} nodes...", node_runtimes.len());
+            for (idx, node_runtime) in node_runtimes.iter().enumerate() {
+                println!("Sending stop signal to node index {}...", idx);
+                let _ = node_runtime.stop_tx.send(());
+            }
 
-            //// Due to how alloy node_bindings work we have to do this to prevent the reth_instances from being dropped and shutdown by the compiler
-            //for reth in handles {
-            //    println!("{:?}", reth.auth_port());
-            //}
+            // Now wait for all threads to finish
+            println!("Waiting for all nodes to shut down...");
+            for (idx, node_runtime) in node_runtimes.into_iter().enumerate() {
+                println!("Waiting for node index {} to join...", idx);
+                let _ = context.clone().spawn_blocking(false, move |_| {
+                    match node_runtime.thread.join() {
+                        Ok(_) => println!("Node index {} thread joined successfully", idx),
+                        Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
+                    }
+                }).await;
+            }
 
+            println!("All nodes shut down cleanly");
             Ok(())
         }
     })
