@@ -39,9 +39,11 @@ pub const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000; // in gwei
 pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 5;
 #[cfg(not(debug_assertions))]
 const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 100;
-#[cfg(debug_assertions)]
+#[cfg(feature = "e2e")]
+pub const EPOCH_NUM_BLOCKS: u64 = 50;
+#[cfg(all(debug_assertions, not(feature = "e2e")))]
 pub const EPOCH_NUM_BLOCKS: u64 = 10;
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "e2e")))]
 const EPOCH_NUM_BLOCKS: u64 = 1000;
 const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 //

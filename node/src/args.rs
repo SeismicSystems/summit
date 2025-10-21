@@ -302,7 +302,6 @@ impl Command {
             }
 
             // configure network
-
             let mut p2p_cfg = authenticated::discovery::Config::aggressive(
                 signer.clone(),
                 genesis.namespace.as_bytes(),
@@ -433,7 +432,7 @@ pub fn run_node_with_runtime(
             .collect();
         peers.sort();
 
-        let mut networking_peers = peers.clone();
+        let networking_peers = peers.clone();
 
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
@@ -488,27 +487,10 @@ pub fn run_node_with_runtime(
                 .expect("This node is not on the committee")
         };
 
-        // If our public key is not in the peer list, we add it for the networking
-        if !networking_peers.iter().any(|key| key == &our_public_key) {
-            networking_peers.push(our_public_key.clone());
-            networking_peers.sort();
-        }
-
         if !committee.iter().any(|(key, _)| key == &our_public_key) {
             committee.push((our_public_key, our_ip));
             committee.sort();
         }
-
-        // TODO
-        //let key_bytes =
-        //    from_hex_formatted("ae3a9bc6eb721b7b8a34d23aa0d5b1623e89bc6f092815ea13b92f79a39c7d38")
-        //        .unwrap();
-        //let joining_key =
-        //    PublicKey::read(&mut key_bytes.as_slice()).expect("failed to parse public key");
-        //if !networking_peers.iter().any(|key| key == &joining_key) {
-        //    networking_peers.push(joining_key);
-        //    networking_peers.sort();
-        //}
 
         // configure network
         let mut p2p_cfg = authenticated::discovery::Config::aggressive(
