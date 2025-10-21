@@ -22,7 +22,7 @@ use commonware_storage::{
     translator::TwoCap,
 };
 use commonware_utils::NZU64;
-use futures::{StreamExt as _, channel::mpsc, FutureExt};
+use futures::{FutureExt, StreamExt as _, channel::mpsc};
 use governor::Quota;
 #[cfg(feature = "prom")]
 use metrics::histogram;

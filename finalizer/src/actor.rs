@@ -11,7 +11,7 @@ use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
-use futures::{StreamExt as _, select, FutureExt};
+use futures::{FutureExt, StreamExt as _, select};
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
@@ -327,13 +327,9 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 // Activate validators that staked this epoch.
                 for key in self.state.added_validators.iter() {
                     let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                    let account = self
-                        .state
-                        .validator_accounts
-                        .get_mut(&key_bytes)
-                        .expect(
-                            "only validators with accounts are added to the added_validators queue",
-                        );
+                    let account = self.state.validator_accounts.get_mut(&key_bytes).expect(
+                        "only validators with accounts are added to the added_validators queue",
+                    );
                     account.status = ValidatorStatus::Active;
                 }
                 // TODO(matthias): remove keys in removed_validators from state or set inactive?

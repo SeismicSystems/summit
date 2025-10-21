@@ -22,7 +22,8 @@ use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio a
 use commonware_utils::from_hex_formatted;
 use futures::{FutureExt, pin_mut};
 use ssz::Decode;
-use tokio::sync::mpsc;
+use std::collections::VecDeque;
+use std::time::Duration;
 use std::{
     fs,
     io::{BufRead as _, BufReader, Write as _},
@@ -31,14 +32,13 @@ use std::{
     str::FromStr as _,
     thread::JoinHandle,
 };
-use std::collections::VecDeque;
-use std::time::Duration;
 use summit::args::{RunFlags, run_node_with_runtime};
 use summit::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::DepositRequest;
 use summit_types::reth::Reth;
+use tokio::sync::mpsc;
 use tracing::Level;
 
 const NUM_NODES: u16 = 4;
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create log directory if specified
     if let Some(ref log_dir) = args.log_dir {
-        fs::remove_dir_all(&log_dir)?;
+        fs::remove_dir_all(log_dir)?;
         fs::create_dir_all(log_dir)?;
     }
 

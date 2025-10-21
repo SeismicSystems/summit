@@ -52,7 +52,10 @@ fn extract_value<'a>(key: &str, line: &'a str) -> Option<&'a str> {
     // Try to find the key with '='
     if let Some(pos) = line.find(key_equal.as_ref()) {
         let start = pos + key_equal.len();
-        let end = line[start..].find(' ').map(|i| start + i).unwrap_or(line.len());
+        let end = line[start..]
+            .find(' ')
+            .map(|i| start + i)
+            .unwrap_or(line.len());
         if start <= line.len() && end <= line.len() {
             return Some(line[start..end].trim());
         }
@@ -61,7 +64,10 @@ fn extract_value<'a>(key: &str, line: &'a str) -> Option<&'a str> {
     // If not found, try to find the key with ': '
     if let Some(pos) = line.find(key_colon.as_ref()) {
         let start = pos + key_colon.len();
-        let end = line[start..].find(',').map(|i| start + i).unwrap_or(line.len());
+        let end = line[start..]
+            .find(',')
+            .map(|i| start + i)
+            .unwrap_or(line.len());
         if start <= line.len() && end <= line.len() {
             return Some(line[start..end].trim());
         }
@@ -166,7 +172,9 @@ impl RethInstance {
 
     /// Returns the IPC endpoint of this instance.
     pub fn ipc_endpoint(&self) -> String {
-        self.ipc.clone().map_or_else(|| "reth.ipc".to_string(), |ipc| ipc.display().to_string())
+        self.ipc
+            .clone()
+            .map_or_else(|| "reth.ipc".to_string(), |ipc| ipc.display().to_string())
     }
 
     /// Returns the HTTP endpoint url of this instance.
@@ -215,7 +223,9 @@ impl Drop for RethInstance {
     fn drop(&mut self) {
         //self.pid.kill().expect("could not kill reth");
         //signal::kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
-        unsafe { libc::kill(self.pid.id() as i32, libc::SIGTERM); }
+        unsafe {
+            libc::kill(self.pid.id() as i32, libc::SIGTERM);
+        }
     }
 }
 
@@ -567,7 +577,9 @@ impl Reth {
             }
 
             let mut line = String::with_capacity(120);
-            reader.read_line(&mut line).map_err(NodeError::ReadLineError)?;
+            reader
+                .read_line(&mut line)
+                .map_err(NodeError::ReadLineError)?;
 
             if line.contains("RPC HTTP server started") {
                 if let Some(addr) = extract_endpoint("url=", &line) {

@@ -7,10 +7,9 @@ use commonware_macros::select;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_utils::SystemTimeExt;
 use futures::{
-    StreamExt as _,
+    FutureExt, StreamExt as _,
     channel::{mpsc, oneshot},
     future::{self, Either, try_join},
-    FutureExt,
 };
 use rand::Rng;
 

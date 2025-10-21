@@ -1,8 +1,8 @@
 pub mod routes;
-use std::sync::Mutex;
-use commonware_runtime::signal::Signal;
 use crate::routes::RpcRoutes;
+use commonware_runtime::signal::Signal;
 use futures::channel::oneshot;
+use std::sync::Mutex;
 use summit_finalizer::FinalizerMailbox;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
