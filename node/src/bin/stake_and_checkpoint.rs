@@ -14,9 +14,9 @@ use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
-use alloy_node_bindings::Reth;
 use alloy_primitives::{Address, U256, keccak256};
 use clap::Parser;
+use commonware_codec::ReadExt;
 use commonware_cryptography::Sha256;
 use commonware_cryptography::{Hasher, PrivateKeyExt, Signer, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio};
@@ -29,11 +29,15 @@ use std::{
     path::PathBuf,
     str::FromStr as _,
 };
+use std::collections::VecDeque;
+use std::time::Duration;
 use summit::args::{RunFlags, run_node_with_runtime};
 use summit::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
+use summit_types::PublicKey;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::DepositRequest;
+use summit_types::reth::Reth;
 use tracing::Level;
 
 const NUM_NODES: u16 = 4;
@@ -69,6 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create log directory if specified
     if let Some(ref log_dir) = args.log_dir {
+        fs::remove_dir_all(&log_dir)?;
         fs::create_dir_all(log_dir)?;
     }
 
@@ -97,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
 
             // Vector to hold all the join handles
-            let mut handles = Vec::new();
+            let mut handles = VecDeque::new();
             let mut consensus_handles = Vec::new();
             // let mut read_threads = Vec::new();
 
@@ -157,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 println!("Node {} rpc address: {}", x, reth.http_port());
 
-                handles.push(reth);
+                handles.push_back(reth);
 
                 #[allow(unused_mut)]
                 let mut flags = get_node_flags(x.into());
@@ -174,7 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Wait a bit for nodes to be ready
-            context.sleep(std::time::Duration::from_secs(5)).await;
+            context.sleep(Duration::from_secs(5)).await;
 
             // Send a deposit transaction to node0
             println!("Sending deposit transaction to node 0");
@@ -294,7 +299,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("Error retrieving checkpoint: {}", e);
                     }
                 }
-                context.sleep(std::time::Duration::from_secs(1)).await;
+                context.sleep(Duration::from_secs(1)).await;
             };
 
             // Start the joining Reth node
@@ -305,7 +310,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
             // Copy db and static_files from node0 to initialize the joining node
+
+            // Stop node0's consensus engine first (to avoid IPC errors)
             let source_node = 0;
+            println!("Stopping node{} consensus engine...", source_node);
+            let node0_consensus = consensus_handles.remove(source_node);
+            drop(node0_consensus); // Drop the handle to stop the consensus engine
+
+            // Wait longer for consensus to fully shut down and close IPC connections
+            println!("Waiting for consensus engine to fully stop...");
+            context.sleep(Duration::from_secs(5)).await;
+
+            // Stop source reth instance and wait for graceful shutdown
+            let mut snapshot_reth = handles.pop_front().expect("No reth instance to snapshot");
+            println!("Sending SIGTERM to node{} Reth and waiting for shutdown...", source_node);
+            snapshot_reth.terminate_and_wait().expect("Failed to terminate reth");
+            println!("Node{} shut down successfully", source_node);
+
             let source_data_dir = format!("{}/node{}/data/reth_db", args.data_dir, source_node);
 
             println!("Copying db from node{} to node{}", source_node, x);
@@ -319,14 +340,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             copy_dir_all(&source_static, &dest_static)
                 .expect("Failed to copy static_files directory");
 
+            let reth_builder = Reth::new()
+                .instance((source_node + 1) as u16)
+                .keep_stdout()
+                //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
+                .data_dir(source_data_dir.clone())
+                .arg("--enclave.mock-server")
+                .arg("--enclave.endpoint-port")
+                .arg(format!("1744{source_node}"))
+                .arg("--auth-ipc")
+                .arg("--auth-ipc.path")
+                .arg(format!("/tmp/reth_engine_api{source_node}.ipc"))
+                .arg("--metrics")
+                .arg(format!("0.0.0.0:{}", 9001 + source_node));
+            let reth = reth_builder.spawn();
+            handles.push_front(reth);
+
+            // Restart node0's consensus engine
+            println!("Restarting node{} consensus engine...", source_node);
+            let flags = get_node_flags(source_node);
+            let handle = run_node_with_runtime(
+                context.with_label(&format!("node{}", source_node)),
+                flags,
+                None,
+            );
+            consensus_handles.insert(source_node, handle);
+
             // Delete lock files
-            let db_lock = format!("{}/lock", dest_db);
-            let static_files_lock = format!("{}/lock", dest_static);
-            let mdbx_lock = format!("{}/mdbx.lck", dest_db);
-            let _ = fs::remove_file(&db_lock); // Ignore error if lock doesn't exist
-            let _ = fs::remove_file(&static_files_lock); // Ignore error if lock doesn't exist
-            let _ = fs::remove_file(&mdbx_lock); // Ignore error if lock doesn't exist
-            println!("Deleted lock files for node{}", x);
+            //let db_lock = format!("{}/lock", dest_db);
+            //let static_files_lock = format!("{}/lock", dest_static);
+            //let mdbx_lock = format!("{}/mdbx.lck", dest_db);
+            //let _ = fs::remove_file(&db_lock); // Ignore error if lock doesn't exist
+            //let _ = fs::remove_file(&static_files_lock); // Ignore error if lock doesn't exist
+            //let _ = fs::remove_file(&mdbx_lock); // Ignore error if lock doesn't exist
+            //println!("Deleted lock files for node{}", x);
 
             let reth_builder = Reth::new()
                 .instance(x + 1)
@@ -367,7 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             println!("Node {} rpc address: {}", x, reth.http_port());
-            handles.push(reth);
+            handles.push_back(reth);
 
             // Start the 4th consensus node with checkpoint
             #[allow(unused_mut)]
@@ -421,7 +468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("All nodes have reached target height!");
                     break;
                 }
-                context.sleep(std::time::Duration::from_secs(2)).await;
+                context.sleep(Duration::from_secs(2)).await;
             }
 
             println!("Test completed successfully!");
