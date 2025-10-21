@@ -18,6 +18,7 @@ summit-types = { workspace = true }
 commonware-cryptography = { workspace = true }
 commonware-utils = { workspace = true }
 commonware-codec = { workspace = true }
+commonware-runtime = { workspace = true }
 ethereum_ssz.workspace = true
 dirs = "5.0.1"
 serde = { workspace = true }

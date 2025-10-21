@@ -14,6 +14,7 @@ path = "src/bin/genesis.rs"
 [[bin]]
 name = "stake-and-checkpoint"
 path = "src/bin/stake_and_checkpoint.rs"
+required-features = ["e2e"]
 
 [[bin]]
 name = "block-fetcher"
@@ -122,3 +123,4 @@ tokio-console = ["console-subscriber"]
 jemalloc = ["dep:tikv-jemalloc-ctl"]
 base-bench = ["summit-application/base-bench", "summit-types/base-bench"]
 bench = ["summit-application/bench", "summit-types/bench"]
+e2e = []

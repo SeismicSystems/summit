@@ -10,6 +10,7 @@ use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
     future::{self, Either, try_join},
+    FutureExt,
 };
 use rand::Rng;
 
@@ -87,105 +88,117 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
     pub async fn run(mut self, mut syncer: SyncerMailbox, mut finalizer: FinalizerMailbox) {
         let rand_id: u8 = rand::random();
-        while let Some(message) = self.mailbox.next().await {
-            match message {
-                Message::Genesis { response } => {
-                    info!("Handling message Genesis");
-                    let _ = response.send(self.genesis_hash.into());
-                }
-                Message::Propose {
-                    view,
-                    parent,
-                    mut response,
-                } => {
-                    info!("{rand_id} Handling message Propose view: {}", view);
-
-                    let built = self.built_block.clone();
-                    select! {
-                            res = self.handle_proposal(parent, &mut syncer,&mut finalizer, view) => {
-                                match res {
-                                    Ok(block) => {
-                                        // store block
-                                        let digest = block.digest();
-                                        {
-                                            let mut built = built.lock().expect("locked poisoned");
-                                            *built = Some(block);
-                                        }
-
-                                        // send digest to consensus
-                                        let _ = response.send(digest);
-                                    },
-                                    Err(e) => warn!("Failed to create a block for height {view}: {e}")
-                                }
-                            },
-                            _ = oneshot_closed_future(&mut response) => {
-                                // simplex dropped receiver
-                                warn!(view, "proposal aborted");
-                            }
-                    }
-                }
-                Message::Broadcast { payload } => {
-                    info!("{rand_id} Handling message Broadcast");
-                    let Some(built_block) =
-                        self.built_block.lock().expect("poisoned mutex").clone()
-                    else {
-                        warn!("Asked to broadcast a block with no built block");
-                        continue;
+        let mut signal = self.context.stopped().fuse();
+        loop {
+            select! {
+                message = self.mailbox.next() => {
+                    let Some(message) = message else {
+                        break;
                     };
-                    // todo(dalton): This should be a hard assert but for testing im just going to log
-                    if payload != built_block.digest() {
-                        error!(
-                            "The payload we were asked to broadcast is different then our built block"
-                        );
-                    }
+                    match message {
+                        Message::Genesis { response } => {
+                            info!("Handling message Genesis");
+                            let _ = response.send(self.genesis_hash.into());
+                        }
+                        Message::Propose {
+                            view,
+                            parent,
+                            mut response,
+                        } => {
+                            info!("{rand_id} Handling message Propose view: {}", view);
 
-                    syncer.broadcast(built_block).await;
-                }
-
-                Message::Verify {
-                    view,
-                    parent,
-                    payload,
-                    mut response,
-                } => {
-                    info!("{rand_id} Handling message Verify view: {}", view);
-                    // Get the parent block
-                    let parent_request = if parent.1 == self.genesis_hash.into() {
-                        Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
-                    } else {
-                        Either::Right(syncer.get(Some(parent.0), parent.1).await)
-                    };
-
-                    let block_request = syncer.get(None, payload).await;
-
-                    // Wait for the blocks to be available or the request to be cancelled in a separate task (to
-                    // continue processing other messages)
-                    self.context.with_label("verify").spawn({
-                        let mut syncer = syncer.clone();
-                        move |_| async move {
-                            let requester = try_join(parent_request, block_request);
+                            let built = self.built_block.clone();
                             select! {
-                                result = requester => {
-                                    let (parent, block) = result.unwrap();
+                                    res = self.handle_proposal(parent, &mut syncer,&mut finalizer, view) => {
+                                        match res {
+                                            Ok(block) => {
+                                                // store block
+                                                let digest = block.digest();
+                                                {
+                                                    let mut built = built.lock().expect("locked poisoned");
+                                                    *built = Some(block);
+                                                }
 
-                                    if handle_verify(&block, parent) {
-
-                                        // persist valid block
-                                        syncer.store_verified(view, block).await;
-
-                                        // respond
-                                        let _ = response.send(true);
-                                    } else {
-                                        info!("Unsucceful vote");
-                                        let _ = response.send(false);
+                                                // send digest to consensus
+                                                let _ = response.send(digest);
+                                            },
+                                            Err(e) => warn!("Failed to create a block for height {view}: {e}")
+                                        }
+                                    },
+                                    _ = oneshot_closed_future(&mut response) => {
+                                        // simplex dropped receiver
+                                        warn!(view, "proposal aborted");
                                     }
-                                },
-                                _ = oneshot_closed_future(&mut response) => {
-                                    warn!(view, "verify aborted");
-                                }
                             }
                         }
-                    });
+                        Message::Broadcast { payload } => {
+                            info!("{rand_id} Handling message Broadcast");
+                            let Some(built_block) =
+                                self.built_block.lock().expect("poisoned mutex").clone()
+                            else {
+                                warn!("Asked to broadcast a block with no built block");
+                                continue;
+                            };
+                            // todo(dalton): This should be a hard assert but for testing im just going to log
+                            if payload != built_block.digest() {
+                                error!(
+                                    "The payload we were asked to broadcast is different then our built block"
+                                );
+                            }
+
+                            syncer.broadcast(built_block).await;
+                        }
+
+                        Message::Verify {
+                            view,
+                            parent,
+                            payload,
+                            mut response,
+                        } => {
+                            info!("{rand_id} Handling message Verify view: {}", view);
+                            // Get the parent block
+                            let parent_request = if parent.1 == self.genesis_hash.into() {
+                                Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
+                            } else {
+                                Either::Right(syncer.get(Some(parent.0), parent.1).await)
+                            };
+
+                            let block_request = syncer.get(None, payload).await;
+
+                            // Wait for the blocks to be available or the request to be cancelled in a separate task (to
+                            // continue processing other messages)
+                            self.context.with_label("verify").spawn({
+                                let mut syncer = syncer.clone();
+                                move |_| async move {
+                                    let requester = try_join(parent_request, block_request);
+                                    select! {
+                                        result = requester => {
+                                            let (parent, block) = result.unwrap();
+
+                                            if handle_verify(&block, parent) {
+
+                                                // persist valid block
+                                                syncer.store_verified(view, block).await;
+
+                                                // respond
+                                                let _ = response.send(true);
+                                            } else {
+                                                info!("Unsucceful vote");
+                                                let _ = response.send(false);
+                                            }
+                                        },
+                                        _ = oneshot_closed_future(&mut response) => {
+                                            warn!(view, "verify aborted");
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                },
+                sig = &mut signal => {
+                    info!("application terminated: {}", sig.unwrap());
+                    break;
                 }
             }
         }

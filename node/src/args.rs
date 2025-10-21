@@ -305,7 +305,8 @@ impl Command {
                     .parse::<SocketAddr>()
                     .unwrap();
                 let config = MetricServerConfig::new(listen_addr, hooks);
-                MetricServer::new(config).serve().await.unwrap();
+                let stop_signal = context.stopped();
+                MetricServer::new(config).serve(stop_signal).await.unwrap();
             }
 
             // configure network
@@ -358,8 +359,9 @@ impl Command {
             // Start RPC server
             let key_path = flags.key_path.clone();
             let rpc_port = flags.rpc_port;
+            let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                if let Err(e) = start_rpc_server(finalizer_mailbox, key_path, rpc_port).await {
+                if let Err(e) = start_rpc_server(finalizer_mailbox, key_path, rpc_port, stop_signal).await {
                     error!("RPC server failed: {}", e);
                 }
             });
@@ -416,8 +418,9 @@ pub fn run_node_with_runtime(
         let initial_state = get_initial_state(&genesis, &committee, checkpoint);
         let mut peers: Vec<PublicKey> = initial_state
             .validator_accounts
-            .keys()
-            .map(|v| {
+            .iter()
+            .filter(|(_, acc)| !(acc.status == ValidatorStatus::Inactive))
+            .map(|(v, _)| {
                 let mut key_bytes = &v[..];
                 PublicKey::read(&mut key_bytes).expect("failed to parse public key")
             })
@@ -499,6 +502,21 @@ pub fn run_node_with_runtime(
             committee.sort();
         }
 
+        // TODO
+        let key_bytes =
+            from_hex_formatted("ae3a9bc6eb721b7b8a34d23aa0d5b1623e89bc6f092815ea13b92f79a39c7d38")
+                .unwrap();
+        let joining_key =
+            PublicKey::read(&mut key_bytes.as_slice()).expect("failed to parse public key");
+        //if !committee.iter().any(|(key, _)| key == &joining_key) {
+        //    committee.push((joining_key, "127.0.0.1:26640".parse().unwrap()));
+        //    committee.sort();
+        //}
+        if !networking_peers.iter().any(|key| key == &joining_key) {
+            networking_peers.push(joining_key);
+            networking_peers.sort();
+        }
+
         // configure network
         let mut p2p_cfg = authenticated::discovery::Config::aggressive(
             config.signer.clone(),
@@ -553,17 +571,19 @@ pub fn run_node_with_runtime(
             let listen_addr = format!("0.0.0.0:{}", flags.prom_port)
                 .parse::<SocketAddr>()
                 .unwrap();
+            let stop_signal = context.stopped();
             let config = MetricServerConfig::new(listen_addr, hooks);
-            MetricServer::new(config).serve().await.unwrap();
+            MetricServer::new(config).serve(stop_signal).await.unwrap();
         }
 
         // Start RPC server
         let key_path = flags.key_path.clone();
         let rpc_port = flags.rpc_port;
+        let stop_signal = context.stopped();
         let rpc_handle = context
             .with_label("rpc_genesis")
             .spawn(move |_context| async move {
-                if let Err(e) = start_rpc_server(finalizer_mailbox, key_path, rpc_port).await {
+                if let Err(e) = start_rpc_server(finalizer_mailbox, key_path, rpc_port, stop_signal).await {
                     error!("RPC server failed: {}", e);
                 }
             });

@@ -11,7 +11,7 @@ use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
-use futures::{StreamExt as _, select};
+use futures::{StreamExt as _, select, FutureExt};
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
@@ -129,6 +129,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             .spawn(|_| block_fetcher.run());
 
         let mut last_committed_timestamp: Option<Instant> = None;
+        let mut signal = self.context.stopped().fuse();
         loop {
             select! {
                 msg = rx_finalize_blocks.next() => {
@@ -158,6 +159,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             self.handle_consensus_state_query(request, response).await;
                         },
                     }
+                }
+                sig = &mut signal => {
+                    info!("finalizer terminated: {}", sig.unwrap());
+                    break;
                 }
             }
         }

@@ -22,14 +22,14 @@ use commonware_storage::{
     translator::TwoCap,
 };
 use commonware_utils::NZU64;
-use futures::{StreamExt as _, channel::mpsc};
+use futures::{StreamExt as _, channel::mpsc, FutureExt};
 use governor::Quota;
 #[cfg(feature = "prom")]
 use metrics::histogram;
 use rand::Rng;
 use summit_types::registry::Registry;
 use summit_types::{Block, Digest, Finalized, Notarized, PublicKey, Signature};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
 const IMMUTABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(262_144);
@@ -217,6 +217,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
         let mut requested_blocks = BTreeSet::new();
         let mut last_view_processed: u64 = 0;
         let mut outstanding_notarize = BTreeSet::new();
+        let mut signal = self.context.stopped().fuse();
         loop {
             // Cancel useless requests
             let mut to_cancel = Vec::new();
@@ -742,6 +743,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                             }
                         },
                     }
+                },
+                sig = &mut signal => {
+                    info!("syncer terminated: {}", sig.unwrap());
+                    break;
                 }
             }
         }

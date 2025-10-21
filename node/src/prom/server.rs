@@ -2,7 +2,9 @@ use crate::prom::{
     hooks::{Hook, Hooks},
     recorder::install_prometheus_recorder,
 };
+use commonware_runtime::signal::Signal;
 use eyre::WrapErr;
+use futures::FutureExt;
 use http::{HeaderValue, Response, header::CONTENT_TYPE};
 use metrics::describe_gauge;
 use metrics_process::Collector;
@@ -36,13 +38,14 @@ impl MetricServer {
     }
 
     /// Spawns the metrics server
-    pub async fn serve(&self) -> eyre::Result<()> {
+    pub async fn serve(&self, stop_signal: Signal) -> eyre::Result<()> {
         let MetricServerConfig { listen_addr, hooks } = &self.config;
 
         let hooks = hooks.clone();
         self.start_endpoint(
             *listen_addr,
             Arc::new(move || hooks.iter().for_each(|hook| hook())),
+            stop_signal,
         )
         .await
         .wrap_err("Could not start Prometheus endpoint")?;
@@ -61,36 +64,45 @@ impl MetricServer {
         &self,
         listen_addr: SocketAddr,
         hook: Arc<F>,
+        stop_signal: Signal,
     ) -> eyre::Result<()> {
         let listener = tokio::net::TcpListener::bind(listen_addr)
             .await
             .wrap_err("Could not bind to address")?;
 
-        //task_executor.spawn_with_graceful_shutdown_signal(|mut signal| async move {
         tokio::spawn(async move {
+            let mut stop_signal = stop_signal.fuse();
             loop {
-                let Ok((stream, _remote_addr)) = listener.accept().await else {
-                    tracing::error!("failed to accept connection");
-                    continue;
-                };
+                tokio::select! {
+                    result = listener.accept() => {
+                        let Ok((stream, _remote_addr)) = result else {
+                            tracing::error!("failed to accept connection");
+                            continue;
+                        };
 
-                let handle = install_prometheus_recorder();
-                let hook = hook.clone();
-                let service = tower::service_fn(move |_| {
-                    (hook)();
-                    let metrics = handle.handle().render();
-                    let mut response = Response::new(metrics);
-                    response
-                        .headers_mut()
-                        .insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-                    async move { Ok::<_, Infallible>(response) }
-                });
+                        let handle = install_prometheus_recorder();
+                        let hook = hook.clone();
+                        let service = tower::service_fn(move |_| {
+                            (hook)();
+                            let metrics = handle.handle().render();
+                            let mut response = Response::new(metrics);
+                            response
+                                .headers_mut()
+                                .insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+                            async move { Ok::<_, Infallible>(response) }
+                        });
 
-                tokio::task::spawn(async move {
-                    let _ = jsonrpsee_server::serve(stream, service)
-                        .await
-                        .inspect_err(|error| tracing::debug!(%error, "failed to serve request"));
-                });
+                        tokio::task::spawn(async move {
+                            let _ = jsonrpsee_server::serve(stream, service)
+                                .await
+                                .inspect_err(|error| tracing::debug!(%error, "failed to serve request"));
+                        });
+                    }
+                    sig = &mut stop_signal => {
+                        tracing::info!("Metrics server shutting down: {}", sig.unwrap());
+                        break;
+                    }
+                }
             }
         });
 
