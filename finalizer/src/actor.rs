@@ -431,10 +431,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                 .cloned()
                             {
                                 // If the validator already submitted an exit request, we skip this withdrawal request
-                                if matches!(
-                                    account.status,
-                                    ValidatorStatus::SubmittedExitRequest
-                                ) {
+                                if matches!(account.status, ValidatorStatus::SubmittedExitRequest) {
                                     continue; // Skip this withdrawal request
                                 }
 
