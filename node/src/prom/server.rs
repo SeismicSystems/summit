@@ -207,6 +207,7 @@ const fn describe_io_stats() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commonware_runtime::signal::Stopper;
     use reqwest::Client;
     use socket2::{Domain, Socket, Type};
     use std::net::{SocketAddr, TcpListener};
@@ -228,7 +229,10 @@ mod tests {
         let listen_addr = get_random_available_addr();
         let config = MetricServerConfig::new(listen_addr, hooks);
 
-        MetricServer::new(config).serve().await.unwrap();
+        let stopper = Stopper::new();
+        let signal = stopper.stopped();
+
+        MetricServer::new(config).serve(signal).await.unwrap();
 
         // Send request to the metrics endpoint
         let url = format!("http://{listen_addr}");
