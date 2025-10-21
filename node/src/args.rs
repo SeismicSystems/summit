@@ -269,6 +269,12 @@ impl Command {
                     .expect("This node is not on the committee")
             };
 
+            let our_public_key = signer.public_key();
+            if !committee.iter().any(|(key, _)| key == &our_public_key) {
+                committee.push((our_public_key, our_ip));
+                committee.sort();
+            }
+
             // Configure telemetry
             let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
             tokio::telemetry::init(
@@ -482,10 +488,11 @@ pub fn run_node_with_runtime(
                 .expect("This node is not on the committee")
         };
 
-        //if !committee.iter().any(|(key, _)| key == &our_public_key) {
-        //    committee.push((our_public_key, our_ip));
-        //    committee.sort();
-        //}
+        let our_public_key = signer.public_key();
+        if !committee.iter().any(|(key, _)| key == &our_public_key) {
+            committee.push((our_public_key, our_ip));
+            committee.sort();
+        }
 
         // configure network
         let mut p2p_cfg = authenticated::discovery::Config::aggressive(
