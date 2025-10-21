@@ -7,6 +7,7 @@ use alloy_primitives::hex;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_cryptography::{Hasher, Sha256, Verifier as _};
+use commonware_resolver::p2p::Coordinator;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::{NZU64, NZUsize, hex};
@@ -25,6 +26,7 @@ use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
 use summit_types::execution_request::ExecutionRequest;
+use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
@@ -37,6 +39,7 @@ const REGISTRY_CHANGE_VIEW_DELTA: u64 = 5;
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
+    O: NetworkOracle<PublicKey>,
 > {
     mailbox: mpsc::Receiver<FinalizerMessage>,
     pending_height_notifys: BTreeMap<u64, Vec<oneshot::Sender<()>>>,
@@ -52,12 +55,16 @@ pub struct Finalizer<
     validator_minimum_stake: u64,     // in gwei
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
+    oracle: O,
 }
 
-impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
-    Finalizer<R, C>
+impl<
+    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    C: EngineClient,
+    O: NetworkOracle<PublicKey>,
+> Finalizer<R, C, O>
 {
-    pub async fn new(context: R, cfg: FinalizerConfig<C>) -> (Self, FinalizerMailbox) {
+    pub async fn new(context: R, cfg: FinalizerConfig<C, O>) -> (Self, FinalizerMailbox) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
         let state_cfg = StateConfig {
             log_journal_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
@@ -87,6 +94,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 context,
                 mailbox: rx,
                 engine_client: cfg.engine_client,
+                oracle: cfg.oracle,
                 pending_height_notifys: BTreeMap::new(),
                 registry: cfg.registry,
                 epoch_num_of_blocks: cfg.epoch_num_of_blocks,
@@ -332,6 +340,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     );
                     account.status = ValidatorStatus::Active;
                 }
+
                 // TODO(matthias): remove keys in removed_validators from state or set inactive?
                 self.registry.update_registry(
                     // We add a delta to the view because the views are initialized with fixed-size
@@ -342,6 +351,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                     std::mem::take(&mut self.state.added_validators),
                     std::mem::take(&mut self.state.removed_validators),
                 );
+                let participants = self.registry.peers().clone();
+                // TODO(matthias): should we wait until view `view + REGISTRY_CHANGE_VIEW_DELTA`
+                // to update the oracle?
+                self.oracle.register(view, participants).await;
             }
 
             #[cfg(feature = "prom")]

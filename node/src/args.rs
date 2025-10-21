@@ -30,11 +30,13 @@ use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 #[cfg(feature = "bench")]
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
+use crate::config::MAILBOX_SIZE;
 use crate::engine::VALIDATOR_MINIMUM_STAKE;
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
+use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
 use tracing::{Level, error};
 
@@ -249,16 +251,6 @@ impl Command {
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-            let config = EngineConfig::get_engine_config(
-                engine_client,
-                signer,
-                peers.clone(),
-                flags.db_prefix.clone(),
-                &genesis,
-                initial_state,
-            )
-            .unwrap();
-
             let our_ip = if let Some(ref ip_str) = flags.ip {
                 ip_str
                     .parse::<SocketAddr>()
@@ -267,7 +259,7 @@ impl Command {
                 committee
                     .iter()
                     .find_map(|v| {
-                        if v.0 == config.signer.public_key() {
+                        if v.0 == signer.public_key() {
                             Some(v.1)
                         } else {
                             None
@@ -312,14 +304,14 @@ impl Command {
             // configure network
 
             let mut p2p_cfg = authenticated::discovery::Config::aggressive(
-                config.signer.clone(),
+                signer.clone(),
                 genesis.namespace.as_bytes(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
                 our_ip,
                 committee.clone(),
                 genesis.max_message_size_bytes as usize,
             );
-            p2p_cfg.mailbox_size = config.mailbox_size;
+            p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
             // Start p2p
             let (mut network, mut oracle) =
@@ -329,6 +321,18 @@ impl Command {
             oracle
                 .register(0, committee.into_iter().map(|(key, _)| key).collect())
                 .await;
+
+            let oracle = DiscoveryOracle::new(oracle);
+            let config = EngineConfig::get_engine_config(
+                engine_client,
+                oracle,
+                signer,
+                peers.clone(),
+                flags.db_prefix.clone(),
+                &genesis,
+                initial_state,
+            )
+            .unwrap();
 
             // Register pending channel
             let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
@@ -466,15 +470,6 @@ pub fn run_node_with_runtime(
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
         let our_public_key = signer.public_key();
-        let config = EngineConfig::get_engine_config(
-            engine_client,
-            signer,
-            peers,
-            flags.db_prefix.clone(),
-            &genesis,
-            initial_state,
-        )
-        .unwrap();
 
         let our_ip = if let Some(ref ip_str) = flags.ip {
             ip_str
@@ -484,7 +479,7 @@ pub fn run_node_with_runtime(
             committee
                 .iter()
                 .find_map(|v| {
-                    if v.0 == config.signer.public_key() {
+                    if v.0 == signer.public_key() {
                         Some(v.1)
                     } else {
                         None
@@ -517,14 +512,14 @@ pub fn run_node_with_runtime(
 
         // configure network
         let mut p2p_cfg = authenticated::discovery::Config::aggressive(
-            config.signer.clone(),
+            signer.clone(),
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
             our_ip,
             committee,
             genesis.max_message_size_bytes as usize,
         );
-        p2p_cfg.mailbox_size = config.mailbox_size;
+        p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
         // Start p2p
         let (mut network, mut oracle) =
@@ -532,6 +527,19 @@ pub fn run_node_with_runtime(
 
         // Provide authorized peers
         oracle.register(0, networking_peers).await;
+
+        let oracle = DiscoveryOracle::new(oracle);
+
+        let config = EngineConfig::get_engine_config(
+            engine_client,
+            oracle,
+            signer,
+            peers,
+            flags.db_prefix.clone(),
+            &genesis,
+            initial_state,
+        )
+        .unwrap();
 
         // Register pending channel
         let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());

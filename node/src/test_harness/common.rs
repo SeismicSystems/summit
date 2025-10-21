@@ -22,6 +22,7 @@ use std::{
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
+use summit_types::network_oracle::NetworkOracle;
 use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
@@ -182,6 +183,7 @@ pub fn run_until_height(
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -460,17 +462,19 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 ///
 /// # Returns
 /// * `EngineConfig<C>` - A fully configured engine config with sensible defaults for testing
-pub fn get_default_engine_config<C: EngineClient>(
+pub fn get_default_engine_config<C: EngineClient, O: NetworkOracle<PublicKey>>(
     engine_client: C,
+    oracle: O,
     partition_prefix: String,
     genesis_hash: [u8; 32],
     namespace: String,
     signer: PrivateKey,
     participants: Vec<PublicKey>,
     initial_state: ConsensusState,
-) -> EngineConfig<C> {
+) -> EngineConfig<C, O> {
     EngineConfig {
         engine_client,
+        oracle,
         partition_prefix,
         genesis_hash,
         namespace,
@@ -491,4 +495,16 @@ pub fn get_default_engine_config<C: EngineClient>(
         fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(10).unwrap()),
         initial_state,
     }
+}
+
+pub struct DummyOracle {}
+
+impl Default for DummyOracle {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl<C: commonware_cryptography::PublicKey> NetworkOracle<C> for DummyOracle {
+    async fn register(&mut self, _index: u64, _peers: Vec<C>) {}
 }

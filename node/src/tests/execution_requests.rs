@@ -1,6 +1,6 @@
 use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
-use crate::test_harness::common::{get_default_engine_config, get_initial_state};
+use crate::test_harness::common::{DummyOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use alloy_primitives::{Address, hex};
 use commonware_cryptography::{PrivateKeyExt, Signer};
@@ -103,6 +103,7 @@ fn test_deposit_request_single() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -291,6 +292,7 @@ fn test_deposit_request_top_up() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -490,6 +492,7 @@ fn test_deposit_and_withdrawal_request_single() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -709,6 +712,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -921,6 +925,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -1146,6 +1151,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -1360,6 +1366,7 @@ fn test_deposit_request_invalid_signature() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,

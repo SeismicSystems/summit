@@ -1,13 +1,14 @@
 use commonware_runtime::buffer::PoolRef;
-use summit_types::{EngineClient, consensus_state::ConsensusState};
-
+use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
+use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 
-pub struct FinalizerConfig<C: EngineClient> {
+pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>> {
     pub mailbox_size: usize,
     pub db_prefix: String,
     pub engine_client: C,
     pub registry: Registry,
+    pub oracle: O,
     pub epoch_num_of_blocks: u64,
     pub validator_max_withdrawals_per_block: usize,
     pub validator_minimum_stake: u64, // in gwei

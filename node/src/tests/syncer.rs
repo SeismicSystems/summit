@@ -1,6 +1,6 @@
 use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
-use crate::test_harness::common::{get_default_engine_config, get_initial_state};
+use crate::test_harness::common::{DummyOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_macros::test_traced;
@@ -91,6 +91,7 @@ fn test_node_joins_later_no_checkpoint() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -141,6 +142,7 @@ fn test_node_joins_later_no_checkpoint() {
 
         let config = get_default_engine_config(
             engine_client,
+            DummyOracle::default(),
             uid.clone(),
             genesis_hash,
             namespace,
@@ -296,6 +298,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
 
             let config = get_default_engine_config(
                 engine_client,
+                DummyOracle::default(),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -348,6 +351,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         // since historical blocks were finalized by only those 4 validators
         let config = get_default_engine_config(
             engine_client,
+            DummyOracle::default(),
             uid.clone(),
             genesis_hash,
             namespace,

@@ -15,6 +15,7 @@ use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
 use summit_syncer::Orchestrator;
+use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
 use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
 use tracing::{error, warn};
@@ -48,6 +49,7 @@ const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 pub struct Engine<
     E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
     C: EngineClient,
+    O: NetworkOracle<PublicKey>,
 > {
     context: E,
     application: summit_application::Actor<E, C>,
@@ -55,7 +57,7 @@ pub struct Engine<
     buffer_mailbox: buffered::Mailbox<PublicKey, Block>,
     syncer: summit_syncer::Actor<E>,
     syncer_mailbox: summit_syncer::Mailbox,
-    finalizer: Finalizer<E, C>,
+    finalizer: Finalizer<E, C, O>,
     pub finalizer_mailbox: FinalizerMailbox,
     orchestrator: Orchestrator,
     simplex: Simplex<
@@ -71,10 +73,13 @@ pub struct Engine<
     sync_height: u64,
 }
 
-impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: EngineClient>
-    Engine<E, C>
+impl<
+    E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    C: EngineClient,
+    O: NetworkOracle<PublicKey>,
+> Engine<E, C, O>
 {
-    pub async fn new(context: E, cfg: EngineConfig<C>) -> Self {
+    pub async fn new(context: E, cfg: EngineConfig<C, O>) -> Self {
         let registry = Registry::new(cfg.participants.clone());
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
@@ -126,6 +131,7 @@ impl<E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics, C: Engin
                 db_prefix: cfg.partition_prefix.clone(),
                 engine_client: cfg.engine_client,
                 registry: registry.clone(),
+                oracle: cfg.oracle,
                 epoch_num_of_blocks: EPOCH_NUM_BLOCKS,
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
                 validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
