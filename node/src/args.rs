@@ -206,8 +206,9 @@ impl Command {
             let initial_state = get_initial_state(&genesis, &committee, None);
             let mut peers: Vec<PublicKey> = initial_state
                 .validator_accounts
-                .keys()
-                .map(|v| {
+                .iter()
+                .filter(|(_, acc)| !(acc.status == ValidatorStatus::Inactive))
+                .map(|(v, _)| {
                     let mut key_bytes = &v[..];
                     PublicKey::read(&mut key_bytes).expect("failed to parse public key")
                 })
@@ -317,16 +318,14 @@ impl Command {
                 authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
             // Provide authorized peers
-            oracle
-                .register(0, committee.into_iter().map(|(key, _)| key).collect())
-                .await;
+            oracle.register(0, peers.clone()).await;
 
             let oracle = DiscoveryOracle::new(oracle);
             let config = EngineConfig::get_engine_config(
                 engine_client,
                 oracle,
                 signer,
-                peers.clone(),
+                peers,
                 flags.db_prefix.clone(),
                 &genesis,
                 initial_state,
@@ -432,8 +431,6 @@ pub fn run_node_with_runtime(
             .collect();
         peers.sort();
 
-        let networking_peers = peers.clone();
-
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
 
@@ -468,8 +465,6 @@ pub fn run_node_with_runtime(
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-        let our_public_key = signer.public_key();
-
         let our_ip = if let Some(ref ip_str) = flags.ip {
             ip_str
                 .parse::<SocketAddr>()
@@ -487,10 +482,10 @@ pub fn run_node_with_runtime(
                 .expect("This node is not on the committee")
         };
 
-        if !committee.iter().any(|(key, _)| key == &our_public_key) {
-            committee.push((our_public_key, our_ip));
-            committee.sort();
-        }
+        //if !committee.iter().any(|(key, _)| key == &our_public_key) {
+        //    committee.push((our_public_key, our_ip));
+        //    committee.sort();
+        //}
 
         // configure network
         let mut p2p_cfg = authenticated::discovery::Config::aggressive(
@@ -508,7 +503,7 @@ pub fn run_node_with_runtime(
             authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
         // Provide authorized peers
-        oracle.register(0, networking_peers).await;
+        oracle.register(0, peers.clone()).await;
 
         let oracle = DiscoveryOracle::new(oracle);
 

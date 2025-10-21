@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 use summit_types::PublicKey;
 
-const DEFAULT_GENESIS_FILE: &'static str = "./example_genesis.toml";
+const DEFAULT_GENESIS_FILE: &str = "./example_genesis.toml";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GenesisConfig {
@@ -44,8 +44,7 @@ pub struct Validator {
 impl Validator {
     pub fn ed25519_pubkey(&self) -> PublicKey {
         let pubkey_bytes = from_hex(&self.public_key).unwrap();
-        let pubkey = PublicKey::decode(&pubkey_bytes[..]).unwrap();
-        pubkey
+        PublicKey::decode(&pubkey_bytes[..]).unwrap()
     }
 }
 
@@ -110,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write the updated genesis config
     let updated_genesis = toml::to_string_pretty(&genesis_config)?;
-    fs::write(&format!("{}/genesis.toml", args.out_dir), updated_genesis)?;
+    fs::write(format!("{}/genesis.toml", args.out_dir), updated_genesis)?;
     println!("Updated genesis config at {}", args.out_dir);
     println!("\nSetup complete for {} nodes", node_count);
 
