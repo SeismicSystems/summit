@@ -10,15 +10,19 @@ namespace = "_SEISMIC_BFT"
 [[validators]]
 public_key = "1be3cb06d7cc347602421fb73838534e4b54934e28959de98906d120d0799ef2"
 ip_address = "127.0.0.1:26600"
+withdrawal_credentials = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
 [[validators]]
 public_key = "32efa16e3cd62292db529e8f4babd27724b13b397edcf2b1dbe48f416ce40f0d"
 ip_address = "127.0.0.1:26610"
+withdrawal_credentials = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
 [[validators]]
 public_key = "ce9b314ac9d55d28bedf543164120eecf737380015c977eaa78d59894bbccf52"
 ip_address = "127.0.0.1:26620"
+withdrawal_credentials = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 
 [[validators]]
 public_key = "f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226"
 ip_address = "127.0.0.1:26630"
+withdrawal_credentials = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"

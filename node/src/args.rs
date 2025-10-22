@@ -196,7 +196,7 @@ impl Command {
             let genesis =
                 Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
-            let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
+            let mut committee: Vec<(PublicKey, SocketAddr, Address)> = genesis
                 .validators
                 .iter()
                 .map(|v| v.try_into().expect("Invalid validator in genesis"))
@@ -269,10 +269,11 @@ impl Command {
                     .expect("This node is not on the committee")
             };
 
+            let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee.into_iter().map(|(key, ip, _)| (key, ip)).collect();
             let our_public_key = signer.public_key();
-            if !committee.iter().any(|(key, _)| key == &our_public_key) {
-                committee.push((our_public_key, our_ip));
-                committee.sort();
+            if !network_committee.iter().any(|(key, _)| key == &our_public_key) {
+                network_committee.push((our_public_key, our_ip));
+                network_committee.sort();
             }
 
             // Configure telemetry
@@ -314,7 +315,7 @@ impl Command {
                 genesis.namespace.as_bytes(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
                 our_ip,
-                committee.clone(),
+                network_committee.clone(),
                 genesis.max_message_size_bytes as usize,
             );
             p2p_cfg.mailbox_size = MAILBOX_SIZE;
@@ -418,7 +419,7 @@ pub fn run_node_with_runtime(
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
-        let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
+        let mut committee: Vec<(PublicKey, SocketAddr, Address)> = genesis
             .validators
             .iter()
             .map(|v| v.try_into().expect("Invalid validator in genesis"))
@@ -488,10 +489,11 @@ pub fn run_node_with_runtime(
                 .expect("This node is not on the committee")
         };
 
+        let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee.into_iter().map(|(key, ip, _)| (key, ip)).collect();
         let our_public_key = signer.public_key();
-        if !committee.iter().any(|(key, _)| key == &our_public_key) {
-            committee.push((our_public_key, our_ip));
-            committee.sort();
+        if !network_committee.iter().any(|(key, _)| key == &our_public_key) {
+            network_committee.push((our_public_key, our_ip));
+            network_committee.sort();
         }
 
         // configure network
@@ -500,7 +502,7 @@ pub fn run_node_with_runtime(
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
             our_ip,
-            committee,
+            network_committee,
             genesis.max_message_size_bytes as usize,
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
@@ -589,7 +591,7 @@ pub fn run_node_with_runtime(
 
 fn get_initial_state(
     genesis: &Genesis,
-    committee: &Vec<(PublicKey, SocketAddr)>,
+    committee: &Vec<(PublicKey, SocketAddr, Address)>,
     checkpoint: Option<ConsensusState>,
 ) -> ConsensusState {
     let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
@@ -605,14 +607,14 @@ fn get_initial_state(
         };
         let mut state = ConsensusState::new(forkchoice);
         // Add the genesis nodes to the consensus state with the minimum stake balance.
-        for (pubkey, _) in committee {
+        for (pubkey, _, address) in committee {
             let pubkey_bytes: [u8; 32] = pubkey
                 .as_ref()
                 .try_into()
                 .expect("Public key must be 32 bytes");
             let account = ValidatorAccount {
                 // TODO(matthias): we have to add a withdrawal address to the genesis
-                withdrawal_credentials: Address::ZERO,
+                withdrawal_credentials: *address,
                 balance: VALIDATOR_MINIMUM_STAKE,
                 pending_withdrawal_amount: 0,
                 status: ValidatorStatus::Active,

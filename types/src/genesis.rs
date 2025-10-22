@@ -3,6 +3,7 @@ use commonware_codec::DecodeExt;
 use commonware_utils::from_hex_formatted;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use alloy_primitives::Address;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Genesis {
@@ -41,17 +42,19 @@ pub struct Genesis {
 pub struct Validator {
     pub public_key: String,
     pub ip_address: String,
+    pub withdrawal_credentials: String,
 }
 
-impl TryInto<(PublicKey, SocketAddr)> for &Validator {
+impl TryInto<(PublicKey, SocketAddr, Address)> for &Validator {
     type Error = String;
 
-    fn try_into(self) -> Result<(PublicKey, SocketAddr), Self::Error> {
+    fn try_into(self) -> Result<(PublicKey, SocketAddr, Address), Self::Error> {
         let pub_key_bytes = from_hex_formatted(&self.public_key).ok_or("PublicKey bad format")?;
 
         Ok((
             PublicKey::decode(&*pub_key_bytes).map_err(|_| "Unable to decode Public Key")?,
             self.ip_address.parse().map_err(|_| "Invalid ip address")?,
+            self.withdrawal_credentials.parse().map_err(|_| "Invalid withdrawal credentials")?,
         ))
     }
 }
