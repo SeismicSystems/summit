@@ -269,9 +269,15 @@ impl Command {
                     .expect("This node is not on the committee")
             };
 
-            let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee.into_iter().map(|(key, ip, _)| (key, ip)).collect();
+            let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
+                .into_iter()
+                .map(|(key, ip, _)| (key, ip))
+                .collect();
             let our_public_key = signer.public_key();
-            if !network_committee.iter().any(|(key, _)| key == &our_public_key) {
+            if !network_committee
+                .iter()
+                .any(|(key, _)| key == &our_public_key)
+            {
                 network_committee.push((our_public_key, our_ip));
                 network_committee.sort();
             }
@@ -489,9 +495,15 @@ pub fn run_node_with_runtime(
                 .expect("This node is not on the committee")
         };
 
-        let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee.into_iter().map(|(key, ip, _)| (key, ip)).collect();
+        let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
+            .into_iter()
+            .map(|(key, ip, _)| (key, ip))
+            .collect();
         let our_public_key = signer.public_key();
-        if !network_committee.iter().any(|(key, _)| key == &our_public_key) {
+        if !network_committee
+            .iter()
+            .any(|(key, _)| key == &our_public_key)
+        {
             network_committee.push((our_public_key, our_ip));
             network_committee.sort();
         }

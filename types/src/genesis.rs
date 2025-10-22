@@ -1,9 +1,9 @@
 use crate::PublicKey;
+use alloy_primitives::Address;
 use commonware_codec::DecodeExt;
 use commonware_utils::from_hex_formatted;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use alloy_primitives::Address;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Genesis {
@@ -54,7 +54,9 @@ impl TryInto<(PublicKey, SocketAddr, Address)> for &Validator {
         Ok((
             PublicKey::decode(&*pub_key_bytes).map_err(|_| "Unable to decode Public Key")?,
             self.ip_address.parse().map_err(|_| "Invalid ip address")?,
-            self.withdrawal_credentials.parse().map_err(|_| "Invalid withdrawal credentials")?,
+            self.withdrawal_credentials
+                .parse()
+                .map_err(|_| "Invalid withdrawal credentials")?,
         ))
     }
 }

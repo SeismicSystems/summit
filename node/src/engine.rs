@@ -35,9 +35,11 @@ const BUFFER_POOL_CAPACITY: NonZero<usize> = NZUsize!(8_192); // 32MB
 const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 3;
 pub const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000; // in gwei
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "e2e")]
+pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 10;
+#[cfg(all(debug_assertions, not(feature = "e2e")))]
 pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 5;
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "e2e")))]
 const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 100;
 #[cfg(all(feature = "e2e", not(debug_assertions)))]
 pub const EPOCH_NUM_BLOCKS: u64 = 50;
