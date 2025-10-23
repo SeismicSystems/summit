@@ -3,6 +3,7 @@ use crate::checkpoint::Checkpoint;
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
 
+#[allow(clippy::large_enum_variant)]
 pub enum ConsensusStateRequest {
     GetCheckpoint,
     GetLatestHeight,

@@ -394,6 +394,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(any(feature = "base-bench", feature = "bench"))]
         bench_block_dir: None,
+        checkpoint_path: None,
         ip: None,
     }
 }
