@@ -35,6 +35,7 @@ use crate::engine::VALIDATOR_MINIMUM_STAKE;
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
+use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
@@ -116,6 +117,9 @@ pub struct RunFlags {
         default_value_t = String::from("./example_genesis.toml")
     )]
     pub genesis_path: String,
+    /// Path to a checkpoint file
+    #[arg(long)]
+    pub checkpoint_path: Option<String>,
     /// IP address for this node (optional, will use genesis if not provided)
     #[arg(long)]
     pub ip: Option<String>,
@@ -156,6 +160,16 @@ impl Command {
         {
             console_subscriber::init();
         }
+
+        let maybe_checkpoint = flags.checkpoint_path.as_ref().map(|path| {
+            // TODO(matthias): verify the checkpoint
+            let checkpoint_bytes: Vec<u8> =
+                std::fs::read(path).expect("failed to read checkpoint from disk");
+            let checkpoint = Checkpoint::read(&mut checkpoint_bytes.as_ref())
+                .expect("failed to parse checkpoint");
+            ConsensusState::try_from(checkpoint)
+                .expect("failed to create consensus state from checkpoint")
+        });
 
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
         let signer = expect_signer(&flags.key_path);
@@ -203,7 +217,11 @@ impl Command {
                 .collect();
             committee.sort();
 
-            let initial_state = get_initial_state(&genesis, &committee, None);
+            let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+                .map(|hash_bytes| hash_bytes.try_into())
+                .expect("bad eth_genesis_hash")
+                .expect("bad eth_genesis_hash");
+            let initial_state = get_initial_state(genesis_hash, &committee, maybe_checkpoint);
             let mut peers: Vec<PublicKey> = initial_state
                 .validator_accounts
                 .iter()
@@ -432,7 +450,11 @@ pub fn run_node_with_runtime(
             .collect();
         committee.sort();
 
-        let initial_state = get_initial_state(&genesis, &committee, checkpoint);
+        let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+            .map(|hash_bytes| hash_bytes.try_into())
+            .expect("bad eth_genesis_hash")
+            .expect("bad eth_genesis_hash");
+        let initial_state = get_initial_state(genesis_hash, &committee, checkpoint);
         let mut peers: Vec<PublicKey> = initial_state
             .validator_accounts
             .iter()
@@ -602,14 +624,10 @@ pub fn run_node_with_runtime(
 }
 
 fn get_initial_state(
-    genesis: &Genesis,
-    committee: &Vec<(PublicKey, SocketAddr, Address)>,
+    genesis_hash: [u8; 32],
+    genesis_committee: &Vec<(PublicKey, SocketAddr, Address)>,
     checkpoint: Option<ConsensusState>,
 ) -> ConsensusState {
-    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
-        .map(|hash_bytes| hash_bytes.try_into())
-        .expect("bad eth_genesis_hash")
-        .expect("bad eth_genesis_hash");
     let genesis_hash: B256 = genesis_hash.into();
     checkpoint.unwrap_or_else(|| {
         let forkchoice = ForkchoiceState {
@@ -619,7 +637,7 @@ fn get_initial_state(
         };
         let mut state = ConsensusState::new(forkchoice);
         // Add the genesis nodes to the consensus state with the minimum stake balance.
-        for (pubkey, _, address) in committee {
+        for (pubkey, _, address) in genesis_committee {
             let pubkey_bytes: [u8; 32] = pubkey
                 .as_ref()
                 .try_into()
