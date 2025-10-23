@@ -2,16 +2,22 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{Query, State},
     routing::{get, post},
 };
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::Signer;
 use commonware_utils::{from_hex_formatted, hex};
+use serde::Deserialize;
 use ssz::Encode;
-use summit_types::{PrivateKey, utils::get_expanded_path};
+use summit_types::{PrivateKey, PublicKey, utils::get_expanded_path};
 
 use crate::{GenesisRpcState, PathSender, RpcState};
+
+#[derive(Deserialize)]
+struct ValidatorBalanceQuery {
+    public_key: String,
+}
 
 pub(crate) struct RpcRoutes;
 
@@ -25,6 +31,10 @@ impl RpcRoutes {
             .route("/get_public_key", get(Self::handle_get_pub_key))
             .route("/get_checkpoint", get(Self::handle_get_checkpoint))
             .route("/get_latest_height", get(Self::handle_latest_height))
+            .route(
+                "/get_validator_balance",
+                get(Self::handle_get_validator_balance),
+            )
             .with_state(state)
     }
 
@@ -78,6 +88,27 @@ impl RpcRoutes {
             .get_latest_height()
             .await
             .to_string())
+    }
+
+    async fn handle_get_validator_balance(
+        State(state): State<Arc<RpcState>>,
+        Query(params): Query<ValidatorBalanceQuery>,
+    ) -> Result<String, String> {
+        // Parse the public key from hex string
+        let key_bytes =
+            from_hex_formatted(&params.public_key).ok_or("Invalid hex format for public key")?;
+        let public_key =
+            PublicKey::decode(&*key_bytes).map_err(|_| "Unable to decode public key")?;
+
+        let balance = state
+            .finalizer_mailbox
+            .get_validator_balance(public_key)
+            .await;
+
+        match balance {
+            Some(balance) => Ok(balance.to_string()),
+            None => Err("Validator not found".to_string()),
+        }
     }
 
     async fn handle_send_genesis(

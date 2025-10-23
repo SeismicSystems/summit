@@ -1,3 +1,4 @@
+use crate::PublicKey;
 use crate::checkpoint::Checkpoint;
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
@@ -5,11 +6,13 @@ use futures::channel::{mpsc, oneshot};
 pub enum ConsensusStateRequest {
     GetCheckpoint,
     GetLatestHeight,
+    GetValidatorBalance(PublicKey),
 }
 
 pub enum ConsensusStateResponse {
     Checkpoint(Option<Checkpoint>),
     LatestHeight(u64),
+    ValidatorBalance(Option<u64>),
 }
 
 /// Used to send queries to the application finalizer to query the consensus state.
@@ -75,5 +78,19 @@ impl ConsensusStateQuery {
             unreachable!("request and response variants must match");
         };
         height
+    }
+
+    pub async fn get_validator_balance(&self, public_key: PublicKey) -> Option<u64> {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetValidatorBalance(public_key);
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::ValidatorBalance(balance) = res else {
+            unreachable!("request and response variants must match");
+        };
+        balance
     }
 }

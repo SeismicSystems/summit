@@ -742,6 +742,17 @@ impl<
                 let height = self.state.get_latest_height();
                 let _ = sender.send(ConsensusStateResponse::LatestHeight(height));
             }
+            ConsensusStateRequest::GetValidatorBalance(public_key) => {
+                let mut key_bytes = [0u8; 32];
+                key_bytes.copy_from_slice(&public_key);
+
+                let balance = self
+                    .state
+                    .validator_accounts
+                    .get(&key_bytes)
+                    .map(|account| account.balance);
+                let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
+            }
         }
     }
 }

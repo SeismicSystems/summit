@@ -3,11 +3,12 @@ use futures::{
     channel::{mpsc, oneshot},
 };
 use summit_types::{
-    BlockAuxData,
+    BlockAuxData, PublicKey,
     checkpoint::Checkpoint,
     consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse},
 };
 
+#[allow(clippy::large_enum_variant)]
 pub enum FinalizerMessage {
     NotifyAtHeight {
         height: u64,
@@ -88,5 +89,23 @@ impl FinalizerMailbox {
             unreachable!("request and response variants must match");
         };
         height
+    }
+
+    pub async fn get_validator_balance(&self, public_key: PublicKey) -> Option<u64> {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetValidatorBalance(public_key);
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::ValidatorBalance(balance) = res else {
+            unreachable!("request and response variants must match");
+        };
+        balance
     }
 }
