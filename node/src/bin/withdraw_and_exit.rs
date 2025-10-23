@@ -56,12 +56,6 @@ struct Args {
     /// Path to the data directory for test
     #[arg(long, default_value = "/tmp/summit_withdraw_test")]
     pub data_dir: String,
-    /// Height at which the joining node will download the checkpoint
-    #[arg(long, default_value_t = 1000)]
-    pub checkpoint_height: u64,
-    /// Height that all nodes must reach for the test to succeed
-    #[arg(long, default_value_t = 2000)]
-    pub stop_height: u64,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
