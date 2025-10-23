@@ -274,17 +274,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let node0_url = format!("http://localhost:{}", node0_http_port);
             let node0_provider = ProviderBuilder::new().connect_http(node0_url.parse().expect("Invalid URL"));
 
+            // Check
+
             let balance_after = node0_provider.get_balance(withdrawal_credentials).await.expect("Failed to get balance after withdrawal");
             println!("Withdrawal credentials balance after: {} wei", balance_after);
-
-            println!("balance before: {}", balance_before);
-            println!("balance after: {}", balance_after);
 
             // The withdrawal amount was VALIDATOR_MINIMUM_STAKE (32 ETH in gwei)
             // Converting to wei: 32_000_000_000 gwei * 10^9 = 32 * 10^18 wei
             let expected_difference = U256::from(VALIDATOR_MINIMUM_STAKE) * U256::from(1_000_000_000u64);
             let actual_difference = balance_after - balance_before;
-            println!("actual_difference: {}", actual_difference);
 
             // Allow tolerance for gas fees (0.01 ETH = 10^16 wei)
             let tolerance = U256::from(10_000_000_000_000_000u64);
@@ -295,6 +293,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 actual_difference, lower_bound, upper_bound);
             println!("Withdrawal successful: balance increased by {} wei (expected ~{})",
                 actual_difference, expected_difference);
+
+            // Check that the validator was removed from the consensus state
+            let rpc_port = get_node_flags(0).rpc_port;
+            let validator_balance = get_validator_balance(rpc_port, "f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226".to_string()).await;
+            if let Err(msg) = validator_balance {
+                assert_eq!(msg.to_string(), "Validator not found");
+                println!("Validator that withdrew is not on the consensus state anymore");
+            } else {
+                panic!("Validator should not be on the consensus state anymore");
+            }
 
             Ok(())
         }
@@ -353,6 +361,21 @@ async fn get_latest_height(rpc_port: u16) -> Result<u64, Box<dyn std::error::Err
     let url = format!("http://localhost:{}/get_latest_height", rpc_port);
     let response = reqwest::get(&url).await?.text().await?;
     Ok(response.parse()?)
+}
+
+async fn get_validator_balance(
+    rpc_port: u16,
+    public_key: String,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let url = format!(
+        "http://localhost:{}/get_validator_balance?public_key={}",
+        rpc_port, public_key
+    );
+    let response = reqwest::get(&url).await?.text().await?;
+    let Ok(balance) = response.parse() else {
+        return Err(response.into());
+    };
+    Ok(balance)
 }
 
 fn get_node_flags(node: usize) -> RunFlags {
