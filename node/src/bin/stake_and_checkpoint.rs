@@ -314,7 +314,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("Error querying height: {}", e);
                     }
                 }
-                context.sleep(std::time::Duration::from_secs(1)).await;
+                context.sleep(Duration::from_secs(1)).await;
             }
 
             // Retrieve checkpoint from first node

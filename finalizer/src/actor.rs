@@ -138,6 +138,7 @@ impl<
 
         let mut last_committed_timestamp: Option<Instant> = None;
         let mut signal = self.context.stopped().fuse();
+
         loop {
             select! {
                 msg = rx_finalize_blocks.next() => {
@@ -461,7 +462,6 @@ impl<
                                 {
                                     continue; // Skip this withdrawal request
                                 }
-
                                 // If after this withdrawal the validator balance would be less than the
                                 // minimum stake, then the full validator balance is withdrawn.
                                 if account.balance
