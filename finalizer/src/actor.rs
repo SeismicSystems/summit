@@ -20,7 +20,7 @@ use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
 use std::collections::BTreeMap;
 use std::num::NonZero;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use summit_syncer::Orchestrator;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
@@ -56,6 +56,8 @@ pub struct Finalizer<
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
     oracle: O,
+    public_key: PublicKey,
+    validator_exit: bool,
 }
 
 impl<
@@ -106,6 +108,8 @@ impl<
                 validator_minimum_stake: cfg.validator_minimum_stake,
                 validator_withdrawal_period: cfg.validator_withdrawal_period,
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
+                public_key: cfg.public_key,
+                validator_exit: false,
             },
             FinalizerMailbox::new(tx),
         )
@@ -140,6 +144,15 @@ impl<
         let mut signal = self.context.stopped().fuse();
 
         loop {
+            if self.validator_exit {
+                // If the validator was removed from the committee, try to shut down the runtime
+                info!("Validator no longer on the committee, shutting down");
+                self.context
+                    .stop(0, None)
+                    .await
+                    .expect("failed to stop runtime");
+                break;
+            }
             select! {
                 msg = rx_finalize_blocks.next() => {
                     let Some((envelope, notifier)) = msg else {
@@ -340,6 +353,17 @@ impl<
                         "only validators with accounts are added to the added_validators queue",
                     );
                     account.status = ValidatorStatus::Active;
+                }
+
+                // If the node's public key is contained in the removed validator list,
+                // trigger an exit
+                if self
+                    .state
+                    .removed_validators
+                    .iter()
+                    .any(|pk| pk == &self.public_key)
+                {
+                    self.validator_exit = true;
                 }
 
                 // TODO(matthias): remove keys in removed_validators from state or set inactive?

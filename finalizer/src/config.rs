@@ -21,4 +21,6 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>> {
     pub initial_state: ConsensusState,
     /// Protocol version for the consensus protocol
     pub protocol_version: u32,
+    /// The node's own public key
+    pub public_key: PublicKey,
 }

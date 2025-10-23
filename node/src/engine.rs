@@ -145,6 +145,7 @@ impl<
                 genesis_hash: cfg.genesis_hash,
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
+                public_key: cfg.signer.public_key(),
             },
         )
         .await;

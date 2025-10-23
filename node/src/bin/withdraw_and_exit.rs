@@ -251,7 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             loop {
                 let mut all_ready = true;
-                for idx in 0..NUM_NODES {
+                for idx in 0..(NUM_NODES - 1) {
                     let rpc_port = get_node_flags(idx as usize).rpc_port;
                     match get_latest_height(rpc_port).await {
                         Ok(height) => {
