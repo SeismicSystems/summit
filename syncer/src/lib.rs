@@ -5,6 +5,7 @@ use commonware_runtime::buffer::PoolRef;
 pub use ingress::*;
 use summit_types::PublicKey;
 use summit_types::registry::Registry;
+use tokio_util::sync::CancellationToken;
 
 pub mod coordinator;
 pub mod handler;
@@ -28,4 +29,6 @@ pub struct Config {
     pub namespace: String,
 
     pub buffer_pool: PoolRef,
+
+    pub cancellation_token: CancellationToken,
 }

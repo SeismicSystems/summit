@@ -5586,6 +5586,7 @@ dependencies = [
  "summit-finalizer",
  "summit-syncer",
  "summit-types",
+ "tokio-util",
  "tracing",
 ]
 
@@ -5611,6 +5612,7 @@ dependencies = [
  "rand 0.8.5",
  "summit-syncer",
  "summit-types",
+ "tokio-util",
  "tracing",
 ]
 
@@ -5655,6 +5657,7 @@ dependencies = [
  "metrics",
  "rand 0.8.5",
  "summit-types",
+ "tokio-util",
  "tracing",
 ]
 

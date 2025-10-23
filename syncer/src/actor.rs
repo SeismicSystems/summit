@@ -29,6 +29,7 @@ use metrics::histogram;
 use rand::Rng;
 use summit_types::registry::Registry;
 use summit_types::{Block, Digest, Finalized, Notarized, PublicKey, Signature};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
@@ -62,6 +63,7 @@ pub struct Actor<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock
     backfill_quota: Quota,
     activity_timeout: u64,
     namespace: String,
+    cancellation_token: CancellationToken,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Actor<R> {
@@ -162,6 +164,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                 activity_timeout: config.activity_timeout,
                 namespace: config.namespace,
                 orchestrator_mailbox,
+                cancellation_token: config.cancellation_token,
             },
             Mailbox::new(tx),
             Orchestrator::new(orchestrator_sender),
@@ -744,11 +747,21 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
                         },
                     }
                 },
+                _ = self.cancellation_token.cancelled() => {
+                    info!("syncer received cancellation signal, exiting");
+                    break;
+                },
                 sig = &mut signal => {
-                    info!("syncer terminated: {}", sig.unwrap());
+                    info!("runtime terminated terminated, shutting down syncer: {}", sig.unwrap());
                     break;
                 }
             }
         }
+    }
+}
+
+impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock> Drop for Actor<R> {
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
     }
 }

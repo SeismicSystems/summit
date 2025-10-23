@@ -6,6 +6,7 @@ use commonware_p2p::{Receiver, Sender};
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
 use commonware_utils::NZUsize;
+use futures::FutureExt;
 use futures::channel::mpsc;
 use futures::future::try_join_all;
 use governor::clock::Clock as GClock;
@@ -18,7 +19,8 @@ use summit_syncer::Orchestrator;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
 use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
-use tracing::{error, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -75,6 +77,7 @@ pub struct Engine<
     >,
 
     sync_height: u64,
+    cancellation_token: CancellationToken,
 }
 
 impl<
@@ -89,6 +92,8 @@ impl<
 
         let sync_height = cfg.initial_state.latest_height;
 
+        let cancellation_token = CancellationToken::new();
+
         // create application
         let (application, application_mailbox) = summit_application::Actor::new(
             context.with_label("application"),
@@ -97,6 +102,7 @@ impl<
                 mailbox_size: cfg.mailbox_size,
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
+                cancellation_token: cancellation_token.clone(),
             },
         )
         .await;
@@ -123,6 +129,7 @@ impl<
             activity_timeout: cfg.activity_timeout,
             namespace: cfg.namespace.clone(),
             buffer_pool: buffer_pool.clone(),
+            cancellation_token: cancellation_token.clone(),
         };
         let (syncer, syncer_mailbox, orchestrator) =
             summit_syncer::Actor::new(context.with_label("syncer"), syncer_config).await;
@@ -146,6 +153,7 @@ impl<
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
                 public_key: cfg.signer.public_key(),
+                cancellation_token: cancellation_token.clone(),
             },
         )
         .await;
@@ -190,6 +198,7 @@ impl<
             finalizer_mailbox,
             orchestrator,
             sync_height,
+            cancellation_token,
         }
     }
 
@@ -264,19 +273,32 @@ impl<
         // start simplex
         let simplex_handle = self.simplex.start(voter_network, resolver_network);
 
-        // Wait for any actor to finish
-        if let Err(e) = try_join_all(vec![
+        // Wait for either all actors to finish or cancellation signal
+        let actors_fut = try_join_all(vec![
             app_handle,
             buffer_handle,
             finalizer_handle,
             syncer_handle,
             simplex_handle,
         ])
-        .await
-        {
-            error!(?e, "engine failed");
-        } else {
-            warn!("engine stopped");
+        .fuse();
+        let cancellation_fut = self.cancellation_token.cancelled().fuse();
+        futures::pin_mut!(actors_fut, cancellation_fut);
+
+        futures::select! {
+            result = actors_fut => {
+                if let Err(e) = result {
+                    error!(?e, "engine failed");
+                } else {
+                    warn!("engine stopped");
+                }
+            }
+            _ = cancellation_fut => {
+                info!("cancellation triggered, waiting for actors to finish");
+                if let Err(e) = actors_fut.await {
+                    error!(?e, "engine failed during graceful shutdown");
+                }
+            }
         }
     }
 }

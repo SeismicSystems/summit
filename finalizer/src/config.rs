@@ -2,6 +2,7 @@ use commonware_runtime::buffer::PoolRef;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
+use tokio_util::sync::CancellationToken;
 
 pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>> {
     pub mailbox_size: usize,
@@ -23,4 +24,5 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>> {
     pub protocol_version: u32,
     /// The node's own public key
     pub public_key: PublicKey,
+    pub cancellation_token: CancellationToken,
 }

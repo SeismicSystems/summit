@@ -12,6 +12,7 @@ use futures::{
     future::{self, Either, try_join},
 };
 use rand::Rng;
+use tokio_util::sync::CancellationToken;
 
 use commonware_consensus::simplex::types::View;
 use futures::task::{Context, Poll};
@@ -59,6 +60,7 @@ pub struct Actor<
     engine_client: C,
     built_block: Arc<Mutex<Option<Block>>>,
     genesis_hash: [u8; 32],
+    cancellation_token: CancellationToken,
 }
 
 impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
@@ -76,6 +78,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                 engine_client: cfg.engine_client,
                 built_block: Arc::new(Mutex::new(None)),
                 genesis_hash,
+                cancellation_token: cfg.cancellation_token,
             },
             Mailbox::new(tx),
         )
@@ -88,6 +91,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     pub async fn run(mut self, mut syncer: SyncerMailbox, mut finalizer: FinalizerMailbox) {
         let rand_id: u8 = rand::random();
         let mut signal = self.context.stopped().fuse();
+        let cancellation_token = self.cancellation_token.clone();
         loop {
             select! {
                 message = self.mailbox.next() => {
@@ -195,8 +199,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         }
                     }
                 },
+                _ = cancellation_token.cancelled() => {
+                    info!("application received cancellation signal, exiting");
+                    break;
+                },
                 sig = &mut signal => {
-                    info!("application terminated: {}", sig.unwrap());
+                    info!("runtime terminated, shutting down application: {}", sig.unwrap());
                     break;
                 }
             }
@@ -343,6 +351,14 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             histogram!("handle_proposal_duration_millis").record(proposal_duration);
         }
         Ok(block)
+    }
+}
+
+impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient> Drop
+    for Actor<R, C>
+{
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
     }
 }
 

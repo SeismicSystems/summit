@@ -20,7 +20,7 @@ use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
 use std::collections::BTreeMap;
 use std::num::NonZero;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use summit_syncer::Orchestrator;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
@@ -31,6 +31,7 @@ use summit_types::registry::Registry;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
 use summit_types::{BlockEnvelope, EngineClient, consensus_state::ConsensusState};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
@@ -58,6 +59,7 @@ pub struct Finalizer<
     oracle: O,
     public_key: PublicKey,
     validator_exit: bool,
+    cancellation_token: CancellationToken,
 }
 
 impl<
@@ -110,6 +112,7 @@ impl<
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
                 public_key: cfg.public_key,
                 validator_exit: false,
+                cancellation_token: cfg.cancellation_token,
             },
             FinalizerMailbox::new(tx),
         )
@@ -142,15 +145,13 @@ impl<
 
         let mut last_committed_timestamp: Option<Instant> = None;
         let mut signal = self.context.stopped().fuse();
+        let cancellation_token = self.cancellation_token.clone();
 
         loop {
             if self.validator_exit {
-                // If the validator was removed from the committee, try to shut down the runtime
+                // If the validator was removed from the committee, trigger coordinated shutdown
                 info!("Validator no longer on the committee, shutting down");
-                self.context
-                    .stop(0, None)
-                    .await
-                    .expect("failed to stop runtime");
+                self.cancellation_token.cancel();
                 break;
             }
             select! {
@@ -182,8 +183,12 @@ impl<
                         },
                     }
                 }
+                _ = cancellation_token.cancelled().fuse() => {
+                    info!("finalizer received cancellation signal, exiting");
+                    break;
+                },
                 sig = &mut signal => {
-                    info!("finalizer terminated: {}", sig.unwrap());
+                    info!("runtime terminated, shutting down finalizer: {}", sig.unwrap());
                     break;
                 }
             }
@@ -738,5 +743,16 @@ impl<
                 let _ = sender.send(ConsensusStateResponse::LatestHeight(height));
             }
         }
+    }
+}
+
+impl<
+    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    C: EngineClient,
+    O: NetworkOracle<PublicKey>,
+> Drop for Finalizer<R, C, O>
+{
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
     }
 }

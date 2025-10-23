@@ -24,6 +24,7 @@ alloy-eips.workspace = true
 alloy-primitives.workspace = true
 governor.workspace = true
 rand.workspace = true
+tokio-util.workspace = true
 alloy-transport-ipc.workspace = true
 
 # For metrics - activate with `prom` feature
