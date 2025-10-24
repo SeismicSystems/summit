@@ -19,12 +19,12 @@ use commonware_codec::ReadExt;
 use commonware_utils::from_hex_formatted;
 use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
+use ssz::Decode;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::NonZeroU32,
     str::FromStr as _,
 };
-use ssz::Decode;
 #[cfg(feature = "base-bench")]
 use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 
@@ -166,8 +166,8 @@ impl Command {
             // TODO(matthias): verify the checkpoint
             let checkpoint_bytes: Vec<u8> =
                 std::fs::read(path).expect("failed to read checkpoint from disk");
-            let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_bytes)
-                .expect("failed to parse checkpoint");
+            let checkpoint =
+                Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
             ConsensusState::try_from(checkpoint)
                 .expect("failed to create consensus state from checkpoint")
         });
