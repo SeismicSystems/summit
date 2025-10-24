@@ -24,6 +24,7 @@ use std::{
     num::NonZeroU32,
     str::FromStr as _,
 };
+use ssz::Decode;
 #[cfg(feature = "base-bench")]
 use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 
@@ -165,7 +166,7 @@ impl Command {
             // TODO(matthias): verify the checkpoint
             let checkpoint_bytes: Vec<u8> =
                 std::fs::read(path).expect("failed to read checkpoint from disk");
-            let checkpoint = Checkpoint::read(&mut checkpoint_bytes.as_ref())
+            let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_bytes)
                 .expect("failed to parse checkpoint");
             ConsensusState::try_from(checkpoint)
                 .expect("failed to create consensus state from checkpoint")
