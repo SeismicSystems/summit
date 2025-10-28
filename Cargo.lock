@@ -1517,8 +1517,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc71e670241b8b07840cbb01d0d9521ae68bc2195f620adaeb57f76c51584bd5"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1536,8 +1535,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "881d86d9cc88835dac1774701cfc296f8485acbbeb6c50d0c04246e066f3a169"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "bytes",
  "paste",
@@ -1547,8 +1545,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f8ba91ccb78397634c478b1199a3d3ff20eaa5dc637a1a657450fa3eafbc0ae"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1573,8 +1570,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e97eba4685c332ae24a5842893f37c839371c33647645c314a124a7e4ee9ba60"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "blake3",
  "blst",
@@ -1597,8 +1593,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25989115bb59d92b1b7f79018792b31882dbe08e3ecaa6fd4ade5c4244f0d4e3"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "futures",
  "proc-macro2",
@@ -1611,8 +1606,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e25f8905f151ae133e13866b208d485f4fb17121bf73a57f6587ffaaac2c9a0"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1634,8 +1628,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c778ccaea860de1fd11305cb51f2ef1de085eafd707adbf48a533afdd8742004"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "bimap",
  "bytes",
@@ -1657,8 +1650,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffb9485b85b504ae6ae37c49a94050b1d3eafe222778e46d354ed0ca65259575"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "async-lock",
  "axum 0.8.4",
@@ -1689,8 +1681,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ac3dfa058a662ce951500abebb865608afc68bfbde206d23a591b6aa3b235f9"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1711,8 +1702,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d7599a9b3b015b9eebe87a4cc572c223843eb281e06262ea13c92db5b29f9a5"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -1732,8 +1722,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.62"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b052e7cbeed6ba05dee34b82434dd4e76ed5dd3b1c4585eafab08233e4033f9"
+source = "git+https://github.com/matthias-wright/monorepo?branch=m%2Fdebug-p2p#bb048e251cda1085b51f4c2c101b14fec794d7bc"
 dependencies = [
  "bytes",
  "commonware-codec",

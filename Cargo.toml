@@ -14,16 +14,16 @@ summit-syncer = {path = "syncer"}
 summit-finalizer = {path = "finalizer"}
 summit-rpc = {path = "rpc"}
 
-commonware-consensus = "0.0.62"
-commonware-cryptography = "0.0.62"
-commonware-storage = "0.0.62"
-commonware-runtime = "0.0.62"
-commonware-codec = "0.0.62"
-commonware-p2p = "0.0.62"
-commonware-broadcast = "0.0.62"
-commonware-utils = "0.0.62"
-commonware-resolver = "0.0.62"
-commonware-macros = "0.0.62"
+commonware-consensus = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-cryptography = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-storage = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-runtime = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-codec = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-p2p = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-broadcast = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-utils = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-resolver = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
+commonware-macros = { git = "https://github.com/matthias-wright/monorepo", branch = "m/debug-p2p" }
 
 alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }
