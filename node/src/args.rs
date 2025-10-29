@@ -350,7 +350,7 @@ impl Command {
                 authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
             // Provide authorized peers
-            oracle.register(0, peers.clone()).await;
+            oracle.register(initial_state.latest_height, peers.clone()).await;
 
             let oracle = DiscoveryOracle::new(oracle);
             let config = EngineConfig::get_engine_config(
@@ -547,7 +547,7 @@ pub fn run_node_with_runtime(
             authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
         // Provide authorized peers
-        oracle.register(0, peers.clone()).await;
+        oracle.register(initial_state.latest_height, peers.clone()).await;
 
         let oracle = DiscoveryOracle::new(oracle);
 

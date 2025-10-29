@@ -396,7 +396,7 @@ impl<
                     participant_count = participants.len(),
                     "registering oracle with validator changes: {participants:?}"
                 );
-                self.oracle.register(view, participants).await;
+                self.oracle.register(new_height, participants).await;
                 registered_oracle = true;
             }
 
