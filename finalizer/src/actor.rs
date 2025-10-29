@@ -88,8 +88,13 @@ impl<
         // The initial state could be from the genesis or a checkpoint.
         // If we want to load a checkpoint, we have to make sure that the DB is cleared.
         let state = if let Some(state) = db.get_latest_consensus_state().await {
+            tracing::info!(
+                height = state.latest_height,
+                "finalizer: loaded state from database (restarted node)"
+            );
             state
         } else {
+            tracing::info!("finalizer: using initial state (fresh node or checkpointed)");
             cfg.initial_state
         };
 
@@ -201,6 +206,7 @@ impl<
         envelope: BlockEnvelope,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
+        let mut registered_oracle = false;
         #[cfg(feature = "prom")]
         let block_processing_start = Instant::now();
 
@@ -348,7 +354,8 @@ impl<
             }
 
             // Add and remove validators for the next epoch
-            if !self.state.added_validators.is_empty() || !self.state.removed_validators.is_empty()
+            let has_validator_changes = !self.state.added_validators.is_empty() || !self.state.removed_validators.is_empty();
+            if has_validator_changes
             {
                 // TODO(matthias): we can probably find a way to do this without iterating over the joining validators
                 // Activate validators that staked this epoch.
@@ -384,7 +391,13 @@ impl<
                 let participants = self.registry.peers().clone();
                 // TODO(matthias): should we wait until view `view + REGISTRY_CHANGE_VIEW_DELTA`
                 // to update the oracle?
+                tracing::debug!(
+                    view,
+                    participant_count = participants.len(),
+                    "registering oracle with validator changes: {participants:?}"
+                );
                 self.oracle.register(view, participants).await;
+                registered_oracle = true;
             }
 
             #[cfg(feature = "prom")]
@@ -427,6 +440,14 @@ impl<
         self.height_notify_up_to(new_height);
         let _ = notifier.send(());
         info!(new_height, "finalized block");
+
+        // Debug: Log if we're not registering oracle for this height
+        if !registered_oracle {
+            tracing::debug!(
+                height = new_height,
+                "finalized block: no validator changes, oracle not registered for this view"
+            );
+        }
     }
 
     async fn parse_execution_requests(&mut self, block: &Block, new_height: u64) {
