@@ -384,7 +384,7 @@ impl<
                 let participants = self.registry.peers().clone();
                 // TODO(matthias): should we wait until view `view + REGISTRY_CHANGE_VIEW_DELTA`
                 // to update the oracle?
-                self.oracle.register(view, participants).await;
+                self.oracle.register(new_height, participants).await;
             }
 
             #[cfg(feature = "prom")]
