@@ -712,6 +712,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng> Acto
 
                                     // send finalization
                                     let payload = Finalized::new(finalization, block);
+                                    debug!(height, "Serving finalization to peer");
                                     let _ = response.send(payload.encode().into());
                                 }
                                 Value::Digest(digest) => {

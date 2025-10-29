@@ -20,6 +20,7 @@ pub struct Registry {
 
 impl Registry {
     pub fn new(participants: Vec<PublicKey>) -> Self {
+        tracing::info!(participant_count = participants.len(), "registry: creating new registry with initial participants");
         let participants_map = participants
             .iter()
             .enumerate()
@@ -39,6 +40,7 @@ impl Registry {
     }
 
     pub fn update_registry(&self, index: View, add: Vec<PublicKey>, remove: Vec<PublicKey>) {
+        tracing::debug!(index, add_count = add.len(), remove_count = remove.len(), "registry: update_registry called");
         let mut views = self.views.write().unwrap();
 
         let mut participants = if let Some((latest_view, view_data)) = views.last_key_value() {
@@ -98,7 +100,9 @@ impl p2p::Coordinator for Registry {
         let views = self.views.read().unwrap();
 
         // Use the list of participants that is associated with the largest index
-        if let Some((_view, view_data)) = views.last_key_value() {
+        if let Some((view, view_data)) = views.last_key_value() {
+            let peer_count = view_data.participants.len();
+            tracing::debug!(view, peer_count, "registry: peers() called - returning participants from latest view");
             let ptr = &view_data.participants as *const Vec<PublicKey>;
             // Drop the guard explicitly
             drop(views);
@@ -106,6 +110,7 @@ impl p2p::Coordinator for Registry {
             // Views are never removed, so this pointer remains valid
             unsafe { &*ptr }
         } else {
+            tracing::warn!("registry: peers() called but no views exist - returning empty");
             static EMPTY: Vec<PublicKey> = Vec::new();
             &EMPTY
         }
