@@ -335,7 +335,7 @@ impl Command {
             }
 
             // configure network
-            let mut p2p_cfg = authenticated::discovery::Config::aggressive(
+            let mut p2p_cfg = authenticated::discovery::Config::recommended(
                 signer.clone(),
                 genesis.namespace.as_bytes(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
@@ -532,7 +532,7 @@ pub fn run_node_with_runtime(
         }
 
         // configure network
-        let mut p2p_cfg = authenticated::discovery::Config::aggressive(
+        let mut p2p_cfg = authenticated::discovery::Config::recommended(
             signer.clone(),
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
