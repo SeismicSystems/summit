@@ -385,8 +385,8 @@ impl<
                     // out-of-bounds array access.
                     view + REGISTRY_CHANGE_VIEW_DELTA,
                     //view,
-                    std::mem::take(&mut self.state.added_validators),
-                    std::mem::take(&mut self.state.removed_validators),
+                    &self.state.added_validators,
+                    &self.state.removed_validators,
                 );
                 let participants = self.registry.peers().clone();
                 // TODO(matthias): should we wait until view `view + REGISTRY_CHANGE_VIEW_DELTA`
@@ -417,6 +417,14 @@ impl<
             {
                 let db_operations_duration = db_operations_start.elapsed().as_millis() as f64;
                 histogram!("database_operations_duration_millis").record(db_operations_duration);
+            }
+
+            // Only clear the added and removed validators after saving the state to disk
+            if !self.state.added_validators.is_empty() {
+                self.state.added_validators.clear();
+            }
+            if !self.state.removed_validators.is_empty() {
+                self.state.removed_validators.clear();
             }
 
             #[cfg(debug_assertions)]

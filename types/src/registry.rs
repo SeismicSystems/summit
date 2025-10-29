@@ -39,7 +39,7 @@ impl Registry {
         registry
     }
 
-    pub fn update_registry(&self, index: View, add: Vec<PublicKey>, remove: Vec<PublicKey>) {
+    pub fn update_registry(&self, index: View, add: &[PublicKey], remove: &[PublicKey]) {
         tracing::debug!(index, add_count = add.len(), remove_count = remove.len(), "registry: update_registry called");
         let mut views = self.views.write().unwrap();
 
@@ -59,7 +59,7 @@ impl Registry {
             participants.participants.push(participant.clone());
             participants
                 .participants_map
-                .insert(participant, (participants.participants.len() as u32) - 1);
+                .insert(participant.clone(), (participants.participants.len() as u32) - 1);
         }
 
         for participant in remove {
@@ -216,7 +216,9 @@ mod tests {
         let new_participant = crate::PrivateKey::from_seed(99).public_key();
 
         // Add participant to view 1
-        registry.update_registry(1, vec![new_participant.clone()], vec![]);
+        let add = vec![new_participant.clone()];
+        let remove = vec![];
+        registry.update_registry(1, &add, &remove);
 
         // Verify participant was added
         let view_1_participants = registry.participants(1);
@@ -235,7 +237,9 @@ mod tests {
         let existing_participant = registry.participants(0).unwrap()[0].clone();
 
         // Try to add existing participant - should log warning but not fail
-        registry.update_registry(1, vec![existing_participant.clone()], vec![]);
+        let add = vec![existing_participant.clone()];
+        let remove = vec![];
+        registry.update_registry(1, &add, &remove);
 
         // Verify participant count didn't increase (duplicate was ignored)
         let view_1_participants = registry.participants(1);
@@ -249,7 +253,9 @@ mod tests {
         let participant_to_remove = registry.participants(0).unwrap()[1].clone();
 
         // Remove participant from view 1
-        registry.update_registry(1, vec![], vec![participant_to_remove.clone()]);
+        let add = vec![];
+        let remove = vec![participant_to_remove.clone()];
+        registry.update_registry(1, &add, &remove);
 
         // Verify participant was removed
         let view_1_participants = registry.participants(1);
@@ -271,7 +277,9 @@ mod tests {
         let nonexistent_participant = crate::PrivateKey::from_seed(999).public_key();
 
         // Try to remove non-existent participant - should log warning but not fail
-        registry.update_registry(1, vec![], vec![nonexistent_participant]);
+        let add = vec![];
+        let remove = vec![nonexistent_participant];
+        registry.update_registry(1, &add, &remove);
 
         // Verify participant count didn't change (remove was ignored)
         let view_1_participants = registry.participants(1);
@@ -313,7 +321,9 @@ mod tests {
 
         // Add participant to create view 3
         let new_participant = crate::PrivateKey::from_seed(100).public_key();
-        registry.update_registry(3, vec![new_participant.clone()], vec![]);
+        let add = vec![new_participant.clone()];
+        let remove = vec![];
+        registry.update_registry(3, &add, &remove);
 
         // Views 0, 1, 2 should still use original participants (largest view <= requested)
         assert_eq!(registry.participants(0).unwrap(), original_participants);
@@ -379,7 +389,9 @@ mod tests {
 
         // Add participant to create view 1
         let new_participant = crate::PrivateKey::from_seed(100).public_key();
-        registry.update_registry(1, vec![new_participant], vec![]);
+        let add = vec![new_participant];
+        let remove = vec![];
+        registry.update_registry(1, &add, &remove);
 
         // Peer set ID should now be 1
         assert_eq!(registry.peer_set_id(), 1);
@@ -395,7 +407,9 @@ mod tests {
 
         // Add participant
         let new_participant = crate::PrivateKey::from_seed(100).public_key();
-        registry.update_registry(1, vec![new_participant.clone()], vec![]);
+        let add = vec![new_participant.clone()];
+        let remove = vec![];
+        registry.update_registry(1, &add, &remove);
 
         // Peers should now reflect the latest view
         let updated_peers = registry.peers();
@@ -412,8 +426,8 @@ mod tests {
         let participant_a = crate::PrivateKey::from_seed(100).public_key();
         let participant_b = crate::PrivateKey::from_seed(101).public_key();
 
-        registry.update_registry(3, vec![participant_a.clone()], vec![]);
-        registry.update_registry(7, vec![participant_b.clone()], vec![]);
+        registry.update_registry(3, &[participant_a.clone()], &[]);
+        registry.update_registry(7, &[participant_b.clone()], &[]);
 
         // Test participants for each view (largest view <= requested)
         assert_eq!(registry.participants(0).unwrap().len(), 2); // view 0
@@ -437,7 +451,7 @@ mod tests {
 
         // Add participant to view 1
         let new_participant = crate::PrivateKey::from_seed(100).public_key();
-        registry.update_registry(1, vec![new_participant.clone()], vec![]);
+        registry.update_registry(1, &[new_participant.clone()], &[]);
 
         // Original view should remain unchanged
         assert_eq!(registry.participants(0).unwrap(), &original_participants);
@@ -525,8 +539,8 @@ mod tests {
         let participant_a = crate::PrivateKey::from_seed(100).public_key();
         let participant_b = crate::PrivateKey::from_seed(101).public_key();
 
-        registry.update_registry(3, vec![participant_a.clone()], vec![]);
-        registry.update_registry(7, vec![participant_b.clone()], vec![]);
+        registry.update_registry(3, &[participant_a.clone()], &[]);
+        registry.update_registry(7, &[participant_b.clone()], &[]);
 
         // Test that we get the largest view <= requested view
         // Views available: 0 (2 participants), 3 (3 participants), 7 (4 participants)
@@ -561,7 +575,7 @@ mod tests {
 
         // Add participant at view 2
         let new_participant = crate::PrivateKey::from_seed(100).public_key();
-        registry.update_registry(2, vec![new_participant.clone()], vec![]);
+        registry.update_registry(2, &[new_participant.clone()], &[]);
 
         // Leader for view 0-1 should use 4-participant set from view 0
         let leader_0 = Su::leader(&registry, 0);
@@ -596,7 +610,7 @@ mod tests {
 
         // Add participant at view 3
         let new_participant = crate::PrivateKey::from_seed(100).public_key();
-        registry.update_registry(3, vec![new_participant.clone()], vec![]);
+        registry.update_registry(3, &[new_participant.clone()], &[]);
 
         // Original participants should be found in all views
         assert_eq!(
@@ -639,10 +653,10 @@ mod tests {
         let participant_a = crate::PrivateKey::from_seed(100).public_key();
         let participant_b = crate::PrivateKey::from_seed(101).public_key();
 
-        registry.update_registry(5, vec![participant_a], vec![]);
+        registry.update_registry(5, &[participant_a], &[]);
         assert_eq!(registry.peer_set_id(), 5);
 
-        registry.update_registry(10, vec![participant_b], vec![]);
+        registry.update_registry(10, &[participant_b], &[]);
         assert_eq!(registry.peer_set_id(), 10);
     }
 
@@ -653,7 +667,7 @@ mod tests {
         let participant_to_remove = original_participants[1].clone();
 
         // Remove participant at view 2
-        registry.update_registry(2, vec![], vec![participant_to_remove.clone()]);
+        registry.update_registry(2, &[], &[participant_to_remove.clone()]);
 
         // Views 0-1 should still have original participants
         assert_eq!(registry.participants(0).unwrap().len(), 3);
@@ -701,8 +715,8 @@ mod tests {
         // Add two participants and remove one in a single operation
         registry.update_registry(
             1,
-            vec![new_participant_a.clone(), new_participant_b.clone()],
-            vec![participant_to_remove.clone()],
+            &[new_participant_a.clone(), new_participant_b.clone()],
+            &[participant_to_remove.clone()],
         );
 
         // Verify the result
