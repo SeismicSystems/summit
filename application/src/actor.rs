@@ -109,10 +109,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             mut response,
                         } => {
                             info!("{rand_id} Handling message Propose view: {}", view);
+                            let start = std::time::Instant::now();
 
                             let built = self.built_block.clone();
                             select! {
                                     res = self.handle_proposal(parent, &mut syncer,&mut finalizer, view) => {
+                                        let elapsed = start.elapsed();
                                         match res {
                                             Ok(block) => {
                                                 // store block
@@ -124,13 +126,15 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                                                 // send digest to consensus
                                                 let _ = response.send(digest);
+                                                debug!(view, elapsed_ms = elapsed.as_millis(), "proposal completed successfully");
                                             },
                                             Err(e) => warn!("Failed to create a block for height {view}: {e}")
                                         }
                                     },
                                     _ = oneshot_closed_future(&mut response) => {
                                         // simplex dropped receiver
-                                        warn!(view, "proposal aborted");
+                                        let elapsed = start.elapsed();
+                                        warn!(view, elapsed_ms = elapsed.as_millis(), "proposal aborted by consensus");
                                     }
                             }
                         }
