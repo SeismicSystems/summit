@@ -11,6 +11,7 @@ use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConsensusState {
+    pub epoch: u64,
     pub latest_height: u64,
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
@@ -118,7 +119,8 @@ impl ConsensusState {
 
 impl EncodeSize for ConsensusState {
     fn encode_size(&self) -> usize {
-        8 // latest_height
+        8 // epoch
+        + 8 // latest_height
         + 8 // next_withdrawal_index
         + 4 // deposit_queue length
         + self.deposit_queue.iter().map(|req| req.encode_size()).sum::<usize>()
@@ -142,6 +144,7 @@ impl Read for ConsensusState {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let epoch = buf.get_u64();
         let latest_height = buf.get_u64();
         let next_withdrawal_index = buf.get_u64();
 
@@ -203,6 +206,7 @@ impl Read for ConsensusState {
         };
 
         Ok(Self {
+            epoch,
             latest_height,
             next_withdrawal_index,
             deposit_queue,
@@ -218,6 +222,7 @@ impl Read for ConsensusState {
 
 impl Write for ConsensusState {
     fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64(self.epoch);
         buf.put_u64(self.latest_height);
         buf.put_u64(self.next_withdrawal_index);
 
@@ -334,6 +339,7 @@ mod tests {
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
+        assert_eq!(decoded_state.epoch, original_state.epoch);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
             decoded_state.next_withdrawal_index,
@@ -357,6 +363,7 @@ mod tests {
     fn test_serialization_deserialization_populated() {
         let mut original_state = ConsensusState::default();
 
+        original_state.epoch = 7;
         original_state.set_latest_height(42);
         original_state.next_withdrawal_index = 5;
 
@@ -380,6 +387,7 @@ mod tests {
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
+        assert_eq!(decoded_state.epoch, original_state.epoch);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
             decoded_state.next_withdrawal_index,
@@ -411,6 +419,7 @@ mod tests {
     fn test_encode_size_accuracy() {
         let mut state = ConsensusState::default();
 
+        state.epoch = 3;
         state.set_latest_height(42);
         state.next_withdrawal_index = 5;
 
@@ -463,6 +472,7 @@ mod tests {
     fn test_try_from_checkpoint() {
         // Create a populated ConsensusState
         let mut original_state = ConsensusState::default();
+        original_state.epoch = 5;
         original_state.set_latest_height(100);
         original_state.next_withdrawal_index = 42;
 
@@ -486,6 +496,7 @@ mod tests {
             .expect("Failed to convert checkpoint back to ConsensusState");
 
         // Verify the data matches
+        assert_eq!(restored_state.epoch, original_state.epoch);
         assert_eq!(restored_state.latest_height, original_state.latest_height);
         assert_eq!(
             restored_state.next_withdrawal_index,
