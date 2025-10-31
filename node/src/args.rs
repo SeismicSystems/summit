@@ -350,7 +350,9 @@ impl Command {
                 authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
             // Provide authorized peers
-            oracle.register(initial_state.latest_height, peers.clone()).await;
+            oracle
+                .register(initial_state.latest_height, peers.clone())
+                .await;
 
             let oracle = DiscoveryOracle::new(oracle);
             let config = EngineConfig::get_engine_config(
@@ -532,6 +534,16 @@ pub fn run_node_with_runtime(
         }
 
         // configure network
+        #[cfg(feature = "e2e")]
+        let mut p2p_cfg = authenticated::discovery::Config::aggressive(
+            signer.clone(),
+            genesis.namespace.as_bytes(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
+            our_ip,
+            network_committee,
+            genesis.max_message_size_bytes as usize,
+        );
+        #[cfg(not(feature = "e2e"))]
         let mut p2p_cfg = authenticated::discovery::Config::recommended(
             signer.clone(),
             genesis.namespace.as_bytes(),
@@ -547,7 +559,9 @@ pub fn run_node_with_runtime(
             authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
         // Provide authorized peers
-        oracle.register(initial_state.latest_height, peers.clone()).await;
+        oracle
+            .register(initial_state.latest_height, peers.clone())
+            .await;
 
         let oracle = DiscoveryOracle::new(oracle);
 

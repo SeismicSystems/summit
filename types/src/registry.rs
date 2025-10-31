@@ -55,9 +55,10 @@ impl Registry {
                 continue;
             }
             participants.participants.push(participant.clone());
-            participants
-                .participants_map
-                .insert(participant.clone(), (participants.participants.len() as u32) - 1);
+            participants.participants_map.insert(
+                participant.clone(),
+                (participants.participants.len() as u32) - 1,
+            );
         }
 
         for participant in remove {
