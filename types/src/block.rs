@@ -1,4 +1,4 @@
-use crate::{Header, PublicKey, Signature};
+use crate::{Header, PublicKey};
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
 use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
@@ -8,7 +8,7 @@ use commonware_codec::{EncodeSize, Error, Read, ReadExt as _, Write};
 use commonware_consensus::Block as Bl;
 use commonware_consensus::{
     Viewable,
-    simplex::types::{Finalization, Notarization},
+    simplex::{signing_scheme::ed25519::Scheme, types::{Finalization, Notarization}},
 };
 use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
@@ -183,7 +183,7 @@ impl Bl for Block {
 impl Viewable for Block {
     type View = u64;
 
-    fn view(&self) -> commonware_consensus::simplex::types::View {
+    fn view(&self) -> commonware_consensus::types::View {
         self.header.view
     }
 }
@@ -283,12 +283,12 @@ impl Committable for Block {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notarized {
-    pub proof: Notarization<Signature, Digest>,
+    pub proof: Notarization<Scheme, Digest>,
     pub block: Block,
 }
 
 impl Notarized {
-    pub fn new(proof: Notarization<Signature, Digest>, block: Block) -> Self {
+    pub fn new(proof: Notarization<Scheme, Digest>, block: Block) -> Self {
         Self { proof, block }
     }
 }
@@ -304,7 +304,7 @@ impl Read for Notarized {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Notarization::<Signature, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
+        let proof = Notarization::<Scheme, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -326,12 +326,12 @@ impl EncodeSize for Notarized {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finalized {
-    pub proof: Finalization<Signature, Digest>,
+    pub proof: Finalization<Scheme, Digest>,
     pub block: Block,
 }
 
 impl Finalized {
-    pub fn new(proof: Finalization<Signature, Digest>, block: Block) -> Self {
+    pub fn new(proof: Finalization<Scheme, Digest>, block: Block) -> Self {
         Self { proof, block }
     }
 }
@@ -347,7 +347,7 @@ impl Read for Finalized {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Finalization::<Signature, Digest>::read_cfg(buf, &buf.remaining())?;
+        let proof = Finalization::<Scheme, Digest>::read_cfg(buf, &buf.remaining())?;
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -370,7 +370,7 @@ impl EncodeSize for Finalized {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockEnvelope {
     pub block: Block,
-    pub finalized: Option<Finalization<Signature, Digest>>,
+    pub finalized: Option<Finalization<Scheme, Digest>>,
 }
 
 #[cfg(test)]

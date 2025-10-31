@@ -1,10 +1,10 @@
 use std::ops::Deref as _;
 
-use crate::{PublicKey, Signature};
+use crate::PublicKey;
 use alloy_primitives::U256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
-use commonware_consensus::simplex::types::Finalization;
+use commonware_consensus::simplex::{signing_scheme::ed25519::Scheme, types::Finalization};
 use commonware_cryptography::{Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 
@@ -258,11 +258,11 @@ impl Read for Header {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalizedHeader {
     pub header: Header,
-    pub finalized: Finalization<Signature, Digest>,
+    pub finalized: Finalization<Scheme, Digest>,
 }
 
 impl FinalizedHeader {
-    pub fn new(header: Header, finalized: Finalization<Signature, Digest>) -> Self {
+    pub fn new(header: Header, finalized: Finalization<Scheme, Digest>) -> Self {
         Self { header, finalized }
     }
 }
@@ -365,7 +365,9 @@ mod test {
     use super::*;
     use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
-    use commonware_consensus::simplex::types::{Finalization, Proposal};
+    use commonware_consensus::{simplex::{signing_scheme::{ed25519::Certificate, utils::Signers}, types::{Finalization, Proposal}}, types::Round};
+    use commonware_cryptography::ed25519::PrivateKey;
+    use commonware_cryptography::{PrivateKeyExt, Signer};
     use ssz::Decode;
 
     fn create_test_public_key(seed: u8) -> PublicKey {
@@ -432,14 +434,24 @@ mod test {
         );
 
         let proposal = Proposal {
-            view: header.view,
+            round: Round::new(0, header.view),
             parent: header.height,
             payload: header.digest,
         };
 
+        // Create valid signatures for the certificate
+        let signer1 = PrivateKey::from_seed(0);
+        let sig1 = signer1.sign(None, header.digest.as_ref());
+
+        let signer2 = PrivateKey::from_seed(1);
+        let sig2 = signer2.sign(None, header.digest.as_ref());
+
         let finalized = Finalization {
             proposal,
-            signatures: Vec::new(),
+            certificate: Certificate {
+                signers: Signers::from(3, [0, 2]), // 2 signers out of 3 participants
+                signatures: vec![sig1, sig2],
+            },
         };
 
         let finalized_header = FinalizedHeader::new(header.clone(), finalized);
@@ -469,15 +481,29 @@ mod test {
         );
 
         // Create a finalization with wrong payload
+        let dummy_digest = [99u8; 32];
         let wrong_proposal = Proposal {
-            view: header.view,
+            round: Round::new(0, header.view),
             parent: header.height,
-            payload: [99u8; 32].into(), // Wrong digest
+            payload: dummy_digest.into(), // Wrong digest
         };
+
+        // Create some dummy signatures for the certificate
+        let signer1 = PrivateKey::from_seed(0);
+        let sig1 = signer1.sign(None, &dummy_digest);
+
+        let signer2 = PrivateKey::from_seed(1);
+        let sig2 = signer2.sign(None, &dummy_digest);
+
+        let signer3 = PrivateKey::from_seed(2);
+        let sig3 = signer3.sign(None, &dummy_digest);
 
         let wrong_finalized = Finalization {
             proposal: wrong_proposal,
-            signatures: Vec::new(),
+            certificate: Certificate {
+                signers: Signers::from(5, [0, 2, 4]), // 3 signers out of 5 participants
+                signatures: vec![sig1, sig2, sig3],
+            },
         };
 
         let finalized_header = FinalizedHeader {
@@ -489,6 +515,7 @@ mod test {
         let result = FinalizedHeader::from_ssz_bytes(&encoded);
 
         assert!(result.is_err());
+        println!("{:?}", result);
         assert!(
             matches!(result.unwrap_err(), ssz::DecodeError::BytesInvalid(msg) if msg.contains("Finalization payload does not match header digest"))
         );
@@ -512,14 +539,17 @@ mod test {
         );
 
         let proposal = Proposal {
-            view: header.view,
+            round: Round::new(0, header.view),
             parent: header.height,
             payload: header.digest,
         };
 
         let finalized = Finalization {
             proposal,
-            signatures: Vec::new(),
+            certificate: Certificate {
+                signers: Signers::from(0, []),
+                signatures: Vec::new(),
+            },
         };
 
         let finalized_header = FinalizedHeader::new(header, finalized);
