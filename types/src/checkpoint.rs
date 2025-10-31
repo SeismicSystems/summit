@@ -145,6 +145,7 @@ mod tests {
     #[test]
     fn test_checkpoint_ssz_encode_decode_empty() {
         let state = ConsensusState {
+            epoch: 0,
             latest_height: 10,
             next_withdrawal_index: 100,
             deposit_queue: VecDeque::new(),
@@ -237,6 +238,7 @@ mod tests {
         validator_accounts.insert([11u8; 32], validator_account2);
 
         let state = ConsensusState {
+            epoch: 0,
             latest_height: 1000,
             next_withdrawal_index: 200,
             deposit_queue,
@@ -269,6 +271,7 @@ mod tests {
         use std::collections::{HashMap, VecDeque};
 
         let state = ConsensusState {
+            epoch: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -368,6 +371,7 @@ mod tests {
         validator_accounts.insert([11u8; 32], validator_account2);
 
         let state = ConsensusState {
+            epoch: 0,
             latest_height: 2000,
             next_withdrawal_index: 300,
             deposit_queue,
@@ -405,6 +409,7 @@ mod tests {
         use std::collections::{HashMap, VecDeque};
 
         let state = ConsensusState {
+            epoch: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -448,6 +453,7 @@ mod tests {
         use std::collections::{HashMap, VecDeque};
 
         let original_state = ConsensusState {
+            epoch: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -462,6 +468,7 @@ mod tests {
         let checkpoint = Checkpoint::new(&original_state);
         let converted_state = ConsensusState::try_from(&checkpoint).unwrap();
 
+        assert_eq!(converted_state.epoch, original_state.epoch);
         assert_eq!(converted_state.latest_height, original_state.latest_height);
         assert_eq!(
             converted_state.next_withdrawal_index,
@@ -486,6 +493,7 @@ mod tests {
         use std::collections::{HashMap, VecDeque};
 
         let original_state = ConsensusState {
+            epoch: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -561,6 +569,7 @@ mod tests {
         validator_accounts.insert([10u8; 32], validator_account1);
 
         let original_state = ConsensusState {
+            epoch: 0,
             latest_height: 1000,
             next_withdrawal_index: 200,
             deposit_queue,
@@ -576,6 +585,7 @@ mod tests {
         let converted_state = ConsensusState::try_from(&checkpoint).unwrap();
 
         // Verify all fields match
+        assert_eq!(converted_state.epoch, original_state.epoch);
         assert_eq!(converted_state.latest_height, original_state.latest_height);
         assert_eq!(
             converted_state.next_withdrawal_index,
