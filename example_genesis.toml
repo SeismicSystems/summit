@@ -8,21 +8,25 @@ max_message_size_bytes = 104857600
 namespace = "_SEISMIC_BFT"
 
 [[validators]]
-public_key = "1be3cb06d7cc347602421fb73838534e4b54934e28959de98906d120d0799ef2"
+node_public_key = "1be3cb06d7cc347602421fb73838534e4b54934e28959de98906d120d0799ef2"
+consensus_public_key = "a6f61154ae7be4fd38cd43cf69adfd4896c57473cacb389702bb83f8adf923eecf4854c745e064c0a2db79db5674332b"
 ip_address = "127.0.0.1:26600"
 withdrawal_credentials = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
 [[validators]]
-public_key = "32efa16e3cd62292db529e8f4babd27724b13b397edcf2b1dbe48f416ce40f0d"
+node_public_key = "32efa16e3cd62292db529e8f4babd27724b13b397edcf2b1dbe48f416ce40f0d"
+consensus_public_key = "b82eaa7fbc7f9cf9d60826e5155ca8ccc46e13d87f64f7bcdcaa2972c370766b87635334bfc49b8fba7fb784e763d44e"
 ip_address = "127.0.0.1:26610"
 withdrawal_credentials = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
 [[validators]]
-public_key = "ce9b314ac9d55d28bedf543164120eecf737380015c977eaa78d59894bbccf52"
+node_public_key = "ce9b314ac9d55d28bedf543164120eecf737380015c977eaa78d59894bbccf52"
+consensus_public_key = "b806a3638975b2c33ccdda9cc55231e1328a0d1f70a3dde804e473e22ec21d5703ee34264c702b971cd0f9d5892434e8"
 ip_address = "127.0.0.1:26620"
 withdrawal_credentials = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 
 [[validators]]
-public_key = "f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226"
+node_public_key = "f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226"
+consensus_public_key = "83c50f2fa828c5e132a2ac00792ef9c892372976ff26400711b7061bdb045f0751559b4a04cfd7399555a2aed5b54f3f"
 ip_address = "127.0.0.1:26630"
 withdrawal_credentials = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
