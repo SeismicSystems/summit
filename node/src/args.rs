@@ -1,7 +1,7 @@
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RESOLVER_CHANNEL, expect_signer,
+        RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -73,9 +73,9 @@ pub enum Command {
 
 #[derive(Args, Debug, Clone)]
 pub struct RunFlags {
-    /// Path to your private key or where you want it generated
-    #[arg(long, default_value_t = DEFAULT_KEY_PATH.into())]
-    pub key_path: String,
+    /// Path to your keystore directory containing node_key.pem and consensus_key.pem
+    #[arg(long, default_value_t = "~/.seismic/consensus/keys".into())]
+    pub key_store_path: String,
     /// Path to the folder we will keep the consensus DB
     #[arg(long, default_value_t = DEFAULT_DB_FOLDER.into())]
     pub store_path: String,
@@ -173,7 +173,8 @@ impl Command {
         });
 
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
-        let signer = expect_signer(&flags.key_path);
+        let key_store = expect_key_store(&flags.key_store_path);
+        let signer = key_store.node_key;
 
         // Initialize runtime
         let cfg = tokio::Config::default()
@@ -358,7 +359,7 @@ impl Command {
             let config = EngineConfig::get_engine_config(
                 engine_client,
                 oracle,
-                signer,
+                key_store,
                 peers,
                 flags.db_prefix.clone(),
                 &genesis,
@@ -393,12 +394,12 @@ impl Command {
             let engine = engine.start(pending, resolver, broadcaster, backfiller);
 
             // Start RPC server
-            let key_path = flags.key_path.clone();
+            let key_store_path = flags.key_store_path.clone();
             let rpc_port = flags.rpc_port;
             let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
                 if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_path, rpc_port, stop_signal).await
+                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
                 {
                     error!("RPC server failed: {}", e);
                 }
@@ -418,7 +419,8 @@ pub fn run_node_with_runtime(
     checkpoint: Option<ConsensusState>,
 ) -> Handle<()> {
     context.spawn(async move |context| {
-        let signer = expect_signer(&flags.key_path);
+        let key_store = expect_key_store(&flags.key_store_path);
+        let signer = key_store.node_key;
 
         let (genesis_tx, genesis_rx) = oneshot::channel();
 
@@ -568,7 +570,7 @@ pub fn run_node_with_runtime(
         let config = EngineConfig::get_engine_config(
             engine_client,
             oracle,
-            signer,
+            key_store,
             peers,
             flags.db_prefix.clone(),
             &genesis,
@@ -618,14 +620,14 @@ pub fn run_node_with_runtime(
         }
 
         // Start RPC server
-        let key_path = flags.key_path.clone();
+        let key_store_path = flags.key_store_path.clone();
         let rpc_port = flags.rpc_port;
         let stop_signal = context.stopped();
         let rpc_handle = context
             .with_label("rpc_genesis")
             .spawn(move |_context| async move {
                 if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_path, rpc_port, stop_signal).await
+                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
                 {
                     error!("RPC server failed: {}", e);
                 }
