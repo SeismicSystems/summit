@@ -1,13 +1,14 @@
 use crate::PublicKey;
-use crate::account::ValidatorAccount;
+use crate::account::{ValidatorAccount, ValidatorStatus};
 use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::PendingWithdrawal;
 use alloy_eips::eip4895::Withdrawal;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, EncodeSize, Error, Read, Write};
+use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
 use std::collections::{HashMap, VecDeque};
+use commonware_cryptography::bls12381;
 
 #[derive(Clone, Debug, Default)]
 pub struct ConsensusState {
@@ -114,6 +115,21 @@ impl ConsensusState {
             .take(k)
             .cloned()
             .collect()
+    }
+
+    pub fn get_validator_keys(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self.validator_accounts
+            .iter()
+            .filter(|(_, acc)| !(acc.status == ValidatorStatus::Inactive))
+            .map(|(v, acc)| {
+                let mut key_bytes = &v[..];
+                let node_public_key = PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let consensus_public_key = acc.consensus_public_key.clone();
+                (node_public_key, consensus_public_key)
+            })
+            .collect();
+        peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        peers
     }
 }
 
@@ -288,6 +304,7 @@ mod tests {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
+    use commonware_cryptography::{bls12381, PrivateKeyExt, Signer};
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
         let mut withdrawal_credentials = [0u8; 32];
@@ -323,7 +340,9 @@ mod tests {
     }
 
     fn create_test_validator_account(index: u64, balance: u64) -> ValidatorAccount {
+        let consensus_key = bls12381::PrivateKey::from_seed(1);
         ValidatorAccount {
+            consensus_public_key: consensus_key.public_key(),
             withdrawal_credentials: Address::from([index as u8; 20]),
             balance,
             pending_withdrawal_amount: 0,

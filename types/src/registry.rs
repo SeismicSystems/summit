@@ -9,6 +9,7 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 #[derive(Default, Clone, Debug)]
 struct Inner {
     sets: BTreeMap<View, Ordered<PublicKey>>,
+    #[allow(clippy::type_complexity)]
     subscribers: Vec<UnboundedSender<(u64, Ordered<PublicKey>, Ordered<PublicKey>)>>,
 }
 
@@ -86,7 +87,7 @@ impl Manager for Registry {
 
     fn peer_set(&mut self, id: u64) -> impl Future<Output=Option<Ordered<Self::PublicKey>>> + Send {
         let inner = self.inner.write().unwrap();
-        let set = inner.sets.get(&id).map(|s| s.clone());
+        let set = inner.sets.get(&id).cloned();
         async move { set }
     }
 
