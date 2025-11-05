@@ -1,0 +1,39 @@
+//! Inbound communication channel for epoch transitions.
+
+use commonware_consensus::{types::Epoch, Reporter};
+use commonware_cryptography::{
+    bls12381::primitives::variant::Variant,
+    PublicKey,
+};
+use futures::{channel::mpsc, SinkExt};
+use summit_types::scheme::EpochTransition;
+
+/// Messages that can be sent to the orchestrator.
+pub enum Message<V: Variant, P: PublicKey> {
+    Enter(EpochTransition<V, P>),
+    Exit(Epoch),
+}
+
+/// Inbound communication channel for epoch transitions.
+#[derive(Debug, Clone)]
+pub struct Mailbox<V: Variant, P: PublicKey> {
+    sender: mpsc::Sender<Message<V, P>>,
+}
+
+impl<V: Variant, P: PublicKey> Mailbox<V, P> {
+    /// Create a new [Mailbox].
+    pub fn new(sender: mpsc::Sender<Message<V, P>>) -> Self {
+        Self { sender }
+    }
+}
+
+impl<V: Variant, P: PublicKey> Reporter for Mailbox<V, P> {
+    type Activity = Message<V, P>;
+
+    async fn report(&mut self, activity: Self::Activity) {
+        self.sender
+            .send(activity)
+            .await
+            .expect("failed to send epoch transition")
+    }
+}
