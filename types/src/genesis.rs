@@ -140,7 +140,6 @@ impl Genesis {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use super::*;
 
     #[test]
@@ -162,43 +161,5 @@ mod tests {
             let found_addr = genesis.ip_of(&validator.node_public_key);
             assert_eq!(found_addr, Some(validator.ip_address));
         }
-    }
-
-    #[test]
-fn test_generate_and_save_bls_keys() {
-        use commonware_cryptography::{bls12381, PrivateKeyExt, Signer};
-        use commonware_codec::Encode;
-        use std::fs;
-        use std::path::Path;
-
-        let temp_dir = PathBuf::from("testnet");
-        fs::create_dir_all(&temp_dir).unwrap();
-
-        println!("\nGenerating 4 BLS key pairs:");
-        println!("Keys saved to: {}\n", temp_dir.display());
-
-        for i in 0..4 {
-            let private_key = bls12381::PrivateKey::from_seed(i);
-            let public_key = private_key.public_key();
-
-            // Save private key to disk
-            fs::create_dir_all(&temp_dir.join(format!("node{}", i))).unwrap();
-            let private_key_path = temp_dir.join(format!("node{}", i)).join("consensus.pem");
-            let private_key_bytes = private_key.encode();
-            fs::write(&private_key_path, &private_key_bytes).unwrap();
-
-            // Print public key in hex format
-            let public_key_hex = public_key.to_string();
-            println!("Validator {}: {}", i, public_key_hex);
-        }
-
-        // Verify we can read the keys back
-        for i in 0..4 {
-            let private_key_path = temp_dir.join(format!("node{}", i)).join("consensus.pem");
-            assert!(Path::new(&private_key_path).exists());
-        }
-
-        // Cleanup
-        //fs::remove_dir_all(&temp_dir).unwrap();
     }
 }

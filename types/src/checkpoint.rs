@@ -132,6 +132,7 @@ mod tests {
     use commonware_codec::DecodeExt;
     use ssz::{Decode, Encode};
     use std::collections::{HashMap, VecDeque};
+    use commonware_cryptography::{bls12381, PrivateKeyExt, Signer};
 
     fn parse_public_key(public_key: &str) -> commonware_cryptography::ed25519::PublicKey {
         commonware_cryptography::ed25519::PublicKey::decode(
@@ -209,7 +210,9 @@ mod tests {
             pubkey: [5u8; 32],
         };
 
+        let consensus_key1 = bls12381::PrivateKey::from_seed(1);
         let validator_account1 = ValidatorAccount {
+            consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,
@@ -217,7 +220,9 @@ mod tests {
             last_deposit_index: 100,
         };
 
+        let consensus_key2 = bls12381::PrivateKey::from_seed(2);
         let validator_account2 = ValidatorAccount {
+            consensus_public_key: consensus_key2.public_key(),
             withdrawal_credentials: Address::from([8u8; 20]),
             balance: 16_000_000_000,                  // 16 ETH
             pending_withdrawal_amount: 8_000_000_000, // 8 ETH pending
@@ -342,7 +347,9 @@ mod tests {
             pubkey: [5u8; 32],
         };
 
+        let consensus_key1 = bls12381::PrivateKey::from_seed(1);
         let validator_account1 = ValidatorAccount {
+            consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,
@@ -350,7 +357,9 @@ mod tests {
             last_deposit_index: 100,
         };
 
+        let consensus_key2 = bls12381::PrivateKey::from_seed(2);
         let validator_account2 = ValidatorAccount {
+            consensus_public_key: consensus_key2.public_key(),
             withdrawal_credentials: Address::from([8u8; 20]),
             balance: 16_000_000_000,                  // 16 ETH
             pending_withdrawal_amount: 8_000_000_000, // 8 ETH pending
@@ -550,7 +559,9 @@ mod tests {
             pubkey: [5u8; 32],
         };
 
+        let consensus_key1 = bls12381::PrivateKey::from_seed(1);
         let validator_account1 = ValidatorAccount {
+            consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,

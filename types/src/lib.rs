@@ -13,6 +13,8 @@ pub mod registry;
 pub mod reth;
 pub mod utils;
 pub mod withdrawal;
+pub mod scheme;
+pub mod keystore;
 
 use alloy_rpc_types_engine::ForkchoiceState;
 pub use block::*;
