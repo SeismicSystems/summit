@@ -1,14 +1,16 @@
 use crate::PublicKey;
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt;
+use commonware_cryptography::bls12381;
 use commonware_utils::from_hex_formatted;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use anyhow::Context;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Genesis {
     /// List of all validators at genesis block
-    pub validators: Vec<Validator>,
+    pub validators: Vec<GenesisValidator>,
     /// The hash of the genesis file used for the EVM client
     pub eth_genesis_hash: String,
     /// Amount of time to wait for a leader to propose a payload
@@ -39,26 +41,39 @@ pub struct Genesis {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Validator {
-    pub public_key: String,
+pub struct GenesisValidator {
+    pub node_public_key: String,
+    pub consensus_public_key: String,
     pub ip_address: String,
     pub withdrawal_credentials: String,
 }
 
-impl TryInto<(PublicKey, SocketAddr, Address)> for &Validator {
-    type Error = String;
+#[derive(Debug, Clone)]
+pub struct Validator {
+    pub node_public_key: PublicKey,
+    pub consensus_public_key: bls12381::PublicKey,
+    pub ip_address: SocketAddr,
+    pub withdrawal_credentials: Address,
+}
 
-    fn try_into(self) -> Result<(PublicKey, SocketAddr, Address), Self::Error> {
-        let pub_key_bytes = from_hex_formatted(&self.public_key).ok_or("PublicKey bad format")?;
+impl TryFrom<&GenesisValidator> for Validator {
+    type Error = anyhow::Error;
 
-        Ok((
-            PublicKey::decode(&*pub_key_bytes).map_err(|_| "Unable to decode Public Key")?,
-            self.ip_address.parse().map_err(|_| "Invalid ip address")?,
-            self.withdrawal_credentials
-                .parse()
-                .map_err(|_| "Invalid withdrawal credentials")?,
-        ))
+    fn try_from(value: &GenesisValidator) -> Result<Self, Self::Error> {
+        let node_key_bytes = from_hex_formatted(&value.node_public_key).context("Node PublicKey bad format")?;
+        let node_public_key = PublicKey::decode(&*node_key_bytes)?;
+
+        let consensus_key_bytes = from_hex_formatted(&value.consensus_public_key).context("Consensus PublicKey bad format")?;
+        let consensus_public_key = bls12381::PublicKey::decode(&*consensus_key_bytes)?;
+
+        Ok(Validator {
+            node_public_key,
+            consensus_public_key,
+            ip_address: value.ip_address.parse()?,
+            withdrawal_credentials: value.withdrawal_credentials.parse()?
+        })
     }
+
 }
 
 impl Genesis {
@@ -68,26 +83,9 @@ impl Genesis {
         Ok(genesis)
     }
 
-    pub fn get_validator_addresses(
-        &self,
-    ) -> Result<Vec<(PublicKey, SocketAddr)>, Box<dyn std::error::Error>> {
-        let mut validators = Vec::new();
-
-        for validator in &self.validators {
-            let public_key_bytes = from_hex_formatted(&validator.public_key)
-                .ok_or("Invalid hex format for public key")?;
-            let pub_key = PublicKey::decode(&*public_key_bytes)?;
-            let socket_addr: SocketAddr = validator.ip_address.parse()?;
-
-            validators.push((pub_key, socket_addr));
-        }
-
-        Ok(validators)
-    }
-
     pub fn ip_of(&self, target_public_key: &PublicKey) -> Option<SocketAddr> {
         for validator in &self.validators {
-            if let Some(public_key_bytes) = from_hex_formatted(&validator.public_key) {
+            if let Some(public_key_bytes) = from_hex_formatted(&validator.node_public_key) {
                 if let Ok(pub_key) = PublicKey::decode(&*public_key_bytes) {
                     if &pub_key == target_public_key {
                         if let Ok(socket_addr) = validator.ip_address.parse() {
@@ -103,10 +101,46 @@ impl Genesis {
     pub fn validator_count(&self) -> usize {
         self.validators.len()
     }
+
+    pub fn get_validators(&self) -> Result<Vec<Validator>, anyhow::Error> {
+        let mut validators = Vec::with_capacity(self.validators.len());
+        for validator in &self.validators {
+            validators.push(validator.try_into()?);
+        }
+        Ok(validators)
+    }
+
+    pub fn get_consensus_keys(&self) -> Result<Vec<bls12381::PublicKey>, Box<dyn std::error::Error>> {
+        let mut keys = Vec::new();
+        for validator in &self.validators {
+            let key_bytes = from_hex_formatted(&validator.consensus_public_key)
+                .ok_or("Invalid hex format for consensus public key")?;
+            let key = bls12381::PublicKey::decode(&*key_bytes)?;
+            keys.push(key);
+        }
+        Ok(keys)
+    }
+
+    pub fn get_validator_keys(&self) -> Result<Vec<(PublicKey, bls12381::PublicKey)>, Box<dyn std::error::Error>> {
+        let mut keys = Vec::new();
+        for validator in &self.validators {
+            let node_key_bytes = from_hex_formatted(&validator.node_public_key)
+                .ok_or("Invalid hex format for node public key")?;
+            let node_key = PublicKey::decode(&*node_key_bytes)?;
+
+            let consensus_key_bytes = from_hex_formatted(&validator.consensus_public_key)
+                .ok_or("Invalid hex format for consensus public key")?;
+            let consensus_key = bls12381::PublicKey::decode(&*consensus_key_bytes)?;
+
+            keys.push((node_key, consensus_key));
+        }
+        Ok(keys)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use super::*;
 
     #[test]
@@ -114,19 +148,57 @@ mod tests {
         let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         assert_eq!(genesis.validator_count(), 4);
 
-        let addresses = genesis.get_validator_addresses().unwrap();
-        assert_eq!(addresses.len(), 4);
+        let keys = genesis.get_validator_keys().unwrap();
+        assert_eq!(keys.len(), 4);
     }
 
     #[test]
     fn test_validator_lookup() {
         let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        let addresses = genesis.get_validator_addresses().unwrap();
 
         // Test that we can find the IP for each validator
-        for (pub_key, expected_addr) in &addresses {
-            let found_addr = genesis.ip_of(pub_key);
-            assert_eq!(found_addr, Some(*expected_addr));
+        let validators = &genesis.get_validators().unwrap();
+        for validator in validators {
+            let found_addr = genesis.ip_of(&validator.node_public_key);
+            assert_eq!(found_addr, Some(validator.ip_address));
         }
+    }
+
+    #[test]
+fn test_generate_and_save_bls_keys() {
+        use commonware_cryptography::{bls12381, PrivateKeyExt, Signer};
+        use commonware_codec::Encode;
+        use std::fs;
+        use std::path::Path;
+
+        let temp_dir = PathBuf::from("testnet");
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        println!("\nGenerating 4 BLS key pairs:");
+        println!("Keys saved to: {}\n", temp_dir.display());
+
+        for i in 0..4 {
+            let private_key = bls12381::PrivateKey::from_seed(i);
+            let public_key = private_key.public_key();
+
+            // Save private key to disk
+            fs::create_dir_all(&temp_dir.join(format!("node{}", i))).unwrap();
+            let private_key_path = temp_dir.join(format!("node{}", i)).join("consensus.pem");
+            let private_key_bytes = private_key.encode();
+            fs::write(&private_key_path, &private_key_bytes).unwrap();
+
+            // Print public key in hex format
+            let public_key_hex = public_key.to_string();
+            println!("Validator {}: {}", i, public_key_hex);
+        }
+
+        // Verify we can read the keys back
+        for i in 0..4 {
+            let private_key_path = temp_dir.join(format!("node{}", i)).join("consensus.pem");
+            assert!(Path::new(&private_key_path).exists());
+        }
+
+        // Cleanup
+        //fs::remove_dir_all(&temp_dir).unwrap();
     }
 }
