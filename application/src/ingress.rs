@@ -1,8 +1,7 @@
-use commonware_consensus::{
-    Automaton, Relay,
-    simplex::types::{Context, View},
-};
+use commonware_consensus::{Automaton, Relay, simplex::types::Context, types::View, Epochable};
+use commonware_consensus::types::{Epoch, Round};
 use commonware_cryptography::sha256::Digest;
+use commonware_cryptography::Signer;
 use futures::{
     SinkExt,
     channel::{mpsc, oneshot},
@@ -10,10 +9,11 @@ use futures::{
 
 pub enum Message {
     Genesis {
+        epoch: Epoch,
         response: oneshot::Sender<Digest>,
     },
     Propose {
-        view: View,
+        round: Round,
         parent: (View, Digest),
         response: oneshot::Sender<Digest>,
     },
@@ -21,7 +21,7 @@ pub enum Message {
         payload: Digest,
     },
     Verify {
-        view: View,
+        round: Round,
         parent: (View, Digest),
         payload: Digest,
         response: oneshot::Sender<bool>,
@@ -29,36 +29,36 @@ pub enum Message {
 }
 
 #[derive(Clone)]
-pub struct Mailbox {
+pub struct Mailbox<C: Signer> {
     sender: mpsc::Sender<Message>,
 }
 
-impl Mailbox {
+impl<C: Signer> Mailbox<C> {
     pub fn new(sender: mpsc::Sender<Message>) -> Self {
         Self { sender }
     }
 }
 
-impl Automaton for Mailbox {
+impl<C: Signer> Automaton for Mailbox<C> {
+    type Context = Context<Self::Digest, C>;
     type Digest = Digest;
-    type Context = Context<Self::Digest>;
 
-    async fn genesis(&mut self) -> Self::Digest {
+    async fn genesis(&mut self, epoch: <Self::Context as Epochable>::Epoch) -> Self::Digest {
         let (response, receiver) = oneshot::channel();
         self.sender
-            .send(Message::Genesis { response })
+            .send(Message::Genesis { response, epoch })
             .await
             .expect("Failed to send genesis");
         receiver.await.expect("Failed to receive genesis")
     }
 
-    async fn propose(&mut self, context: Context<Self::Digest>) -> oneshot::Receiver<Self::Digest> {
+    async fn propose(&mut self, context: Context<Self::Digest, C>) -> oneshot::Receiver<Self::Digest> {
         // If we linked payloads to their parent, we would include
         // the parent in the `Context` in the payload.
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Message::Propose {
-                view: context.view,
+                round: context.round,
                 parent: context.parent,
                 response,
             })
@@ -69,7 +69,7 @@ impl Automaton for Mailbox {
 
     async fn verify(
         &mut self,
-        context: Context<Self::Digest>,
+        context: Context<Self::Digest, C>,
         payload: Self::Digest,
     ) -> oneshot::Receiver<bool> {
         // If we linked payloads to their parent, we would verify
@@ -77,7 +77,7 @@ impl Automaton for Mailbox {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Message::Verify {
-                view: context.view,
+                round: context.round,
                 parent: context.parent,
                 payload,
                 response,
@@ -88,7 +88,7 @@ impl Automaton for Mailbox {
     }
 }
 
-impl Relay for Mailbox {
+impl<C: Signer> Relay for Mailbox<C> {
     type Digest = Digest;
 
     async fn broadcast(&mut self, digest: Self::Digest) {
