@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use crate::{Header, PublicKey};
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
 use alloy_primitives::{Bytes as AlloyBytes, U256};
@@ -9,11 +8,17 @@ use commonware_codec::{EncodeSize, Error, Read, ReadExt as _, Write};
 use commonware_consensus::Block as ConsensusBlock;
 use commonware_consensus::{
     Viewable,
-    simplex::{signing_scheme::bls12381_multisig::Scheme, types::{Finalization, Notarization}},
+    simplex::{
+        signing_scheme::bls12381_multisig::Scheme,
+        types::{Finalization, Notarization},
+    },
 };
-use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest, Signer, ed25519};
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::{
+    Committable, Digestible, Hasher, Sha256, Signer, ed25519, sha256::Digest,
+};
 use ssz::Encode as _;
+use std::marker::PhantomData;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block<C: Signer = ed25519::PrivateKey, V: Variant = MinPk> {
@@ -46,6 +51,7 @@ impl<C: Signer, V: Variant> Block<C, V> {
         payload: ExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
         block_value: U256,
+        epoch: u64,
         view: u64,
         checkpoint_hash: Option<Digest>,
         prev_epoch_header_hash: Digest,
@@ -76,6 +82,7 @@ impl<C: Signer, V: Variant> Block<C, V> {
             parent,
             height,
             timestamp,
+            epoch,
             view,
             payload_hash,
             execution_request_hash,
@@ -140,6 +147,7 @@ impl<C: Signer, V: Variant> Block<C, V> {
             parent: genesis_hash.into(),
             height: 0,
             timestamp: 0,
+            epoch: 0,
             view: 1,
             payload_hash,
             execution_request_hash: [0; 32].into(),
@@ -314,7 +322,8 @@ impl<C: Signer, V: Variant> Read for Notarized<C, V> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Notarization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
+        let proof =
+            Notarization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -357,7 +366,8 @@ impl<C: Signer, V: Variant> Read for Finalized<C, V> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Finalization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(buf, &buf.remaining())?;
+        let proof =
+            Finalization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(buf, &buf.remaining())?;
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -389,8 +399,8 @@ mod test {
     use alloy_primitives::{Bytes as AlloyBytes, U256, hex};
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
     use commonware_codec::{DecodeExt as _, Encode as _};
-    use commonware_cryptography::ed25519;
     use commonware_cryptography::bls12381::primitives::variant::MinPk;
+    use commonware_cryptography::ed25519;
 
     fn create_test_public_key(seed: u8) -> PublicKey {
         let test_keys = [
@@ -455,6 +465,7 @@ mod test {
             vec![Default::default()],
             U256::ZERO,
             42,
+            1,
             Some([0u8; 32].into()),
             [0u8; 32].into(),
             added_validators,
@@ -503,6 +514,7 @@ mod test {
             Vec::new(),
             U256::ZERO,
             42,
+            1,
             Some([0u8; 32].into()),
             [0u8; 32].into(),
             added_validators,
