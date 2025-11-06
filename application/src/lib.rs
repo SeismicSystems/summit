@@ -5,4 +5,5 @@ pub mod ingress;
 pub use ingress::Mailbox;
 
 pub mod config;
+
 pub use config::*;

@@ -14,19 +14,22 @@ use futures::{
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
-use commonware_consensus::simplex::types::View;
+use commonware_consensus::types::View;
 use futures::task::{Context, Poll};
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::types::Round;
+use commonware_cryptography::Signer;
 use summit_finalizer::FinalizerMailbox;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::histogram;
-use summit_syncer::ingress::Mailbox as SyncerMailbox;
+use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
 use summit_types::{Block, Digest, EngineClient};
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
@@ -54,6 +57,8 @@ fn oneshot_closed_future<T>(sender: &mut oneshot::Sender<T>) -> ChannelClosedFut
 pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
+    S: Scheme,
+    K: Signer,
 > {
     context: R,
     mailbox: mpsc::Receiver<Message>,
@@ -63,10 +68,10 @@ pub struct Actor<
     cancellation_token: CancellationToken,
 }
 
-impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient>
-    Actor<R, C>
+impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient, S: Scheme, K: Signer>
+    Actor<R, C, S, K>
 {
-    pub async fn new(context: R, cfg: ApplicationConfig<C>) -> (Self, Mailbox) {
+    pub async fn new(context: R, cfg: ApplicationConfig<C>) -> (Self, Mailbox<K>) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
 
         let genesis_hash = cfg.genesis_hash;
@@ -84,11 +89,11 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         )
     }
 
-    pub fn start(mut self, syncer: SyncerMailbox, finalizer: FinalizerMailbox) -> Handle<()> {
+    pub fn start(mut self, syncer: SyncerMailbox<Digest, S>, finalizer: FinalizerMailbox) -> Handle<()> {
         self.context.spawn_ref()(self.run(syncer, finalizer))
     }
 
-    pub async fn run(mut self, mut syncer: SyncerMailbox, mut finalizer: FinalizerMailbox) {
+    pub async fn run(mut self, mut syncer: SyncerMailbox<Digest, S>, mut finalizer: FinalizerMailbox) {
         let rand_id: u8 = rand::random();
         let mut signal = self.context.stopped().fuse();
         let cancellation_token = self.cancellation_token.clone();
@@ -99,20 +104,23 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         break;
                     };
                     match message {
-                        Message::Genesis { response } => {
-                            info!("Handling message Genesis");
-                            let _ = response.send(self.genesis_hash.into());
+                        Message::Genesis { response, epoch } => {
+                            if epoch == 0 {
+                                let _ = response.send(self.genesis_hash.into());
+                            } else {
+                                todo!("TODO(matthias): for later epochs, this has to be the hash of the last block from the prev epoch");
+                            }
                         }
                         Message::Propose {
-                            view,
+                            round,
                             parent,
                             mut response,
                         } => {
-                            info!("{rand_id} Handling message Propose view: {}", view);
+                            info!("{rand_id} Handling message Propose round: {}", round);
 
                             let built = self.built_block.clone();
                             select! {
-                                    res = self.handle_proposal(parent, &mut syncer,&mut finalizer, view) => {
+                                    res = self.handle_proposal(parent, &mut syncer,&mut finalizer, round) => {
                                         match res {
                                             Ok(block) => {
                                                 // store block
@@ -125,12 +133,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                 // send digest to consensus
                                                 let _ = response.send(digest);
                                             },
-                                            Err(e) => warn!("Failed to create a block for height {view}: {e}")
+                                            Err(e) => warn!("Failed to create a block for round {round}: {e}")
                                         }
                                     },
                                     _ = oneshot_closed_future(&mut response) => {
                                         // simplex dropped receiver
-                                        warn!(view, "proposal aborted");
+                                        warn!(round, "proposal aborted");
                                     }
                             }
                         }
@@ -153,12 +161,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                         }
 
                         Message::Verify {
-                            view,
+                            round,
                             parent,
                             payload,
                             mut response,
                         } => {
-                            info!("{rand_id} Handling message Verify view: {}", view);
+                            info!("{rand_id} Handling message Verify round: {}", round);
                             // Get the parent block
                             let parent_request = if parent.1 == self.genesis_hash.into() {
                                 Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
@@ -179,9 +187,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                             let (parent, block) = result.unwrap();
 
                                             if handle_verify(&block, parent) {
-
                                                 // persist valid block
-                                                syncer.store_verified(view, block).await;
+                                                syncer.verified(round, block).await;
 
                                                 // respond
                                                 let _ = response.send(true);
@@ -191,7 +198,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                             }
                                         },
                                         _ = oneshot_closed_future(&mut response) => {
-                                            warn!(view, "verify aborted");
+                                            warn!(round, "verify aborted");
                                         }
                                     }
                                 }
@@ -214,9 +221,9 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     async fn handle_proposal(
         &mut self,
         parent: (u64, Digest),
-        syncer: &mut summit_syncer::Mailbox,
+        syncer: &mut SyncerMailbox<Digest, S>,
         finalizer: &mut FinalizerMailbox,
-        view: View,
+        round: Round,
     ) -> Result<Block> {
         #[cfg(feature = "prom")]
         let proposal_start = std::time::Instant::now();
@@ -324,6 +331,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         // STEP 6: Compute block digest
         #[cfg(feature = "prom")]
         let compute_digest_start = std::time::Instant::now();
+
+        let (epoch, view) = round;
         let block = Block::compute_digest(
             parent.digest(),
             parent.height() + 1,
@@ -331,6 +340,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             payload_envelope.envelope_inner.execution_payload,
             payload_envelope.execution_requests.to_vec(),
             payload_envelope.envelope_inner.block_value,
+            epoch,
             view,
             checkpoint_hash,
             aux_data.header_hash,
@@ -354,8 +364,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     }
 }
 
-impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient> Drop
-    for Actor<R, C>
+impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient, S: Scheme, K: Signer> Drop
+    for Actor<R, C, S, K>
 {
     fn drop(&mut self) {
         self.cancellation_token.cancel();
