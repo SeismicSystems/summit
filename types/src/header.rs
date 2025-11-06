@@ -4,7 +4,8 @@ use crate::PublicKey;
 use alloy_primitives::U256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
-use commonware_consensus::simplex::{signing_scheme::ed25519::Scheme, types::Finalization};
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::types::Finalization;
 use commonware_cryptography::{Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 
@@ -263,18 +264,18 @@ impl Read for Header {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FinalizedHeader {
+pub struct FinalizedHeader<S: Scheme> {
     pub header: Header,
-    pub finalized: Finalization<Scheme, Digest>,
+    pub finalized: Finalization<S, Digest>,
 }
 
-impl FinalizedHeader {
-    pub fn new(header: Header, finalized: Finalization<Scheme, Digest>) -> Self {
+impl<S: Scheme> FinalizedHeader<S> {
+    pub fn new(header: Header, finalized: Finalization<S, Digest>) -> Self {
         Self { header, finalized }
     }
 }
 
-impl ssz::Encode for FinalizedHeader {
+impl<S: Scheme> ssz::Encode for FinalizedHeader<S> {
     fn is_ssz_fixed_len() -> bool {
         false
     }
@@ -301,7 +302,10 @@ impl ssz::Encode for FinalizedHeader {
     }
 }
 
-impl ssz::Decode for FinalizedHeader {
+impl<S: Scheme> ssz::Decode for FinalizedHeader<S>
+where
+    <S::Certificate as Read>::Cfg: From<usize>,
+{
     fn is_ssz_fixed_len() -> bool {
         false
     }
@@ -319,7 +323,8 @@ impl ssz::Decode for FinalizedHeader {
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
         let mut finalized_buf = finalized_bytes.as_slice();
-        let finalized = Finalization::read_cfg(&mut finalized_buf, &finalized_bytes.len())
+        let cfg = <S::Certificate as Read>::Cfg::from(finalized_buf.remaining());
+        let finalized = Finalization::<S, Digest>::read_cfg(&mut finalized_buf, &cfg)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
         // Ensure the finalization is for the header
@@ -333,13 +338,13 @@ impl ssz::Decode for FinalizedHeader {
     }
 }
 
-impl EncodeSize for FinalizedHeader {
+impl<S: Scheme> EncodeSize for FinalizedHeader<S> {
     fn encode_size(&self) -> usize {
         self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
     }
 }
 
-impl Write for FinalizedHeader {
+impl<S: Scheme> Write for FinalizedHeader<S> {
     fn write(&self, buf: &mut impl BufMut) {
         let ssz_bytes = &*self.as_ssz_bytes();
         let bytes_len = ssz_bytes.len() as u32;
@@ -349,7 +354,10 @@ impl Write for FinalizedHeader {
     }
 }
 
-impl Read for FinalizedHeader {
+impl<S: Scheme> Read for FinalizedHeader<S>
+where
+    <S::Certificate as Read>::Cfg: From<usize>,
+{
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
@@ -379,6 +387,7 @@ mod test {
         },
         types::Round,
     };
+    use commonware_consensus::simplex::signing_scheme::ed25519;
     use commonware_cryptography::ed25519::PrivateKey;
     use commonware_cryptography::{PrivateKeyExt, Signer};
     use ssz::Decode;
@@ -469,12 +478,14 @@ mod test {
             },
         };
 
-        let finalized_header = FinalizedHeader::new(header.clone(), finalized);
+        let finalized_header = FinalizedHeader::<ed25519::Scheme>::new(header.clone(), finalized);
 
         let encoded = finalized_header.encode();
-        let decoded = FinalizedHeader::decode(encoded).unwrap();
+        let decoded = FinalizedHeader::<ed25519::Scheme>::decode(encoded).unwrap();
 
-        assert_eq!(finalized_header, decoded);
+        assert_eq!(finalized_header.finalized, decoded.finalized);
+        assert_eq!(finalized_header.header, decoded.header);
+
         assert_eq!(finalized_header.header, header);
     }
 
@@ -522,13 +533,13 @@ mod test {
             },
         };
 
-        let finalized_header = FinalizedHeader {
+        let finalized_header: FinalizedHeader<ed25519::Scheme> = FinalizedHeader {
             header,
             finalized: wrong_finalized,
         };
 
         let encoded = finalized_header.as_ssz_bytes();
-        let result = FinalizedHeader::from_ssz_bytes(&encoded);
+        let result = FinalizedHeader::<ed25519::Scheme>::from_ssz_bytes(&encoded);
 
         assert!(result.is_err());
         println!("{:?}", result);
@@ -569,7 +580,7 @@ mod test {
             },
         };
 
-        let finalized_header = FinalizedHeader::new(header, finalized);
+        let finalized_header = FinalizedHeader::<ed25519::Scheme>::new(header, finalized);
 
         let ssz_len = finalized_header.ssz_bytes_len();
         let encode_len = finalized_header.encode_size();
