@@ -13,6 +13,7 @@ pub struct Header {
     pub parent: Digest,
     pub height: u64,
     pub timestamp: u64,
+    pub epoch: u64,
     pub view: u64,
     pub payload_hash: Digest,
     pub execution_request_hash: Digest,
@@ -31,6 +32,7 @@ impl Header {
         parent: Digest,
         height: u64,
         timestamp: u64,
+        epoch: u64,
         view: u64,
         payload_hash: Digest,
         execution_request_hash: Digest,
@@ -67,6 +69,7 @@ impl Header {
             parent,
             height,
             timestamp,
+            epoch,
             view,
             payload_hash,
             execution_request_hash,
@@ -87,7 +90,7 @@ impl ssz::Encode for Header {
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
         let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
-            + <u64 as ssz::Encode>::ssz_fixed_len() * 3 // height, timestamp, view
+            + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
             + <U256 as ssz::Encode>::ssz_fixed_len() // block_value
             + <Vec<[u8; 32]> as ssz::Encode>::ssz_fixed_len() * 2; // added_validators, removed_validators offsets
 
@@ -130,6 +133,7 @@ impl ssz::Encode for Header {
         encoder.append(&parent);
         encoder.append(&self.height);
         encoder.append(&self.timestamp);
+        encoder.append(&self.epoch);
         encoder.append(&self.view);
         encoder.append(&payload_hash);
         encoder.append(&execution_request_hash);
@@ -143,7 +147,7 @@ impl ssz::Encode for Header {
 
     fn ssz_bytes_len(&self) -> usize {
         let fixed_size = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
-            + <u64 as ssz::Encode>::ssz_fixed_len() * 3 // height, timestamp, view
+            + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
             + <U256 as ssz::Encode>::ssz_fixed_len(); // block_value
 
         // Calculate length as if they were Vec<[u8; 32]>
@@ -167,6 +171,7 @@ impl ssz::Decode for Header {
         builder.register_type::<[u8; 32]>()?; // parent
         builder.register_type::<u64>()?; // height
         builder.register_type::<u64>()?; // timestamp
+        builder.register_type::<u64>()?; // epoch
         builder.register_type::<u64>()?; // view
         builder.register_type::<[u8; 32]>()?; // payload_hash
         builder.register_type::<[u8; 32]>()?; // execution_request_hash
@@ -181,6 +186,7 @@ impl ssz::Decode for Header {
         let parent: [u8; 32] = decoder.decode_next()?;
         let height: u64 = decoder.decode_next()?;
         let timestamp: u64 = decoder.decode_next()?;
+        let epoch: u64 = decoder.decode_next()?;
         let view: u64 = decoder.decode_next()?;
         let payload_hash: [u8; 32] = decoder.decode_next()?;
         let execution_request_hash: [u8; 32] = decoder.decode_next()?;
@@ -213,6 +219,7 @@ impl ssz::Decode for Header {
             parent.into(),
             height,
             timestamp,
+            epoch,
             view,
             payload_hash.into(),
             execution_request_hash.into(),
@@ -365,7 +372,13 @@ mod test {
     use super::*;
     use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
-    use commonware_consensus::{simplex::{signing_scheme::{ed25519::Certificate, utils::Signers}, types::{Finalization, Proposal}}, types::Round};
+    use commonware_consensus::{
+        simplex::{
+            signing_scheme::{ed25519::Certificate, utils::Signers},
+            types::{Finalization, Proposal},
+        },
+        types::Round,
+    };
     use commonware_cryptography::ed25519::PrivateKey;
     use commonware_cryptography::{PrivateKeyExt, Signer};
     use ssz::Decode;
@@ -401,6 +414,7 @@ mod test {
             27,
             2727,
             42,
+            1,
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
@@ -424,6 +438,7 @@ mod test {
             27,
             2727,
             42,
+            1,
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
@@ -471,6 +486,7 @@ mod test {
             27,
             2727,
             42,
+            1,
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
@@ -529,6 +545,7 @@ mod test {
             27,
             2727,
             42,
+            1,
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
