@@ -25,8 +25,8 @@ pub struct Block<C: Signer = ed25519::PrivateKey, V: Variant = MinPk> {
     pub header: Header,
     pub payload: ExecutionPayloadV3,
     pub execution_requests: Vec<AlloyBytes>,
-    pub _signer_type: PhantomData<C>,
-    pub _variant: PhantomData<V>,
+    pub _signer_marker: PhantomData<C>,
+    pub _variant_marker: PhantomData<V>,
 }
 
 impl<C: Signer, V: Variant> Block<C, V> {
@@ -97,8 +97,8 @@ impl<C: Signer, V: Variant> Block<C, V> {
             header,
             payload,
             execution_requests,
-            _signer_type: PhantomData,
-            _variant: PhantomData,
+            _signer_marker: PhantomData,
+            _variant_marker: PhantomData,
         }
     }
 
@@ -131,8 +131,8 @@ impl<C: Signer, V: Variant> Block<C, V> {
             header,
             payload,
             execution_requests,
-            _signer_type: PhantomData,
-            _variant: PhantomData,
+            _signer_marker: PhantomData,
+            _variant_marker: PhantomData,
         })
     }
 
@@ -162,8 +162,8 @@ impl<C: Signer, V: Variant> Block<C, V> {
             header,
             payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
             execution_requests: Default::default(),
-            _signer_type: PhantomData,
-            _variant: PhantomData,
+            _signer_marker: PhantomData,
+            _variant_marker: PhantomData,
         }
     }
 
@@ -393,6 +393,72 @@ pub struct BlockEnvelope<C: Signer, V: Variant> {
     pub finalized: Option<Finalization<Scheme<C::PublicKey, V>, Digest>>,
 }
 
+impl<C: Signer, V: Variant> Digestible for BlockEnvelope<C, V> {
+    type Digest = Digest;
+
+    fn digest(&self) -> Digest {
+        self.block.header.digest
+    }
+}
+
+impl<C: Signer, V: Variant> Committable for BlockEnvelope<C, V> {
+    type Commitment = Digest;
+
+    fn commitment(&self) -> Digest {
+        self.block.header.digest
+    }
+}
+
+impl<C: Signer, V: Variant> ConsensusBlock for BlockEnvelope<C, V> {
+    fn height(&self) -> u64 {
+        self.block.header.height
+    }
+
+    fn parent(&self) -> Self::Commitment {
+        self.block.header.parent
+    }
+}
+
+impl<C: Signer, V: Variant> Read for BlockEnvelope<C, V> {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
+        let block = Block::<C, V>::read(buf)?;
+        let has_finalized = buf.get_u8();
+        let finalized = if has_finalized == 1 {
+            Some(Finalization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(
+                buf,
+                &buf.remaining(),
+            )?)
+        } else {
+            None
+        };
+        Ok(Self { block, finalized })
+    }
+}
+
+impl<C: Signer, V: Variant> Write for BlockEnvelope<C, V> {
+    fn write(&self, buf: &mut impl BufMut) {
+        self.block.write(buf);
+        if let Some(ref finalized) = self.finalized {
+            buf.put_u8(1u8);
+            finalized.write(buf);
+        } else {
+            buf.put_u8(0u8);
+        }
+    }
+}
+
+impl<C: Signer, V: Variant> EncodeSize for BlockEnvelope<C, V> {
+    fn encode_size(&self) -> usize {
+        let mut size = self.block.encode_size() + 1; // +1 for the has_finalized flag
+        if let Some(ref finalized) = self.finalized {
+            size += finalized.encode_size();
+        }
+        size
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -556,5 +622,75 @@ mod test {
         // The Write implementation adds a 4-byte length prefix
         assert_eq!(actual_encoded.len(), pure_ssz.len() + 4);
         assert_eq!(actual_encoded.len(), encode_len);
+    }
+
+    #[test]
+    fn test_block_envelope_without_finalization() {
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
+        let envelope = BlockEnvelope {
+            block: block.clone(),
+            finalized: None,
+        };
+
+        // Test encoding and decoding
+        let encoded = envelope.encode();
+        let decoded = BlockEnvelope::<ed25519::PrivateKey, MinPk>::decode(encoded.clone()).unwrap();
+
+        // Verify round-trip: encode the decoded value and compare bytes
+        let re_encoded = decoded.encode();
+        assert_eq!(
+            encoded, re_encoded,
+            "Round-trip encoding should be identical"
+        );
+
+        // Verify structure
+        assert!(decoded.finalized.is_none());
+        assert_eq!(envelope.block.header.height, decoded.block.header.height);
+        assert_eq!(
+            envelope.block.header.timestamp,
+            decoded.block.header.timestamp
+        );
+    }
+
+    #[test]
+    fn test_block_envelope_encode_size_without_finalization() {
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
+        let envelope = BlockEnvelope {
+            block: block.clone(),
+            finalized: None,
+        };
+
+        let encode_size = envelope.encode_size();
+        let actual_encoded = envelope.encode();
+
+        // Size should be block size + 1 byte for the flag
+        assert_eq!(actual_encoded.len(), encode_size);
+        assert_eq!(encode_size, block.encode_size() + 1);
+    }
+
+    #[test]
+    fn test_block_envelope_digestible() {
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
+        let envelope = BlockEnvelope {
+            block: block.clone(),
+            finalized: None,
+        };
+
+        // BlockEnvelope digest should match the underlying block digest
+        assert_eq!(envelope.digest(), block.digest());
+        assert_eq!(envelope.commitment(), block.commitment());
+    }
+
+    #[test]
+    fn test_block_envelope_consensus_block() {
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
+        let envelope = BlockEnvelope {
+            block: block.clone(),
+            finalized: None,
+        };
+
+        // BlockEnvelope should expose the same ConsensusBlock properties as the underlying block
+        assert_eq!(envelope.height(), block.height());
+        assert_eq!(envelope.parent(), block.parent());
     }
 }
