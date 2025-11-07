@@ -6,7 +6,9 @@ use axum::{
     routing::{get, post},
 };
 use commonware_codec::DecodeExt as _;
-use commonware_cryptography::Signer;
+use commonware_consensus::Block as ConsensusBlock;
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_cryptography::{Committable, Signer};
 use commonware_utils::{from_hex_formatted, hex};
 use serde::Deserialize;
 use ssz::Encode;
@@ -22,18 +24,23 @@ struct ValidatorBalanceQuery {
 pub(crate) struct RpcRoutes;
 
 impl RpcRoutes {
-    pub fn mount(state: RpcState) -> Router {
+    pub fn mount<S: Scheme + 'static, B: ConsensusBlock + Committable + 'static>(
+        state: RpcState<S, B>,
+    ) -> Router {
         // todo(dalton): Add cors
         let state = Arc::new(state);
 
         Router::new()
             .route("/health", get(Self::handle_health_check))
-            .route("/get_public_key", get(Self::handle_get_pub_key))
-            .route("/get_checkpoint", get(Self::handle_get_checkpoint))
-            .route("/get_latest_height", get(Self::handle_latest_height))
+            .route("/get_public_key", get(Self::handle_get_pub_key::<S, B>))
+            .route("/get_checkpoint", get(Self::handle_get_checkpoint::<S, B>))
+            .route(
+                "/get_latest_height",
+                get(Self::handle_latest_height::<S, B>),
+            )
             .route(
                 "/get_validator_balance",
-                get(Self::handle_get_validator_balance),
+                get(Self::handle_get_validator_balance::<S, B>),
             )
             .with_state(state)
     }
@@ -51,7 +58,9 @@ impl RpcRoutes {
         "Ok"
     }
 
-    async fn handle_get_pub_key(State(state): State<Arc<RpcState>>) -> Result<String, String> {
+    async fn handle_get_pub_key<S: Scheme, B: ConsensusBlock + Committable>(
+        State(state): State<Arc<RpcState<S, B>>>,
+    ) -> Result<String, String> {
         let private_key = Self::read_ed_key_from_path(&state.key_path)?;
 
         Ok(private_key.public_key().to_string())
@@ -68,7 +77,9 @@ impl RpcRoutes {
         Ok(pk)
     }
 
-    async fn handle_get_checkpoint(State(state): State<Arc<RpcState>>) -> Result<String, String> {
+    async fn handle_get_checkpoint<S: Scheme, B: ConsensusBlock + Committable>(
+        State(state): State<Arc<RpcState<S, B>>>,
+    ) -> Result<String, String> {
         let maybe_checkpoint = state
             .finalizer_mailbox
             .clone()
@@ -82,7 +93,9 @@ impl RpcRoutes {
         Ok(hex(&encoded))
     }
 
-    async fn handle_latest_height(State(state): State<Arc<RpcState>>) -> Result<String, String> {
+    async fn handle_latest_height<S: Scheme, B: ConsensusBlock + Committable>(
+        State(state): State<Arc<RpcState<S, B>>>,
+    ) -> Result<String, String> {
         Ok(state
             .finalizer_mailbox
             .get_latest_height()
@@ -90,8 +103,8 @@ impl RpcRoutes {
             .to_string())
     }
 
-    async fn handle_get_validator_balance(
-        State(state): State<Arc<RpcState>>,
+    async fn handle_get_validator_balance<S: Scheme, B: ConsensusBlock + Committable>(
+        State(state): State<Arc<RpcState<S, B>>>,
         Query(params): Query<ValidatorBalanceQuery>,
     ) -> Result<String, String> {
         // Parse the public key from hex string
