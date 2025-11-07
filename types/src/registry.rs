@@ -1,10 +1,10 @@
 use crate::PublicKey;
 use commonware_consensus::types::View;
 use commonware_p2p::Manager;
-use std::collections::{BTreeMap, HashSet};
-use std::sync::{Arc, RwLock};
 use commonware_utils::set::Ordered;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
+use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 #[derive(Default, Clone, Debug)]
 struct Inner {
@@ -24,7 +24,10 @@ impl Registry {
     pub fn new(id: u64, participants: Vec<PublicKey>) -> Self {
         let mut sets = BTreeMap::new();
         sets.insert(id, Ordered::from(participants));
-        let inner = Inner { sets, subscribers: vec![] };
+        let inner = Inner {
+            sets,
+            subscribers: vec![],
+        };
         Self {
             inner: Arc::new(RwLock::new(inner)),
         }
@@ -35,9 +38,13 @@ impl Registry {
 
         // TODO(matthias): we should also consider enforcing that the previous id must exist,
         // and do something like inner.sets.get(id - 1)
-        let (_last_id, old_set) = inner.sets.last_key_value().expect("registry was initialized with an id");
+        let (_last_id, old_set) = inner
+            .sets
+            .last_key_value()
+            .expect("registry was initialized with an id");
 
-        let mut new_set = Vec::with_capacity((old_set.len() + add.len()).saturating_sub(remove.len()));
+        let mut new_set =
+            Vec::with_capacity((old_set.len() + add.len()).saturating_sub(remove.len()));
         let remove: HashSet<PublicKey> = HashSet::from_iter(remove.iter().cloned());
         for key in old_set {
             if !remove.contains(key) {
@@ -53,9 +60,9 @@ impl Registry {
 
         // Notify all subscribers
         let notification = (id, old_set, Ordered::from(new_set));
-        inner.subscribers.retain(|tx| {
-            tx.unbounded_send(notification.clone()).is_ok()
-        });
+        inner
+            .subscribers
+            .retain(|tx| tx.unbounded_send(notification.clone()).is_ok());
 
         // TODO(matthias): consider garbage collection for old IDs
     }
@@ -65,11 +72,13 @@ impl Manager for Registry {
     type PublicKey = PublicKey;
 
     type Peers = Vec<PublicKey>;
-    fn update(&mut self, id: u64, peers: Self::Peers) -> impl Future<Output=()> + Send {
+    fn update(&mut self, id: u64, peers: Self::Peers) -> impl Future<Output = ()> + Send {
         let mut inner = self.inner.write().unwrap();
 
         // Since IDs are monotonically increasing, the old set is the last one in the map
-        let old_set = inner.sets.last_key_value()
+        let old_set = inner
+            .sets
+            .last_key_value()
             .map(|(_, set)| set.clone())
             .unwrap_or_else(|| Ordered::from(Vec::new()));
 
@@ -78,20 +87,27 @@ impl Manager for Registry {
 
         // Notify all subscribers
         let notification = (id, old_set, new_set);
-        inner.subscribers.retain(|tx| {
-            tx.unbounded_send(notification.clone()).is_ok()
-        });
+        inner
+            .subscribers
+            .retain(|tx| tx.unbounded_send(notification.clone()).is_ok());
 
         async {}
     }
 
-    fn peer_set(&mut self, id: u64) -> impl Future<Output=Option<Ordered<Self::PublicKey>>> + Send {
+    fn peer_set(
+        &mut self,
+        id: u64,
+    ) -> impl Future<Output = Option<Ordered<Self::PublicKey>>> + Send {
         let inner = self.inner.write().unwrap();
         let set = inner.sets.get(&id).cloned();
         async move { set }
     }
 
-    fn subscribe(&mut self) -> impl Future<Output=UnboundedReceiver<(u64, Ordered<Self::PublicKey>, Ordered<Self::PublicKey>)>> + Send {
+    fn subscribe(
+        &mut self,
+    ) -> impl Future<
+        Output = UnboundedReceiver<(u64, Ordered<Self::PublicKey>, Ordered<Self::PublicKey>)>,
+    > + Send {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         let mut inner = self.inner.write().unwrap();
         inner.subscribers.push(tx);
@@ -324,4 +340,3 @@ mod tests {
         });
     }
 }
-

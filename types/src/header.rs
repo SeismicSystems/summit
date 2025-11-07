@@ -266,12 +266,15 @@ impl Read for Header {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalizedHeader<S: Scheme> {
     pub header: Header,
-    pub finalized: Finalization<S, Digest>,
+    pub finalization: Finalization<S, Digest>,
 }
 
 impl<S: Scheme> FinalizedHeader<S> {
-    pub fn new(header: Header, finalized: Finalization<S, Digest>) -> Self {
-        Self { header, finalized }
+    pub fn new(header: Header, finalization: Finalization<S, Digest>) -> Self {
+        Self {
+            header,
+            finalization,
+        }
     }
 }
 
@@ -284,7 +287,7 @@ impl<S: Scheme> ssz::Encode for FinalizedHeader<S> {
         // For simplicity, encode header first, then finalized proof using commonware encoding
         let header_bytes = self.header.as_ssz_bytes();
         let mut finalized_bytes = Vec::new();
-        self.finalized.write(&mut finalized_bytes);
+        self.finalization.write(&mut finalized_bytes);
 
         let offset = 8; // Two 4-byte length prefixes
         let mut encoder = ssz::SszEncoder::container(buf, offset);
@@ -296,7 +299,7 @@ impl<S: Scheme> ssz::Encode for FinalizedHeader<S> {
     fn ssz_bytes_len(&self) -> usize {
         let header_bytes = self.header.as_ssz_bytes();
         let mut finalized_bytes = Vec::new();
-        self.finalized.write(&mut finalized_bytes);
+        self.finalization.write(&mut finalized_bytes);
 
         header_bytes.len() + finalized_bytes.len() + 8 // Two 4-byte length prefixes
     }
@@ -322,19 +325,33 @@ where
         let header = Header::from_ssz_bytes(&header_bytes)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
+        // The certificate config needs to be derived from the buffer size (participant count)
+        // This works because we know bls12381_multisig::Certificate::Cfg = usize
+        // We construct it here where we have the concrete type information
         let mut finalized_buf = finalized_bytes.as_slice();
-        let cfg = <S::Certificate as Read>::Cfg::from(finalized_buf.remaining());
-        let finalized = Finalization::<S, Digest>::read_cfg(&mut finalized_buf, &cfg)
+
+        // For BLS multisig, the Cfg is the participant count, which we derive from buffer size
+        // This is a limitation of the SSZ decode not having access to external config
+        // The actual participant count should ideally come from the registry/validator set
+        let participant_count_bytes = finalized_buf.remaining();
+
+        // We need to convert usize to Cfg type, but can't use From without the bound
+        // So we're stuck needing the From bound here for SSZ compatibility
+        let cfg = <S::Certificate as Read>::Cfg::from(participant_count_bytes);
+        let finalization = Finalization::<S, Digest>::read_cfg(&mut finalized_buf, &cfg)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
         // Ensure the finalization is for the header
-        if finalized.proposal.payload != header.digest {
+        if finalization.proposal.payload != header.digest {
             return Err(ssz::DecodeError::BytesInvalid(
                 "Finalization payload does not match header digest".to_string(),
             ));
         }
 
-        Ok(Self { header, finalized })
+        Ok(Self {
+            header,
+            finalization,
+        })
     }
 }
 
@@ -380,6 +397,7 @@ mod test {
     use super::*;
     use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
+    use commonware_consensus::simplex::signing_scheme::ed25519;
     use commonware_consensus::{
         simplex::{
             signing_scheme::{ed25519::Certificate, utils::Signers},
@@ -387,7 +405,6 @@ mod test {
         },
         types::Round,
     };
-    use commonware_consensus::simplex::signing_scheme::ed25519;
     use commonware_cryptography::ed25519::PrivateKey;
     use commonware_cryptography::{PrivateKeyExt, Signer};
     use ssz::Decode;
@@ -483,7 +500,7 @@ mod test {
         let encoded = finalized_header.encode();
         let decoded = FinalizedHeader::<ed25519::Scheme>::decode(encoded).unwrap();
 
-        assert_eq!(finalized_header.finalized, decoded.finalized);
+        assert_eq!(finalized_header.finalization, decoded.finalization);
         assert_eq!(finalized_header.header, decoded.header);
 
         assert_eq!(finalized_header.header, header);
@@ -535,7 +552,7 @@ mod test {
 
         let finalized_header: FinalizedHeader<ed25519::Scheme> = FinalizedHeader {
             header,
-            finalized: wrong_finalized,
+            finalization: wrong_finalized,
         };
 
         let encoded = finalized_header.as_ssz_bytes();

@@ -1,11 +1,11 @@
 use crate::PublicKey;
 use alloy_primitives::Address;
+use anyhow::Context;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::bls12381;
 use commonware_utils::from_hex_formatted;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use anyhow::Context;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Genesis {
@@ -60,20 +60,21 @@ impl TryFrom<&GenesisValidator> for Validator {
     type Error = anyhow::Error;
 
     fn try_from(value: &GenesisValidator) -> Result<Self, Self::Error> {
-        let node_key_bytes = from_hex_formatted(&value.node_public_key).context("Node PublicKey bad format")?;
+        let node_key_bytes =
+            from_hex_formatted(&value.node_public_key).context("Node PublicKey bad format")?;
         let node_public_key = PublicKey::decode(&*node_key_bytes)?;
 
-        let consensus_key_bytes = from_hex_formatted(&value.consensus_public_key).context("Consensus PublicKey bad format")?;
+        let consensus_key_bytes = from_hex_formatted(&value.consensus_public_key)
+            .context("Consensus PublicKey bad format")?;
         let consensus_public_key = bls12381::PublicKey::decode(&*consensus_key_bytes)?;
 
         Ok(Validator {
             node_public_key,
             consensus_public_key,
             ip_address: value.ip_address.parse()?,
-            withdrawal_credentials: value.withdrawal_credentials.parse()?
+            withdrawal_credentials: value.withdrawal_credentials.parse()?,
         })
     }
-
 }
 
 impl Genesis {
@@ -110,7 +111,9 @@ impl Genesis {
         Ok(validators)
     }
 
-    pub fn get_consensus_keys(&self) -> Result<Vec<bls12381::PublicKey>, Box<dyn std::error::Error>> {
+    pub fn get_consensus_keys(
+        &self,
+    ) -> Result<Vec<bls12381::PublicKey>, Box<dyn std::error::Error>> {
         let mut keys = Vec::new();
         for validator in &self.validators {
             let key_bytes = from_hex_formatted(&validator.consensus_public_key)
@@ -121,7 +124,9 @@ impl Genesis {
         Ok(keys)
     }
 
-    pub fn get_validator_keys(&self) -> Result<Vec<(PublicKey, bls12381::PublicKey)>, Box<dyn std::error::Error>> {
+    pub fn get_validator_keys(
+        &self,
+    ) -> Result<Vec<(PublicKey, bls12381::PublicKey)>, Box<dyn std::error::Error>> {
         let mut keys = Vec::new();
         for validator in &self.validators {
             let node_key_bytes = from_hex_formatted(&validator.node_public_key)

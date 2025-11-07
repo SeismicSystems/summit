@@ -36,7 +36,7 @@ pub struct ValidatorAccount {
     pub balance: u64,                              // Balance in gwei
     pub pending_withdrawal_amount: u64,            // Sum of pending withdrawals in gwei
     pub status: ValidatorStatus,
-    pub last_deposit_index: u64,                   // Last deposit request index
+    pub last_deposit_index: u64, // Last deposit request index
 }
 
 impl TryFrom<&[u8]> for ValidatorAccount {

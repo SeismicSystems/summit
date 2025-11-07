@@ -1,13 +1,14 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use commonware_consensus::simplex::signing_scheme::{self, Scheme};
 use commonware_consensus::types::Epoch;
+use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
-use commonware_cryptography::bls12381::primitives::group;
 use commonware_utils::set::{Ordered, OrderedAssociated};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-pub type MultisigScheme<C, V> = signing_scheme::bls12381_multisig::Scheme<<C as Signer>::PublicKey, V>;
+pub type MultisigScheme<C, V> =
+    signing_scheme::bls12381_multisig::Scheme<<C as Signer>::PublicKey, V>;
 
 /// Supplies the signing scheme the marshal should use for a given epoch.
 pub trait SchemeProvider: Clone + Send + Sync + 'static {
@@ -82,12 +83,12 @@ impl<C: Signer, V: Variant> EpochSchemeProvider for SummitSchemeProvider<C, V> {
         &self,
         transition: &EpochTransition<Self::Variant, Self::PublicKey>,
     ) -> Self::Scheme {
-        let participants: OrderedAssociated<Self::PublicKey, V::Public> =
-            transition.dealers
-                .iter()
-                .cloned()
-                .zip(transition.bls_keys.iter().cloned())
-                .collect();
+        let participants: OrderedAssociated<Self::PublicKey, V::Public> = transition
+            .dealers
+            .iter()
+            .cloned()
+            .zip(transition.bls_keys.iter().cloned())
+            .collect();
 
         MultisigScheme::<C, V>::new(participants, self.bls_private_key.clone())
     }
