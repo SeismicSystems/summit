@@ -1,15 +1,19 @@
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::{Block as ConsensusBlock, Reporter};
+use commonware_cryptography::Committable;
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
 };
+use summit_syncer::Update;
 use summit_types::{
-    BlockAuxData, PublicKey,
+    Block, BlockAuxData, PublicKey,
     checkpoint::Checkpoint,
     consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse},
 };
 
 #[allow(clippy::large_enum_variant)]
-pub enum FinalizerMessage {
+pub enum FinalizerMessage<S: Scheme, B: ConsensusBlock + Committable = Block> {
     NotifyAtHeight {
         height: u64,
         response: oneshot::Sender<()>,
@@ -22,15 +26,18 @@ pub enum FinalizerMessage {
         request: ConsensusStateRequest,
         response: oneshot::Sender<ConsensusStateResponse>,
     },
+    SyncerUpdate {
+        update: Update<B, S>,
+    },
 }
 
 #[derive(Clone)]
-pub struct FinalizerMailbox {
-    sender: mpsc::Sender<FinalizerMessage>,
+pub struct FinalizerMailbox<S: Scheme, B: ConsensusBlock + Committable = Block> {
+    sender: mpsc::Sender<FinalizerMessage<S, B>>,
 }
 
-impl FinalizerMailbox {
-    pub fn new(sender: mpsc::Sender<FinalizerMessage>) -> Self {
+impl<S: Scheme, B: ConsensusBlock + Committable> FinalizerMailbox<S, B> {
+    pub fn new(sender: mpsc::Sender<FinalizerMessage<S, B>>) -> Self {
         Self { sender }
     }
 
@@ -107,5 +114,16 @@ impl FinalizerMailbox {
             unreachable!("request and response variants must match");
         };
         balance
+    }
+}
+
+impl<S: Scheme, B: ConsensusBlock + Committable> Reporter for FinalizerMailbox<S, B> {
+    type Activity = Update<B, S>;
+
+    async fn report(&mut self, activity: Self::Activity) {
+        self.sender
+            .send(FinalizerMessage::SyncerUpdate { update: activity })
+            .await
+            .expect("Unable to send syncer update to Finalizer");
     }
 }

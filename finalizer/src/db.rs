@@ -1,13 +1,18 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
+use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Storage};
-use commonware_storage::store::{self, Store};
+use commonware_storage::adb::store::{self, Store};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
-pub use store::Config;
+use std::marker::PhantomData;
 use summit_types::FinalizedHeader;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
+
+pub use store::Config;
 
 // Key prefixes for different data types
 const STATE_PREFIX: u8 = 0x01;
@@ -20,13 +25,13 @@ const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
 const LATEST_FINALIZED_HEADER_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const FINALIZED_CHECKPOINT_KEY: [u8; 2] = [CHECKPOINT_PREFIX, 1];
 
-pub struct FinalizerState<E: Clock + Storage + Metrics> {
-    store: Store<E, FixedBytes<64>, Value, TwoCap>,
+pub struct FinalizerState<E: Clock + Storage + Metrics, V: Variant> {
+    store: Store<E, FixedBytes<64>, Value<V>, TwoCap>,
 }
 
-impl<E: Clock + Storage + Metrics> FinalizerState<E> {
+impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn new(context: E, cfg: Config<TwoCap, ()>) -> Self {
-        let store = Store::<_, FixedBytes<64>, Value, TwoCap>::init(context, cfg)
+        let store = Store::<_, FixedBytes<64>, Value<V>, TwoCap>::init(context, cfg)
             .await
             .expect("failed to initialize unified store");
 
@@ -170,7 +175,11 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     }
 
     // FinalizedHeader operations
-    pub async fn store_finalized_header(&mut self, height: u64, header: &FinalizedHeader) {
+    pub async fn store_finalized_header(
+        &mut self,
+        height: u64,
+        header: &FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>,
+    ) {
         let key = Self::make_finalized_header_key(height);
         self.store
             .update(key, Value::FinalizedHeader(Box::new(header.clone())))
@@ -185,7 +194,10 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
     }
 
     #[allow(unused)]
-    pub async fn get_finalized_header(&self, height: u64) -> Option<FinalizedHeader> {
+    pub async fn get_finalized_header(
+        &self,
+        height: u64,
+    ) -> Option<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>> {
         let key = Self::make_finalized_header_key(height);
         if let Some(Value::FinalizedHeader(header)) = self
             .store
@@ -199,7 +211,9 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
         }
     }
 
-    pub async fn get_most_recent_finalized_header(&self) -> Option<FinalizedHeader> {
+    pub async fn get_most_recent_finalized_header(
+        &self,
+    ) -> Option<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>> {
         let latest_height = self.get_latest_finalized_header_height().await;
         if latest_height > 0 {
             self.get_finalized_header(latest_height).await
@@ -218,14 +232,14 @@ impl<E: Clock + Storage + Metrics> FinalizerState<E> {
 }
 
 #[derive(Clone)]
-enum Value {
+enum Value<V: Variant> {
     U64(u64),
     ConsensusState(Box<ConsensusState>),
     Checkpoint(Checkpoint),
-    FinalizedHeader(Box<FinalizedHeader>),
+    FinalizedHeader(Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>),
 }
 
-impl EncodeSize for Value {
+impl<V: Variant> EncodeSize for Value<V> {
     fn encode_size(&self) -> usize {
         1 + match self {
             Self::U64(_) => 8,
@@ -236,7 +250,7 @@ impl EncodeSize for Value {
     }
 }
 
-impl Read for Value {
+impl<V: Variant> Read for Value<V> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
@@ -248,16 +262,17 @@ impl Read for Value {
                 &(),
             )?))),
             0x06 => Ok(Self::Checkpoint(Checkpoint::read_cfg(buf, &())?)),
-            0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::read_cfg(
-                buf,
-                &(),
+            0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::<
+                bls12381_multisig::Scheme<PublicKey, V>,
+            >::read_cfg(
+                buf, &()
             )?))),
             byte => Err(Error::InvalidVarint(byte as usize)),
         }
     }
 }
 
-impl Write for Value {
+impl<V: Variant> Write for Value<V> {
     fn write(&self, buf: &mut impl BufMut) {
         match self {
             Self::U64(val) => {
@@ -283,14 +298,25 @@ impl Write for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commonware_consensus::simplex::signing_scheme::bls12381_multisig::Certificate as BlsCertificate;
+    use commonware_consensus::simplex::signing_scheme::utils::Signers;
+    use commonware_consensus::simplex::types::{Finalization, Proposal};
+    use commonware_consensus::types::Round;
+    use commonware_cryptography::bls12381::{
+        self,
+        primitives::{
+            group::{Element, G2},
+            variant::MinPk,
+        },
+    };
     use commonware_runtime::buffer::PoolRef;
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{NZU64, NZUsize};
 
-    async fn create_test_db_with_context<E: Clock + Storage + Metrics>(
+    async fn create_test_db_with_context<E: Clock + Storage + Metrics, V: Variant>(
         partition: &str,
         context: E,
-    ) -> FinalizerState<E> {
+    ) -> FinalizerState<E, V> {
         let config = Config {
             log_journal_partition: format!("{}-log", partition),
             log_write_buffer: NZUsize!(64 * 1024),
@@ -302,7 +328,7 @@ mod tests {
             translator: TwoCap,
             buffer_pool: PoolRef::new(NZUsize!(77), NZUsize!(9)),
         };
-        FinalizerState::new(context, config).await
+        FinalizerState::<E, V>::new(context, config).await
     }
 
     #[test]
@@ -310,7 +336,8 @@ mod tests {
         let cfg = commonware_runtime::deterministic::Config::default().with_seed(1);
         let executor = Runner::from(cfg);
         executor.start(|context| async move {
-            let mut db = create_test_db_with_context("test_consensus_state", context).await;
+            let mut db =
+                create_test_db_with_context::<_, MinPk>("test_consensus_state", context).await;
 
             // Create a test consensus state
             let mut consensus_state = ConsensusState::default();
@@ -360,13 +387,15 @@ mod tests {
         let cfg = commonware_runtime::deterministic::Config::default().with_seed(3);
         let executor = Runner::from(cfg);
         executor.start(|context| async move {
-            let mut db = create_test_db_with_context("test_finalized_header", context).await;
+            let mut db =
+                create_test_db_with_context::<_, MinPk>("test_finalized_header", context).await;
 
             // Create a test header
             let header = summit_types::Header::compute_digest(
                 [1u8; 32].into(),                    // parent
                 100,                                 // height
                 1234567890,                          // timestamp
+                0,                                   // epoch
                 1,                                   // view
                 [2u8; 32].into(),                    // payload_hash
                 [3u8; 32].into(),                    // execution_request_hash
@@ -378,15 +407,17 @@ mod tests {
             );
 
             // Create finalization proof
-            use commonware_consensus::simplex::types::{Finalization, Proposal};
             let proposal = Proposal {
-                view: header.view,
+                round: Round::new(header.epoch, header.view),
                 parent: header.height,
                 payload: header.digest,
             };
             let finalized = Finalization {
                 proposal,
-                signatures: Vec::new(),
+                certificate: BlsCertificate {
+                    signers: Signers::from(3, [0, 1, 2]),
+                    signature: G2::zero(),
+                },
             };
             let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized);
 
@@ -413,6 +444,7 @@ mod tests {
                 [5u8; 32].into(),                    // parent
                 200,                                 // height
                 1234567900,                          // timestamp
+                0,                                   // epoch
                 2,                                   // view
                 [6u8; 32].into(),                    // payload_hash
                 [7u8; 32].into(),                    // execution_request_hash
@@ -423,13 +455,16 @@ mod tests {
                 Vec::new(),                          // removed_validators
             );
             let proposal2 = Proposal {
-                view: header2.view,
+                round: Round::new(header2.epoch, header2.view),
                 parent: header2.height,
                 payload: header2.digest,
             };
             let finalized2 = Finalization {
                 proposal: proposal2,
-                signatures: Vec::new(),
+                certificate: BlsCertificate {
+                    signers: Signers::from(3, [0, 1, 2]),
+                    signature: G2::zero(),
+                },
             };
             let finalized_header2 = summit_types::FinalizedHeader::new(header2.clone(), finalized2);
             db.store_finalized_header(200, &finalized_header2).await;
@@ -456,19 +491,21 @@ mod tests {
         let cfg = commonware_runtime::deterministic::Config::default().with_seed(5);
         let executor = Runner::from(cfg);
         executor.start(|context| async move {
-            let mut db =
-                create_test_db_with_context("test_most_recent_finalized_header", context).await;
+            let mut db = create_test_db_with_context::<_, MinPk>(
+                "test_most_recent_finalized_header",
+                context,
+            )
+            .await;
 
             // Test that no most recent header exists initially
             assert!(db.get_most_recent_finalized_header().await.is_none());
-
-            use commonware_consensus::simplex::types::{Finalization, Proposal};
 
             // Store headers out of order
             let header1 = summit_types::Header::compute_digest(
                 [1u8; 32].into(),                    // parent
                 100,                                 // height
                 1234567890,                          // timestamp
+                0,                                   // epoch
                 1,                                   // view
                 [2u8; 32].into(),                    // payload_hash
                 [3u8; 32].into(),                    // execution_request_hash
@@ -479,13 +516,17 @@ mod tests {
                 Vec::new(),                          // removed_validators
             );
             let proposal1 = Proposal {
-                view: header1.view,
+                round: Round::new(header1.epoch, header1.view),
                 parent: header1.height,
                 payload: header1.digest,
             };
+
             let finalized1 = Finalization {
                 proposal: proposal1,
-                signatures: Vec::new(),
+                certificate: BlsCertificate {
+                    signers: Signers::from(3, [0, 1, 2]),
+                    signature: G2::zero(),
+                },
             };
             let finalized_header1 = summit_types::FinalizedHeader::new(header1.clone(), finalized1);
 
@@ -493,6 +534,7 @@ mod tests {
                 [7u8; 32].into(),                     // parent
                 300,                                  // height
                 1234567920,                           // timestamp
+                0,                                    // epoch
                 3,                                    // view
                 [8u8; 32].into(),                     // payload_hash
                 [9u8; 32].into(),                     // execution_request_hash
@@ -503,13 +545,17 @@ mod tests {
                 Vec::new(),                           // removed_validators
             );
             let proposal3 = Proposal {
-                view: header3.view,
+                round: Round::new(header3.epoch, header3.view),
                 parent: header3.height,
                 payload: header3.digest,
             };
+
             let finalized3 = Finalization {
                 proposal: proposal3,
-                signatures: Vec::new(),
+                certificate: BlsCertificate {
+                    signers: Signers::from(3, [0, 1, 2]),
+                    signature: G2::zero(),
+                },
             };
             let finalized_header3 = summit_types::FinalizedHeader::new(header3.clone(), finalized3);
 
@@ -517,6 +563,7 @@ mod tests {
                 [5u8; 32].into(),                    // parent
                 200,                                 // height
                 1234567900,                          // timestamp
+                0,                                   // epoch
                 2,                                   // view
                 [6u8; 32].into(),                    // payload_hash
                 [7u8; 32].into(),                    // execution_request_hash
@@ -527,13 +574,17 @@ mod tests {
                 Vec::new(),                          // removed_validators
             );
             let proposal2 = Proposal {
-                view: header2.view,
+                round: Round::new(header2.epoch, header2.view),
                 parent: header2.height,
                 payload: header2.digest,
             };
+
             let finalized2 = Finalization {
                 proposal: proposal2,
-                signatures: Vec::new(),
+                certificate: BlsCertificate {
+                    signers: Signers::from(3, [0, 1, 2]),
+                    signature: G2::zero(),
+                },
             };
             let finalized_header2 = summit_types::FinalizedHeader::new(header2.clone(), finalized2);
 
@@ -579,7 +630,7 @@ mod tests {
         let cfg = commonware_runtime::deterministic::Config::default().with_seed(4);
         let executor = Runner::from(cfg);
         executor.start(|context| async move {
-            let mut db = create_test_db_with_context("test_checkpoint", context).await;
+            let mut db = create_test_db_with_context::<_, MinPk>("test_checkpoint", context).await;
 
             // Create test consensus states with different heights to ensure different digests
             let mut finalized_state1 = ConsensusState::default();

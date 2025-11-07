@@ -1,15 +1,19 @@
+use commonware_cryptography::Signer;
+use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_runtime::buffer::PoolRef;
+use summit_orchestrator::Mailbox as OrchestratorMailbox;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 
-pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>> {
+pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, S: Signer, V: Variant> {
     pub mailbox_size: usize,
     pub db_prefix: String,
     pub engine_client: C,
     pub registry: Registry,
     pub oracle: O,
+    pub orchestrator_mailbox: OrchestratorMailbox<V, S::PublicKey>,
     pub epoch_num_of_blocks: u64,
     pub validator_max_withdrawals_per_block: usize,
     pub validator_minimum_stake: u64, // in gwei
@@ -23,6 +27,6 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>> {
     /// Protocol version for the consensus protocol
     pub protocol_version: u32,
     /// The node's own public key
-    pub public_key: PublicKey,
+    pub node_public_key: PublicKey,
     pub cancellation_token: CancellationToken,
 }
