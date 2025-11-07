@@ -1,21 +1,20 @@
-use std::{num::NonZeroU32, time::Duration};
-
 use crate::keys::read_keys_from_keystore;
 use anyhow::{Context, Result};
-use commonware_cryptography::bls12381::{self, primitives::group};
-use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::Signer;
+use commonware_cryptography::bls12381;
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
+use std::{num::NonZeroU32, time::Duration};
 use summit_types::consensus_state::ConsensusState;
+use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, Genesis, PrivateKey, PublicKey};
-use summit_types::keystore::KeyStore;
+use zeroize::ZeroizeOnDrop;
 /* DEFAULTS */
-pub const PENDING_CHANNEL: u32 = 0;
-pub const RESOLVER_CHANNEL: u32 = 1;
-pub const BROADCASTER_CHANNEL: u32 = 2;
-pub const BACKFILLER_CHANNEL: u32 = 3;
+pub const PENDING_CHANNEL: u64 = 0;
+pub const RESOLVER_CHANNEL: u64 = 1;
+pub const BROADCASTER_CHANNEL: u64 = 2;
+pub const BACKFILLER_CHANNEL: u64 = 3;
 pub const MAILBOX_SIZE: usize = 16384;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,11 +26,12 @@ pub const MESSAGE_BACKLOG: usize = 16384;
 const BACKFILL_QUOTA: u32 = 10; // in seconds
 const FETCH_RATE_P2P: u32 = 128; // in seconds
 
-pub struct EngineConfig<C: EngineClient, S: Signer, V: Variant, O: NetworkOracle<S::PublicKey>> {
+pub struct EngineConfig<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
+{
     pub engine_client: C,
     pub partition_prefix: String,
     pub key_store: KeyStore<S>,
-    //pub participants: Vec<PublicKey>,
+    pub participants: Vec<(PublicKey, bls12381::PublicKey)>,
     pub mailbox_size: usize,
     pub backfill_quota: Quota,
     pub deque_size: usize,
@@ -55,12 +55,14 @@ pub struct EngineConfig<C: EngineClient, S: Signer, V: Variant, O: NetworkOracle
     pub initial_state: ConsensusState,
 }
 
-impl<C: EngineClient, S: Signer, V: Variant, O: NetworkOracle<S::PublicKey>> EngineConfig<C, S, V, O> {
+impl<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
+    EngineConfig<C, S, O>
+{
     pub fn get_engine_config(
         engine_client: C,
         oracle: O,
         key_store: KeyStore<S>,
-        participants: Vec<PublicKey>,
+        participants: Vec<(PublicKey, bls12381::PublicKey)>,
         db_prefix: String,
         genesis: &Genesis,
         initial_state: ConsensusState,
@@ -69,7 +71,7 @@ impl<C: EngineClient, S: Signer, V: Variant, O: NetworkOracle<S::PublicKey>> Eng
             engine_client,
             partition_prefix: db_prefix,
             key_store,
-            //participants,
+            participants,
             oracle,
             mailbox_size: MAILBOX_SIZE,
             backfill_quota: Quota::per_second(NonZeroU32::new(BACKFILL_QUOTA).unwrap()),
@@ -96,10 +98,11 @@ impl<C: EngineClient, S: Signer, V: Variant, O: NetworkOracle<S::PublicKey>> Eng
 
 pub(crate) fn load_key_store(key_store_path: &str) -> Result<KeyStore<PrivateKey>> {
     match read_keys_from_keystore(key_store_path).context("failed to load key store") {
-        Ok((node_key, consensus_key)) => {
-            Ok(KeyStore { node_key, consensus_key })
-        }
-        Err(e) => Err(e)
+        Ok((node_key, consensus_key)) => Ok(KeyStore {
+            node_key,
+            consensus_key,
+        }),
+        Err(e) => Err(e),
     }
 }
 
