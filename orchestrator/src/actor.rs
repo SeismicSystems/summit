@@ -1,33 +1,33 @@
 //! Consensus engine orchestrator for epoch transitions.
-use summit_types::{Block, scheme::SummitSchemeProvider, Digest};
 use crate::{Mailbox, Message};
+use summit_types::{Block, Digest, scheme::SummitSchemeProvider};
 
-use commonware_codec::{varint::UInt, DecodeExt, Encode};
+use commonware_codec::{DecodeExt, Encode, varint::UInt};
 use commonware_consensus::{
+    Automaton, Relay,
     simplex::{
         self,
         types::{Context, Voter},
     },
     types::Epoch,
     utils::last_block_in_epoch,
-    Automaton, Relay,
 };
-use commonware_cryptography::{bls12381::primitives::variant::Variant, Signer};
+use commonware_cryptography::{Signer, bls12381::primitives::variant::Variant};
 use commonware_macros::select;
 use commonware_p2p::{
-    utils::mux::{Builder, MuxHandle, Muxer},
     Blocker, Receiver, Recipients, Sender,
+    utils::mux::{Builder, MuxHandle, Muxer},
 };
 use commonware_runtime::{
-    buffer::PoolRef, spawn_cell, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
+    Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::PoolRef, spawn_cell,
 };
-use commonware_utils::{NZUsize, NZU32};
-use futures::{channel::mpsc, StreamExt};
-use governor::{clock::Clock as GClock, Quota, RateLimiter};
+use commonware_utils::{NZU32, NZUsize};
+use futures::{StreamExt, channel::mpsc};
+use governor::{Quota, RateLimiter, clock::Clock as GClock};
 use rand::{CryptoRng, Rng};
 use std::{collections::BTreeMap, time::Duration};
-use tracing::{debug, info, warn};
 use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
+use tracing::{debug, info, warn};
 
 /// Configuration for the orchestrator.
 pub struct Config<B, V, C, A>
@@ -35,8 +35,7 @@ where
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest>,
+    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
 {
     pub oracle: B,
     pub application: A,
@@ -46,7 +45,7 @@ where
     pub namespace: Vec<u8>,
     pub muxer_size: usize,
     pub mailbox_size: usize,
-    pub rate_limit: governor::Quota,
+    pub rate_limit: Quota,
 
     pub blocks_per_epoch: u64,
 
@@ -60,8 +59,7 @@ where
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest>,
+    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
 {
     context: ContextCell<E>,
     mailbox: mpsc::Receiver<Message<V, C::PublicKey>>,
@@ -85,8 +83,7 @@ where
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest>,
+    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
 {
     pub fn new(context: E, config: Config<B, V, C, A>) -> (Self, Mailbox<V, C::PublicKey>) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);

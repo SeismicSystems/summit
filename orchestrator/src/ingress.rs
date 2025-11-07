@@ -1,11 +1,8 @@
 //! Inbound communication channel for epoch transitions.
 
-use commonware_consensus::{types::Epoch, Reporter};
-use commonware_cryptography::{
-    bls12381::primitives::variant::Variant,
-    PublicKey,
-};
-use futures::{channel::mpsc, SinkExt};
+use commonware_consensus::{Reporter, types::Epoch};
+use commonware_cryptography::{PublicKey, bls12381::primitives::variant::Variant};
+use futures::{SinkExt, channel::mpsc};
 use summit_types::scheme::EpochTransition;
 
 /// Messages that can be sent to the orchestrator.
