@@ -1,5 +1,5 @@
-use commonware_cryptography::bls12381::PrivateKey;
 use commonware_cryptography::Signer;
+use commonware_cryptography::bls12381::PrivateKey;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Zeroize, ZeroizeOnDrop)]

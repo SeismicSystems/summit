@@ -7,8 +7,8 @@ use alloy_eips::eip4895::Withdrawal;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
-use std::collections::{HashMap, VecDeque};
 use commonware_cryptography::bls12381;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConsensusState {
@@ -118,12 +118,14 @@ impl ConsensusState {
     }
 
     pub fn get_validator_keys(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
-        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self.validator_accounts
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
+            .validator_accounts
             .iter()
             .filter(|(_, acc)| !(acc.status == ValidatorStatus::Inactive))
             .map(|(v, acc)| {
                 let mut key_bytes = &v[..];
-                let node_public_key = PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let node_public_key =
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key");
                 let consensus_public_key = acc.consensus_public_key.clone();
                 (node_public_key, consensus_public_key)
             })
@@ -304,7 +306,7 @@ mod tests {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
-    use commonware_cryptography::{bls12381, PrivateKeyExt, Signer};
+    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
         let mut withdrawal_credentials = [0u8; 32];

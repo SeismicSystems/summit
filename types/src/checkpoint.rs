@@ -130,9 +130,9 @@ mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use commonware_codec::DecodeExt;
+    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
     use ssz::{Decode, Encode};
     use std::collections::{HashMap, VecDeque};
-    use commonware_cryptography::{bls12381, PrivateKeyExt, Signer};
 
     fn parse_public_key(public_key: &str) -> commonware_cryptography::ed25519::PublicKey {
         commonware_cryptography::ed25519::PublicKey::decode(
