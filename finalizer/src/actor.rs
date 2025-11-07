@@ -1,14 +1,18 @@
 use crate::db::{Config as StateConfig, FinalizerState};
-use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage, block_fetcher::BlockFetcher};
+use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
 #[cfg(debug_assertions)]
-use alloy_primitives::hex;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
-use commonware_cryptography::{Hasher, Sha256, Verifier as _};
-use commonware_resolver::p2p::Coordinator;
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
+use commonware_consensus::simplex::signing_scheme::{Scheme, bls12381_multisig};
+use commonware_consensus::simplex::types::Finalization;
+use commonware_cryptography::bls12381::primitives::variant::Variant;
+use commonware_cryptography::{
+    Digestible, Hasher, PrivateKeyExt, Sha256, Signer, Verifier as _, bls12381,
+};
+use commonware_p2p::Manager;
+use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
@@ -17,11 +21,12 @@ use futures::{FutureExt, StreamExt as _, select};
 use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
-use rand::Rng;
+use rand::{CryptoRng, Rng};
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::Instant;
-use summit_syncer::Orchestrator;
+use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
@@ -41,13 +46,16 @@ pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
+    S: Signer,
+    Z: Scheme<PublicKey = PublicKey>,
+    V: Variant,
 > {
-    mailbox: mpsc::Receiver<FinalizerMessage>,
+    mailbox: mpsc::Receiver<FinalizerMessage<Z, Block<S, V>>>,
     pending_height_notifys: BTreeMap<u64, Vec<oneshot::Sender<()>>>,
-    context: R,
+    context: ContextCell<R>,
     engine_client: C,
     registry: Registry,
-    db: FinalizerState<R>,
+    db: FinalizerState<R, V>,
     state: ConsensusState,
     genesis_hash: [u8; 32],
     validator_max_withdrawals_per_block: usize,
@@ -57,18 +65,27 @@ pub struct Finalizer<
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
     oracle: O,
-    public_key: PublicKey,
+    orchestrator_mailbox: summit_orchestrator::Mailbox<V, S::PublicKey>,
+    node_public_key: PublicKey,
     validator_exit: bool,
     cancellation_token: CancellationToken,
+    _signer_marker: PhantomData<S>,
+    _variant_marker: PhantomData<V>,
 }
 
 impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
-> Finalizer<R, C, O>
+    S: Signer,
+    Z: Scheme<PublicKey = PublicKey>,
+    V: Variant,
+> Finalizer<R, C, O, S, Z, V>
 {
-    pub async fn new(context: R, cfg: FinalizerConfig<C, O>) -> (Self, FinalizerMailbox) {
+    pub async fn new(
+        context: R,
+        cfg: FinalizerConfig<C, O, S, V>,
+    ) -> (Self, FinalizerMailbox<Z, Block<S, V>>) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
         let state_cfg = StateConfig {
             log_journal_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
@@ -82,7 +99,8 @@ impl<
             buffer_pool: cfg.buffer_pool,
         };
 
-        let db = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
+        let db =
+            FinalizerState::<R, V>::new(context.with_label("finalizer_state"), state_cfg).await;
 
         // Check if the state exists in the database. Otherwise, use the initial state.
         // The initial state could be from the genesis or a checkpoint.
@@ -95,10 +113,11 @@ impl<
 
         (
             Self {
-                context,
+                context: ContextCell::new(context),
                 mailbox: rx,
                 engine_client: cfg.engine_client,
                 oracle: cfg.oracle,
+                orchestrator_mailbox: cfg.orchestrator_mailbox,
                 pending_height_notifys: BTreeMap::new(),
                 registry: cfg.registry,
                 epoch_num_of_blocks: cfg.epoch_num_of_blocks,
@@ -110,38 +129,35 @@ impl<
                 validator_minimum_stake: cfg.validator_minimum_stake,
                 validator_withdrawal_period: cfg.validator_withdrawal_period,
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
-                public_key: cfg.public_key,
+                node_public_key: cfg.node_public_key,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,
+                _signer_marker: PhantomData,
+                _variant_marker: PhantomData,
             },
             FinalizerMailbox::new(tx),
         )
     }
 
-    pub fn start(
-        mut self,
-        orchestrator: Orchestrator,
-        sync_height: u64,
-        finalization_notify: mpsc::Receiver<()>,
-    ) -> Handle<()> {
-        self.context.spawn_ref()(self.run(orchestrator, sync_height, finalization_notify))
+    pub fn start(mut self, sync_height: u64) -> Handle<()> {
+        spawn_cell!(self.context, self.run(sync_height).await)
     }
 
     pub async fn run(
         mut self,
-        orchestrator: Orchestrator,
+        //orchestrator: Orchestrator,
         sync_height: u64,
-        finalization_notify: mpsc::Receiver<()>,
+        //finalization_notify: mpsc::Receiver<()>,
     ) {
-        let (block_fetcher, mut rx_finalize_blocks) = BlockFetcher::new(
-            orchestrator,
-            finalization_notify,
-            self.epoch_num_of_blocks,
-            sync_height,
-        );
-        self.context
-            .with_label("block-fetcher")
-            .spawn(|_| block_fetcher.run());
+        //let (block_fetcher, mut rx_finalize_blocks) = BlockFetcher::new(
+        //    orchestrator,
+        //    finalization_notify,
+        //    self.epoch_num_of_blocks,
+        //    sync_height,
+        //);
+        //self.context
+        //    .with_label("block-fetcher")
+        //    .spawn(|_| block_fetcher.run());
 
         let mut last_committed_timestamp: Option<Instant> = None;
         let mut signal = self.context.stopped().fuse();
@@ -155,17 +171,30 @@ impl<
                 break;
             }
             select! {
-                msg = rx_finalize_blocks.next() => {
-                    let Some((envelope, notifier)) = msg else {
-                            warn!("All senders to finalizer dropped");
-                            break;
-                        };
-                    self.handle_execution_block(notifier,envelope, &mut last_committed_timestamp).await;
+                //msg = rx_finalize_blocks.next() => {
+                //    let Some((envelope, notifier)) = msg else {
+                //            warn!("All senders to finalizer dropped");
+                //            break;
+                //        };
+                //    self.handle_execution_block(notifier,envelope, &mut last_committed_timestamp).await;
 
-                }
+                //}
                 mailbox_message = self.mailbox.next() => {
                     let mail = mailbox_message.expect("Finalizer mailbox closed");
                     match mail {
+                        FinalizerMessage::SyncerUpdate { update } => {
+                            match update {
+                                Update::Tip(height, digest) => {
+
+                                }
+                                Update::Block(block, ack_tx) => {
+                                    self.handle_execution_block(ack_tx, block, None, &mut last_committed_timestamp).await;
+                                }
+                                Update::BlockWithFinalization(block, finalization, ack_tx) => {
+
+                                }
+                            }
+                        },
                         FinalizerMessage::NotifyAtHeight { height, response } => {
                             let last_indexed = self.state.get_latest_height();
                             if last_indexed >= height {
@@ -197,14 +226,14 @@ impl<
 
     async fn handle_execution_block(
         &mut self,
-        notifier: oneshot::Sender<()>,
-        envelope: BlockEnvelope,
+        ack_tx: oneshot::Sender<()>,
+        block: Block<S, V>,
+        finalization: Option<Finalization<Z, <Block<S, V> as Digestible>::Digest>>,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
         #[cfg(feature = "prom")]
         let block_processing_start = Instant::now();
 
-        let BlockEnvelope { block, finalized } = envelope;
         // check the payload
         #[cfg(feature = "prom")]
         let payload_check_start = Instant::now();
@@ -316,22 +345,28 @@ impl<
         // Store finalizes checkpoint to database
         if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
             let view = block.view();
-            if let Some(finalized) = finalized {
+            if let Some(finalization) = finalization {
                 // The finalized signatures should always be included on the last block
                 // of the epoch. However, there is an edge case, where the block after
                 // last block of the epoch arrived out of order.
                 // This is not critical and will likely never happen on all validators
                 // at the same time.
                 // TODO(matthias): figure out a good solution for making checkpoints available
-                debug_assert!(block.header.digest == finalized.proposal.payload);
+                debug_assert!(block.header.digest == finalization.proposal.payload);
 
                 // Store the finalized block header in the database
+                // Convert to concrete BLS scheme type by encoding and decoding
                 let finalized_header = FinalizedHeader {
-                    header: block.header,
-                    finalized,
+                    header: block.header.clone(),
+                    finalization,
                 };
+                use commonware_codec::{Read as CodecRead, Write as CodecWrite};
+                let mut buf = Vec::new();
+                finalized_header.write(&mut buf);
+                let concrete_header = <FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, V>> as CodecRead>::read_cfg(&mut buf.as_slice(), &())
+                    .expect("failed to convert finalized header to concrete type");
                 self.db
-                    .store_finalized_header(new_height, &finalized_header)
+                    .store_finalized_header(new_height, &concrete_header)
                     .await;
 
                 #[cfg(debug_assertions)]
@@ -366,7 +401,7 @@ impl<
                     .state
                     .removed_validators
                     .iter()
-                    .any(|pk| pk == &self.public_key)
+                    .any(|pk| pk == &self.node_public_key)
                 {
                     self.validator_exit = true;
                 }
@@ -381,10 +416,13 @@ impl<
                     &self.state.added_validators,
                     &self.state.removed_validators,
                 );
-                let participants = self.registry.peers().clone();
+                // TODO(matthias): update peers properly
+                let participants = self.registry.peer_set(1).await.unwrap();
                 // TODO(matthias): should we wait until view `view + REGISTRY_CHANGE_VIEW_DELTA`
                 // to update the oracle?
-                self.oracle.register(new_height, participants).await;
+                self.oracle
+                    .register(new_height, participants.into_iter().collect())
+                    .await;
             }
 
             #[cfg(feature = "prom")]
@@ -433,11 +471,11 @@ impl<
         }
 
         self.height_notify_up_to(new_height);
-        let _ = notifier.send(());
+        let _ = ack_tx.send(());
         info!(new_height, "finalized block");
     }
 
-    async fn parse_execution_requests(&mut self, block: &Block, new_height: u64) {
+    async fn parse_execution_requests(&mut self, block: &Block<S, V>, new_height: u64) {
         for request_bytes in &block.execution_requests {
             match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
                 Ok(execution_request) => {
@@ -531,7 +569,7 @@ impl<
         }
     }
 
-    async fn process_execution_requests(&mut self, block: &Block, new_height: u64) {
+    async fn process_execution_requests(&mut self, block: &Block<S, V>, new_height: u64) {
         if is_penultimate_block_of_epoch(new_height, self.epoch_num_of_blocks) {
             for _ in 0..self.validator_onboarding_limit_per_block {
                 if let Some(request) = self.state.pop_deposit() {
@@ -586,7 +624,10 @@ impl<
                         }
 
                         // Create new ValidatorAccount from DepositRequest
+                        // TODO(matthias): use the actual BLS key
+                        let dummy_key = bls12381::PrivateKey::from_seed(0);
                         let new_account = ValidatorAccount {
+                            consensus_public_key: dummy_key.public_key(),
                             withdrawal_credentials: Address::from_slice(
                                 &request.withdrawal_credentials[12..32],
                             ), // Take last 20 bytes
@@ -769,7 +810,10 @@ impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
-> Drop for Finalizer<R, C, O>
+    S: Signer,
+    Z: Scheme<PublicKey = PublicKey>,
+    V: Variant,
+> Drop for Finalizer<R, C, O, S, Z, V>
 {
     fn drop(&mut self) {
         self.cancellation_token.cancel();
