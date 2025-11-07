@@ -30,7 +30,7 @@ use std::{
     thread::JoinHandle,
 };
 use summit::args::{RunFlags, run_node_with_runtime};
-use summit::engine::{EPOCH_NUM_BLOCKS, VALIDATOR_MINIMUM_STAKE};
+use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_MINIMUM_STAKE};
 use summit_types::PublicKey;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("failed to send deposit transaction");
 
             // Wait for all nodes to continue making progress
-            let epoch_end = EPOCH_NUM_BLOCKS;
+            let epoch_end = BLOCKS_PER_EPOCH;
             println!(
                 "Waiting for all {} nodes to reach height {}",
                 NUM_NODES, epoch_end

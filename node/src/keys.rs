@@ -1,11 +1,11 @@
 use crate::args::DEFAULT_KEY_PATH;
 use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};
-use commonware_codec::{extensions::DecodeExt, Encode};
+use commonware_codec::{Encode, extensions::DecodeExt};
 use std::io::{self, Write};
 
-use commonware_cryptography::{PrivateKeyExt as _, Signer};
 use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;
+use commonware_cryptography::{PrivateKeyExt as _, Signer};
 use commonware_utils::from_hex_formatted;
 use summit_types::{PrivateKey, utils::get_expanded_path};
 
@@ -30,7 +30,7 @@ pub enum KeySubCmd {
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct KeyFlags {
     /// Path to your keystore directory containing node_key.pem and consensus_key.pem
-    #[arg(long, default_value_t = "~/.seismic/consensus/keys".into())]
+    #[arg(long, default_value_t = String::from("~/.seismic/consensus/keys"))]
     pub key_store_path: String,
     #[arg(short = 'n', long, conflicts_with = "yes_overwrite")]
     pub no_overwrite: bool,
@@ -96,15 +96,13 @@ impl KeySubCmd {
         }
 
         // Create keystore directory
-        std::fs::create_dir_all(&keystore_dir)
-            .expect("Unable to create keystore directory");
+        std::fs::create_dir_all(&keystore_dir).expect("Unable to create keystore directory");
 
         // Generate ed25519 node key
         let node_private_key = PrivateKey::from_rng(&mut rand::thread_rng());
         let node_pub_key = node_private_key.public_key();
         let encoded_node_key = node_private_key.to_string();
-        std::fs::write(&node_key_path, encoded_node_key)
-            .expect("Unable to write node key to disk");
+        std::fs::write(&node_key_path, encoded_node_key).expect("Unable to write node key to disk");
 
         // Generate BLS consensus key
         let consensus_private_key = BlsPrivateKey::from_rng(&mut rand::thread_rng());
@@ -123,11 +121,10 @@ impl KeySubCmd {
         let node_key_path = keystore_dir.join(NODE_KEY_FILENAME);
         let consensus_key_path = keystore_dir.join(CONSENSUS_KEY_FILENAME);
 
-        let node_pk = read_ed_key_from_file(&node_key_path)
-            .expect("Unable to read node key from disk");
+        let node_pk =
+            read_ed_key_from_file(&node_key_path).expect("Unable to read node key from disk");
         let consensus_pk = read_bls_key_from_file(&consensus_key_path)
             .expect("Unable to read consensus key from disk");
-
 
         println!("Node Public Key (ed25519): {}", node_pk.public_key());
         println!("Consensus Public Key (BLS): {}", consensus_pk.public_key());
