@@ -1,7 +1,8 @@
-use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
 use crate::test_harness::common::{DummyOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
+use commonware_cryptography::bls12381;
 use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_macros::test_traced;
 use commonware_p2p::simulated;
@@ -13,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::PrivateKey;
 use summit_types::consensus_state::ConsensusState;
+use summit_types::keystore::KeyStore;
 
 #[test_traced("INFO")]
 fn test_checkpoint_created() {
@@ -38,20 +40,28 @@ fn test_checkpoint_created() {
         // Start network
         network.start();
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by_key(|(lhs, _)| *lhs);
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -59,7 +69,7 @@ fn test_checkpoint_created() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let stop_height = EPOCH_NUM_BLOCKS + 1;
+        let stop_height = BLOCKS_PER_EPOCH + 1;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
         let initial_state = get_initial_state(
@@ -73,9 +83,9 @@ fn test_checkpoint_created() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -90,7 +100,7 @@ fn test_checkpoint_created() {
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -131,13 +141,13 @@ fn test_checkpoint_created() {
 
                 if metric.ends_with("consensus_state_stored") {
                     let height = value.parse::<u64>().unwrap();
-                    assert_eq!(height, EPOCH_NUM_BLOCKS);
+                    assert_eq!(height, BLOCKS_PER_EPOCH);
                     state_stored.insert(metric.to_string());
                 }
 
                 if metric.ends_with("finalized_header_stored") {
                     let height = value.parse::<u64>().unwrap();
-                    assert_eq!(height, EPOCH_NUM_BLOCKS);
+                    assert_eq!(height, BLOCKS_PER_EPOCH);
                     header_stored.insert(metric.to_string());
                 }
                 if header_stored.len() as u32 >= n && state_stored.len() as u32 == n {
@@ -198,20 +208,28 @@ fn test_previous_header_hash_matches() {
         // Start network
         network.start();
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by_key(|(lhs, _)| *lhs);
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -219,7 +237,7 @@ fn test_previous_header_hash_matches() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let stop_height = EPOCH_NUM_BLOCKS + 1;
+        let stop_height = BLOCKS_PER_EPOCH + 1;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
         let initial_state = get_initial_state(
@@ -233,9 +251,9 @@ fn test_previous_header_hash_matches() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -250,7 +268,7 @@ fn test_previous_header_hash_matches() {
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -298,10 +316,10 @@ fn test_previous_header_hash_matches() {
                     let validator_id =
                         common::extract_validator_id(metric).expect("failed to parse validator id");
 
-                    if height == EPOCH_NUM_BLOCKS {
+                    if height == BLOCKS_PER_EPOCH {
                         // This is the first time the finalized header is written to disk
                         first_header_stored.insert(validator_id, header);
-                    } else if height == 2 * EPOCH_NUM_BLOCKS {
+                    } else if height == 2 * BLOCKS_PER_EPOCH {
                         // This is the second time the finalized header is written to disk
                         if let Some(header_from_prev_epoch) = first_header_stored.get(&validator_id)
                         {
@@ -310,7 +328,7 @@ fn test_previous_header_hash_matches() {
                             second_header_stored.insert(validator_id);
                         }
                     } else {
-                        assert_eq!(height % EPOCH_NUM_BLOCKS, 0);
+                        assert_eq!(height % BLOCKS_PER_EPOCH, 0);
                     }
                 }
                 // There is an edge case where not all validators write a finalized header to disk.
@@ -372,12 +390,20 @@ fn test_single_engine_with_checkpoint() {
         network.start();
 
         // Create a single validator
-        let signer = PrivateKey::from_seed(100);
-        let validators = vec![signer.public_key()];
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        let node_key = PrivateKey::from_seed(100);
+        let node_public_key = node_key.public_key();
+        let consensus_key = bls12381::PrivateKey::from_seed(100);
+        let consensus_public_key = consensus_key.public_key();
+        let key_store = KeyStore {
+            node_key,
+            consensus_key,
+        };
+        let validators = vec![(node_public_key.clone(), consensus_public_key)];
+        let node_public_keys = vec![node_public_key.clone()];
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link validator
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -392,7 +418,7 @@ fn test_single_engine_with_checkpoint() {
         consensus_state.set_latest_height(50); // Set a specific height
 
         // Configure engine with the checkpoint
-        let public_key = signer.public_key();
+        let public_key = key_store.node_key.public_key();
         let uid = format!("validator-{public_key}");
         let namespace = String::from("_SEISMIC_BFT");
         let engine_client = engine_client_network.create_client(uid.clone());
@@ -405,7 +431,7 @@ fn test_single_engine_with_checkpoint() {
             uid.clone(),
             genesis_hash,
             namespace,
-            signer,
+            key_store,
             validators.clone(),
             consensus_state,
         );
@@ -462,23 +488,32 @@ fn test_node_joins_later_with_checkpoint() {
         // Start network
         network.start();
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
+        validators.sort_by_key(|(lhs, _)| *lhs);
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
 
         // Separate initial validators from late joiner
-        let initial_validators = &validators[..validators.len() - 1];
+        let initial_node_public_keys = &node_public_keys[..node_public_keys.len() - 1];
 
         // Register and link only initial validators
-        let mut registrations = common::register_validators(&mut oracle, initial_validators).await;
-        common::link_validators(&mut oracle, initial_validators, link.clone(), None).await;
+        let mut registrations =
+            common::register_validators(&mut oracle, initial_node_public_keys).await;
+        common::link_validators(&mut oracle, initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -500,11 +535,11 @@ fn test_node_joins_later_with_checkpoint() {
         let mut consensus_state_queries = HashMap::new();
 
         // Start all the engines, except for one
-        let signer_joining_later = signers.pop().unwrap();
+        let key_store_joining_later = key_stores.pop().unwrap();
 
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -519,7 +554,7 @@ fn test_node_joins_later_with_checkpoint() {
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -551,14 +586,14 @@ fn test_node_joins_later_with_checkpoint() {
         }
 
         // Now register and join the final validator to the network
-        let public_key = signer_joining_later.public_key();
+        let public_key = key_store_joining_later.node_key.public_key();
 
         // Register the late joining validator
         let late_registrations =
             common::register_validators(&mut oracle, &[public_key.clone()]).await;
 
         // Join the validator to the network
-        common::join_validator(&mut oracle, &public_key, initial_validators, link).await;
+        common::join_validator(&mut oracle, &public_key, initial_node_public_keys, link).await;
 
         // Allow p2p connections to establish before starting engine
         context.sleep(Duration::from_millis(100)).await;
@@ -584,7 +619,7 @@ fn test_node_joins_later_with_checkpoint() {
             uid.clone(),
             genesis_hash,
             namespace,
-            signer_joining_later,
+            key_store_joining_later,
             validators.clone(),
             consensus_state,
         );
@@ -598,7 +633,7 @@ fn test_node_joins_later_with_checkpoint() {
         engine.start(pending, resolver, broadcast, backfill);
 
         // Poll metrics
-        let stop_height = 3 * EPOCH_NUM_BLOCKS;
+        let stop_height = 3 * BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();
@@ -683,23 +718,33 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         // Start network
         network.start();
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
+        validators.sort_by_key(|(lhs, _)| *lhs);
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
 
         // Separate initial validators from late joiner
-        let initial_validators = &validators[..validators.len() - 1];
+        let initial_validators = validators[..validators.len() - 1].to_vec();
+        let initial_node_public_keys = &node_public_keys[..node_public_keys.len() - 1];
 
         // Register and link only initial validators
-        let mut registrations = common::register_validators(&mut oracle, initial_validators).await;
-        common::link_validators(&mut oracle, initial_validators, link.clone(), None).await;
+        let mut registrations =
+            common::register_validators(&mut oracle, initial_node_public_keys).await;
+        common::link_validators(&mut oracle, initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -721,11 +766,11 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         let mut consensus_state_queries = HashMap::new();
 
         // Start all the engines, except for one
-        let signer_joining_later = signers.pop().unwrap();
+        let key_store_joining_later = key_stores.pop().unwrap();
 
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -740,8 +785,8 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
-                initial_validators.to_vec(),
+                key_store,
+                initial_validators.clone(),
                 initial_state.clone(),
             );
             let engine = Engine::new(context.with_label(&uid), config).await;
@@ -772,14 +817,14 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         }
 
         // Now register and join the final validator to the network
-        let public_key = signer_joining_later.public_key();
+        let public_key = key_store_joining_later.node_key.public_key();
 
         // Register the late joining validator
         let late_registrations =
             common::register_validators(&mut oracle, &[public_key.clone()]).await;
 
         // Join the validator to the network
-        common::join_validator(&mut oracle, &public_key, initial_validators, link).await;
+        common::join_validator(&mut oracle, &public_key, initial_node_public_keys, link).await;
 
         // Allow p2p connections to establish before starting engine
         context.sleep(Duration::from_millis(100)).await;
@@ -805,8 +850,8 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             uid.clone(),
             genesis_hash,
             namespace,
-            signer_joining_later,
-            initial_validators.to_vec(),
+            key_store_joining_later,
+            initial_validators,
             consensus_state,
         );
         let engine = Engine::new(context.with_label(&uid), config).await;
@@ -819,7 +864,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         engine.start(pending, resolver, broadcast, backfill);
 
         // Poll metrics
-        let stop_height = 3 * EPOCH_NUM_BLOCKS;
+        let stop_height = 3 * BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();

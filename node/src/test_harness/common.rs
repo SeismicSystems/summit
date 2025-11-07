@@ -1,4 +1,4 @@
-use commonware_cryptography::{Hasher, PrivateKeyExt, Sha256, Signer};
+use commonware_cryptography::{Hasher, PrivateKeyExt, Sha256, Signer, bls12381};
 
 use crate::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
@@ -7,6 +7,7 @@ use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::Write;
+use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
@@ -22,6 +23,7 @@ use std::{
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
+use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
 
@@ -131,6 +133,8 @@ pub fn run_until_height(
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: true,
+                tracked_peer_sets: Some(n as usize * 2),
             },
         );
 
@@ -138,16 +142,24 @@ pub fn run_until_height(
         network.start();
 
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
+        validators.sort_by_key(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores
+            .sort_by_key(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
+
         let mut registrations = register_validators(&mut oracle, &validators).await;
 
         // Link all validators
@@ -170,9 +182,9 @@ pub fn run_until_height(
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -187,7 +199,7 @@ pub fn run_until_height(
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -462,23 +474,25 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 ///
 /// # Returns
 /// * `EngineConfig<C>` - A fully configured engine config with sensible defaults for testing
-pub fn get_default_engine_config<C: EngineClient, O: NetworkOracle<PublicKey>>(
+pub fn get_default_engine_config<C: EngineClient, V: Variant, O: NetworkOracle<PublicKey>>(
     engine_client: C,
     oracle: O,
     partition_prefix: String,
     genesis_hash: [u8; 32],
     namespace: String,
-    signer: PrivateKey,
-    participants: Vec<PublicKey>,
+    key_store: KeyStore<PrivateKey>,
+    participants: Vec<(PublicKey, bls12381::PublicKey)>,
     initial_state: ConsensusState,
-) -> EngineConfig<C, O> {
+) -> EngineConfig<C, PrivateKey, V, O> {
+    // For tests, generate a dummy BLS key
+
     EngineConfig {
         engine_client,
         oracle,
         partition_prefix,
         genesis_hash,
         namespace,
-        signer,
+        key_store,
         participants,
         mailbox_size: 1024,
         deque_size: 10,
