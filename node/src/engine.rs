@@ -1,26 +1,35 @@
 use crate::config::EngineConfig;
 use commonware_broadcast::buffered;
+use commonware_codec::{DecodeExt, Encode};
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
 use commonware_consensus::simplex::{self, Engine as Simplex};
-use commonware_cryptography::Signer as _;
-use commonware_p2p::{Receiver, Sender};
+use commonware_consensus::{Automaton, Relay};
+use commonware_cryptography::bls12381::primitives::group;
+use commonware_cryptography::bls12381::primitives::variant::Variant;
+use commonware_cryptography::{Signer as _, Signer};
+use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
 use commonware_runtime::buffer::PoolRef;
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
-use commonware_utils::NZUsize;
+use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
+use commonware_utils::{NZU64, NZUsize};
 use futures::FutureExt;
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
 use futures::future::try_join_all;
-use governor::clock::Clock as GClock;
+use governor::{Quota, clock::Clock as GClock};
 use rand::{CryptoRng, Rng};
-use std::num::NonZero;
+use std::marker::PhantomData;
+use std::num::{NonZero, NonZeroU32};
+use std::time::Duration;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
-use summit_syncer::Orchestrator;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
+use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
 use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use zeroize::ZeroizeOnDrop;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -31,6 +40,18 @@ const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
 const BUFFER_POOL_PAGE_SIZE: NonZero<usize> = NZUsize!(4_096); // 4KB
 const BUFFER_POOL_CAPACITY: NonZero<usize> = NZUsize!(8_192); // 32MB
+const DEQUE_SIZE: usize = 10;
+const ACTIVITY_TIMEOUT: u64 = 256;
+const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
+const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
+const IMMUTABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(262_144);
+const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
+const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
+const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
+const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
+const FREEZER_TABLE_INITIAL_SIZE: u32 = 1024 * 1024; // 100mb
+const MAX_REPAIR: u64 = 50;
+
 //
 // Onboarding config (set arbitrarily for now)
 
@@ -44,51 +65,63 @@ pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 5;
 #[cfg(all(not(debug_assertions), not(feature = "e2e")))]
 const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 100;
 #[cfg(all(feature = "e2e", not(debug_assertions)))]
-pub const EPOCH_NUM_BLOCKS: u64 = 50;
+pub const BLOCKS_PER_EPOCH: u64 = 50;
 #[cfg(debug_assertions)]
-pub const EPOCH_NUM_BLOCKS: u64 = 10;
+pub const BLOCKS_PER_EPOCH: u64 = 10;
 #[cfg(all(not(debug_assertions), not(feature = "e2e")))]
-const EPOCH_NUM_BLOCKS: u64 = 1000;
+const BLOCKS_PER_EPOCH: u64 = 1000;
 const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 //
 
 pub struct Engine<
-    E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
     C: EngineClient,
-    O: NetworkOracle<PublicKey>,
+    O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Manager<PublicKey = PublicKey>,
+    S: Signer<PublicKey = PublicKey>,
+    V: Variant,
 > {
     context: E,
-    application: summit_application::Actor<E, C>,
-    buffer: buffered::Engine<E, PublicKey, Block>,
-    buffer_mailbox: buffered::Mailbox<PublicKey, Block>,
-    syncer: summit_syncer::Actor<E>,
-    syncer_mailbox: summit_syncer::Mailbox,
-    finalizer: Finalizer<E, C, O>,
-    pub finalizer_mailbox: FinalizerMailbox,
-    orchestrator: Orchestrator,
-    simplex: Simplex<
-        E,
-        PrivateKey,
-        Digest,
-        summit_application::Mailbox,
-        summit_application::Mailbox,
-        summit_syncer::Mailbox,
-        Registry,
-    >,
-
+    application: summit_application::Actor<E, C, MultisigScheme<S, V>, S::PublicKey, S, V>,
+    application_mailbox: summit_application::Mailbox<S::PublicKey>,
+    buffer: buffered::Engine<E, S::PublicKey, Block<S, V>>,
+    buffer_mailbox: buffered::Mailbox<S::PublicKey, Block<S, V>>,
+    syncer: summit_syncer::Actor<E, Block<S, V>, SummitSchemeProvider<S, V>, MultisigScheme<S, V>>,
+    syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, V>, Block<S, V>>,
+    finalizer: Finalizer<E, C, O, S, MultisigScheme<S, V>, V>,
+    pub finalizer_mailbox: FinalizerMailbox<MultisigScheme<S, V>, Block<S, V>>,
+    orchestrator: summit_orchestrator::Actor<E, O, V, S, summit_application::Mailbox<S::PublicKey>>,
+    oracle: O,
+    node_public_key: PublicKey,
+    mailbox_size: usize,
     sync_height: u64,
     cancellation_token: CancellationToken,
 }
 
 impl<
-    E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics,
+    E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
     C: EngineClient,
-    O: NetworkOracle<PublicKey>,
-> Engine<E, C, O>
+    O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Manager<PublicKey = PublicKey>,
+    S: Signer<PublicKey = PublicKey> + ZeroizeOnDrop,
+    V: Variant,
+> Engine<E, C, O, S, V>
+where
+    MultisigScheme<S, V>: Scheme<PublicKey = S::PublicKey>,
 {
-    pub async fn new(context: E, cfg: EngineConfig<C, O>) -> Self {
-        let registry = Registry::new(cfg.participants.clone());
+    pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
+        let node_keys: Vec<_> = cfg
+            .participants
+            .iter()
+            .map(|(node_key, _)| node_key.clone())
+            .collect();
+        let registry = Registry::new(cfg.initial_state.epoch, node_keys);
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+
+        //let threshold = registry.
+        let encoded = cfg.key_store.consensus_key.encode();
+        let private_scalar = group::Private::decode(&mut encoded.as_ref())
+            .expect("failed to extract scalar from private key");
+        let scheme_provider =
+            SummitSchemeProvider::new(cfg.key_store.node_key.clone(), private_scalar);
 
         let sync_height = cfg.initial_state.latest_height;
 
@@ -111,7 +144,7 @@ impl<
         let (buffer, buffer_mailbox) = buffered::Engine::new(
             context.with_label("buffer"),
             buffered::Config {
-                public_key: cfg.signer.public_key(),
+                public_key: cfg.key_store.node_key.public_key(),
                 mailbox_size: cfg.mailbox_size,
                 deque_size: cfg.deque_size,
                 priority: true,
@@ -121,18 +154,47 @@ impl<
 
         // create the syncer
         let syncer_config = summit_syncer::Config {
+            scheme_provider: scheme_provider.clone(),
+            epoch_length: BLOCKS_PER_EPOCH,
             partition_prefix: cfg.partition_prefix.clone(),
-            public_key: cfg.signer.public_key(),
-            registry: registry.clone(),
             mailbox_size: cfg.mailbox_size,
-            backfill_quota: cfg.backfill_quota,
-            activity_timeout: cfg.activity_timeout,
-            namespace: cfg.namespace.clone(),
-            buffer_pool: buffer_pool.clone(),
-            cancellation_token: cancellation_token.clone(),
+            view_retention_timeout: cfg.activity_timeout,
+            namespace: cfg.namespace.as_bytes().to_vec(),
+
+            prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+            immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+            freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
+            freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+            freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+            freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+            freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
+            freezer_journal_buffer_pool: buffer_pool.clone(),
+            replay_buffer: REPLAY_BUFFER,
+            write_buffer: WRITE_BUFFER,
+            block_codec_config: (),
+            max_repair: MAX_REPAIR,
+            _marker: PhantomData,
         };
-        let (syncer, syncer_mailbox, orchestrator) =
-            summit_syncer::Actor::new(context.with_label("syncer"), syncer_config).await;
+
+        let (syncer, syncer_mailbox) =
+            summit_syncer::Actor::init(context.with_label("syncer"), syncer_config).await;
+
+        // create orchestrator
+        let (orchestrator, orchestrator_mailbox) = summit_orchestrator::Actor::new(
+            context.with_label("orchestrator"),
+            summit_orchestrator::Config {
+                oracle: cfg.oracle.clone(),
+                application: application_mailbox.clone(),
+                scheme_provider: scheme_provider.clone(),
+                syncer_mailbox: syncer_mailbox.clone(),
+                namespace: cfg.namespace.as_bytes().to_vec(),
+                muxer_size: cfg.mailbox_size,
+                mailbox_size: cfg.mailbox_size,
+                rate_limit: cfg.fetch_rate_per_peer,
+                blocks_per_epoch: BLOCKS_PER_EPOCH,
+                partition_prefix: cfg.partition_prefix.clone(),
+            },
+        );
 
         // create finalizer
         let (finalizer, finalizer_mailbox) = Finalizer::new(
@@ -142,8 +204,9 @@ impl<
                 db_prefix: cfg.partition_prefix.clone(),
                 engine_client: cfg.engine_client,
                 registry: registry.clone(),
-                oracle: cfg.oracle,
-                epoch_num_of_blocks: EPOCH_NUM_BLOCKS,
+                oracle: cfg.oracle.clone(),
+                orchestrator_mailbox,
+                epoch_num_of_blocks: BLOCKS_PER_EPOCH,
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
                 validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
                 validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
@@ -152,51 +215,26 @@ impl<
                 genesis_hash: cfg.genesis_hash,
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
-                public_key: cfg.signer.public_key(),
+                node_public_key: cfg.key_store.node_key.public_key().clone(),
                 cancellation_token: cancellation_token.clone(),
             },
         )
         .await;
 
-        // create simplex
-        let simplex = Simplex::new(
-            context.with_label("simplex"),
-            simplex::Config {
-                crypto: cfg.signer,
-                automaton: application_mailbox.clone(),
-                relay: application_mailbox.clone(),
-                reporter: syncer_mailbox.clone(),
-                supervisor: registry,
-                partition: format!("{}-summit", cfg.partition_prefix),
-                mailbox_size: cfg.mailbox_size,
-                namespace: cfg.namespace.clone().as_bytes().to_vec(),
-                replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
-                leader_timeout: cfg.leader_timeout,
-                notarization_timeout: cfg.notarization_timeout,
-                nullify_retry: cfg.nullify_retry,
-                activity_timeout: cfg.activity_timeout,
-                max_participants: 10_000, // todo(dalton): get rid of this magic number
-                skip_timeout: cfg.skip_timeout,
-                fetch_timeout: cfg.fetch_timeout,
-                max_fetch_count: cfg.max_fetch_count,
-                fetch_rate_per_peer: cfg.fetch_rate_per_peer,
-                fetch_concurrent: cfg.fetch_concurrent,
-                buffer_pool,
-            },
-        );
-
         Self {
             context,
             application,
+            application_mailbox,
             buffer,
             buffer_mailbox,
             syncer,
             syncer_mailbox,
-            simplex,
             finalizer,
             finalizer_mailbox,
             orchestrator,
+            oracle: cfg.oracle,
+            node_public_key: cfg.key_store.node_key.public_key(),
+            mailbox_size: cfg.mailbox_size,
             sync_height,
             cancellation_token,
         }
@@ -216,8 +254,8 @@ impl<
             impl Receiver<PublicKey = PublicKey>,
         ),
         broadcast_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
         ),
         backfill_network: (
             impl Sender<PublicKey = PublicKey>,
@@ -248,8 +286,8 @@ impl<
             impl Receiver<PublicKey = PublicKey>,
         ),
         broadcast_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
         ),
         backfill_network: (
             impl Sender<PublicKey = PublicKey>,
@@ -259,19 +297,36 @@ impl<
         // start the application
         let app_handle = self
             .application
-            .start(self.syncer_mailbox, self.finalizer_mailbox);
+            .start(self.syncer_mailbox, self.finalizer_mailbox.clone());
         // start the buffer
         let buffer_handle = self.buffer.start(broadcast_network);
-        let (tx_finalizer_notify, rx_finalizer_notify) = mpsc::channel(2);
-        let finalizer_handle =
-            self.finalizer
-                .start(self.orchestrator, self.sync_height, rx_finalizer_notify);
+
+        // Initialize resolver for backfill
+        let resolver_config = summit_syncer::resolver::p2p::Config {
+            public_key: self.node_public_key.clone(),
+            manager: self.oracle.clone(),
+            mailbox_size: self.mailbox_size,
+            requester_config: requester::Config {
+                me: Some(self.node_public_key.clone()),
+                rate_limit: Quota::per_second(NonZeroU32::new(5).unwrap()),
+                initial: Duration::from_secs(1),
+                timeout: Duration::from_secs(2),
+            },
+            fetch_retry_timeout: Duration::from_millis(100),
+            priority_requests: false,
+            priority_responses: false,
+        };
+        let (resolver_rx, resolver) =
+            summit_syncer::resolver::p2p::init(&self.context, resolver_config, backfill_network);
+
+        let finalizer_handle = self.finalizer.start(self.sync_height);
         // start the syncer
-        let syncer_handle =
-            self.syncer
-                .start(self.buffer_mailbox, backfill_network, tx_finalizer_notify);
-        // start simplex
-        let simplex_handle = self.simplex.start(voter_network, resolver_network);
+        let syncer_handle = self.syncer.start(
+            self.finalizer_mailbox.clone(),
+            self.buffer_mailbox.clone(),
+            (resolver_rx, resolver),
+            self.sync_height,
+        );
 
         // Wait for either all actors to finish or cancellation signal
         let actors_fut = try_join_all(vec![
@@ -279,7 +334,6 @@ impl<
             buffer_handle,
             finalizer_handle,
             syncer_handle,
-            simplex_handle,
         ])
         .fuse();
         let cancellation_fut = self.cancellation_token.cancelled().fuse();
