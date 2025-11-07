@@ -2,9 +2,9 @@ use crate::{
     ApplicationConfig,
     ingress::{Mailbox, Message},
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use commonware_macros::select;
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
+use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::SystemTimeExt;
 use futures::{
     FutureExt, StreamExt as _,
@@ -14,22 +14,23 @@ use futures::{
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
-use commonware_consensus::types::View;
-use futures::task::{Context, Poll};
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::types::Round;
+use commonware_cryptography::bls12381::primitives::variant::Variant;
+use commonware_cryptography::{PublicKey, Signer};
+use futures::task::Poll;
+use std::marker::PhantomData;
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_consensus::types::Round;
-use commonware_cryptography::Signer;
 use summit_finalizer::FinalizerMailbox;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::histogram;
-use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
+use summit_syncer::ingress::mailbox::{Identifier, Mailbox as SyncerMailbox};
 use summit_types::{Block, Digest, EngineClient};
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
@@ -40,7 +41,7 @@ struct ChannelClosedFuture<'a, T> {
 impl<T> Future for ChannelClosedFuture<'_, T> {
     type Output = ();
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut futures::task::Context<'_>) -> Poll<Self::Output> {
         // Use poll_canceled to check if the receiver has dropped the channel
         match self.sender.poll_canceled(cx) {
             Poll::Ready(()) => Poll::Ready(()), // Receiver dropped, channel closed
@@ -58,42 +59,66 @@ pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     S: Scheme,
+    P: PublicKey,
     K: Signer,
+    V: Variant,
 > {
-    context: R,
+    context: ContextCell<R>,
     mailbox: mpsc::Receiver<Message>,
     engine_client: C,
-    built_block: Arc<Mutex<Option<Block>>>,
+    built_block: Arc<Mutex<Option<Block<K, V>>>>,
     genesis_hash: [u8; 32],
     cancellation_token: CancellationToken,
+    _scheme_marker: PhantomData<S>,
+    _key_marker: PhantomData<P>,
+    _signer_marker: PhantomData<K>,
+    _variant_marker: PhantomData<V>,
 }
 
-impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient, S: Scheme, K: Signer>
-    Actor<R, C, S, K>
+impl<
+    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    C: EngineClient,
+    S: Scheme,
+    P: PublicKey,
+    K: Signer,
+    V: Variant,
+> Actor<R, C, S, P, K, V>
 {
-    pub async fn new(context: R, cfg: ApplicationConfig<C>) -> (Self, Mailbox<K>) {
+    pub async fn new(context: R, cfg: ApplicationConfig<C>) -> (Self, Mailbox<P>) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
 
         let genesis_hash = cfg.genesis_hash;
 
         (
             Self {
-                context,
+                context: ContextCell::new(context),
                 mailbox: rx,
                 engine_client: cfg.engine_client,
                 built_block: Arc::new(Mutex::new(None)),
                 genesis_hash,
                 cancellation_token: cfg.cancellation_token,
+                _scheme_marker: PhantomData,
+                _key_marker: PhantomData,
+                _signer_marker: PhantomData,
+                _variant_marker: PhantomData,
             },
             Mailbox::new(tx),
         )
     }
 
-    pub fn start(mut self, syncer: SyncerMailbox<Digest, S>, finalizer: FinalizerMailbox) -> Handle<()> {
-        self.context.spawn_ref()(self.run(syncer, finalizer))
+    pub fn start(
+        mut self,
+        syncer: SyncerMailbox<S, Block<K, V>>,
+        finalizer: FinalizerMailbox<S, Block<K, V>>,
+    ) -> Handle<()> {
+        spawn_cell!(self.context, self.run(syncer, finalizer).await)
     }
 
-    pub async fn run(mut self, mut syncer: SyncerMailbox<Digest, S>, mut finalizer: FinalizerMailbox) {
+    pub async fn run(
+        mut self,
+        mut syncer: SyncerMailbox<S, Block<K, V>>,
+        mut finalizer: FinalizerMailbox<S, Block<K, V>>,
+    ) {
         let rand_id: u8 = rand::random();
         let mut signal = self.context.stopped().fuse();
         let cancellation_token = self.cancellation_token.clone();
@@ -120,7 +145,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
 
                             let built = self.built_block.clone();
                             select! {
-                                    res = self.handle_proposal(parent, &mut syncer,&mut finalizer, round) => {
+                                    res = self.handle_proposal(parent, &mut syncer, &mut finalizer, round) => {
                                         match res {
                                             Ok(block) => {
                                                 // store block
@@ -138,7 +163,7 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                     },
                                     _ = oneshot_closed_future(&mut response) => {
                                         // simplex dropped receiver
-                                        warn!(round, "proposal aborted");
+                                        warn!("proposal aborted for round {round}");
                                     }
                             }
                         }
@@ -167,17 +192,18 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                             mut response,
                         } => {
                             info!("{rand_id} Handling message Verify round: {}", round);
-                            // Get the parent block
+
+                            // Subscribe to blocks (will wait for them if not available)
                             let parent_request = if parent.1 == self.genesis_hash.into() {
                                 Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
                             } else {
-                                Either::Right(syncer.get(Some(parent.0), parent.1).await)
+                                Either::Right(syncer.subscribe(None, parent.1).await)
                             };
-
-                            let block_request = syncer.get(None, payload).await;
+                            let block_request = syncer.subscribe(Some(round), payload).await;
 
                             // Wait for the blocks to be available or the request to be cancelled in a separate task (to
                             // continue processing other messages)
+
                             self.context.with_label("verify").spawn({
                                 let mut syncer = syncer.clone();
                                 move |_| async move {
@@ -193,12 +219,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
                                                 // respond
                                                 let _ = response.send(true);
                                             } else {
-                                                info!("Unsucceful vote");
+                                                info!("Unsuccessful vote for round {round}");
                                                 let _ = response.send(false);
                                             }
                                         },
                                         _ = oneshot_closed_future(&mut response) => {
-                                            warn!(round, "verify aborted");
+                                            warn!("verify aborted for round {round}");
                                         }
                                     }
                                 }
@@ -221,10 +247,10 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     async fn handle_proposal(
         &mut self,
         parent: (u64, Digest),
-        syncer: &mut SyncerMailbox<Digest, S>,
-        finalizer: &mut FinalizerMailbox,
+        syncer: &mut SyncerMailbox<S, Block<K, V>>,
+        finalizer: &mut FinalizerMailbox<S, Block<K, V>>,
         round: Round,
-    ) -> Result<Block> {
+    ) -> Result<Block<K, V>> {
         #[cfg(feature = "prom")]
         let proposal_start = std::time::Instant::now();
 
@@ -234,9 +260,12 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         let parent_request = if parent.1 == self.genesis_hash.into() {
             Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
         } else {
-            Either::Right(syncer.get(Some(parent.0), parent.1).await)
+            Either::Right(
+                syncer
+                    .get_block(Identifier::Commitment(parent.1))
+                    .map(|x| x.context("")),
+            )
         };
-
         let parent = parent_request.await.unwrap();
 
         #[cfg(feature = "prom")]
@@ -332,7 +361,6 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
         #[cfg(feature = "prom")]
         let compute_digest_start = std::time::Instant::now();
 
-        let (epoch, view) = round;
         let block = Block::compute_digest(
             parent.digest(),
             parent.height() + 1,
@@ -340,8 +368,8 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
             payload_envelope.envelope_inner.execution_payload,
             payload_envelope.execution_requests.to_vec(),
             payload_envelope.envelope_inner.block_value,
-            epoch,
-            view,
+            round.epoch(),
+            round.view(),
             checkpoint_hash,
             aux_data.header_hash,
             aux_data.added_validators,
@@ -364,15 +392,21 @@ impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: E
     }
 }
 
-impl<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng, C: EngineClient, S: Scheme, K: Signer> Drop
-    for Actor<R, C, S, K>
+impl<
+    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    C: EngineClient,
+    S: Scheme,
+    P: PublicKey,
+    K: Signer,
+    V: Variant,
+> Drop for Actor<R, C, S, P, K, V>
 {
     fn drop(&mut self) {
         self.cancellation_token.cancel();
     }
 }
 
-fn handle_verify(block: &Block, parent: Block) -> bool {
+fn handle_verify<K: Signer, V: Variant>(block: &Block<K, V>, parent: Block<K, V>) -> bool {
     if block.eth_parent_hash() != parent.eth_block_hash() {
         return false;
     }
