@@ -1,11 +1,12 @@
-use commonware_consensus::{Automaton, Relay, simplex::types::Context, types::View, Epochable};
 use commonware_consensus::types::{Epoch, Round};
+use commonware_consensus::{Automaton, Epochable, Relay, simplex::types::Context, types::View};
+use commonware_cryptography::PublicKey;
 use commonware_cryptography::sha256::Digest;
-use commonware_cryptography::Signer;
 use futures::{
     SinkExt,
     channel::{mpsc, oneshot},
 };
+use std::marker::PhantomData;
 
 pub enum Message {
     Genesis {
@@ -29,18 +30,22 @@ pub enum Message {
 }
 
 #[derive(Clone)]
-pub struct Mailbox<C: Signer> {
+pub struct Mailbox<P: PublicKey> {
     sender: mpsc::Sender<Message>,
+    _signer_marker: PhantomData<P>,
 }
 
-impl<C: Signer> Mailbox<C> {
+impl<P: PublicKey> Mailbox<P> {
     pub fn new(sender: mpsc::Sender<Message>) -> Self {
-        Self { sender }
+        Self {
+            sender,
+            _signer_marker: PhantomData,
+        }
     }
 }
 
-impl<C: Signer> Automaton for Mailbox<C> {
-    type Context = Context<Self::Digest, C>;
+impl<P: PublicKey> Automaton for Mailbox<P> {
+    type Context = Context<Self::Digest, P>;
     type Digest = Digest;
 
     async fn genesis(&mut self, epoch: <Self::Context as Epochable>::Epoch) -> Self::Digest {
@@ -52,7 +57,10 @@ impl<C: Signer> Automaton for Mailbox<C> {
         receiver.await.expect("Failed to receive genesis")
     }
 
-    async fn propose(&mut self, context: Context<Self::Digest, C>) -> oneshot::Receiver<Self::Digest> {
+    async fn propose(
+        &mut self,
+        context: Context<Self::Digest, P>,
+    ) -> oneshot::Receiver<Self::Digest> {
         // If we linked payloads to their parent, we would include
         // the parent in the `Context` in the payload.
         let (response, receiver) = oneshot::channel();
@@ -69,7 +77,7 @@ impl<C: Signer> Automaton for Mailbox<C> {
 
     async fn verify(
         &mut self,
-        context: Context<Self::Digest, C>,
+        context: Context<Self::Digest, P>,
         payload: Self::Digest,
     ) -> oneshot::Receiver<bool> {
         // If we linked payloads to their parent, we would verify
@@ -88,7 +96,7 @@ impl<C: Signer> Automaton for Mailbox<C> {
     }
 }
 
-impl<C: Signer> Relay for Mailbox<C> {
+impl<P: PublicKey> Relay for Mailbox<P> {
     type Digest = Digest;
 
     async fn broadcast(&mut self, digest: Self::Digest) {
