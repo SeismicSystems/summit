@@ -1,4 +1,4 @@
-use commonware_consensus::{simplex::signing_scheme::Scheme, Block};
+use commonware_consensus::{Block, simplex::signing_scheme::Scheme};
 use commonware_runtime::buffer::PoolRef;
 use std::{
     marker::PhantomData,

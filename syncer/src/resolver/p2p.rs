@@ -3,7 +3,7 @@
 use crate::Block;
 use crate::ingress::handler::{self, Handler};
 use commonware_cryptography::PublicKey;
-use commonware_p2p::{utils::requester, Manager, Receiver, Sender};
+use commonware_p2p::{Manager, Receiver, Sender, utils::requester};
 use commonware_resolver::p2p;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::channel::mpsc;

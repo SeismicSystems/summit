@@ -32,3 +32,4 @@ tracing-subscriber = "0.3.19"
 
 [features]
 prom = ["metrics"]
+test-mocks = []

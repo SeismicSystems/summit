@@ -8,32 +8,33 @@ use super::{
         orchestrator::{Orchestration, Orchestrator},
     },
 };
-use crate::{ingress::mailbox::Identifier as BlockID, Update};
-use commonware_broadcast::{buffered, Broadcaster};
+use crate::{Update, ingress::mailbox::Identifier as BlockID};
+use commonware_broadcast::{Broadcaster, buffered};
 use commonware_codec::{Decode, Encode};
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::types::{Finalization, Notarization};
+use commonware_consensus::types::Round;
+use commonware_consensus::{Block, Reporter, utils};
 use commonware_cryptography::PublicKey;
 use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_resolver::Resolver;
-use commonware_runtime::{spawn_cell, Clock, ContextCell, Handle, Metrics, Spawner, Storage};
-use commonware_storage::archive::{immutable, Archive as _, Identifier as ArchiveID};
+use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_storage::archive::{Archive as _, Identifier as ArchiveID, immutable};
 use commonware_utils::futures::{AbortablePool, Aborter};
 use futures::{
+    StreamExt,
     channel::{mpsc, oneshot},
-    try_join, StreamExt,
+    try_join,
 };
 use governor::clock::Clock as GClock;
 #[cfg(feature = "prom")]
 use metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
 use std::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{BTreeMap, btree_map::Entry},
     time::Instant,
 };
-use commonware_consensus::{utils, Block, Reporter};
-use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_consensus::simplex::types::{Finalization, Notarization};
-use commonware_consensus::types::Round;
 use tracing::{debug, info, warn};
 
 use summit_types::scheme::SchemeProvider;
@@ -115,11 +116,11 @@ pub struct Actor<
 }
 
 impl<
-        E: Rng + CryptoRng + Spawner + Metrics + Clock + GClock + Storage,
-        B: Block,
-        P: SchemeProvider<Scheme = S>,
-        S: Scheme,
-    > Actor<E, B, P, S>
+    E: Rng + CryptoRng + Spawner + Metrics + Clock + GClock + Storage,
+    B: Block,
+    P: SchemeProvider<Scheme = S>,
+    S: Scheme,
+> Actor<E, B, P, S>
 {
     /// Create a new application actor.
     pub async fn init(context: E, config: Config<B, P, S>) -> (Self, Mailbox<S, B>) {
@@ -283,23 +284,28 @@ impl<
     /// Start the actor.
     pub fn start<R, K>(
         mut self,
-        application: impl Reporter<Activity = Update<B>>,
+        application: impl Reporter<Activity = Update<B, S>>,
         buffer: buffered::Mailbox<K, B>,
         resolver: (mpsc::Receiver<handler::Message<B>>, R),
+        sync_height: u64,
     ) -> Handle<()>
     where
         R: Resolver<Key = handler::Request<B>>,
         K: PublicKey,
     {
-        spawn_cell!(self.context, self.run(application, buffer, resolver).await)
+        spawn_cell!(
+            self.context,
+            self.run(application, buffer, resolver, sync_height).await
+        )
     }
 
     /// Run the application actor.
     async fn run<R, K>(
         mut self,
-        mut application: impl Reporter<Activity = Update<B>>,
+        mut application: impl Reporter<Activity = Update<B, S>>,
         mut buffer: buffered::Mailbox<K, B>,
         (mut resolver_rx, mut resolver): (mpsc::Receiver<handler::Message<B>>, R),
+        sync_height: u64,
     ) where
         R: Resolver<Key = handler::Request<B>>,
         K: PublicKey,
@@ -310,10 +316,10 @@ impl<
         let orchestrator = Orchestrator::new(orchestrator_sender);
         let finalizer = Finalizer::new(
             self.context.with_label("finalizer"),
-            format!("{}-finalizer", self.partition_prefix.clone()),
             application.clone(),
             orchestrator,
             notifier_rx,
+            sync_height,
         )
         .await;
         finalizer.start();
@@ -787,7 +793,7 @@ impl<
         block: B,
         finalization: Option<Finalization<S, B::Commitment>>,
         notifier: &mut mpsc::Sender<()>,
-        application: &mut impl Reporter<Activity = Update<B>>,
+        application: &mut impl Reporter<Activity = Update<B, S>>,
     ) {
         self.notify_subscribers(commitment, &block).await;
 

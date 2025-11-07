@@ -1,15 +1,15 @@
+use commonware_codec::Codec;
 use commonware_consensus::{
+    Block,
     simplex::{
         signing_scheme::Scheme,
         types::{Finalization, Notarization},
     },
     types::{Epoch, Round, View},
-    Block,
 };
-use commonware_codec::Codec;
-use commonware_runtime::{buffer::PoolRef, Clock, Metrics, Spawner, Storage};
+use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::PoolRef};
 use commonware_storage::{
-    archive::{self, prunable, Archive as _, Identifier},
+    archive::{self, Archive as _, Identifier, prunable},
     metadata::{self, Metadata},
     translator::TwoCap,
 };
@@ -93,11 +93,11 @@ pub(crate) struct Manager<
 }
 
 impl<
-        R: Rng + Spawner + Metrics + Clock + GClock + Storage,
-        B: Block,
-        P: SchemeProvider<Scheme = S>,
-        S: Scheme,
-    > Manager<R, B, P, S>
+    R: Rng + Spawner + Metrics + Clock + GClock + Storage,
+    B: Block,
+    P: SchemeProvider<Scheme = S>,
+    S: Scheme,
+> Manager<R, B, P, S>
 {
     /// Initialize the cache manager and its metadata store.
     pub(crate) async fn init(
