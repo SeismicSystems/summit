@@ -65,23 +65,33 @@ pub use ingress::mailbox::Mailbox;
 pub mod resolver;
 
 use commonware_consensus::Block;
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::types::Finalization;
+use futures::channel::oneshot;
 
 /// An update reported to the application, either a new finalized tip or a finalized block.
 ///
 /// Finalized tips are reported as soon as known, whether or not we hold all blocks up to that height.
 /// Finalized blocks are reported to the application in monotonically increasing order (no gaps permitted).
-#[derive(Clone, Debug)]
-pub enum Update<B: Block> {
+#[derive(Debug)]
+pub enum Update<B: Block, S: Scheme> {
     /// A new finalized tip.
     Tip(u64, B::Commitment),
-    /// A new finalized block.
-    Block(B),
+    /// A new finalized block and a channel to acknowledge the update.
+    ///
+    /// To ensure all blocks are delivered at least once, marshal waits to mark
+    /// a block as delivered until the application explicitly acknowledges the update.
+    /// If the sender is dropped before acknowledgement, marshal will exit (assuming
+    /// the application is shutting down).
+    Block(B, oneshot::Sender<()>),
+    /// A new finalized block with finalization
+    BlockWithFinalization(B, Finalization<S, B::Digest>, oneshot::Sender<()>),
 }
 
 #[cfg(test)]
 pub mod mocks;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-mocks"))]
 mod tests {
     use super::{
         actor,
@@ -89,24 +99,31 @@ mod tests {
         mocks::{application::Application, block::Block},
         resolver::p2p as resolver,
     };
-    use summit_types::scheme::SchemeProvider;
+    use crate::ingress::mailbox::Identifier;
     use commonware_broadcast::buffered;
+    use commonware_consensus::simplex::mocks::fixtures::{Fixture, bls12381_threshold};
+    use commonware_consensus::simplex::signing_scheme::bls12381_threshold;
+    use commonware_consensus::simplex::types::{
+        Activity, Finalization, Finalize, Notarization, Notarize, Proposal,
+    };
+    use commonware_consensus::types::{Epoch, Round};
+    use commonware_consensus::{Block as _, Reporter, utils};
     use commonware_cryptography::{
+        Digestible, Hasher as _,
         bls12381::primitives::variant::MinPk,
         ed25519::PublicKey,
         sha256::{Digest as Sha256Digest, Sha256},
-        Digestible, Hasher as _,
     };
     use commonware_macros::test_traced;
     use commonware_p2p::{
+        Manager,
         simulated::{self, Link, Network, Oracle},
         utils::requester,
-        Manager,
     };
-    use commonware_runtime::{buffer::PoolRef, deterministic, Clock, Metrics, Runner};
-    use commonware_utils::{NZUsize, NZU64};
+    use commonware_runtime::{Clock, Metrics, Runner, buffer::PoolRef, deterministic};
+    use commonware_utils::{NZU64, NZUsize};
     use governor::Quota;
-    use rand::{seq::SliceRandom, Rng};
+    use rand::{Rng, seq::SliceRandom};
     use std::{
         collections::BTreeMap,
         marker::PhantomData,
@@ -114,12 +131,7 @@ mod tests {
         sync::Arc,
         time::Duration,
     };
-    use commonware_consensus::simplex::mocks::fixtures::{bls12381_threshold, Fixture};
-    use commonware_consensus::simplex::signing_scheme::bls12381_threshold;
-    use commonware_consensus::simplex::types::{Activity, Finalization, Finalize, Notarization, Notarize, Proposal};
-    use commonware_consensus::types::{Epoch, Round};
-    use commonware_consensus::{utils, Block as _, Reporter};
-    use crate::ingress::mailbox::Identifier;
+    use summit_types::scheme::SchemeProvider;
 
     type D = Sha256Digest;
     type B = Block<D>;
@@ -166,10 +178,7 @@ mod tests {
         oracle: &mut Oracle<K>,
         validator: K,
         scheme_provider: P,
-    ) -> (
-        Application<B>,
-        crate::ingress::mailbox::Mailbox<S, B>,
-    ) {
+    ) -> (Application<B, S>, crate::ingress::mailbox::Mailbox<S, B>) {
         let config = Config {
             scheme_provider,
             epoch_length: BLOCKS_PER_EPOCH,
@@ -224,10 +233,10 @@ mod tests {
         broadcast_engine.start(network);
 
         let (actor, mailbox) = actor::Actor::init(context.clone(), config).await;
-        let application = Application::<B>::default();
+        let application = Application::<B, S>::default();
 
         // Start the application
-        actor.start(application.clone(), buffer, resolver);
+        actor.start(application.clone(), buffer, resolver, 0);
 
         (application, mailbox)
     }

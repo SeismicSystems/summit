@@ -1,16 +1,16 @@
 use commonware_consensus::{
+    Block, Reporter,
     simplex::{
         signing_scheme::Scheme,
         types::{Activity, Finalization, Notarization},
     },
     types::Round,
-    Block, Reporter,
 };
 use commonware_cryptography::Digest;
 use commonware_storage::archive;
 use futures::{
-    channel::{mpsc, oneshot},
     SinkExt,
+    channel::{mpsc, oneshot},
 };
 use tracing::error;
 

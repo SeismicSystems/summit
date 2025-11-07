@@ -1,15 +1,14 @@
-use commonware_consensus::{
-    Block, Reporter,
-};
-use crate::{ingress::orchestrator::Orchestrator, Update};
-use commonware_runtime::{spawn_cell, Clock, ContextCell, Handle, Metrics, Spawner, Storage};
+use crate::{Update, ingress::orchestrator::Orchestrator};
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::{Block, Reporter};
+use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::{fixed_bytes, sequence::FixedBytes};
-use futures::{channel::mpsc, StreamExt};
+use futures::channel::oneshot;
+use futures::{StreamExt, channel::mpsc};
 use tracing::{debug, error};
 
 // The key used to store the last indexed height in the metadata store.
-const LATEST_KEY: FixedBytes<1> = fixed_bytes!("00");
 
 /// Requests the finalized blocks (in order) from the orchestrator, sends them to the application,
 /// waits for confirmation that the application has processed the block.
@@ -18,8 +17,9 @@ const LATEST_KEY: FixedBytes<1> = fixed_bytes!("00");
 /// processing from the last processed height after a restart.
 pub struct Finalizer<
     B: Block,
+    S: Scheme,
     R: Spawner + Clock + Metrics + Storage,
-    Z: Reporter<Activity = Update<B>>,
+    Z: Reporter<Activity = Update<B, S>>,
 > {
     context: ContextCell<R>,
 
@@ -32,38 +32,31 @@ pub struct Finalizer<
     // Notifier to indicate that the finalized blocks have been updated and should be re-queried.
     notifier_rx: mpsc::Receiver<()>,
 
-    // Metadata store that stores the last indexed height.
-    metadata: Metadata<R, FixedBytes<1>, u64>,
+    // The lowest height from which to begin syncing
+    sync_height: u64,
 }
 
-impl<B: Block, R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Update<B>>>
-    Finalizer<B, R, Z>
+impl<
+    B: Block,
+    S: Scheme,
+    R: Spawner + Clock + Metrics + Storage,
+    Z: Reporter<Activity = Update<B, S>>,
+> Finalizer<B, S, R, Z>
 {
     /// Initialize the finalizer.
     pub async fn new(
         context: R,
-        partition_prefix: String,
         application: Z,
         orchestrator: Orchestrator<B>,
         notifier_rx: mpsc::Receiver<()>,
+        sync_height: u64,
     ) -> Self {
-        // Initialize metadata
-        let metadata = Metadata::init(
-            context.with_label("metadata"),
-            metadata::Config {
-                partition: format!("{partition_prefix}-metadata"),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("failed to initialize metadata");
-
         Self {
             context: ContextCell::new(context),
             application,
             orchestrator,
             notifier_rx,
-            metadata,
+            sync_height,
         }
     }
 
@@ -76,7 +69,7 @@ impl<B: Block, R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Up
     async fn run(mut self) {
         // Initialize last indexed from metadata store.
         // If the key does not exist, we assume the genesis block (height 0) has been indexed.
-        let mut latest = *self.metadata.get(&LATEST_KEY).unwrap_or(&0);
+        let mut latest = self.sync_height;
 
         // The main loop to process finalized blocks. This loop will hot-spin until a block is
         // available, at which point it will process it and continue. If a block is not available,
@@ -95,15 +88,17 @@ impl<B: Block, R: Spawner + Clock + Metrics + Storage, Z: Reporter<Activity = Up
                 // After an unclean shutdown (where the finalizer metadata is not synced after some
                 // height is processed by the application), it is possible that the application may
                 // be asked to process a block it has already seen (which it can simply ignore).
+
                 let commitment = block.commitment();
-                self.application.report(Update::Block(block)).await;
+                let (ack_tx, ack_rx) = oneshot::channel();
+                self.application.report(Update::Block(block, ack_tx)).await;
+                if let Err(e) = ack_rx.await {
+                    error!(?e, height, "application did not acknowledge block");
+                    return;
+                }
 
                 // Record that we have processed up through this height.
                 latest = height;
-                if let Err(e) = self.metadata.put_sync(LATEST_KEY.clone(), latest).await {
-                    error!("failed to update metadata: {e}");
-                    return;
-                }
 
                 // Notify the orchestrator that the block has been processed.
                 self.orchestrator.processed(height, commitment).await;
