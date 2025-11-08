@@ -168,11 +168,12 @@ fn execution_payload_envelope_to_block(
         execution_payload,
         execution_requests,
         payload.envelope_inner.block_value,
+        0, // epoch
         view,
-        None,
-        [0u8; 32].into(),
-        Vec::new(), // added_validators
-        Vec::new(), // removed_validators
+        None,                    // checkpoint_hash
+        Digest::from([0u8; 32]), // prev_epoch_header_hash
+        Vec::new(),              // added_validators
+        Vec::new(),              // removed_validators
     )
 }
 

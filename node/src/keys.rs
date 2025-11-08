@@ -1,7 +1,6 @@
-use crate::args::DEFAULT_KEY_PATH;
 use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};
-use commonware_codec::{Encode, extensions::DecodeExt};
+use commonware_codec::extensions::DecodeExt;
 use std::io::{self, Write};
 
 use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;

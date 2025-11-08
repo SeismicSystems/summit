@@ -2,8 +2,6 @@ use crate::{Update, ingress::orchestrator::Orchestrator};
 use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_consensus::{Block, Reporter};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
-use commonware_storage::metadata::{self, Metadata};
-use commonware_utils::{fixed_bytes, sequence::FixedBytes};
 use futures::channel::oneshot;
 use futures::{StreamExt, channel::mpsc};
 use tracing::{debug, error};

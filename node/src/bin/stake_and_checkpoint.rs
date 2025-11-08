@@ -354,7 +354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Send stop signal and wait for runtime to shut down gracefully
             node0_runtime.stop_tx.send(()).expect("Failed to send stop signal");
             println!("Waiting for node{} runtime to shut down...", source_node);
-            let _ = context.clone().spawn_blocking(false, move |_| {
+            let _ = tokio::task::spawn_blocking(move || {
                 node0_runtime.thread.join().expect("Failed to join node0 thread");
             }).await;
 
@@ -487,7 +487,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let signer_path = format!("{}/node{}/data/key.pem", args.data_dir, x);
             let encoded_priv_key = ed25519_private_key.to_string();
             fs::write(&signer_path, encoded_priv_key).expect("Unable to write private key to disk");
-            flags.key_path = signer_path;
+            flags.key_store_path = signer_path;
             flags.ip = Some("127.0.0.1:26640".to_string());
 
             println!(
@@ -573,7 +573,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Waiting for all nodes to shut down...");
             for (idx, node_runtime) in node_runtimes.into_iter().enumerate() {
                 println!("Waiting for node index {} to join...", idx);
-                let _ = context.clone().spawn_blocking(false, move |_| {
+                let _ = tokio::task::spawn_blocking(move || {
                     match node_runtime.thread.join() {
                         Ok(_) => println!("Node index {} thread joined successfully", idx),
                         Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),

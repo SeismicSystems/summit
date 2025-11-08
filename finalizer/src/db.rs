@@ -1,13 +1,12 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::adb::store::{self, Store};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
-use std::marker::PhantomData;
 use summit_types::FinalizedHeader;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
