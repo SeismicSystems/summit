@@ -98,9 +98,6 @@ impl<C: Signer, V: Variant> EpochSchemeProvider for SummitSchemeProvider<C, V> {
 pub struct EpochTransition<V: Variant, P: PublicKey> {
     /// The epoch to transition to.
     pub epoch: Epoch,
-    /// The dealers for the epoch (identity keys).
-    pub dealers: Ordered<P>,
-    /// The BLS public keys for the epoch.
-    /// Contains the BLS public keys corresponding to each dealer.
-    pub bls_keys: Vec<V::Public>,
+    /// The public keys of the validator set
+    pub validator_keys: Vec<(P, V::Public)>,
 }

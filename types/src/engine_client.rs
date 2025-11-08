@@ -312,11 +312,12 @@ pub mod base_benchmarking {
                 self.payload,
                 execution_requests,
                 U256::ZERO, // block_value
+                0,          // epoch
                 view,
-                None,
-                [0u8; 32].into(),
-                Vec::new(), // added_validators
-                Vec::new(), // removed_validators
+                None,                    // checkpoint_hash
+                Digest::from([0u8; 32]), // prev_epoch_header_hash
+                Vec::new(),              // added_validators
+                Vec::new(),              // removed_validators
             )
         }
     }
@@ -446,11 +447,12 @@ pub mod benchmarking {
                 self.payload,
                 execution_requests,
                 U256::ZERO, // block_value
+                0,          // epoch
                 view,
-                None,             // checkpoint_hash
-                [0u8; 32].into(), // prev_epoch_header_hash
-                Vec::new(),       // added_validators
-                Vec::new(),       // removed_validators
+                None,                    // checkpoint_hash
+                Digest::from([0u8; 32]), // prev_epoch_header_hash
+                Vec::new(),              // added_validators
+                Vec::new(),              // removed_validators
             )
         }
     }

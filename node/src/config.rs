@@ -11,10 +11,8 @@ use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, Genesis, PrivateKey, PublicKey};
 use zeroize::ZeroizeOnDrop;
 /* DEFAULTS */
-pub const PENDING_CHANNEL: u64 = 0;
-pub const RESOLVER_CHANNEL: u64 = 1;
-pub const BROADCASTER_CHANNEL: u64 = 2;
-pub const BACKFILLER_CHANNEL: u64 = 3;
+pub const BROADCASTER_CHANNEL: u64 = 0;
+pub const BACKFILLER_CHANNEL: u64 = 1;
 pub const MAILBOX_SIZE: usize = 16384;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);

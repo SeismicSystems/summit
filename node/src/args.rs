@@ -1,21 +1,19 @@
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RESOLVER_CHANNEL, expect_key_store,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
 };
 use clap::{Args, Parser, Subcommand};
-use commonware_cryptography::{Signer, bls12381, ed25519};
+use commonware_cryptography::{Signer, bls12381};
 use commonware_p2p::{Manager, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_codec::{DecodeExt, ReadExt};
 use commonware_utils::from_hex_formatted;
 use commonware_utils::set::Ordered;
 use futures::{channel::oneshot, future::try_join_all};
@@ -262,7 +260,7 @@ impl Command {
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-            let our_ip = get_node_ip(&flags, &key_store, &committee);
+            let our_ip = get_node_ip(flags, &key_store, &committee);
 
             let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
                 .into_iter()
@@ -346,14 +344,6 @@ impl Command {
             )
             .unwrap();
 
-            // Register pending channel
-            let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-            let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
-
-            // Register resolver channel
-            let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-            let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
-
             // Register broadcast channel
             let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
             let broadcaster =
@@ -371,7 +361,7 @@ impl Command {
             let finalizer_mailbox = engine.finalizer_mailbox.clone();
 
             // Start engine
-            let engine = engine.start(pending, resolver, broadcaster, backfiller);
+            let engine = engine.start(broadcaster, backfiller);
 
             // Start RPC server
             let key_store_path = flags.key_store_path.clone();
@@ -489,7 +479,7 @@ pub fn run_node_with_runtime(
 
         // configure network
         #[cfg(feature = "e2e")]
-        let mut p2p_cfg = authenticated::discovery::Config::aggressive(
+        let mut p2p_cfg = authenticated::discovery::Config::local(
             key_store.node_key.clone(),
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
@@ -533,14 +523,6 @@ pub fn run_node_with_runtime(
         )
         .unwrap();
 
-        // Register pending channel
-        let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-        let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
-
-        // Register resolver channel
-        let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
-        let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
-
         // Register broadcast channel
         let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
         let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
@@ -556,7 +538,7 @@ pub fn run_node_with_runtime(
 
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Start engine
-        let engine = engine.start(pending, resolver, broadcaster, backfiller);
+        let engine = engine.start(broadcaster, backfiller);
 
         // Start prometheus endpoint
         #[cfg(feature = "prom")]
@@ -618,7 +600,7 @@ fn get_initial_state(
                 .expect("Public key must be 32 bytes");
             let account = ValidatorAccount {
                 consensus_public_key: validator.consensus_public_key.clone(),
-                withdrawal_credentials: validator.withdrawal_credentials.clone(),
+                withdrawal_credentials: validator.withdrawal_credentials,
                 balance: VALIDATOR_MINIMUM_STAKE,
                 pending_withdrawal_amount: 0,
                 status: ValidatorStatus::Active,
@@ -638,7 +620,7 @@ fn get_initial_state(
 fn get_node_ip(
     flags: &RunFlags,
     key_store: &KeyStore<PrivateKey>,
-    committee: &Vec<Validator>,
+    committee: &[Validator],
 ) -> SocketAddr {
     if let Some(ref ip_str) = flags.ip {
         ip_str

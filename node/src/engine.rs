@@ -2,18 +2,14 @@ use crate::config::EngineConfig;
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
-use commonware_consensus::simplex::{self, Engine as Simplex};
-use commonware_consensus::{Automaton, Relay};
+use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
-use commonware_cryptography::{Signer as _, Signer};
 use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
 use commonware_utils::{NZU64, NZUsize};
 use futures::FutureExt;
-use futures::channel::{mpsc, oneshot};
 use futures::future::try_join_all;
 use governor::{Quota, clock::Clock as GClock};
 use rand::{CryptoRng, Rng};
@@ -26,7 +22,7 @@ use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
-use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
+use summit_types::{Block, EngineClient, PublicKey};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use zeroize::ZeroizeOnDrop;
@@ -82,9 +78,9 @@ pub struct Engine<
 > {
     context: E,
     application: summit_application::Actor<E, C, MultisigScheme<S, V>, S::PublicKey, S, V>,
-    application_mailbox: summit_application::Mailbox<S::PublicKey>,
     buffer: buffered::Engine<E, S::PublicKey, Block<S, V>>,
     buffer_mailbox: buffered::Mailbox<S::PublicKey, Block<S, V>>,
+    #[allow(clippy::type_complexity)]
     syncer: summit_syncer::Actor<E, Block<S, V>, SummitSchemeProvider<S, V>, MultisigScheme<S, V>>,
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, V>, Block<S, V>>,
     finalizer: Finalizer<E, C, O, S, MultisigScheme<S, V>, V>,
@@ -224,7 +220,6 @@ where
         Self {
             context,
             application,
-            application_mailbox,
             buffer,
             buffer_mailbox,
             syncer,
@@ -245,14 +240,6 @@ where
     /// This will also rebuild the state of the engine from provided `Journal`.
     pub fn start(
         self,
-        voter_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        resolver_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
         broadcast_network: (
             impl Sender<PublicKey = S::PublicKey>,
             impl Receiver<PublicKey = S::PublicKey>,
@@ -262,14 +249,9 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        self.context.clone().spawn(|_| {
-            self.run(
-                voter_network,
-                resolver_network,
-                broadcast_network,
-                backfill_network,
-            )
-        })
+        self.context
+            .clone()
+            .spawn(|_| self.run(broadcast_network, backfill_network))
     }
 
     /// Start the `simplex` consensus engine.
@@ -277,14 +259,6 @@ where
     /// This will also rebuild the state of the engine from provided `Journal`.
     async fn run(
         self,
-        voter_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        resolver_network: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
         broadcast_network: (
             impl Sender<PublicKey = S::PublicKey>,
             impl Receiver<PublicKey = S::PublicKey>,
@@ -319,7 +293,7 @@ where
         let (resolver_rx, resolver) =
             summit_syncer::resolver::p2p::init(&self.context, resolver_config, backfill_network);
 
-        let finalizer_handle = self.finalizer.start(self.sync_height);
+        let finalizer_handle = self.finalizer.start();
         // start the syncer
         let syncer_handle = self.syncer.start(
             self.finalizer_mailbox.clone(),

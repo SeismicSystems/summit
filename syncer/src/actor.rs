@@ -29,7 +29,7 @@ use futures::{
 };
 use governor::clock::Clock as GClock;
 #[cfg(feature = "prom")]
-use metrics::gauge::Gauge;
+use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
@@ -87,8 +87,6 @@ pub struct Actor<
     max_repair: u64,
     // Codec configuration for block type
     block_codec_config: B::Cfg,
-    // Partition prefix
-    partition_prefix: String,
 
     // ---------- State ----------
     // Last view processed
@@ -240,7 +238,6 @@ impl<
                     view_retention_timeout: config.view_retention_timeout,
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
-                    partition_prefix: config.partition_prefix,
                     last_processed_round: Round::new(0, 0),
                     tip: 0,
                     block_subscriptions: BTreeMap::new(),
@@ -268,7 +265,6 @@ impl<
                     view_retention_timeout: config.view_retention_timeout,
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
-                    partition_prefix: config.partition_prefix,
                     last_processed_round: Round::new(0, 0),
                     tip: 0,
                     block_subscriptions: BTreeMap::new(),

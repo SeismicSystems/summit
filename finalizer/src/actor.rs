@@ -5,6 +5,7 @@ use alloy_primitives::Address;
 #[cfg(debug_assertions)]
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_consensus::Reporter;
 use commonware_consensus::simplex::signing_scheme::{Scheme, bls12381_multisig};
 use commonware_consensus::simplex::types::Finalization;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
@@ -21,11 +22,12 @@ use futures::{FutureExt, StreamExt as _, select};
 use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
-use rand::{CryptoRng, Rng};
+use rand::Rng;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::Instant;
+use summit_orchestrator::Message;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
@@ -33,9 +35,10 @@ use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateR
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::registry::Registry;
+use summit_types::scheme::EpochTransition;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
-use summit_types::{BlockEnvelope, EngineClient, consensus_state::ConsensusState};
+use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -139,26 +142,11 @@ impl<
         )
     }
 
-    pub fn start(mut self, sync_height: u64) -> Handle<()> {
-        spawn_cell!(self.context, self.run(sync_height).await)
+    pub fn start(mut self) -> Handle<()> {
+        spawn_cell!(self.context, self.run().await)
     }
 
-    pub async fn run(
-        mut self,
-        //orchestrator: Orchestrator,
-        sync_height: u64,
-        //finalization_notify: mpsc::Receiver<()>,
-    ) {
-        //let (block_fetcher, mut rx_finalize_blocks) = BlockFetcher::new(
-        //    orchestrator,
-        //    finalization_notify,
-        //    self.epoch_num_of_blocks,
-        //    sync_height,
-        //);
-        //self.context
-        //    .with_label("block-fetcher")
-        //    .spawn(|_| block_fetcher.run());
-
+    pub async fn run(mut self) {
         let mut last_committed_timestamp: Option<Instant> = None;
         let mut signal = self.context.stopped().fuse();
         let cancellation_token = self.cancellation_token.clone();
@@ -171,27 +159,19 @@ impl<
                 break;
             }
             select! {
-                //msg = rx_finalize_blocks.next() => {
-                //    let Some((envelope, notifier)) = msg else {
-                //            warn!("All senders to finalizer dropped");
-                //            break;
-                //        };
-                //    self.handle_execution_block(notifier,envelope, &mut last_committed_timestamp).await;
-
-                //}
                 mailbox_message = self.mailbox.next() => {
                     let mail = mailbox_message.expect("Finalizer mailbox closed");
                     match mail {
                         FinalizerMessage::SyncerUpdate { update } => {
                             match update {
-                                Update::Tip(height, digest) => {
-
+                                Update::Tip(_height, _digest) => {
+                                    // I don't think we need this
                                 }
                                 Update::Block(block, ack_tx) => {
                                     self.handle_execution_block(ack_tx, block, None, &mut last_committed_timestamp).await;
                                 }
                                 Update::BlockWithFinalization(block, finalization, ack_tx) => {
-
+                                    self.handle_execution_block(ack_tx, block, Some(finalization), &mut last_committed_timestamp).await;
                                 }
                             }
                         },
@@ -201,7 +181,6 @@ impl<
                                 let _ = response.send(());
                                 continue;
                             }
-
                             self.pending_height_notifys.entry(height).or_default().push(response);
                         },
                         FinalizerMessage::GetAuxData { height, response } => {
@@ -345,6 +324,10 @@ impl<
         // Store finalizes checkpoint to database
         if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
             let view = block.view();
+
+            // Increment epoch
+            self.state.epoch += 1;
+
             if let Some(finalization) = finalization {
                 // The finalized signatures should always be included on the last block
                 // of the epoch. However, there is an edge case, where the block after
@@ -395,6 +378,14 @@ impl<
                     account.status = ValidatorStatus::Active;
                 }
 
+                for key in self.state.removed_validators.iter() {
+                    // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
+                    let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+                    if let Some(mut account) = self.state.validator_accounts.get_mut(&key_bytes) {
+                        account.status = ValidatorStatus::Inactive;
+                    }
+                }
+
                 // If the node's public key is contained in the removed validator list,
                 // trigger an exit
                 if self
@@ -405,25 +396,23 @@ impl<
                 {
                     self.validator_exit = true;
                 }
-
-                // TODO(matthias): remove keys in removed_validators from state or set inactive?
-                self.registry.update_registry(
-                    // We add a delta to the view because the views are initialized with fixed-size
-                    // arrays in Simplex. Adding a validator to an ongoing view can cause an
-                    // out-of-bounds array access.
-                    view + REGISTRY_CHANGE_VIEW_DELTA,
-                    //view,
-                    &self.state.added_validators,
-                    &self.state.removed_validators,
-                );
-                // TODO(matthias): update peers properly
-                let participants = self.registry.peer_set(1).await.unwrap();
-                // TODO(matthias): should we wait until view `view + REGISTRY_CHANGE_VIEW_DELTA`
-                // to update the oracle?
-                self.oracle
-                    .register(new_height, participants.into_iter().collect())
-                    .await;
             }
+
+            // Create the list of validators for the new epoch
+            let active_validators = self.state.get_active_validators();
+            let network_keys = active_validators
+                .iter()
+                .map(|(node_key, _)| node_key.clone())
+                .collect();
+            self.oracle.register(self.state.epoch, network_keys).await;
+
+            // Send the new validator list to the orchestrator
+            self.orchestrator_mailbox
+                .report(Message::Enter(EpochTransition {
+                    epoch: self.state.epoch,
+                    validator_keys: active_validators,
+                }))
+                .await;
 
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
