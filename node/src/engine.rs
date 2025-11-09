@@ -2,9 +2,9 @@ use crate::config::EngineConfig;
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_cryptography::Signer;
+use commonware_cryptography::{Signer, bls12381};
 use commonware_cryptography::bls12381::primitives::group;
-use commonware_cryptography::bls12381::primitives::variant::Variant;
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
@@ -74,18 +74,17 @@ pub struct Engine<
     C: EngineClient,
     O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Manager<PublicKey = PublicKey>,
     S: Signer<PublicKey = PublicKey>,
-    V: Variant,
 > {
     context: E,
-    application: summit_application::Actor<E, C, MultisigScheme<S, V>, S::PublicKey, S, V>,
-    buffer: buffered::Engine<E, S::PublicKey, Block<S, V>>,
-    buffer_mailbox: buffered::Mailbox<S::PublicKey, Block<S, V>>,
+    application: summit_application::Actor<E, C, MultisigScheme<S, MinPk>, S::PublicKey, S, MinPk>,
+    buffer: buffered::Engine<E, S::PublicKey, Block<S, MinPk>>,
+    buffer_mailbox: buffered::Mailbox<S::PublicKey, Block<S, MinPk>>,
     #[allow(clippy::type_complexity)]
-    syncer: summit_syncer::Actor<E, Block<S, V>, SummitSchemeProvider<S, V>, MultisigScheme<S, V>>,
-    syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, V>, Block<S, V>>,
-    finalizer: Finalizer<E, C, O, S, MultisigScheme<S, V>, V>,
-    pub finalizer_mailbox: FinalizerMailbox<MultisigScheme<S, V>, Block<S, V>>,
-    orchestrator: summit_orchestrator::Actor<E, O, V, S, summit_application::Mailbox<S::PublicKey>>,
+    syncer: summit_syncer::Actor<E, Block<S, MinPk>, SummitSchemeProvider<S, MinPk>, MultisigScheme<S, MinPk>>,
+    syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
+    finalizer: Finalizer<E, C, O, S, MultisigScheme<S, MinPk>, MinPk>,
+    pub finalizer_mailbox: FinalizerMailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
+    orchestrator: summit_orchestrator::Actor<E, O, MinPk, S, summit_application::Mailbox<S::PublicKey>>,
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: usize,
@@ -98,10 +97,9 @@ impl<
     C: EngineClient,
     O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Manager<PublicKey = PublicKey>,
     S: Signer<PublicKey = PublicKey> + ZeroizeOnDrop,
-    V: Variant,
-> Engine<E, C, O, S, V>
+> Engine<E, C, O, S>
 where
-    MultisigScheme<S, V>: Scheme<PublicKey = S::PublicKey>,
+    MultisigScheme<S, MinPk>: Scheme<PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
         let node_keys: Vec<_> = cfg
@@ -116,7 +114,7 @@ where
         let encoded = cfg.key_store.consensus_key.encode();
         let private_scalar = group::Private::decode(&mut encoded.as_ref())
             .expect("failed to extract scalar from private key");
-        let scheme_provider =
+        let scheme_provider: SummitSchemeProvider<S, MinPk> =
             SummitSchemeProvider::new(cfg.key_store.node_key.clone(), private_scalar);
 
         let sync_height = cfg.initial_state.latest_height;
@@ -213,6 +211,7 @@ where
                 protocol_version: PROTOCOL_VERSION,
                 node_public_key: cfg.key_store.node_key.public_key().clone(),
                 cancellation_token: cancellation_token.clone(),
+                _variant_marker: PhantomData,
             },
         )
         .await;

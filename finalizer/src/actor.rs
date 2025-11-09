@@ -8,7 +8,7 @@ use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::Reporter;
 use commonware_consensus::simplex::signing_scheme::{Scheme, bls12381_multisig};
 use commonware_consensus::simplex::types::Finalization;
-use commonware_cryptography::bls12381::primitives::variant::Variant;
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_cryptography::{
     Digestible, Hasher, PrivateKeyExt, Sha256, Signer, Verifier as _, bls12381,
 };
@@ -49,7 +49,7 @@ pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
-    S: Signer,
+    S: Signer<PublicKey = PublicKey>,
     Z: Scheme<PublicKey = PublicKey>,
     V: Variant,
 > {
@@ -68,7 +68,7 @@ pub struct Finalizer<
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
     oracle: O,
-    orchestrator_mailbox: summit_orchestrator::Mailbox<V, S::PublicKey>,
+    orchestrator_mailbox: summit_orchestrator::Mailbox<MinPk, S::PublicKey>,
     node_public_key: PublicKey,
     validator_exit: bool,
     cancellation_token: CancellationToken,
@@ -80,7 +80,7 @@ impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
-    S: Signer,
+    S: Signer<PublicKey = PublicKey>,
     Z: Scheme<PublicKey = PublicKey>,
     V: Variant,
 > Finalizer<R, C, O, S, Z, V>
@@ -321,7 +321,7 @@ impl<
             }
         }
 
-        // Store finalizes checkpoint to database
+        let mut epoch_change = false; // Store finalizes checkpoint to database
         if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
             let view = block.view();
 
@@ -406,13 +406,16 @@ impl<
                 .collect();
             self.oracle.register(self.state.epoch, network_keys).await;
 
-            // Send the new validator list to the orchestrator
+            // Send the new validator list to the orchestrator amd start the Simplex engine
+            // for the new epoch
+            let active_validators = self.state.get_active_validators();
             self.orchestrator_mailbox
                 .report(Message::Enter(EpochTransition {
                     epoch: self.state.epoch,
                     validator_keys: active_validators,
                 }))
                 .await;
+            epoch_change = true;
 
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
@@ -462,6 +465,14 @@ impl<
         self.height_notify_up_to(new_height);
         let _ = ack_tx.send(());
         info!(new_height, "finalized block");
+
+        if epoch_change {
+            // Shut down the Simplex engine for the old epoch
+            self.orchestrator_mailbox
+                .report(Message::Exit(self.state.epoch - 1))
+                .await;
+            epoch_change = false;
+        }
     }
 
     async fn parse_execution_requests(&mut self, block: &Block<S, V>, new_height: u64) {
@@ -746,6 +757,7 @@ impl<
                 .state
                 .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
             BlockAuxData {
+                epoch: self.state.epoch,
                 withdrawals: ready_withdrawals,
                 checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
@@ -755,6 +767,7 @@ impl<
             }
         } else {
             BlockAuxData {
+                epoch: self.state.epoch,
                 withdrawals: vec![],
                 checkpoint_hash: None,
                 header_hash: [0; 32].into(),
@@ -799,7 +812,7 @@ impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
-    S: Signer,
+    S: Signer<PublicKey = PublicKey>,
     Z: Scheme<PublicKey = PublicKey>,
     V: Variant,
 > Drop for Finalizer<R, C, O, S, Z, V>

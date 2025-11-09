@@ -150,6 +150,16 @@ impl ConsensusState {
         peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         peers
     }
+
+    pub fn get_active_validators_as<BLS: Clone>(&self) -> Vec<(PublicKey, BLS)>
+    where
+        bls12381::PublicKey: Into<BLS>,
+    {
+        self.get_active_validators()
+            .into_iter()
+            .map(|(pk, bls_pk)| (pk, bls_pk.into()))
+            .collect()
+    }
 }
 
 impl EncodeSize for ConsensusState {

@@ -355,7 +355,7 @@ impl Command {
             // Create network
             let p2p = network.start();
             // create engine
-            let engine: Engine<_, _, _, _, bls12381::primitives::variant::MinPk> =
+            let engine: Engine<_, _, _, _> =
                 Engine::new(context.with_label("engine"), config).await;
 
             let finalizer_mailbox = engine.finalizer_mailbox.clone();
@@ -533,7 +533,7 @@ pub fn run_node_with_runtime(
         // Create network
         let p2p = network.start();
         // create engine
-        let engine: Engine<_, _, _, _, bls12381::primitives::variant::MinPk> =
+        let engine: Engine<_, _, _, _> =
             Engine::new(context.with_label("engine"), config).await;
 
         let finalizer_mailbox = engine.finalizer_mailbox.clone();

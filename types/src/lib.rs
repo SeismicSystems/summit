@@ -31,6 +31,7 @@ pub type Activity = CActivity<Signature, Digest>;
 /// Auxiliary data needed for block construction
 #[derive(Debug, Clone)]
 pub struct BlockAuxData {
+    pub epoch: u64,
     pub withdrawals: Vec<PendingWithdrawal>,
     pub checkpoint_hash: Option<Digest>,
     pub header_hash: Digest,
@@ -39,6 +40,7 @@ pub struct BlockAuxData {
     pub forkchoice: ForkchoiceState,
 }
 
+pub use commonware_cryptography::bls12381;
 pub type PublicKey = commonware_cryptography::ed25519::PublicKey;
 pub type PrivateKey = commonware_cryptography::ed25519::PrivateKey;
 pub type Signature = commonware_cryptography::ed25519::Signature;
