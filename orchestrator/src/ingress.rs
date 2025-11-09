@@ -7,8 +7,9 @@ use summit_types::scheme::EpochTransition;
 
 /// Messages that can be sent to the orchestrator.
 pub enum Message<V: Variant, P: PublicKey> {
-    Enter(EpochTransition<V, P>),
+    Enter(EpochTransition),
     Exit(Epoch),
+    _Phantom(std::marker::PhantomData<V>, std::marker::PhantomData<P>),
 }
 
 /// Inbound communication channel for epoch transitions.
@@ -20,7 +21,9 @@ pub struct Mailbox<V: Variant, P: PublicKey> {
 impl<V: Variant, P: PublicKey> Mailbox<V, P> {
     /// Create a new [Mailbox].
     pub fn new(sender: mpsc::Sender<Message<V, P>>) -> Self {
-        Self { sender }
+        Self {
+            sender,
+        }
     }
 }
 

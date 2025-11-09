@@ -1,7 +1,8 @@
+use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::signing_scheme::{self, Scheme};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::group;
-use commonware_cryptography::bls12381::primitives::variant::Variant;
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_cryptography::{PublicKey, Signer};
 use commonware_utils::set::{Ordered, OrderedAssociated};
 use std::collections::HashMap;
@@ -61,7 +62,7 @@ pub trait EpochSchemeProvider {
     /// Returns a [Scheme] for the given [EpochTransition].
     fn scheme_for_epoch(
         &self,
-        transition: &EpochTransition<Self::Variant, Self::PublicKey>,
+        transition: &EpochTransition,
     ) -> Self::Scheme;
 }
 
@@ -74,20 +75,25 @@ impl<C: Signer, V: Variant> SchemeProvider for SummitSchemeProvider<C, V> {
     }
 }
 
-impl<C: Signer, V: Variant> EpochSchemeProvider for SummitSchemeProvider<C, V> {
+impl<C: Signer<PublicKey = crate::PublicKey>, V: Variant> EpochSchemeProvider for SummitSchemeProvider<C, V>
+{
     type Variant = V;
     type PublicKey = C::PublicKey;
     type Scheme = MultisigScheme<C, V>;
 
     fn scheme_for_epoch(
         &self,
-        transition: &EpochTransition<Self::Variant, Self::PublicKey>,
+        transition: &EpochTransition,
     ) -> Self::Scheme {
         let participants: OrderedAssociated<Self::PublicKey, V::Public> = transition
-            .dealers
+            .validator_keys
             .iter()
-            .cloned()
-            .zip(transition.bls_keys.iter().cloned())
+            .map(|(pk, bls_pk)| {
+                let minpk_public: &<MinPk as Variant>::Public = bls_pk.as_ref();
+                let encoded = minpk_public.encode();
+                let variant_pk = V::Public::decode(&mut encoded.as_ref()).expect("failed to decode BLS public key");
+                (pk.clone(), variant_pk)
+            })
             .collect();
 
         MultisigScheme::<C, V>::new(participants, self.bls_private_key.clone())
@@ -95,9 +101,9 @@ impl<C: Signer, V: Variant> EpochSchemeProvider for SummitSchemeProvider<C, V> {
 }
 
 /// A notification of an epoch transition.
-pub struct EpochTransition<V: Variant, P: PublicKey> {
+pub struct EpochTransition<BLS = crate::bls12381::PublicKey> {
     /// The epoch to transition to.
     pub epoch: Epoch,
     /// The public keys of the validator set
-    pub validator_keys: Vec<(P, V::Public)>,
+    pub validator_keys: Vec<(crate::PublicKey, BLS)>,
 }

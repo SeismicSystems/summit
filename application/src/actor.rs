@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 use summit_finalizer::FinalizerMailbox;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::histogram;
@@ -301,6 +301,16 @@ impl<
         {
             let aux_data_duration = aux_data_start.elapsed().as_millis() as f64;
             histogram!("handle_proposal_aux_data_duration_millis").record(aux_data_duration);
+        }
+
+        if aux_data.epoch != round.epoch() {
+            // This might happen because the finalizer notifies the orchestrator at the end of an
+            // epoch to shut down Simplex. While Simplex is being shutdown, it will still continue to produce blocks.
+            return Err(anyhow!(
+                "Aborting block proposal for epoch {}. Current epoch is {}",
+                aux_data.epoch,
+                aux_data.epoch
+            ));
         }
 
         let pending_withdrawals = aux_data.withdrawals;

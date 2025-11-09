@@ -12,7 +12,7 @@ use commonware_consensus::{
     types::Epoch,
     utils::last_block_in_epoch,
 };
-use commonware_cryptography::{Signer, bls12381::primitives::variant::Variant};
+use commonware_cryptography::{Signer, bls12381::primitives::variant::{MinPk, Variant}};
 use commonware_macros::select;
 use commonware_p2p::{
     Blocker, Receiver, Recipients, Sender,
@@ -58,11 +58,11 @@ where
     E: Spawner + Metrics + Rng + CryptoRng + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
-    C: Signer,
+    C: Signer<PublicKey = summit_types::PublicKey>,
     A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
 {
     context: ContextCell<E>,
-    mailbox: mpsc::Receiver<Message<V, C::PublicKey>>,
+    mailbox: mpsc::Receiver<Message<MinPk, C::PublicKey>>,
     application: A,
 
     oracle: B,
@@ -82,10 +82,10 @@ where
     E: Spawner + Metrics + Rng + CryptoRng + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
-    C: Signer,
+    C: Signer<PublicKey = summit_types::PublicKey>,
     A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
 {
-    pub fn new(context: E, config: Config<B, V, C, A>) -> (Self, Mailbox<V, C::PublicKey>) {
+    pub fn new(context: E, config: Config<B, V, C, A>) -> (Self, Mailbox<MinPk, C::PublicKey>) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
         let pool_ref = PoolRef::new(NZUsize!(16_384), NZUsize!(10_000));
 
@@ -319,6 +319,7 @@ where
 
                             info!(epoch, "exited epoch");
                         }
+                        Message::_Phantom(_, _) => unreachable!(),
                     }
                 },
             }
