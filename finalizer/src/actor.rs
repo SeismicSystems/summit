@@ -4,7 +4,7 @@ use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
 #[cfg(debug_assertions)]
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::{DecodeExt as _, Encode, ReadExt as _};
 use commonware_consensus::Reporter;
 use commonware_consensus::simplex::signing_scheme::{Scheme, bls12381_multisig};
 use commonware_consensus::simplex::types::Finalization;
@@ -482,29 +482,56 @@ impl<
                         ExecutionRequest::Deposit(deposit_request) => {
                             let message = deposit_request.as_message(self.protocol_version_digest);
 
-                            let mut signature_bytes = &deposit_request.signature[..];
-                            let Ok(signature) = Signature::read(&mut signature_bytes) else {
+                            let mut node_signature_bytes = &deposit_request.node_signature[..];
+                            let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
                                 info!(
-                                    "Failed to parse signature from deposit request: {deposit_request:?}"
+                                    "Failed to parse node signature from deposit request: {deposit_request:?}"
                                 );
                                 continue; // Skip this deposit request
                             };
-                            if !deposit_request.pubkey.verify(None, &message, &signature) {
+                            if !deposit_request.node_pubkey.verify(None, &message, &node_signature) {
                                 #[cfg(debug_assertions)]
                                 {
                                     let gauge: Gauge = Gauge::default();
                                     gauge.set(new_height as i64);
                                     self.context.register(
                                         format!(
-                                            "<pubkey>{}</pubkey>_deposit_request_invalid_sig",
-                                            hex::encode(&deposit_request.pubkey)
+                                            "<pubkey>{}</pubkey>_deposit_request_invalid_node_sig",
+                                            hex::encode(&deposit_request.node_pubkey)
                                         ),
                                         "height",
                                         gauge,
                                     );
                                 }
                                 info!(
-                                    "Failed to verify signature from deposit request: {deposit_request:?}"
+                                    "Failed to verify node signature from deposit request: {deposit_request:?}"
+                                );
+                                continue; // Skip this deposit request
+                            }
+
+                            let mut consensus_signature_bytes = &deposit_request.consensus_signature[..];
+                            let Ok(consensus_signature) = bls12381::Signature::read(&mut consensus_signature_bytes) else {
+                                info!(
+                                    "Failed to parse consensus signature from deposit request: {deposit_request:?}"
+                                );
+                                continue; // Skip this deposit request
+                            };
+                            if !deposit_request.consensus_pubkey.verify(None, &message, &consensus_signature) {
+                                #[cfg(debug_assertions)]
+                                {
+                                    let gauge: Gauge = Gauge::default();
+                                    gauge.set(new_height as i64);
+                                    self.context.register(
+                                        format!(
+                                            "<pubkey>{}</pubkey>_deposit_request_invalid_consensus_sig",
+                                            hex::encode(&deposit_request.consensus_pubkey)
+                                        ),
+                                        "height",
+                                        gauge,
+                                    );
+                                }
+                                info!(
+                                    "Failed to verify consensus signature from deposit request: {deposit_request:?}"
                                 );
                                 continue; // Skip this deposit request
                             }
@@ -576,7 +603,7 @@ impl<
                     let mut account_exists = false;
                     if let Some(mut account) = self
                         .state
-                        .get_account(request.pubkey.as_ref().try_into().unwrap())
+                        .get_account(request.node_pubkey.as_ref().try_into().unwrap())
                         .cloned()
                     {
                         if request.index > account.last_deposit_index {
@@ -590,7 +617,7 @@ impl<
                             account.last_deposit_index = request.index;
                             validator_balance = account.balance;
                             self.state
-                                .set_account(request.pubkey.as_ref().try_into().unwrap(), account);
+                                .set_account(request.node_pubkey.as_ref().try_into().unwrap(), account);
                             account_exists = true;
                         }
                     } else {
@@ -623,10 +650,8 @@ impl<
                         }
 
                         // Create new ValidatorAccount from DepositRequest
-                        // TODO(matthias): use the actual BLS key
-                        let dummy_key = bls12381::PrivateKey::from_seed(0);
                         let new_account = ValidatorAccount {
-                            consensus_public_key: dummy_key.public_key(),
+                            consensus_public_key: request.consensus_pubkey.clone(),
                             withdrawal_credentials: Address::from_slice(
                                 &request.withdrawal_credentials[12..32],
                             ), // Take last 20 bytes
@@ -636,13 +661,13 @@ impl<
                             last_deposit_index: request.index,
                         };
                         self.state
-                            .set_account(request.pubkey.as_ref().try_into().unwrap(), new_account);
+                            .set_account(request.node_pubkey.as_ref().try_into().unwrap(), new_account);
                         validator_balance = request.amount;
                     }
                     if !account_exists && validator_balance >= self.validator_minimum_stake {
                         // If the node shuts down, before the account changes are committed,
                         // then everything should work normally, because the registry is not persisted to disk
-                        self.state.added_validators.push(request.pubkey.clone());
+                        self.state.added_validators.push(request.node_pubkey.clone());
                     }
                     #[cfg(debug_assertions)]
                     {
@@ -651,7 +676,7 @@ impl<
                         self.context.register(
                             format!("<registry>{}</registry><creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
                                     !account_exists && validator_balance >= self.validator_minimum_stake,
-                                    hex::encode(request.withdrawal_credentials), hex::encode(request.pubkey)),
+                                    hex::encode(request.withdrawal_credentials), hex::encode(request.node_pubkey.encode())),
                             "Validator balance",
                             gauge
                         );
