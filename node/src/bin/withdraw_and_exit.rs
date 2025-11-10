@@ -382,7 +382,7 @@ fn get_node_flags(node: usize) -> RunFlags {
     let path = format!("testnet/node{node}/");
 
     RunFlags {
-        key_store_path: format!("{path}key.pem"),
+        key_store_path: format!("{path}node_key.pem"),
         store_path: format!("{path}db"),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,

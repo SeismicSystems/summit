@@ -10,6 +10,8 @@ use alloy_rpc_types_engine::{
 use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use commonware_cryptography::{ed25519, Signer};
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use summit_types::{Block, EngineClient};
 
 #[derive(Clone)]
@@ -375,7 +377,7 @@ impl EngineClient for MockEngineClient {
             .expect("Payload ID not found")
     }
 
-    async fn check_payload(&self, block: &Block) -> PayloadStatus {
+    async fn check_payload<C: Signer, V: Variant>(&self, block: &Block<C, V>) -> PayloadStatus {
         let mut state = self.state.lock().unwrap();
 
         if state.force_invalid {
@@ -739,13 +741,13 @@ mod tests {
 
         // Simulate consensus: client2 receives the block through Engine API
         // First, client2 validates the block (like receiving it from network)
-        let block_for_validation = Block::compute_digest(
+        let block_for_validation = Block::<ed25519::PrivateKey, MinPk>::compute_digest(
             summit_types::Digest::from([0u8; 32]), // Genesis digest
             1,
             1000,
             block1.clone(),
             Vec::new(),
-            alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
+            U256::from(1_000_000_000_000_000_000u64),
             0,
             1,
             None,
@@ -819,7 +821,7 @@ mod tests {
             for client in [&client1, &client2, &client3] {
                 if client.client_id() != producer.client_id() {
                     // Each client validates the block (like receiving it from network)
-                    let block_for_validation = summit_types::Block::compute_digest(
+                    let block_for_validation = Block::<ed25519::PrivateKey, MinPk>::compute_digest(
                         summit_types::Digest::from([(round - 1) as u8; 32]), // Parent digest
                         round as u64,
                         (round * 1000) as u64,
@@ -918,7 +920,7 @@ mod tests {
         client1.commit_hash(new_fork_choice).await;
 
         // Simulate network propagation to client2
-        let block_for_validation = Block::compute_digest(
+        let block_for_validation = Block::<ed25519::PrivateKey, MinPk>::compute_digest(
             summit_types::Digest::from([0u8; 32]),
             1,
             1000,

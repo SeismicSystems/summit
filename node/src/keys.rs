@@ -131,9 +131,18 @@ impl KeySubCmd {
 }
 
 pub fn read_bls_key_from_file(path: &std::path::Path) -> Result<BlsPrivateKey> {
+    println!("Read BLS key: {}", path.display());
+
+    if let Err(e) = std::fs::read_to_string(path) {
+        println!("Failed to read BLS key: {}", e);
+    }
+
     let encoded_pk = std::fs::read_to_string(path)?;
+    println!("Read BLS key 1");
     let key = from_hex_formatted(&encoded_pk).context("Invalid BLS key format")?;
+    println!("Read BLS key 2");
     let pk = BlsPrivateKey::decode(&*key)?;
+    println!("Read BLS key 3");
     Ok(pk)
 }
 
@@ -146,7 +155,46 @@ pub fn read_ed_key_from_file(path: &std::path::Path) -> Result<PrivateKey> {
 
 pub fn read_keys_from_keystore(keystore_path: &str) -> Result<(PrivateKey, BlsPrivateKey)> {
     let keystore_dir = get_expanded_path(keystore_path)?;
+    println!("Keystore directory: {}", keystore_dir.display());
     let node_key = read_ed_key_from_file(&keystore_dir.join(NODE_KEY_FILENAME))?;
     let consensus_key = read_bls_key_from_file(&keystore_dir.join(CONSENSUS_KEY_FILENAME))?;
     Ok((node_key, consensus_key))
 }
+
+//#[cfg(test)]
+//mod tests {
+//    use super::*;
+//    use commonware_cryptography::Signer;
+//
+//    #[test]
+//    fn test_generate_testnet_keys() {
+//        // Generate 4 BLS private keys for testnet nodes
+//        for i in 0..4 {
+//            let node_dir = format!("../testnet/node{}", i);
+//
+//            // Create directory
+//            std::fs::create_dir_all(&node_dir).expect("Unable to create testnet directory");
+//
+//            // Generate BLS consensus key deterministically from seed
+//            let consensus_private_key = BlsPrivateKey::from_seed(i as u64);
+//            let consensus_pub_key = consensus_private_key.public_key();
+//
+//            // Save consensus key
+//            let consensus_key_path = format!("{}/{}", node_dir, CONSENSUS_KEY_FILENAME);
+//            let encoded_consensus_key = consensus_private_key.to_string();
+//            std::fs::write(&consensus_key_path, encoded_consensus_key)
+//                .expect("Unable to write consensus key to disk");
+//
+//            println!("Generated keys for node{} at {consensus_key_path}:", i);
+//            println!("  Consensus Public Key (BLS): {}", consensus_pub_key);
+//
+//            // Verify we can read the key back
+//            let read_consensus_key = read_bls_key_from_file(std::path::Path::new(&consensus_key_path))
+//                .expect("Unable to read consensus key");
+//
+//            assert_eq!(consensus_pub_key, read_consensus_key.public_key());
+//        }
+//
+//        println!("\nSuccessfully generated and verified BLS keys for 4 testnet nodes");
+//    }
+//}
