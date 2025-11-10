@@ -128,7 +128,7 @@ mod tests {
             let repo_root = node_crate_dir.parent().unwrap();
             repo_root.join("testnet/node0")
         };
-        expect_key_store(&keys_dir.join("key.pem").to_string_lossy());
+        expect_key_store(&keys_dir.to_string_lossy());
     }
 
     #[test]

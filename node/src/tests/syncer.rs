@@ -33,6 +33,8 @@ fn test_node_joins_later_no_checkpoint() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -52,16 +54,16 @@ fn test_node_joins_later_no_checkpoint() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|lhs, rhs| lhs.0.cmp(&rhs.0));
-        key_stores
-            .sort_by_key(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
 
         // Separate initial validators from late joiner
         let initial_validators = &validators[..validators.len() - 1];
+        let initial_node_public_keys: Vec<_> = initial_validators.iter().map(|(pk, _)| pk.clone()).collect();
 
         // Register and link only initial validators
-        let mut registrations = common::register_validators(&mut oracle, initial_validators).await;
-        common::link_validators(&mut oracle, initial_validators, link.clone(), None).await;
+        let mut registrations = common::register_validators(&oracle, &initial_node_public_keys).await;
+        common::link_validators(&mut oracle, &initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -141,7 +143,7 @@ fn test_node_joins_later_no_checkpoint() {
             common::register_validators(&mut oracle, &[public_key.clone()]).await;
 
         // Join the validator to the network
-        common::join_validator(&mut oracle, &public_key, initial_validators, link).await;
+        common::join_validator(&mut oracle, &public_key, &initial_node_public_keys, link).await;
 
         // Allow p2p connections to establish before starting engine
         context.sleep(Duration::from_millis(100)).await;
@@ -261,6 +263,8 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -280,16 +284,16 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|lhs, rhs| lhs.0.cmp(&rhs.0));
-        key_stores
-            .sort_by_key(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
 
         // Separate initial validators from late joiner
         let initial_validators = &validators[..validators.len() - 1];
+        let initial_node_public_keys: Vec<_> = initial_validators.iter().map(|(pk, _)| pk.clone()).collect();
 
         // Register and link only initial validators
-        let mut registrations = common::register_validators(&mut oracle, initial_validators).await;
-        common::link_validators(&mut oracle, initial_validators, link.clone(), None).await;
+        let mut registrations = common::register_validators(&oracle, &initial_node_public_keys).await;
+        common::link_validators(&mut oracle, &initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -369,7 +373,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             common::register_validators(&mut oracle, &[public_key.clone()]).await;
 
         // Join the validator to the network
-        common::join_validator(&mut oracle, &public_key, initial_validators, link).await;
+        common::join_validator(&mut oracle, &public_key, &initial_node_public_keys, link).await;
 
         // Allow p2p connections to establish before starting engine
         context.sleep(Duration::from_millis(100)).await;

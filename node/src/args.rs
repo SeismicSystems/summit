@@ -44,7 +44,6 @@ use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use tracing::{Level, error};
 
-pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
 pub const DEFAULT_ENGINE_IPC_PATH: &str = "/tmp/reth_engine_api.ipc";

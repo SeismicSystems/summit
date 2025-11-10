@@ -35,6 +35,8 @@ fn test_checkpoint_created() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -54,7 +56,7 @@ fn test_checkpoint_created() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -210,6 +212,8 @@ fn test_previous_header_hash_matches() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -229,7 +233,7 @@ fn test_previous_header_hash_matches() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -398,6 +402,8 @@ fn test_single_engine_with_checkpoint() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -505,6 +511,8 @@ fn test_node_joins_later_with_checkpoint() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -524,7 +532,7 @@ fn test_node_joins_later_with_checkpoint() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -749,6 +757,8 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -768,7 +778,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();

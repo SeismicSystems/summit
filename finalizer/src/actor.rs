@@ -760,9 +760,6 @@ impl<
         height: u64,
         sender: oneshot::Sender<BlockAuxData>,
     ) {
-        // TODO(matthias): the height notify should take care of the synchronization, but verify this
-        // Get ready withdrawals at the current height
-
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.

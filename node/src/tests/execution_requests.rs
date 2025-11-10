@@ -39,6 +39,8 @@ fn test_deposit_request_single() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -58,7 +60,7 @@ fn test_deposit_request_single() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -74,7 +76,7 @@ fn test_deposit_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _) = common::create_deposit_request(
+        let (test_deposit, _, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
@@ -177,7 +179,7 @@ fn test_deposit_request_single() {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_deposit.withdrawal_credentials));
-                        assert_eq!(pubkey_hex, test_deposit.pubkey.to_string());
+                        assert_eq!(pubkey_hex, test_deposit.node_pubkey.to_string());
                         assert_eq!(value, test_deposit.amount);
                         processed_requests.insert(metric.to_string());
                     } else {
@@ -227,6 +229,8 @@ fn test_deposit_request_top_up() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
 
@@ -248,7 +252,7 @@ fn test_deposit_request_top_up() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -265,14 +269,14 @@ fn test_deposit_request_top_up() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit1, private_key) = common::create_deposit_request(
+        let (test_deposit1, private_key, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
             None,
         );
-        let (test_deposit2, _) = common::create_deposit_request(
+        let (test_deposit2, _, _) = common::create_deposit_request(
             2,
             10_000_000_000,
             common::get_domain(),
@@ -385,7 +389,7 @@ fn test_deposit_request_top_up() {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_deposit1.withdrawal_credentials));
-                        assert_eq!(ed_pubkey_hex, test_deposit1.pubkey.to_string());
+                        assert_eq!(ed_pubkey_hex, test_deposit1.node_pubkey.to_string());
                         // The amount from both deposits should be added to the validator balance
                         assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
                         processed_requests.insert(metric.to_string());
@@ -439,6 +443,8 @@ fn test_deposit_and_withdrawal_request_single() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
 
@@ -460,7 +466,7 @@ fn test_deposit_and_withdrawal_request_single() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -477,7 +483,7 @@ fn test_deposit_and_withdrawal_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _) = common::create_deposit_request(
+        let (test_deposit, _, _) = common::create_deposit_request(
             n as u64, // use a private key seed that doesn't exist on the consensus state
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
@@ -488,7 +494,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.pubkey.as_ref().try_into().unwrap(),
+            test_deposit.node_pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount,
         );
 
@@ -596,7 +602,7 @@ fn test_deposit_and_withdrawal_request_single() {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_withdrawal.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
+                        assert_eq!(ed_pubkey_hex, test_deposit.node_pubkey.to_string());
                         assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
                         processed_requests.insert(metric.to_string());
                     } else {
@@ -662,6 +668,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
 
@@ -683,7 +691,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -700,7 +708,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _) = common::create_deposit_request(
+        let (test_deposit, _, _) = common::create_deposit_request(
             n as u64,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
@@ -711,7 +719,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal1 = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.pubkey.as_ref().try_into().unwrap(),
+            test_deposit.node_pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount / 2,
         );
         let mut test_withdrawal2 = test_withdrawal1.clone();
@@ -832,7 +840,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_withdrawal1.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
+                        assert_eq!(ed_pubkey_hex, test_deposit.node_pubkey.to_string());
                         assert_eq!(balance, 0);
                         processed_requests.insert(metric.to_string());
                     } else {
@@ -901,6 +909,8 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
 
@@ -922,7 +932,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -939,7 +949,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _) = common::create_deposit_request(
+        let (test_deposit, _, _) = common::create_deposit_request(
             n as u64,
             VALIDATOR_MINIMUM_STAKE / 2,
             common::get_domain(),
@@ -950,7 +960,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.pubkey.as_ref().try_into().unwrap(),
+            test_deposit.node_pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount,
         );
 
@@ -1070,7 +1080,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                     let creds =
                         common::parse_metric_substring(metric, "creds").expect("creds missing");
                     assert_eq!(creds, hex::encode(test_withdrawal.source_address));
-                    assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
+                    assert_eq!(ed_pubkey_hex, test_deposit.node_pubkey.to_string());
                     assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
                     processed_requests.insert(metric.to_string());
                 }
@@ -1130,6 +1140,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
 
@@ -1151,7 +1163,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -1171,7 +1183,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
         let mut deposit_reqs = HashMap::new();
         let mut withdrawal_reqs = HashMap::new();
         for i in 0..deposit_reqs.len() {
-            let (test_deposit, _) = common::create_deposit_request(
+            let (test_deposit, _, _) = common::create_deposit_request(
                 i as u64,
                 VALIDATOR_MINIMUM_STAKE,
                 common::get_domain(),
@@ -1183,10 +1195,10 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
             let test_withdrawal = common::create_withdrawal_request(
                 withdrawal_address,
-                test_deposit.pubkey.as_ref().try_into().unwrap(),
+                test_deposit.node_pubkey.as_ref().try_into().unwrap(),
                 test_deposit.amount,
             );
-            deposit_reqs.insert(hex::encode(test_deposit.pubkey.clone()), test_deposit);
+            deposit_reqs.insert(hex::encode(test_deposit.node_pubkey.clone()), test_deposit);
             withdrawal_reqs.insert(
                 hex::encode(test_withdrawal.validator_pubkey),
                 test_withdrawal,
@@ -1303,7 +1315,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
                     let creds =
                         common::parse_metric_substring(metric, "creds").expect("creds missing");
                     assert_eq!(creds, hex::encode(deposit_req.withdrawal_credentials));
-                    assert_eq!(ed_pubkey_hex, deposit_req.pubkey.to_string());
+                    assert_eq!(ed_pubkey_hex, deposit_req.node_pubkey.to_string());
                     assert_eq!(balance, deposit_req.amount);
                 }
 
@@ -1319,7 +1331,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
                     let balance = value.parse::<u64>().unwrap();
                     assert_eq!(creds, hex::encode(withdrawal_req.source_address));
-                    assert_eq!(ed_pubkey_hex, deposit_req.pubkey.to_string());
+                    assert_eq!(ed_pubkey_hex, deposit_req.node_pubkey.to_string());
                     assert_eq!(balance, deposit_req.amount - withdrawal_req.amount);
                 }
                 if height_reached.len() as u32 >= n {
@@ -1381,6 +1393,8 @@ fn test_deposit_request_invalid_signature() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: None,
             },
         );
         // Start network
@@ -1400,7 +1414,7 @@ fn test_deposit_request_invalid_signature() {
             key_stores.push(key_store);
             validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort_by_key(|(lhs, _)| *lhs);
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -1416,7 +1430,7 @@ fn test_deposit_request_invalid_signature() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (mut test_deposit, _) = common::create_deposit_request(
+        let (mut test_deposit, _, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
@@ -1424,15 +1438,16 @@ fn test_deposit_request_invalid_signature() {
             None,
         );
 
-        let (test_deposit2, _) = common::create_deposit_request(
+        let (test_deposit2, _, _) = common::create_deposit_request(
             2,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
             None,
         );
-        // Use signature from another private key
-        test_deposit.signature = test_deposit2.signature;
+        // Use signatures from another private key (to make it invalid)
+        test_deposit.node_signature = test_deposit2.node_signature;
+        test_deposit.consensus_signature = test_deposit2.consensus_signature;
 
         // Convert to ExecutionRequest and then to Requests
         let execution_requests = vec![ExecutionRequest::Deposit(test_deposit.clone())];
@@ -1521,7 +1536,7 @@ fn test_deposit_request_invalid_signature() {
                     if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let validator_id = common::extract_validator_id(metric)
                             .expect("failed to parse validator id");
-                        assert_eq!(pubkey_hex, test_deposit.pubkey.to_string());
+                        assert_eq!(pubkey_hex, test_deposit.node_pubkey.to_string());
                         processed_requests.insert(validator_id);
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);

@@ -491,7 +491,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 flags.bench_block_dir = args.bench_block_dir.clone();
             }
 
-            let signer_path = format!("{}/node{}/data/key.pem", args.data_dir, x);
+            let signer_path = format!("{}/node{}/data/node_key.pem", args.data_dir, x);
             let encoded_priv_key = ed25519_private_key.to_string();
             fs::write(&signer_path, encoded_priv_key).expect("Unable to write private key to disk");
             flags.key_store_path = signer_path;
