@@ -581,18 +581,21 @@ impl Reth {
                 .read_line(&mut line)
                 .map_err(NodeError::ReadLineError)?;
 
+            #[allow(clippy::collapsible_if)]
             if line.contains("RPC HTTP server started") {
                 if let Some(addr) = extract_endpoint("url=", &line) {
                     http_port = addr.port();
                 }
             }
 
+            #[allow(clippy::collapsible_if)]
             if line.contains("RPC WS server started") {
                 if let Some(addr) = extract_endpoint("url=", &line) {
                     ws_port = addr.port();
                 }
             }
 
+            #[allow(clippy::collapsible_if)]
             if line.contains("RPC auth server started") {
                 if let Some(addr) = extract_endpoint("url=", &line) {
                     auth_port = addr.port();
@@ -609,6 +612,7 @@ impl Reth {
                 ports_started = true;
             }
 
+            #[allow(clippy::collapsible_if)]
             if self.discovery_enabled {
                 if line.contains("Updated local ENR") {
                     if let Some(port) = extract_endpoint("IpV4 UDP Socket", &line) {

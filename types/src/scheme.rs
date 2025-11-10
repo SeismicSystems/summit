@@ -4,7 +4,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_cryptography::{PublicKey, Signer};
-use commonware_utils::set::{Ordered, OrderedAssociated};
+use commonware_utils::set::OrderedAssociated;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -24,15 +24,13 @@ pub trait SchemeProvider: Clone + Send + Sync + 'static {
 pub struct SummitSchemeProvider<C: Signer, V: Variant> {
     #[allow(clippy::type_complexity)]
     schemes: Arc<Mutex<HashMap<Epoch, Arc<MultisigScheme<C, V>>>>>,
-    signer: C,
     bls_private_key: group::Private,
 }
 
 impl<C: Signer, V: Variant> SummitSchemeProvider<C, V> {
-    pub fn new(signer: C, bls_private_key: group::Private) -> Self {
+    pub fn new(bls_private_key: group::Private) -> Self {
         Self {
             schemes: Arc::new(Mutex::new(HashMap::new())),
-            signer,
             bls_private_key,
         }
     }

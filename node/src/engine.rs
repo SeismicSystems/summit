@@ -2,9 +2,9 @@ use crate::config::EngineConfig;
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_cryptography::{Signer, bls12381};
+use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::primitives::group;
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
@@ -20,7 +20,6 @@ use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
 use summit_types::network_oracle::NetworkOracle;
-use summit_types::registry::Registry;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
 use summit_types::{Block, EngineClient, PublicKey};
 use tokio_util::sync::CancellationToken;
@@ -36,9 +35,6 @@ const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
 const BUFFER_POOL_PAGE_SIZE: NonZero<usize> = NZUsize!(4_096); // 4KB
 const BUFFER_POOL_CAPACITY: NonZero<usize> = NZUsize!(8_192); // 32MB
-const DEQUE_SIZE: usize = 10;
-const ACTIVITY_TIMEOUT: u64 = 256;
-const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
 const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
 const IMMUTABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(262_144);
 const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
@@ -80,11 +76,17 @@ pub struct Engine<
     buffer: buffered::Engine<E, S::PublicKey, Block<S, MinPk>>,
     buffer_mailbox: buffered::Mailbox<S::PublicKey, Block<S, MinPk>>,
     #[allow(clippy::type_complexity)]
-    syncer: summit_syncer::Actor<E, Block<S, MinPk>, SummitSchemeProvider<S, MinPk>, MultisigScheme<S, MinPk>>,
+    syncer: summit_syncer::Actor<
+        E,
+        Block<S, MinPk>,
+        SummitSchemeProvider<S, MinPk>,
+        MultisigScheme<S, MinPk>,
+    >,
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
     finalizer: Finalizer<E, C, O, S, MultisigScheme<S, MinPk>, MinPk>,
     pub finalizer_mailbox: FinalizerMailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
-    orchestrator: summit_orchestrator::Actor<E, O, MinPk, S, summit_application::Mailbox<S::PublicKey>>,
+    orchestrator:
+        summit_orchestrator::Actor<E, O, MinPk, S, summit_application::Mailbox<S::PublicKey>>,
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: usize,
@@ -102,20 +104,13 @@ where
     MultisigScheme<S, MinPk>: Scheme<PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
-        let node_keys: Vec<_> = cfg
-            .participants
-            .iter()
-            .map(|(node_key, _)| node_key.clone())
-            .collect();
-        let registry = Registry::new(cfg.initial_state.epoch, node_keys);
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
-        //let threshold = registry.
         let encoded = cfg.key_store.consensus_key.encode();
         let private_scalar = group::Private::decode(&mut encoded.as_ref())
             .expect("failed to extract scalar from private key");
         let scheme_provider: SummitSchemeProvider<S, MinPk> =
-            SummitSchemeProvider::new(cfg.key_store.node_key.clone(), private_scalar);
+            SummitSchemeProvider::new(private_scalar);
 
         let sync_height = cfg.initial_state.latest_height;
 
@@ -197,7 +192,6 @@ where
                 mailbox_size: cfg.mailbox_size,
                 db_prefix: cfg.partition_prefix.clone(),
                 engine_client: cfg.engine_client,
-                registry: registry.clone(),
                 oracle: cfg.oracle.clone(),
                 orchestrator_mailbox,
                 epoch_num_of_blocks: BLOCKS_PER_EPOCH,
@@ -239,6 +233,22 @@ where
     /// This will also rebuild the state of the engine from provided `Journal`.
     pub fn start(
         self,
+        pending_network: (
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
+        ),
+        recovered_network: (
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
+        ),
+        resolver_network: (
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
+        ),
+        orchestrator_network: (
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
+        ),
         broadcast_network: (
             impl Sender<PublicKey = S::PublicKey>,
             impl Receiver<PublicKey = S::PublicKey>,
@@ -248,9 +258,16 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        self.context
-            .clone()
-            .spawn(|_| self.run(broadcast_network, backfill_network))
+        self.context.clone().spawn(|_| {
+            self.run(
+                pending_network,
+                recovered_network,
+                resolver_network,
+                orchestrator_network,
+                broadcast_network,
+                backfill_network,
+            )
+        })
     }
 
     /// Start the `simplex` consensus engine.
@@ -258,6 +275,22 @@ where
     /// This will also rebuild the state of the engine from provided `Journal`.
     async fn run(
         self,
+        pending_network: (
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
+        ),
+        recovered_network: (
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
+        ),
+        resolver_network: (
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
+        ),
+        orchestrator_network: (
+            impl Sender<PublicKey = S::PublicKey>,
+            impl Receiver<PublicKey = S::PublicKey>,
+        ),
         broadcast_network: (
             impl Sender<PublicKey = S::PublicKey>,
             impl Receiver<PublicKey = S::PublicKey>,
@@ -300,6 +333,13 @@ where
             (resolver_rx, resolver),
             self.sync_height,
         );
+        // start the orchestrator
+        let orchestrator_handle = self.orchestrator.start(
+            pending_network,
+            recovered_network,
+            resolver_network,
+            orchestrator_network,
+        );
 
         // Wait for either all actors to finish or cancellation signal
         let actors_fut = try_join_all(vec![
@@ -307,6 +347,7 @@ where
             buffer_handle,
             finalizer_handle,
             syncer_handle,
+            orchestrator_handle,
         ])
         .fuse();
         let cancellation_fut = self.cancellation_token.cancelled().fuse();

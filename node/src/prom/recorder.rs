@@ -24,7 +24,6 @@ static PROMETHEUS_RECORDER_HANDLE: LazyLock<PrometheusRecorder> =
 ///
 /// This is intended to be used as the global recorder.
 /// Callers must ensure that [`PrometheusRecorder::spawn_upkeep`] is called once.
-
 #[allow(unused)]
 #[derive(Debug)]
 pub struct PrometheusRecorder {

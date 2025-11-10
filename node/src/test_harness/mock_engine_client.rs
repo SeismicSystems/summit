@@ -746,6 +746,7 @@ mod tests {
             block1.clone(),
             Vec::new(),
             alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
+            0,
             1,
             None,
             [0u8; 32].into(),
@@ -826,6 +827,7 @@ mod tests {
                         Vec::new(),
                         U256::from(1_000_000_000_000_000_000u64),
                         1,
+                        round as u64,
                         None,
                         [0u8; 32].into(),
                         Vec::new(), // added_validators
@@ -923,6 +925,7 @@ mod tests {
             block.clone(),
             Vec::new(),
             alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
+            0,
             1,
             None,
             [0u8; 32].into(),
