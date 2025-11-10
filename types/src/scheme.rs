@@ -60,10 +60,7 @@ pub trait EpochSchemeProvider {
     type Scheme: Scheme;
 
     /// Returns a [Scheme] for the given [EpochTransition].
-    fn scheme_for_epoch(
-        &self,
-        transition: &EpochTransition,
-    ) -> Self::Scheme;
+    fn scheme_for_epoch(&self, transition: &EpochTransition) -> Self::Scheme;
 }
 
 impl<C: Signer, V: Variant> SchemeProvider for SummitSchemeProvider<C, V> {
@@ -75,23 +72,22 @@ impl<C: Signer, V: Variant> SchemeProvider for SummitSchemeProvider<C, V> {
     }
 }
 
-impl<C: Signer<PublicKey = crate::PublicKey>, V: Variant> EpochSchemeProvider for SummitSchemeProvider<C, V>
+impl<C: Signer<PublicKey = crate::PublicKey>, V: Variant> EpochSchemeProvider
+    for SummitSchemeProvider<C, V>
 {
     type Variant = V;
     type PublicKey = C::PublicKey;
     type Scheme = MultisigScheme<C, V>;
 
-    fn scheme_for_epoch(
-        &self,
-        transition: &EpochTransition,
-    ) -> Self::Scheme {
+    fn scheme_for_epoch(&self, transition: &EpochTransition) -> Self::Scheme {
         let participants: OrderedAssociated<Self::PublicKey, V::Public> = transition
             .validator_keys
             .iter()
             .map(|(pk, bls_pk)| {
                 let minpk_public: &<MinPk as Variant>::Public = bls_pk.as_ref();
                 let encoded = minpk_public.encode();
-                let variant_pk = V::Public::decode(&mut encoded.as_ref()).expect("failed to decode BLS public key");
+                let variant_pk = V::Public::decode(&mut encoded.as_ref())
+                    .expect("failed to decode BLS public key");
                 (pk.clone(), variant_pk)
             })
             .collect();
