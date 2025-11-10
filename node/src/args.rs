@@ -1,12 +1,14 @@
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, expect_key_store,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG,
+        ORCHESTRATOR_CHANNEL, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL,
+        expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
 };
 use clap::{Args, Parser, Subcommand};
-use commonware_cryptography::{Signer, bls12381};
+use commonware_cryptography::Signer;
 use commonware_p2p::{Manager, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
@@ -344,6 +346,23 @@ impl Command {
             )
             .unwrap();
 
+            // Register pending channel
+            let pending_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
+
+            // Register recovered channel
+            let recovered_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
+
+            // Register resolver channel
+            let resolver_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
+
+            // Register orchestrator channel
+            let orchestrator_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let orchestrator =
+                network.register(ORCHESTRATOR_CHANNEL, orchestrator_limit, MESSAGE_BACKLOG);
+
             // Register broadcast channel
             let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
             let broadcaster =
@@ -361,7 +380,14 @@ impl Command {
             let finalizer_mailbox = engine.finalizer_mailbox.clone();
 
             // Start engine
-            let engine = engine.start(broadcaster, backfiller);
+            let engine = engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcaster,
+                backfiller,
+            );
 
             // Start RPC server
             let key_store_path = flags.key_store_path.clone();
@@ -523,6 +549,23 @@ pub fn run_node_with_runtime(
         )
         .unwrap();
 
+        // Register pending channel
+        let pending_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
+
+        // Register recovered channel
+        let recovered_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
+
+        // Register resolver channel
+        let resolver_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
+
+        // Register orchestrator channel
+        let orchestrator_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let orchestrator =
+            network.register(ORCHESTRATOR_CHANNEL, orchestrator_limit, MESSAGE_BACKLOG);
+
         // Register broadcast channel
         let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
         let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
@@ -533,12 +576,18 @@ pub fn run_node_with_runtime(
         // Create network
         let p2p = network.start();
         // create engine
-        let engine: Engine<_, _, _, _> =
-            Engine::new(context.with_label("engine"), config).await;
+        let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
 
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Start engine
-        let engine = engine.start(broadcaster, backfiller);
+        let engine = engine.start(
+            pending,
+            recovered,
+            resolver,
+            orchestrator,
+            broadcaster,
+            backfiller,
+        );
 
         // Start prometheus endpoint
         #[cfg(feature = "prom")]

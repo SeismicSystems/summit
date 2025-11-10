@@ -155,63 +155,42 @@ impl DepositRequest {
     }
 
     pub fn as_message(&self, domain: Digest) -> Digest {
-        // Hash consensus_pubkey with 16-byte padding
-        let mut hasher = Sha256::default();
-        hasher.update(&self.consensus_pubkey.encode());
-        hasher.update(&[0u8; 16]);
-        let consensus_pubkey_hash = hasher.finalize();
+        let mut node_pubkey_bytes = [0u8; 32];
+        node_pubkey_bytes.copy_from_slice(&self.node_pubkey.encode());
 
-        // Hash node_pubkey with consensus_pubkey_hash to get pubkey_root
+        // Hash node_pubkey and consensus_pubkey together
+        let mut left = Vec::with_capacity(80);
+        left.extend_from_slice(&node_pubkey_bytes);
+        left.extend_from_slice(&self.consensus_pubkey.encode());
         let mut hasher = Sha256::default();
-        hasher.update(&self.node_pubkey.encode());
-        hasher.update(&consensus_pubkey_hash);
-        let pubkey_root = hasher.finalize();
+        hasher.update(&left);
+        let pubkeys_hash = hasher.finalize();
 
-        // Hash first 64 bytes of consensus_signature
+        // Hash pubkeys_hash with withdrawal_credentials
+        let mut left = Vec::with_capacity(64);
+        left.extend_from_slice(&pubkeys_hash);
+        left.extend_from_slice(&self.withdrawal_credentials);
         let mut hasher = Sha256::default();
-        hasher.update(&self.consensus_signature[0..64]);
-        let consensus_sig_part1 = hasher.finalize();
-
-        // Hash last 32 bytes of consensus_signature with 32-byte padding
-        let mut hasher = Sha256::default();
-        hasher.update(&self.consensus_signature[64..96]);
-        hasher.update(&[0u8; 32]);
-        let consensus_sig_part2 = hasher.finalize();
-
-        // Combine both parts to get bls_signature_hash
-        let mut hasher = Sha256::default();
-        hasher.update(&consensus_sig_part1);
-        hasher.update(&consensus_sig_part2);
-        let bls_signature_hash = hasher.finalize();
-
-        // Hash node_signature with bls_signature_hash to get signature_root
-        let mut hasher = Sha256::default();
-        hasher.update(&self.node_signature);
-        hasher.update(&bls_signature_hash);
-        let signature_root = hasher.finalize();
-
-        // Hash pubkey_root with withdrawal_credentials
-        let mut hasher = Sha256::default();
-        hasher.update(&pubkey_root);
-        hasher.update(&self.withdrawal_credentials);
+        hasher.update(&left);
         let left_hash = hasher.finalize();
 
-        // Hash amount with 24-byte padding and signature_root
+        // Hash amount with padding
+        let mut right = Vec::with_capacity(64);
+        right.extend_from_slice(&self.amount.to_le_bytes());
+        right.extend_from_slice(&[0; 56]);
         let mut hasher = Sha256::default();
-        hasher.update(&self.amount.to_le_bytes());
-        hasher.update(&[0u8; 24]);
-        hasher.update(&signature_root);
+        hasher.update(&right);
         let right_hash = hasher.finalize();
 
-        // Combine to get node hash
+        // Combine left and right
         let mut hasher = Sha256::default();
         hasher.update(&left_hash);
         hasher.update(&right_hash);
-        let node_hash = hasher.finalize();
+        let root_hash = hasher.finalize();
 
         // Final hash with domain
         let mut hasher = Sha256::default();
-        hasher.update(&node_hash);
+        hasher.update(&root_hash);
         hasher.update(&domain);
         hasher.finalize()
     }

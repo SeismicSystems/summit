@@ -144,11 +144,6 @@ pub fn read_ed_key_from_file(path: &std::path::Path) -> Result<PrivateKey> {
     Ok(pk)
 }
 
-pub fn read_ed_key_from_path(key_path: &str) -> Result<PrivateKey> {
-    let path = get_expanded_path(key_path)?;
-    read_ed_key_from_file(&path)
-}
-
 pub fn read_keys_from_keystore(keystore_path: &str) -> Result<(PrivateKey, BlsPrivateKey)> {
     let keystore_dir = get_expanded_path(keystore_path)?;
     let node_key = read_ed_key_from_file(&keystore_dir.join(NODE_KEY_FILENAME))?;

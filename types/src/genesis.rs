@@ -86,6 +86,7 @@ impl Genesis {
 
     pub fn ip_of(&self, target_public_key: &PublicKey) -> Option<SocketAddr> {
         for validator in &self.validators {
+            #[allow(clippy::collapsible_if)]
             if let Some(public_key_bytes) = from_hex_formatted(&validator.node_public_key) {
                 if let Ok(pub_key) = PublicKey::decode(&*public_key_bytes) {
                     if &pub_key == target_public_key {

@@ -9,10 +9,7 @@ use commonware_consensus::Reporter;
 use commonware_consensus::simplex::signing_scheme::{Scheme, bls12381_multisig};
 use commonware_consensus::simplex::types::Finalization;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
-use commonware_cryptography::{
-    Digestible, Hasher, PrivateKeyExt, Sha256, Signer, Verifier as _, bls12381,
-};
-use commonware_p2p::Manager;
+use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::{NZU64, NZUsize, hex};
@@ -34,7 +31,6 @@ use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::network_oracle::NetworkOracle;
-use summit_types::registry::Registry;
 use summit_types::scheme::EpochTransition;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
@@ -43,7 +39,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
-const REGISTRY_CHANGE_VIEW_DELTA: u64 = 5;
 
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -57,7 +52,6 @@ pub struct Finalizer<
     pending_height_notifys: BTreeMap<u64, Vec<oneshot::Sender<()>>>,
     context: ContextCell<R>,
     engine_client: C,
-    registry: Registry,
     db: FinalizerState<R, V>,
     state: ConsensusState,
     genesis_hash: [u8; 32],
@@ -122,7 +116,6 @@ impl<
                 oracle: cfg.oracle,
                 orchestrator_mailbox: cfg.orchestrator_mailbox,
                 pending_height_notifys: BTreeMap::new(),
-                registry: cfg.registry,
                 epoch_num_of_blocks: cfg.epoch_num_of_blocks,
                 db,
                 state,
@@ -323,8 +316,6 @@ impl<
 
         let mut epoch_change = false; // Store finalizes checkpoint to database
         if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
-            let view = block.view();
-
             // Increment epoch
             self.state.epoch += 1;
 
@@ -381,7 +372,7 @@ impl<
                 for key in self.state.removed_validators.iter() {
                     // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
                     let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                    if let Some(mut account) = self.state.validator_accounts.get_mut(&key_bytes) {
+                    if let Some(account) = self.state.validator_accounts.get_mut(&key_bytes) {
                         account.status = ValidatorStatus::Inactive;
                     }
                 }
@@ -483,13 +474,17 @@ impl<
                             let message = deposit_request.as_message(self.protocol_version_digest);
 
                             let mut node_signature_bytes = &deposit_request.node_signature[..];
-                            let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
+                            let Ok(node_signature) = Signature::read(&mut node_signature_bytes)
+                            else {
                                 info!(
                                     "Failed to parse node signature from deposit request: {deposit_request:?}"
                                 );
                                 continue; // Skip this deposit request
                             };
-                            if !deposit_request.node_pubkey.verify(None, &message, &node_signature) {
+                            if !deposit_request
+                                .node_pubkey
+                                .verify(None, &message, &node_signature)
+                            {
                                 #[cfg(debug_assertions)]
                                 {
                                     let gauge: Gauge = Gauge::default();
@@ -509,14 +504,21 @@ impl<
                                 continue; // Skip this deposit request
                             }
 
-                            let mut consensus_signature_bytes = &deposit_request.consensus_signature[..];
-                            let Ok(consensus_signature) = bls12381::Signature::read(&mut consensus_signature_bytes) else {
+                            let mut consensus_signature_bytes =
+                                &deposit_request.consensus_signature[..];
+                            let Ok(consensus_signature) =
+                                bls12381::Signature::read(&mut consensus_signature_bytes)
+                            else {
                                 info!(
                                     "Failed to parse consensus signature from deposit request: {deposit_request:?}"
                                 );
                                 continue; // Skip this deposit request
                             };
-                            if !deposit_request.consensus_pubkey.verify(None, &message, &consensus_signature) {
+                            if !deposit_request.consensus_pubkey.verify(
+                                None,
+                                &message,
+                                &consensus_signature,
+                            ) {
                                 #[cfg(debug_assertions)]
                                 {
                                     let gauge: Gauge = Gauge::default();
@@ -616,8 +618,10 @@ impl<
                             }
                             account.last_deposit_index = request.index;
                             validator_balance = account.balance;
-                            self.state
-                                .set_account(request.node_pubkey.as_ref().try_into().unwrap(), account);
+                            self.state.set_account(
+                                request.node_pubkey.as_ref().try_into().unwrap(),
+                                account,
+                            );
                             account_exists = true;
                         }
                     } else {
@@ -660,14 +664,18 @@ impl<
                             status: ValidatorStatus::Inactive,
                             last_deposit_index: request.index,
                         };
-                        self.state
-                            .set_account(request.node_pubkey.as_ref().try_into().unwrap(), new_account);
+                        self.state.set_account(
+                            request.node_pubkey.as_ref().try_into().unwrap(),
+                            new_account,
+                        );
                         validator_balance = request.amount;
                     }
                     if !account_exists && validator_balance >= self.validator_minimum_stake {
                         // If the node shuts down, before the account changes are committed,
                         // then everything should work normally, because the registry is not persisted to disk
-                        self.state.added_validators.push(request.node_pubkey.clone());
+                        self.state
+                            .added_validators
+                            .push(request.node_pubkey.clone());
                     }
                     #[cfg(debug_assertions)]
                     {

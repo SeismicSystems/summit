@@ -92,23 +92,31 @@ pub async fn register_validators(
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
+        (Sender<PublicKey>, Receiver<PublicKey>),
+        (Sender<PublicKey>, Receiver<PublicKey>),
     ),
 > {
     let mut registrations = HashMap::new();
     for validator in validators.iter() {
         let (pending_sender, pending_receiver) =
             oracle.register(validator.clone(), 0).await.unwrap();
-        let (resolver_sender, resolver_receiver) =
+        let (recovered_sender, recovered_receiver) =
             oracle.register(validator.clone(), 1).await.unwrap();
-        let (broadcast_sender, broadcast_receiver) =
+        let (resolver_sender, resolver_receiver) =
             oracle.register(validator.clone(), 2).await.unwrap();
-        let (backfill_sender, backfill_receiver) =
+        let (orchestrator_sender, orchestrator_receiver) =
             oracle.register(validator.clone(), 3).await.unwrap();
+        let (broadcast_sender, broadcast_receiver) =
+            oracle.register(validator.clone(), 4).await.unwrap();
+        let (backfill_sender, backfill_receiver) =
+            oracle.register(validator.clone(), 5).await.unwrap();
         registrations.insert(
             validator.clone(),
             (
                 (pending_sender, pending_receiver),
+                (recovered_sender, recovered_receiver),
                 (resolver_sender, resolver_receiver),
+                (orchestrator_sender, orchestrator_receiver),
                 (broadcast_sender, broadcast_receiver),
                 (backfill_sender, backfill_receiver),
             ),
@@ -208,11 +216,18 @@ pub fn run_until_height(
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics

@@ -4,7 +4,6 @@ use commonware_runtime::buffer::PoolRef;
 use std::marker::PhantomData;
 use summit_orchestrator::Mailbox as OrchestratorMailbox;
 use summit_types::network_oracle::NetworkOracle;
-use summit_types::registry::Registry;
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 
@@ -12,7 +11,6 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, S: Sign
     pub mailbox_size: usize,
     pub db_prefix: String,
     pub engine_client: C,
-    pub registry: Registry,
     pub oracle: O,
     pub orchestrator_mailbox: OrchestratorMailbox<MinPk, S::PublicKey>,
     pub epoch_num_of_blocks: u64,

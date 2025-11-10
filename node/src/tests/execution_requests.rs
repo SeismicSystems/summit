@@ -125,11 +125,18 @@ fn test_deposit_request_single() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
         // Poll metrics
         let mut height_reached = HashSet::new();
@@ -322,11 +329,18 @@ fn test_deposit_request_top_up() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -530,11 +544,18 @@ fn test_deposit_and_withdrawal_request_single() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -758,11 +779,18 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -979,11 +1007,18 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -1213,11 +1248,18 @@ fn test_deposit_and_withdrawal_request_multiple() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -1436,11 +1478,18 @@ fn test_deposit_request_invalid_signature() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
         // Poll metrics
         let mut processed_requests = HashSet::new();
@@ -1466,7 +1515,7 @@ fn test_deposit_request_invalid_signature() {
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("deposit_request_invalid_sig") {
+                if metric.ends_with("deposit_request_invalid_node_sig") {
                     let value = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
                     if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {

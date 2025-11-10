@@ -108,11 +108,18 @@ fn test_checkpoint_created() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
         // Poll metrics
         let mut state_stored = HashSet::new();
@@ -276,11 +283,18 @@ fn test_previous_header_hash_matches() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
         // Poll metrics
         let mut first_header_stored = HashMap::new();
@@ -439,10 +453,18 @@ fn test_single_engine_with_checkpoint() {
         let engine = Engine::new(context.with_label(&uid), config).await;
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Get networking
-        let (pending, resolver, broadcast, backfill) = registrations.remove(&public_key).unwrap();
+        let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            registrations.remove(&public_key).unwrap();
 
         // Start engine
-        engine.start(pending, resolver, broadcast, backfill);
+        engine.start(
+            pending,
+            recovered,
+            resolver,
+            orchestrator,
+            broadcast,
+            backfill,
+        );
 
         // Wait a bit for initialization
         context.sleep(Duration::from_millis(500)).await;
@@ -562,11 +584,18 @@ fn test_node_joins_later_with_checkpoint() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Wait for the validators to checkpoint
@@ -626,11 +655,18 @@ fn test_node_joins_later_with_checkpoint() {
         let engine = Engine::new(context.with_label(&uid), config).await;
 
         // Get networking from late registrations
-        let (pending, resolver, broadcast, backfill) =
+        let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
             late_registrations.into_iter().next().unwrap().1;
 
         // Start engine
-        engine.start(pending, resolver, broadcast, backfill);
+        engine.start(
+            pending,
+            recovered,
+            resolver,
+            orchestrator,
+            broadcast,
+            backfill,
+        );
 
         // Poll metrics
         let stop_height = 3 * BLOCKS_PER_EPOCH;
@@ -793,11 +829,18 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Wait for the validators to checkpoint
@@ -857,11 +900,18 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         let engine = Engine::new(context.with_label(&uid), config).await;
 
         // Get networking from late registrations
-        let (pending, resolver, broadcast, backfill) =
+        let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
             late_registrations.into_iter().next().unwrap().1;
 
         // Start engine
-        engine.start(pending, resolver, broadcast, backfill);
+        engine.start(
+            pending,
+            recovered,
+            resolver,
+            orchestrator,
+            broadcast,
+            backfill,
+        );
 
         // Poll metrics
         let stop_height = 3 * BLOCKS_PER_EPOCH;

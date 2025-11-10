@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 use summit_finalizer::FinalizerMailbox;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::histogram;
