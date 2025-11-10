@@ -471,7 +471,6 @@ impl<
             self.orchestrator_mailbox
                 .report(Message::Exit(self.state.epoch - 1))
                 .await;
-            epoch_change = false;
         }
     }
 

@@ -179,23 +179,29 @@ mod tests {
         use ssz::{Decode, Encode};
 
         // Create sample data for the populated state
+        let consensus_key1 = bls12381::PrivateKey::from_seed(100);
         let deposit1 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
             ),
+            consensus_pubkey: consensus_key1.public_key(),
             withdrawal_credentials: [1u8; 32],
             amount: 32_000_000_000, // 32 ETH in gwei
-            signature: [42u8; 64],
+            node_signature: [42u8; 64],
+            consensus_signature: [1u8; 96],
             index: 100,
         };
 
+        let consensus_key2 = bls12381::PrivateKey::from_seed(101);
         let deposit2 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
             ),
+            consensus_pubkey: consensus_key2.public_key(),
             withdrawal_credentials: [2u8; 32],
             amount: 16_000_000_000, // 16 ETH in gwei
-            signature: [43u8; 64],
+            node_signature: [43u8; 64],
+            consensus_signature: [2u8; 96],
             index: 101,
         };
 
@@ -316,23 +322,29 @@ mod tests {
         use commonware_codec::{EncodeSize, ReadExt, Write};
 
         // Create sample data for the populated state
+        let consensus_key1 = bls12381::PrivateKey::from_seed(100);
         let deposit1 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
             ),
+            consensus_pubkey: consensus_key1.public_key(),
             withdrawal_credentials: [1u8; 32],
             amount: 32_000_000_000, // 32 ETH in gwei
-            signature: [42u8; 64],
+            node_signature: [42u8; 64],
+            consensus_signature: [1u8; 96],
             index: 100,
         };
 
+        let consensus_key2 = bls12381::PrivateKey::from_seed(101);
         let deposit2 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
             ),
+            consensus_pubkey: consensus_key2.public_key(),
             withdrawal_credentials: [2u8; 32],
             amount: 16_000_000_000, // 16 ETH in gwei
-            signature: [43u8; 64],
+            node_signature: [43u8; 64],
+            consensus_signature: [2u8; 96],
             index: 101,
         };
 
@@ -538,13 +550,16 @@ mod tests {
         use alloy_primitives::Address;
 
         // Create sample data for the populated state
+        let consensus_key1 = bls12381::PrivateKey::from_seed(100);
         let deposit1 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
             ),
+            consensus_pubkey: consensus_key1.public_key(),
             withdrawal_credentials: [1u8; 32],
             amount: 32_000_000_000, // 32 ETH in gwei
-            signature: [42u8; 64],
+            node_signature: [42u8; 64],
+            consensus_signature: [1u8; 96],
             index: 100,
         };
 

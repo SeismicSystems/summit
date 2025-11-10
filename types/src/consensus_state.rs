@@ -342,11 +342,14 @@ mod tests {
             withdrawal_credentials[12 + i] = index as u8;
         }
 
+        let consensus_key = bls12381::PrivateKey::from_seed(index);
         DepositRequest {
-            pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
+            node_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
+            consensus_pubkey: consensus_key.public_key(),
             withdrawal_credentials,
             amount,
-            signature: [index as u8; 64],
+            node_signature: [index as u8; 64],
+            consensus_signature: [index as u8; 96],
             index,
         }
     }
