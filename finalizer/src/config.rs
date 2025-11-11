@@ -1,5 +1,4 @@
-use commonware_cryptography::Signer;
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_runtime::buffer::PoolRef;
 use std::marker::PhantomData;
 use summit_orchestrator::Mailbox as OrchestratorMailbox;
@@ -7,12 +6,12 @@ use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 
-pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, S: Signer, V: Variant> {
+pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Variant> {
     pub mailbox_size: usize,
     pub db_prefix: String,
     pub engine_client: C,
     pub oracle: O,
-    pub orchestrator_mailbox: OrchestratorMailbox<MinPk, S::PublicKey>,
+    pub orchestrator_mailbox: OrchestratorMailbox,
     pub epoch_num_of_blocks: u64,
     pub validator_max_withdrawals_per_block: usize,
     pub validator_minimum_stake: u64, // in gwei

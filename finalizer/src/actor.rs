@@ -8,7 +8,7 @@ use commonware_codec::{DecodeExt as _, Encode, ReadExt as _};
 use commonware_consensus::Reporter;
 use commonware_consensus::simplex::signing_scheme::{Scheme, bls12381_multisig};
 use commonware_consensus::simplex::types::Finalization;
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::TwoCap;
@@ -62,7 +62,7 @@ pub struct Finalizer<
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
     oracle: O,
-    orchestrator_mailbox: summit_orchestrator::Mailbox<MinPk, S::PublicKey>,
+    orchestrator_mailbox: summit_orchestrator::Mailbox,
     node_public_key: PublicKey,
     validator_exit: bool,
     cancellation_token: CancellationToken,
@@ -81,7 +81,7 @@ impl<
 {
     pub async fn new(
         context: R,
-        cfg: FinalizerConfig<C, O, S, V>,
+        cfg: FinalizerConfig<C, O, V>,
     ) -> (Self, FinalizerMailbox<Z, Block<S, V>>) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
         let state_cfg = StateConfig {
