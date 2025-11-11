@@ -195,6 +195,11 @@ impl<
                         FinalizerMessage::GetAuxData { height, response } => {
                             self.handle_aux_data_mailbox(height, response).await;
                         },
+                        FinalizerMessage::GetEpochGenesisHash { epoch, response } => {
+                            // TODO(matthias): verify that this can never happen
+                            assert_eq!(epoch, self.state.epoch);
+                            let _ = response.send(self.state.epoch_genesis_hash);
+                        },
                         FinalizerMessage::QueryState { request, response } => {
                             self.handle_consensus_state_query(request, response).await;
                         },
@@ -334,6 +339,8 @@ impl<
         if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
             // Increment epoch
             self.state.epoch += 1;
+            // Set the epoch genesis hash for the next epoch
+            self.state.epoch_genesis_hash = self.state.forkchoice.head_block_hash.into();
 
             if let Some(finalization) = finalization {
                 // The finalized signatures should always be included on the last block
