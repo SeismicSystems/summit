@@ -8,19 +8,20 @@ use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::Write;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
+use commonware_p2p::{Blocker, Manager};
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
     deterministic::{self, Runner},
 };
 use commonware_utils::from_hex_formatted;
+use commonware_utils::set::Ordered;
 use governor::Quota;
+use std::future::Future;
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
 };
-use commonware_p2p::{Blocker, Manager};
-use commonware_utils::set::Ordered;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
@@ -138,7 +139,7 @@ pub fn run_until_height(
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
-                tracked_peer_sets: Some(n as usize * 2),
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -163,7 +164,8 @@ pub fn run_until_height(
         validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         key_stores.sort_by(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
 
-        let node_public_keys: Vec<PublicKey> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let node_public_keys: Vec<PublicKey> =
+            validators.iter().map(|(pk, _)| pk.clone()).collect();
         let mut registrations = register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
@@ -199,7 +201,7 @@ pub fn run_until_height(
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -330,7 +332,6 @@ pub fn get_initial_state(
     })
 }
 
-
 /// Parse a substring from a metric name using XML-like tags
 ///
 /// # Arguments
@@ -435,10 +436,14 @@ pub fn create_deposit_request(
 
     // Generate both signatures
     let node_signature_bytes = ed25519_private_key.sign(None, &message);
-    deposit.node_signature.copy_from_slice(&node_signature_bytes);
+    deposit
+        .node_signature
+        .copy_from_slice(&node_signature_bytes);
 
     let consensus_signature_bytes = bls_private_key.sign(None, &message);
-    deposit.consensus_signature.copy_from_slice(&consensus_signature_bytes);
+    deposit
+        .consensus_signature
+        .copy_from_slice(&consensus_signature_bytes);
 
     (deposit, ed25519_private_key, bls_private_key)
 }
@@ -496,7 +501,10 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 ///
 /// # Returns
 /// * `EngineConfig<C>` - A fully configured engine config with sensible defaults for testing
-pub fn get_default_engine_config<C: EngineClient, O: NetworkOracle<PublicKey>>(
+pub fn get_default_engine_config<
+    C: EngineClient,
+    O: NetworkOracle<PublicKey> + Blocker<PublicKey = PublicKey> + Manager<PublicKey = PublicKey>,
+>(
     engine_client: C,
     oracle: O,
     partition_prefix: String,
@@ -533,12 +541,75 @@ pub fn get_default_engine_config<C: EngineClient, O: NetworkOracle<PublicKey>>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct SimulatedOracle {
+    oracle: Oracle<PublicKey>,
+}
+
+impl SimulatedOracle {
+    pub fn new(oracle: Oracle<PublicKey>) -> Self {
+        Self { oracle }
+    }
+}
+
+impl NetworkOracle<PublicKey> for SimulatedOracle {
+    async fn register(&mut self, index: u64, peers: Vec<PublicKey>) {
+        self.oracle.update(index, Ordered::from(peers)).await;
+    }
+}
+
+impl Blocker for SimulatedOracle {
+    type PublicKey = PublicKey;
+
+    async fn block(&mut self, _public_key: Self::PublicKey) {
+        // Simulated oracle doesn't support blocking individual peers
+        // This is only used in production for misbehaving peers
+    }
+}
+
+impl Manager for SimulatedOracle {
+    type PublicKey = PublicKey;
+    type Peers = Ordered<PublicKey>;
+
+    fn update(&mut self, id: u64, peers: Self::Peers) -> impl Future<Output = ()> + Send {
+        self.oracle.update(id, peers)
+    }
+
+    async fn peer_set(&mut self, id: u64) -> Option<Ordered<Self::PublicKey>> {
+        self.oracle.peer_set(id).await
+    }
+
+    async fn subscribe(
+        &mut self,
+    ) -> futures::channel::mpsc::UnboundedReceiver<(
+        u64,
+        Ordered<Self::PublicKey>,
+        Ordered<Self::PublicKey>,
+    )> {
+        self.oracle.subscribe().await
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct DummyOracle {}
+pub struct DummyOracle {
+    sender: std::sync::Arc<
+        std::sync::Mutex<
+            Option<
+                futures::channel::mpsc::UnboundedSender<(
+                    u64,
+                    Ordered<PublicKey>,
+                    Ordered<PublicKey>,
+                )>,
+            >,
+        >,
+    >,
+}
 
 impl Default for DummyOracle {
     fn default() -> Self {
-        Self {}
+        Self {
+            sender: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
     }
 }
 
@@ -551,12 +622,10 @@ impl Manager for DummyOracle {
     type Peers = Ordered<PublicKey>;
 
     fn update(&mut self, _id: u64, _peers: Self::Peers) -> impl Future<Output = ()> + Send {
-        //self.oracle.update(id, peers)
         async {}
     }
 
     async fn peer_set(&mut self, _id: u64) -> Option<Ordered<Self::PublicKey>> {
-        //self.oracle.peer_set(id).await
         todo!()
     }
 
@@ -567,8 +636,9 @@ impl Manager for DummyOracle {
         Ordered<Self::PublicKey>,
         Ordered<Self::PublicKey>,
     )> {
-        //self.oracle.subscribe().await
-        let (_sender, receiver) = futures::channel::mpsc::unbounded();
+        let (sender, receiver) = futures::channel::mpsc::unbounded();
+        // Store sender to keep channel alive
+        *self.sender.lock().unwrap() = Some(sender);
         receiver
     }
 }

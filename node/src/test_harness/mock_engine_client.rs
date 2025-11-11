@@ -7,11 +7,11 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState, PayloadId, PayloadStatus,
     PayloadStatusEnum,
 };
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::{Signer, ed25519};
 use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use commonware_cryptography::{ed25519, Signer};
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use summit_types::{Block, EngineClient};
 
 #[derive(Clone)]

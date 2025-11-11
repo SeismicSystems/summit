@@ -144,6 +144,22 @@ impl<
         let mut signal = self.context.stopped().fuse();
         let cancellation_token = self.cancellation_token.clone();
 
+        // Initialize the current epoch with the validator set
+        // This ensures the orchestrator can start consensus immediately
+        let active_validators = self.state.get_active_validators();
+        let network_keys: Vec<_> = active_validators
+            .iter()
+            .map(|(node_key, _)| node_key.clone())
+            .collect();
+        self.oracle.register(self.state.epoch, network_keys).await;
+
+        self.orchestrator_mailbox
+            .report(Message::Enter(EpochTransition {
+                epoch: self.state.epoch,
+                validator_keys: active_validators,
+            }))
+            .await;
+
         loop {
             if self.validator_exit {
                 // If the validator was removed from the committee, trigger coordinated shutdown

@@ -59,10 +59,14 @@ fn test_node_joins_later_no_checkpoint() {
 
         // Separate initial validators from late joiner
         let initial_validators = &validators[..validators.len() - 1];
-        let initial_node_public_keys: Vec<_> = initial_validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let initial_node_public_keys: Vec<_> = initial_validators
+            .iter()
+            .map(|(pk, _)| pk.clone())
+            .collect();
 
         // Register and link only initial validators
-        let mut registrations = common::register_validators(&oracle, &initial_node_public_keys).await;
+        let mut registrations =
+            common::register_validators(&oracle, &initial_node_public_keys).await;
         common::link_validators(&mut oracle, &initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =
@@ -289,10 +293,14 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
 
         // Separate initial validators from late joiner
         let initial_validators = &validators[..validators.len() - 1];
-        let initial_node_public_keys: Vec<_> = initial_validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let initial_node_public_keys: Vec<_> = initial_validators
+            .iter()
+            .map(|(pk, _)| pk.clone())
+            .collect();
 
         // Register and link only initial validators
-        let mut registrations = common::register_validators(&oracle, &initial_node_public_keys).await;
+        let mut registrations =
+            common::register_validators(&oracle, &initial_node_public_keys).await;
         common::link_validators(&mut oracle, &initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =

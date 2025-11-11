@@ -43,6 +43,7 @@ pub fn init<E, C, B, S, R, P>(
 ) -> (
     mpsc::Receiver<handler::Message<B>>,
     p2p::Mailbox<handler::Request<B>>,
+    commonware_runtime::Handle<()>,
 )
 where
     E: Rng + Spawner + Clock + GClock + Metrics,
@@ -67,6 +68,6 @@ where
             priority_responses: config.priority_responses,
         },
     );
-    resolver_engine.start(backfill);
-    (receiver, resolver)
+    let handle = resolver_engine.start(backfill);
+    (receiver, resolver, handle)
 }

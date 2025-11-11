@@ -322,7 +322,7 @@ where
             priority_requests: false,
             priority_responses: false,
         };
-        let (resolver_rx, resolver) =
+        let (resolver_rx, resolver, resolver_handle) =
             summit_syncer::resolver::p2p::init(&self.context, resolver_config, backfill_network);
 
         let finalizer_handle = self.finalizer.start();
@@ -348,6 +348,7 @@ where
             finalizer_handle,
             syncer_handle,
             orchestrator_handle,
+            resolver_handle,
         ])
         .fuse();
         let cancellation_fut = self.cancellation_token.cancelled().fuse();
