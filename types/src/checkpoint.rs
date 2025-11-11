@@ -156,6 +156,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -259,6 +260,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -292,6 +294,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -402,6 +405,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -440,6 +444,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -484,6 +489,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&original_state);
@@ -524,6 +530,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let mut checkpoint = Checkpoint::new(&original_state);
@@ -605,6 +612,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&original_state);
