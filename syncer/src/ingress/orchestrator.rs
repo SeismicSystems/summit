@@ -1,4 +1,6 @@
 use crate::Block;
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::types::Finalization;
 use futures::{
     SinkExt,
     channel::{mpsc, oneshot},
@@ -9,13 +11,19 @@ use tracing::error;
 ///
 /// We break this into a separate enum to establish a separate priority for
 /// finalizer messages over consensus messages.
-pub enum Orchestration<B: Block> {
+pub enum Orchestration<S: Scheme, B: Block> {
     /// A request to get the next finalized block.
     Get {
         /// The height of the block to get.
         height: u64,
         /// A channel to send the block, if found.
         result: oneshot::Sender<Option<B>>,
+    },
+    /// A request to get the next finalized block together with the finalization.
+    GetWithFinalization {
+        height: u64,
+        #[allow(clippy::type_complexity)]
+        result: oneshot::Sender<(Option<B>, Option<Finalization<S, B::Commitment>>)>,
     },
     /// A notification that a block has been processed by the application.
     Processed {
@@ -33,13 +41,13 @@ pub enum Orchestration<B: Block> {
 
 /// A handle for the finalizer to communicate with the main actor loop.
 #[derive(Clone)]
-pub struct Orchestrator<B: Block> {
-    sender: mpsc::Sender<Orchestration<B>>,
+pub struct Orchestrator<S: Scheme, B: Block> {
+    sender: mpsc::Sender<Orchestration<S, B>>,
 }
 
-impl<B: Block> Orchestrator<B> {
+impl<S: Scheme, B: Block> Orchestrator<S, B> {
     /// Creates a new orchestrator.
-    pub fn new(sender: mpsc::Sender<Orchestration<B>>) -> Self {
+    pub fn new(sender: mpsc::Sender<Orchestration<S, B>>) -> Self {
         Self { sender }
     }
 
@@ -59,6 +67,27 @@ impl<B: Block> Orchestrator<B> {
             return None;
         }
         receiver.await.unwrap_or(None)
+    }
+
+    /// Gets the finalized block at the given height together with the finalization.
+    pub async fn get_with_finalization(
+        &mut self,
+        height: u64,
+    ) -> (Option<B>, Option<Finalization<S, B::Commitment>>) {
+        let (response, receiver) = oneshot::channel();
+        if self
+            .sender
+            .send(Orchestration::GetWithFinalization {
+                height,
+                result: response,
+            })
+            .await
+            .is_err()
+        {
+            error!("failed to send get_with_finalization message to actor: receiver dropped");
+            return (None, None);
+        }
+        receiver.await.unwrap_or((None, None))
     }
 
     /// Notifies the actor that a block has been processed.

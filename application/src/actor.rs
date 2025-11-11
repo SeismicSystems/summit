@@ -279,7 +279,7 @@ impl<
                     .map(|x| x.context("")),
             )
         };
-        let parent = parent_request.await.unwrap();
+        let parent = parent_request.await.expect("sender dropped");
 
         #[cfg(feature = "prom")]
         {

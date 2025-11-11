@@ -83,9 +83,10 @@ pub enum Update<B: Block, S: Scheme> {
     /// a block as delivered until the application explicitly acknowledges the update.
     /// If the sender is dropped before acknowledgement, marshal will exit (assuming
     /// the application is shutting down).
-    Block(B, oneshot::Sender<()>),
-    /// A new finalized block with finalization
-    BlockWithFinalization(B, Finalization<S, B::Digest>, oneshot::Sender<()>),
+    Block(
+        (B, Option<Finalization<S, B::Commitment>>),
+        oneshot::Sender<()>,
+    ),
 }
 
 #[cfg(test)]

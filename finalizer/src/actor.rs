@@ -176,11 +176,8 @@ impl<
                                 Update::Tip(_height, _digest) => {
                                     // I don't think we need this
                                 }
-                                Update::Block(block, ack_tx) => {
-                                    self.handle_execution_block(ack_tx, block, None, &mut last_committed_timestamp).await;
-                                }
-                                Update::BlockWithFinalization(block, finalization, ack_tx) => {
-                                    self.handle_execution_block(ack_tx, block, Some(finalization), &mut last_committed_timestamp).await;
+                                Update::Block((block, finalization), ack_tx) => {
+                                    self.handle_execution_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
                                 }
                             }
                         },

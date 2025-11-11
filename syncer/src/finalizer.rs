@@ -4,8 +4,8 @@ use commonware_consensus::{Block, Reporter};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use futures::channel::oneshot;
 use futures::{StreamExt, channel::mpsc};
+use summit_types::utils::is_last_block_of_epoch;
 use tracing::{debug, error};
-
 // The key used to store the last indexed height in the metadata store.
 
 /// Requests the finalized blocks (in order) from the orchestrator, sends them to the application,
@@ -25,13 +25,16 @@ pub struct Finalizer<
     application: Z,
 
     // Orchestrator that stores the finalized blocks.
-    orchestrator: Orchestrator<B>,
+    orchestrator: Orchestrator<S, B>,
 
     // Notifier to indicate that the finalized blocks have been updated and should be re-queried.
     notifier_rx: mpsc::Receiver<()>,
 
     // The lowest height from which to begin syncing
     sync_height: u64,
+
+    // Number of blocks per epoch
+    epoch_length: u64,
 }
 
 impl<
@@ -45,9 +48,10 @@ impl<
     pub async fn new(
         context: R,
         application: Z,
-        orchestrator: Orchestrator<B>,
+        orchestrator: Orchestrator<S, B>,
         notifier_rx: mpsc::Receiver<()>,
         sync_height: u64,
+        epoch_length: u64,
     ) -> Self {
         Self {
             context: ContextCell::new(context),
@@ -55,6 +59,7 @@ impl<
             orchestrator,
             notifier_rx,
             sync_height,
+            epoch_length,
         }
     }
 
@@ -76,8 +81,14 @@ impl<
             // The next height to process is the next height after the last processed height.
             let height = latest + 1;
 
+            let (block, finalized) = if is_last_block_of_epoch(height, self.epoch_length) {
+                self.orchestrator.get_with_finalization(height).await
+            } else {
+                (self.orchestrator.get(height).await, None)
+            };
+
             // Attempt to get the next block from the orchestrator.
-            if let Some(block) = self.orchestrator.get(height).await {
+            if let Some(block) = block {
                 // Sanity-check that the block height is the one we expect.
                 assert!(block.height() == height, "block height mismatch");
 
@@ -89,7 +100,9 @@ impl<
 
                 let commitment = block.commitment();
                 let (ack_tx, ack_rx) = oneshot::channel();
-                self.application.report(Update::Block(block, ack_tx)).await;
+                self.application
+                    .report(Update::Block((block, finalized), ack_tx))
+                    .await;
                 if let Err(e) = ack_rx.await {
                     error!(?e, height, "application did not acknowledge block");
                     return;
