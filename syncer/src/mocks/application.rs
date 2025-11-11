@@ -45,11 +45,7 @@ impl<B: Block, S: Scheme> Reporter for Application<B, S> {
             Update::Tip(height, commitment) => {
                 *self.tip.lock().unwrap() = Some((height, commitment));
             }
-            Update::Block(block, ack_tx) => {
-                self.blocks.lock().unwrap().insert(block.height(), block);
-                let _ = ack_tx.send(());
-            }
-            Update::BlockWithFinalization(block, _finalization, ack_tx) => {
+            Update::Block((block, _), ack_tx) => {
                 self.blocks.lock().unwrap().insert(block.height(), block);
                 let _ = ack_tx.send(());
             }

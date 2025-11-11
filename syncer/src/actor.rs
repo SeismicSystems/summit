@@ -316,6 +316,7 @@ impl<
             orchestrator,
             notifier_rx,
             sync_height,
+            self.epoch_length,
         )
         .await;
         finalizer.start();
@@ -501,6 +502,11 @@ impl<
                             // Check if in blocks
                             let block = self.get_finalized_block(height).await;
                             result.send(block).unwrap_or_else(|_| warn!(?height, "Failed to send block to orchestrator"));
+                        }
+                        Orchestration::GetWithFinalization { height, result } => {
+                            let block = self.get_finalized_block(height).await;
+                            let finalization = self.get_finalization_by_height(height).await;
+                            result.send((block, finalization)).unwrap_or_else(|_| warn!(?height, "Failed to send block and finalization to orchestrator"));
                         }
                         Orchestration::Processed { height, digest } => {
                             // Update metrics

@@ -388,12 +388,12 @@ impl<C: Signer, V: Variant> EncodeSize for Finalized<C, V> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BlockEnvelope<C: Signer, V: Variant> {
+pub struct BlockWithFinalization<C: Signer, V: Variant> {
     pub block: Block<C, V>,
     pub finalized: Option<Finalization<Scheme<C::PublicKey, V>, Digest>>,
 }
 
-impl<C: Signer, V: Variant> Digestible for BlockEnvelope<C, V> {
+impl<C: Signer, V: Variant> Digestible for BlockWithFinalization<C, V> {
     type Digest = Digest;
 
     fn digest(&self) -> Digest {
@@ -401,7 +401,7 @@ impl<C: Signer, V: Variant> Digestible for BlockEnvelope<C, V> {
     }
 }
 
-impl<C: Signer, V: Variant> Committable for BlockEnvelope<C, V> {
+impl<C: Signer, V: Variant> Committable for BlockWithFinalization<C, V> {
     type Commitment = Digest;
 
     fn commitment(&self) -> Digest {
@@ -409,7 +409,7 @@ impl<C: Signer, V: Variant> Committable for BlockEnvelope<C, V> {
     }
 }
 
-impl<C: Signer, V: Variant> ConsensusBlock for BlockEnvelope<C, V> {
+impl<C: Signer, V: Variant> ConsensusBlock for BlockWithFinalization<C, V> {
     fn height(&self) -> u64 {
         self.block.header.height
     }
@@ -419,7 +419,7 @@ impl<C: Signer, V: Variant> ConsensusBlock for BlockEnvelope<C, V> {
     }
 }
 
-impl<C: Signer, V: Variant> Read for BlockEnvelope<C, V> {
+impl<C: Signer, V: Variant> Read for BlockWithFinalization<C, V> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
@@ -437,7 +437,7 @@ impl<C: Signer, V: Variant> Read for BlockEnvelope<C, V> {
     }
 }
 
-impl<C: Signer, V: Variant> Write for BlockEnvelope<C, V> {
+impl<C: Signer, V: Variant> Write for BlockWithFinalization<C, V> {
     fn write(&self, buf: &mut impl BufMut) {
         self.block.write(buf);
         if let Some(ref finalized) = self.finalized {
@@ -449,7 +449,7 @@ impl<C: Signer, V: Variant> Write for BlockEnvelope<C, V> {
     }
 }
 
-impl<C: Signer, V: Variant> EncodeSize for BlockEnvelope<C, V> {
+impl<C: Signer, V: Variant> EncodeSize for BlockWithFinalization<C, V> {
     fn encode_size(&self) -> usize {
         let mut size = self.block.encode_size() + 1; // +1 for the has_finalized flag
         if let Some(ref finalized) = self.finalized {
@@ -627,14 +627,15 @@ mod test {
     #[test]
     fn test_block_envelope_without_finalization() {
         let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
-        let envelope = BlockEnvelope {
+        let envelope = BlockWithFinalization {
             block: block.clone(),
             finalized: None,
         };
 
         // Test encoding and decoding
         let encoded = envelope.encode();
-        let decoded = BlockEnvelope::<ed25519::PrivateKey, MinPk>::decode(encoded.clone()).unwrap();
+        let decoded =
+            BlockWithFinalization::<ed25519::PrivateKey, MinPk>::decode(encoded.clone()).unwrap();
 
         // Verify round-trip: encode the decoded value and compare bytes
         let re_encoded = decoded.encode();
@@ -655,7 +656,7 @@ mod test {
     #[test]
     fn test_block_envelope_encode_size_without_finalization() {
         let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
-        let envelope = BlockEnvelope {
+        let envelope = BlockWithFinalization {
             block: block.clone(),
             finalized: None,
         };
@@ -671,7 +672,7 @@ mod test {
     #[test]
     fn test_block_envelope_digestible() {
         let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
-        let envelope = BlockEnvelope {
+        let envelope = BlockWithFinalization {
             block: block.clone(),
             finalized: None,
         };
@@ -684,7 +685,7 @@ mod test {
     #[test]
     fn test_block_envelope_consensus_block() {
         let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
-        let envelope = BlockEnvelope {
+        let envelope = BlockWithFinalization {
             block: block.clone(),
             finalized: None,
         };
