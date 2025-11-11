@@ -12,10 +12,7 @@ use commonware_consensus::{
     types::Epoch,
     utils::last_block_in_epoch,
 };
-use commonware_cryptography::{
-    Signer,
-    bls12381::primitives::variant::Variant,
-};
+use commonware_cryptography::{Signer, bls12381::primitives::variant::Variant};
 use commonware_macros::select;
 use commonware_p2p::{
     Blocker, Receiver, Recipients, Sender,

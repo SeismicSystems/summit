@@ -7,7 +7,6 @@ edition.workspace = true
 summit-types.workspace = true
 summit-syncer.workspace = true
 summit-finalizer.workspace = true
-bytes.workspace = true
 
 anyhow.workspace = true
 tracing.workspace = true
@@ -18,14 +17,9 @@ commonware-macros.workspace = true
 commonware-utils.workspace = true
 
 futures.workspace = true
-alloy-provider.workspace = true
-alloy-rpc-types-engine.workspace = true
-alloy-eips.workspace = true
-alloy-primitives.workspace = true
 governor.workspace = true
 rand.workspace = true
 tokio-util.workspace = true
-alloy-transport-ipc.workspace = true
 
 # For metrics - activate with `prom` feature
 metrics = { version = "0.24.0", optional = true }

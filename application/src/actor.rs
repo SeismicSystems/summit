@@ -30,7 +30,7 @@ use tracing::{error, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::histogram;
-use summit_syncer::ingress::mailbox::{Identifier, Mailbox as SyncerMailbox};
+use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
 use summit_types::{Block, Digest, EngineClient};
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
@@ -265,9 +265,17 @@ impl<
         let parent_request = if parent.1 == self.genesis_hash.into() {
             Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
         } else {
+            let parent_round = if parent.0 == 0 {
+                // Parent view is 0, which means that this is the first block of the epoch
+                // TODO(matthias): verify that the parent view of the first block is always 0 (nullify)
+                None
+            } else {
+                Some(Round::new(round.epoch(), parent.0))
+            };
             Either::Right(
                 syncer
-                    .get_block(Identifier::Commitment(parent.1))
+                    .subscribe(parent_round, parent.1)
+                    .await
                     .map(|x| x.context("")),
             )
         };

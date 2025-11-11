@@ -5600,13 +5600,7 @@ dependencies = [
 name = "summit-application"
 version = "0.0.0"
 dependencies = [
- "alloy-eips",
- "alloy-primitives",
- "alloy-provider",
- "alloy-rpc-types-engine",
- "alloy-transport-ipc",
  "anyhow",
- "bytes",
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-macros",

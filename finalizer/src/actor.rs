@@ -340,7 +340,7 @@ impl<
             // Increment epoch
             self.state.epoch += 1;
             // Set the epoch genesis hash for the next epoch
-            self.state.epoch_genesis_hash = self.state.forkchoice.head_block_hash.into();
+            self.state.epoch_genesis_hash = block.digest().0;
 
             if let Some(finalization) = finalization {
                 // The finalized signatures should always be included on the last block
