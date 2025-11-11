@@ -301,12 +301,9 @@ mod tests {
     use commonware_consensus::simplex::signing_scheme::utils::Signers;
     use commonware_consensus::simplex::types::{Finalization, Proposal};
     use commonware_consensus::types::Round;
-    use commonware_cryptography::bls12381::{
-        self,
-        primitives::{
-            group::{Element, G2},
-            variant::MinPk,
-        },
+    use commonware_cryptography::bls12381::primitives::{
+        group::{Element, G2},
+        variant::MinPk,
     };
     use commonware_runtime::buffer::PoolRef;
     use commonware_runtime::{Runner as _, deterministic::Runner};

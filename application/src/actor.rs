@@ -133,7 +133,12 @@ impl<
                             if epoch == 0 {
                                 let _ = response.send(self.genesis_hash.into());
                             } else {
-                                todo!("TODO(matthias): for later epochs, this has to be the hash of the last block from the prev epoch");
+                                let epoch_genesis_hash = finalizer
+                                    .get_epoch_genesis_hash(epoch)
+                                    .await
+                                    .await
+                                    .expect("failed to get epoch genesis hash from finalizer");
+                                let _ = response.send(epoch_genesis_hash.into());
                             }
                         }
                         Message::Propose {

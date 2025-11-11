@@ -29,6 +29,7 @@ impl ConsensusState {
     pub fn new(forkchoice: ForkchoiceState) -> Self {
         Self {
             forkchoice,
+            epoch_genesis_hash: forkchoice.head_block_hash.into(),
             ..Default::default()
         }
     }

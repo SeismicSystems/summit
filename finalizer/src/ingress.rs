@@ -22,6 +22,10 @@ pub enum FinalizerMessage<S: Scheme, B: ConsensusBlock + Committable = Block> {
         height: u64,
         response: oneshot::Sender<BlockAuxData>,
     },
+    GetEpochGenesisHash {
+        epoch: u64,
+        response: oneshot::Sender<[u8; 32]>,
+    },
     QueryState {
         request: ConsensusStateRequest,
         response: oneshot::Sender<ConsensusStateResponse>,
@@ -55,6 +59,16 @@ impl<S: Scheme, B: ConsensusBlock + Committable> FinalizerMailbox<S, B> {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(FinalizerMessage::GetAuxData { height, response })
+            .await
+            .expect("Unable to send to main Finalizer loop");
+
+        receiver
+    }
+
+    pub async fn get_epoch_genesis_hash(&mut self, epoch: u64) -> oneshot::Receiver<[u8; 32]> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(FinalizerMessage::GetEpochGenesisHash { epoch, response })
             .await
             .expect("Unable to send to main Finalizer loop");
 
