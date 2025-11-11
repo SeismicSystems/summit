@@ -22,6 +22,7 @@ pub struct ConsensusState {
     pub added_validators: Vec<PublicKey>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
+    pub epoch_genesis_hash: [u8; 32],
 }
 
 impl ConsensusState {
@@ -182,6 +183,7 @@ impl EncodeSize for ConsensusState {
         + 32 // forkchoice.head_block_hash
         + 32 // forkchoice.safe_block_hash
         + 32 // forkchoice.finalized_block_hash
+        + 32 // epoch_genesis_hash
     }
 }
 
@@ -250,6 +252,9 @@ impl Read for ConsensusState {
             finalized_block_hash: finalized_block_hash.into(),
         };
 
+        let mut epoch_genesis_hash = [0u8; 32];
+        buf.copy_to_slice(&mut epoch_genesis_hash);
+
         Ok(Self {
             epoch,
             latest_height,
@@ -261,6 +266,7 @@ impl Read for ConsensusState {
             added_validators,
             removed_validators,
             forkchoice,
+            epoch_genesis_hash,
         })
     }
 }
@@ -311,6 +317,9 @@ impl Write for ConsensusState {
         buf.put_slice(self.forkchoice.head_block_hash.as_slice());
         buf.put_slice(self.forkchoice.safe_block_hash.as_slice());
         buf.put_slice(self.forkchoice.finalized_block_hash.as_slice());
+
+        // Write epoch_genesis_hash
+        buf.put_slice(&self.epoch_genesis_hash);
     }
 }
 
@@ -408,6 +417,10 @@ mod tests {
             decoded_state.validator_accounts.len(),
             original_state.validator_accounts.len()
         );
+        assert_eq!(
+            decoded_state.epoch_genesis_hash,
+            original_state.epoch_genesis_hash
+        );
     }
 
     #[test]
@@ -417,6 +430,7 @@ mod tests {
         original_state.epoch = 7;
         original_state.set_latest_height(42);
         original_state.next_withdrawal_index = 5;
+        original_state.epoch_genesis_hash = [42u8; 32];
 
         let deposit1 = create_test_deposit_request(1, 32000000000);
         let deposit2 = create_test_deposit_request(2, 16000000000);
@@ -443,6 +457,10 @@ mod tests {
         assert_eq!(
             decoded_state.next_withdrawal_index,
             original_state.next_withdrawal_index
+        );
+        assert_eq!(
+            decoded_state.epoch_genesis_hash,
+            original_state.epoch_genesis_hash
         );
 
         assert_eq!(decoded_state.deposit_queue.len(), 2);
@@ -526,6 +544,7 @@ mod tests {
         original_state.epoch = 5;
         original_state.set_latest_height(100);
         original_state.next_withdrawal_index = 42;
+        original_state.epoch_genesis_hash = [99u8; 32];
 
         // Add some data
         let deposit = create_test_deposit_request(1, 32000000000);
@@ -552,6 +571,10 @@ mod tests {
         assert_eq!(
             restored_state.next_withdrawal_index,
             original_state.next_withdrawal_index
+        );
+        assert_eq!(
+            restored_state.epoch_genesis_hash,
+            original_state.epoch_genesis_hash
         );
         assert_eq!(
             restored_state.deposit_queue.len(),
