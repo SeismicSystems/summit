@@ -14,7 +14,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{
     Signer,
-    bls12381::primitives::variant::{MinPk, Variant},
+    bls12381::primitives::variant::Variant,
 };
 use commonware_macros::select;
 use commonware_p2p::{
@@ -65,7 +65,7 @@ where
     A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
 {
     context: ContextCell<E>,
-    mailbox: mpsc::Receiver<Message<MinPk, C::PublicKey>>,
+    mailbox: mpsc::Receiver<Message>,
     application: A,
 
     oracle: B,
@@ -88,7 +88,7 @@ where
     C: Signer<PublicKey = summit_types::PublicKey>,
     A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
 {
-    pub fn new(context: E, config: Config<B, V, C, A>) -> (Self, Mailbox<MinPk, C::PublicKey>) {
+    pub fn new(context: E, config: Config<B, V, C, A>) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
         let pool_ref = PoolRef::new(NZUsize!(16_384), NZUsize!(10_000));
 
@@ -322,7 +322,6 @@ where
 
                             info!(epoch, "exited epoch");
                         }
-                        Message::_Phantom(_, _) => unreachable!(),
                     }
                 },
             }
