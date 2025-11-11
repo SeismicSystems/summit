@@ -9,7 +9,7 @@ use crate::{
 };
 use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
-use commonware_p2p::{Manager, authenticated};
+use commonware_p2p::authenticated;
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
@@ -17,7 +17,6 @@ use tokio_util::sync::CancellationToken;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_utils::from_hex_formatted;
-use commonware_utils::set::Ordered;
 use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
 use ssz::Decode;
@@ -322,16 +321,8 @@ impl Command {
             p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
             // Start p2p
-            let (mut network, mut oracle) =
+            let (mut network, oracle) =
                 authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
-
-            // Provide authorized peers
-            oracle
-                .update(
-                    initial_state.latest_height,
-                    Ordered::from_iter(peers.iter().map(|(node_key, _)| node_key.clone())),
-                )
-                .await;
 
             let oracle = DiscoveryOracle::new(oracle);
             let config = EngineConfig::get_engine_config(
@@ -524,16 +515,8 @@ pub fn run_node_with_runtime(
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
         // Start p2p
-        let (mut network, mut oracle) =
+        let (mut network, oracle) =
             authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
-
-        // Provide authorized peers
-        oracle
-            .update(
-                initial_state.latest_height,
-                Ordered::from_iter(peers.iter().map(|(node_key, _)| node_key.clone())),
-            )
-            .await;
 
         let oracle = DiscoveryOracle::new(oracle);
 
