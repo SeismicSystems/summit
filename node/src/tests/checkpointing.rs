@@ -167,7 +167,10 @@ fn test_checkpoint_created() {
                     assert_eq!(height, BLOCKS_PER_EPOCH);
                     header_stored.insert(metric.to_string());
                 }
-                if header_stored.len() as u32 >= n && state_stored.len() as u32 == n && height_reached.len() as u32 >= n {
+                if header_stored.len() as u32 >= n
+                    && state_stored.len() as u32 == n
+                    && height_reached.len() as u32 >= n
+                {
                     success = true;
                     break;
                 }

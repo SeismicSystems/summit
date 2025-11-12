@@ -14,7 +14,7 @@ use futures::future::try_join_all;
 use governor::{Quota, clock::Clock as GClock};
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
-use std::num::{NonZero, NonZeroU32};
+use std::num::{NonZero, NonZeroU32, NonZeroU64};
 use std::time::Duration;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
@@ -42,7 +42,7 @@ const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
 const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
 const FREEZER_TABLE_INITIAL_SIZE: u32 = 1024 * 1024; // 100mb
-const MAX_REPAIR: u64 = 50;
+const MAX_REPAIR: NonZeroU64 = NonZeroU64::new(50).unwrap();
 
 //
 // Onboarding config (set arbitrarily for now)

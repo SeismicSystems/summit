@@ -199,8 +199,6 @@ impl<C: Signer, V: Variant> ConsensusBlock for Block<C, V> {
 }
 
 impl<C: Signer, V: Variant> Viewable for Block<C, V> {
-    type View = u64;
-
     fn view(&self) -> commonware_consensus::types::View {
         self.header.view
     }

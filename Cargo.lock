@@ -834,9 +834,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.98"
+version = "1.0.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
+checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
 name = "ark-ff"
@@ -1517,8 +1517,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98d0d0909a8323c69cc0f5090cac4b2eb546f4cc29a60dc0dcfe238e75f79c19"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1536,8 +1535,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d473c9be55b1143abebd3fa6a748fe9d35151df4614ea7f68b314e504559af08"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "bytes",
  "paste",
@@ -1547,8 +1545,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b3b1dd7e0596b23a50ef69a290d0ed4e187a3f16a6aa6f317af188cd8b2bb5"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1563,6 +1560,7 @@ dependencies = [
  "commonware-utils",
  "futures",
  "governor",
+ "pin-project",
  "prometheus-client",
  "rand 0.8.5",
  "rand_distr",
@@ -1573,8 +1571,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7157f6e4a84b7a70108f15bf402f539b48d52adf727b9938fe59f752efc5b3e"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "blake3",
  "blst",
@@ -1599,8 +1596,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff368ef4db2d10686c1a89b7f4a3f1e7dddd9641a96cac42b72bf71a10360291"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "futures",
  "proc-macro-crate",
@@ -1614,8 +1610,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "657c7a971cf269411914e2a32a77815d5990ae111f2804d6b15f5952f75270c6"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1641,8 +1636,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e72ea84c5b43939cde251fba17627065d45cd9cedcb67f673c58291c5454e8f"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "bimap",
  "bytes",
@@ -1664,8 +1658,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de4d08e6e11088ed5b42e5ad93b18ffd745cbcc04c6ef7f723f5d237e146abc8"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "async-lock",
  "axum 0.8.4",
@@ -1696,9 +1689,9 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3116985d7a761aa7bf26d5226d51b8de0eaa6458277963f3c5d903f4078d504"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
+ "anyhow",
  "bytes",
  "cfg-if",
  "commonware-codec",
@@ -1719,8 +1712,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "260076055c2a5eb1b734641603a9bc6bcd439bd6525055480c7d149e2a8dad70"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -1740,8 +1732,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.63"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "209c03e7057e9d4d5f0bade24685e2bc8845471b89e4ab54684f1af8c287ad3b"
+source = "git+https://github.com/commonwarexyz/monorepo.git?rev=f395c9e#f395c9ef1009b764e4358b6df0c8e03ba61d125d"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1752,6 +1743,7 @@ dependencies = [
  "num-integer",
  "num-rational",
  "num-traits",
+ "pin-project",
  "rand 0.8.5",
  "thiserror 2.0.12",
 ]
@@ -2365,7 +2357,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "778e2ac28f6c47af28e4907f13ffd1e1ddbd400980a9abd7c8df189bf578a5ad"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2997,7 +2989,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -3230,7 +3222,7 @@ checksum = "e04d7f318608d35d4b61ddd75cbdaee86b023ebe2bd5a66ee0915f0bf93095a9"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3423,7 +3415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.53.2",
 ]
 
 [[package]]
@@ -4527,7 +4519,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.0",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4976,7 +4968,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4989,7 +4981,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.9.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5710,10 +5702,10 @@ dependencies = [
  "futures",
  "governor",
  "metrics",
+ "pin-project",
  "prometheus-client",
  "rand 0.8.5",
  "summit-types",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -5858,7 +5850,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix 1.0.7",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6633,7 +6625,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
