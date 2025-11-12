@@ -314,13 +314,11 @@ mod tests {
         context: E,
     ) -> FinalizerState<E, V> {
         let config = Config {
-            log_journal_partition: format!("{}-log", partition),
+            log_partition: format!("{}-log", partition),
             log_write_buffer: NZUsize!(64 * 1024),
             log_compression: None,
             log_codec_config: (),
             log_items_per_section: NZU64!(4),
-            locations_journal_partition: format!("{}-locations", partition),
-            locations_items_per_blob: NZU64!(4),
             translator: TwoCap,
             buffer_pool: PoolRef::new(NZUsize!(77), NZUsize!(9)),
         };

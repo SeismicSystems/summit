@@ -1,5 +1,5 @@
 use commonware_consensus::types::{Epoch, Round};
-use commonware_consensus::{Automaton, Epochable, Relay, simplex::types::Context, types::View};
+use commonware_consensus::{Automaton, Relay, simplex::types::Context, types::View};
 use commonware_cryptography::PublicKey;
 use commonware_cryptography::sha256::Digest;
 use futures::{
@@ -48,7 +48,7 @@ impl<P: PublicKey> Automaton for Mailbox<P> {
     type Context = Context<Self::Digest, P>;
     type Digest = Digest;
 
-    async fn genesis(&mut self, epoch: <Self::Context as Epochable>::Epoch) -> Self::Digest {
+    async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Message::Genesis { response, epoch })

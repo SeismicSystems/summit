@@ -85,13 +85,11 @@ impl<
     ) -> (Self, FinalizerMailbox<Z, Block<S, V>>) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
         let state_cfg = StateConfig {
-            log_journal_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
+            log_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
             log_write_buffer: WRITE_BUFFER,
             log_compression: None,
             log_codec_config: (),
             log_items_per_section: NZU64!(262_144),
-            locations_journal_partition: format!("{}-finalizer_state-locations", cfg.db_prefix),
-            locations_items_per_blob: NZU64!(262_144), // todo: No reference for this config option look into this
             translator: TwoCap,
             buffer_pool: cfg.buffer_pool,
         };

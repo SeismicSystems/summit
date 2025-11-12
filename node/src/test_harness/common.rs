@@ -14,9 +14,7 @@ use commonware_runtime::{
     deterministic::{self, Runner},
 };
 use commonware_utils::from_hex_formatted;
-use commonware_utils::set::Ordered;
 use governor::Quota;
-use std::future::Future;
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
@@ -543,18 +541,22 @@ pub fn get_default_engine_config<
 
 #[derive(Clone, Debug)]
 pub struct SimulatedOracle {
-    oracle: Oracle<PublicKey>,
+    inner: simulated::Manager<PublicKey>,
 }
 
 impl SimulatedOracle {
     pub fn new(oracle: Oracle<PublicKey>) -> Self {
-        Self { oracle }
+        Self {
+            inner: oracle.manager(),
+        }
     }
 }
 
 impl NetworkOracle<PublicKey> for SimulatedOracle {
     async fn register(&mut self, index: u64, peers: Vec<PublicKey>) {
-        self.oracle.update(index, Ordered::from(peers)).await;
+        self.inner
+            .update(index, commonware_utils::set::Ordered::from(peers))
+            .await
     }
 }
 
@@ -569,23 +571,19 @@ impl Blocker for SimulatedOracle {
 
 impl Manager for SimulatedOracle {
     type PublicKey = PublicKey;
-    type Peers = Ordered<PublicKey>;
+    type Peers = commonware_utils::set::Ordered<PublicKey>;
 
-    fn update(&mut self, id: u64, peers: Self::Peers) -> impl Future<Output = ()> + Send {
-        self.oracle.update(id, peers)
+    async fn update(&mut self, id: u64, peers: Self::Peers) {
+        self.inner.update(id, peers).await
     }
 
-    async fn peer_set(&mut self, id: u64) -> Option<Ordered<Self::PublicKey>> {
-        self.oracle.peer_set(id).await
+    async fn peer_set(&mut self, id: u64) -> Option<Self::Peers> {
+        self.inner.peer_set(id).await
     }
 
     async fn subscribe(
         &mut self,
-    ) -> futures::channel::mpsc::UnboundedReceiver<(
-        u64,
-        Ordered<Self::PublicKey>,
-        Ordered<Self::PublicKey>,
-    )> {
-        self.oracle.subscribe().await
+    ) -> futures::channel::mpsc::UnboundedReceiver<(u64, Self::Peers, Self::Peers)> {
+        self.inner.subscribe().await
     }
 }
