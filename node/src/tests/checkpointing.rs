@@ -126,6 +126,7 @@ fn test_checkpoint_created() {
         // Poll metrics
         let mut state_stored = HashSet::new();
         let mut header_stored = HashSet::new();
+        let mut height_reached = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -154,12 +155,19 @@ fn test_checkpoint_created() {
                     state_stored.insert(metric.to_string());
                 }
 
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
                 if metric.ends_with("finalized_header_stored") {
                     let height = value.parse::<u64>().unwrap();
                     assert_eq!(height, BLOCKS_PER_EPOCH);
                     header_stored.insert(metric.to_string());
                 }
-                if header_stored.len() as u32 >= n && state_stored.len() as u32 == n {
+                if header_stored.len() as u32 >= n && state_stored.len() as u32 == n && height_reached.len() as u32 >= n {
                     success = true;
                     break;
                 }
@@ -303,6 +311,7 @@ fn test_previous_header_hash_matches() {
         // Poll metrics
         let mut first_header_stored = HashMap::new();
         let mut second_header_stored = HashSet::new();
+        let mut height_reached = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -323,6 +332,13 @@ fn test_previous_header_hash_matches() {
                 if metric.ends_with("_peers_blocked") {
                     let value = value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
                 }
 
                 if metric.ends_with("finalized_header_stored") {
@@ -351,7 +367,7 @@ fn test_previous_header_hash_matches() {
                 }
                 // There is an edge case where not all validators write a finalized header to disk.
                 // That's why we only enforce n - 1 validators to reach this checkpoint to avoid a flaky test.
-                if second_header_stored.len() as u32 == n - 1 {
+                if second_header_stored.len() as u32 == n - 1 && height_reached.len() as u32 >= n {
                     success = true;
                     break;
                 }
@@ -434,7 +450,13 @@ fn test_single_engine_with_checkpoint() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
 
         // Create and populate a consensus state
-        let mut consensus_state = ConsensusState::default();
+        let mut consensus_state = common::get_initial_state(
+            genesis_hash,
+            &validators,
+            None,
+            None,
+            VALIDATOR_MINIMUM_STAKE,
+        );
         consensus_state.set_latest_height(50); // Set a specific height
 
         // Configure engine with the checkpoint
