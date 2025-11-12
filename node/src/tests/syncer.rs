@@ -1,6 +1,6 @@
 use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
-use crate::test_harness::common::{DummyOracle, get_default_engine_config, get_initial_state};
+use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
 use commonware_macros::test_traced;
@@ -34,7 +34,7 @@ fn test_node_joins_later_no_checkpoint() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: None,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
@@ -104,7 +104,7 @@ fn test_node_joins_later_no_checkpoint() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -162,7 +162,7 @@ fn test_node_joins_later_no_checkpoint() {
 
         let config = get_default_engine_config(
             engine_client,
-            DummyOracle::default(),
+            SimulatedOracle::new(oracle.clone()),
             uid.clone(),
             genesis_hash,
             namespace,
@@ -268,7 +268,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: None,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
@@ -338,7 +338,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -398,7 +398,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         // since historical blocks were finalized by only those 4 validators
         let config = get_default_engine_config(
             engine_client,
-            DummyOracle::default(),
+            SimulatedOracle::new(oracle.clone()),
             uid.clone(),
             genesis_hash,
             namespace,
