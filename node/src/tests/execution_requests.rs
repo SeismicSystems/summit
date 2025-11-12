@@ -1,6 +1,6 @@
 use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
-use crate::test_harness::common::{DummyOracle, get_default_engine_config, get_initial_state};
+use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use alloy_primitives::{Address, hex};
 use commonware_cryptography::bls12381;
@@ -39,8 +39,8 @@ fn test_deposit_request_single() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
-                disconnect_on_block: false,
-                tracked_peer_sets: None,
+                disconnect_on_block: true,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
@@ -115,7 +115,7 @@ fn test_deposit_request_single() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -168,23 +168,25 @@ fn test_deposit_request_single() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
+                        println!("############################");
+                        println!("{metric}: {}", height_reached.len());
                         height_reached.insert(metric.to_string());
                     }
                 }
 
                 if metric.ends_with("validator_balance") {
                     let value = value.parse::<u64>().unwrap();
+                    //println!("*********************************");
+                    //println!("{metric}: size: {}", processed_requests.len());
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
-                        let creds =
-                            common::parse_metric_substring(metric, "creds").expect("creds missing");
-                        assert_eq!(creds, hex::encode(test_deposit.withdrawal_credentials));
-                        assert_eq!(pubkey_hex, test_deposit.node_pubkey.to_string());
-                        assert_eq!(value, test_deposit.amount);
-                        processed_requests.insert(metric.to_string());
-                    } else {
-                        println!("{}: {} (failed to parse pubkey)", metric, value);
-                    }
+                    let pubkey_hex =
+                        common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
+                    let creds =
+                        common::parse_metric_substring(metric, "creds").expect("creds missing");
+                    assert_eq!(creds, hex::encode(test_deposit.withdrawal_credentials));
+                    assert_eq!(pubkey_hex, test_deposit.node_pubkey.to_string());
+                    assert_eq!(value, test_deposit.amount);
+                    processed_requests.insert(metric.to_string());
                 }
                 if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
@@ -230,7 +232,7 @@ fn test_deposit_request_top_up() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: None,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -321,7 +323,7 @@ fn test_deposit_request_top_up() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -444,7 +446,7 @@ fn test_deposit_and_withdrawal_request_single() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: None,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -538,7 +540,7 @@ fn test_deposit_and_withdrawal_request_single() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -669,7 +671,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: None,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -775,7 +777,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -910,7 +912,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: None,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -1005,7 +1007,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -1141,7 +1143,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: None,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -1248,7 +1250,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
@@ -1394,7 +1396,7 @@ fn test_deposit_request_invalid_signature() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: None,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
@@ -1481,7 +1483,7 @@ fn test_deposit_request_invalid_signature() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
