@@ -83,7 +83,7 @@ pub struct Engine<
         MultisigScheme<S, MinPk>,
     >,
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
-    finalizer: Finalizer<E, C, O, S, MultisigScheme<S, MinPk>, MinPk>,
+    finalizer: Finalizer<E, C, O, S, MinPk>,
     pub finalizer_mailbox: FinalizerMailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
     orchestrator:
         summit_orchestrator::Actor<E, O, MinPk, S, summit_application::Mailbox<S::PublicKey>>,

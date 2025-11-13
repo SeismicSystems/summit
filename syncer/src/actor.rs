@@ -25,6 +25,8 @@ use commonware_utils::{
 };
 use pin_project::pin_project;
 
+#[cfg(feature = "prom")]
+use commonware_runtime::telemetry::metrics::status::GaugeExt;
 use commonware_storage::metadata;
 use commonware_storage::metadata::Metadata;
 use commonware_utils::futures::OptionFuture;
@@ -288,7 +290,7 @@ impl<
                     mailbox,
                     scheme_provider: config.scheme_provider,
                     epoch_length: config.epoch_length,
-                    mailbox_size: config.mailbox_size,
+                    namespace: config.namespace,
                     view_retention_timeout: config.view_retention_timeout,
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,

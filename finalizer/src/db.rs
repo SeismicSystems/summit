@@ -410,10 +410,10 @@ mod tests {
                 proposal,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::zero(),
+                    signature: G2::one(), // Use one/generator instead of zero/infinity
                 },
             };
-            let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized);
+            let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized, 3);
 
             // Test that no header exists initially
             assert!(db.get_finalized_header(100).await.is_none());
@@ -457,10 +457,11 @@ mod tests {
                 proposal: proposal2,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::zero(),
+                    signature: G2::one(),
                 },
             };
-            let finalized_header2 = summit_types::FinalizedHeader::new(header2.clone(), finalized2);
+            let finalized_header2 =
+                summit_types::FinalizedHeader::new(header2.clone(), finalized2, 3);
             db.store_finalized_header(200, &finalized_header2).await;
             db.commit().await;
 
@@ -519,10 +520,11 @@ mod tests {
                 proposal: proposal1,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::zero(),
+                    signature: G2::one(),
                 },
             };
-            let finalized_header1 = summit_types::FinalizedHeader::new(header1.clone(), finalized1);
+            let finalized_header1 =
+                summit_types::FinalizedHeader::new(header1.clone(), finalized1, 3);
 
             let header3 = summit_types::Header::compute_digest(
                 [7u8; 32].into(),                     // parent
@@ -548,10 +550,11 @@ mod tests {
                 proposal: proposal3,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::zero(),
+                    signature: G2::one(),
                 },
             };
-            let finalized_header3 = summit_types::FinalizedHeader::new(header3.clone(), finalized3);
+            let finalized_header3 =
+                summit_types::FinalizedHeader::new(header3.clone(), finalized3, 3);
 
             let header2 = summit_types::Header::compute_digest(
                 [5u8; 32].into(),                    // parent
@@ -577,10 +580,11 @@ mod tests {
                 proposal: proposal2,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::zero(),
+                    signature: G2::one(),
                 },
             };
-            let finalized_header2 = summit_types::FinalizedHeader::new(header2.clone(), finalized2);
+            let finalized_header2 =
+                summit_types::FinalizedHeader::new(header2.clone(), finalized2, 3);
 
             // Store headers in non-sequential order: 100, 300, 200
             db.store_finalized_header(100, &finalized_header1).await;

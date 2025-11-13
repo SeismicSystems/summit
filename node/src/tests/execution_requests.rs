@@ -387,7 +387,8 @@ fn test_deposit_request_top_up() {
                         continue;
                     }
                     // Parse the pubkey from the metric name using helper function
-                    let ed_pubkey_hex = common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
+                    let ed_pubkey_hex =
+                        common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
                     let creds =
                         common::parse_metric_substring(metric, "creds").expect("creds missing");
                     assert_eq!(creds, hex::encode(test_deposit1.withdrawal_credentials));

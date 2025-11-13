@@ -12,9 +12,9 @@ use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
 use commonware_utils::from_hex_formatted;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use summit_types::{utils, PrivateKey};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::keystore::KeyStore;
+use summit_types::{PrivateKey, utils};
 
 #[test_traced("INFO")]
 fn test_checkpoint_created() {
@@ -353,7 +353,9 @@ fn test_previous_header_hash_matches() {
                     let validator_id =
                         common::extract_validator_id(metric).expect("failed to parse validator id");
 
-                    if utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height) && height <= BLOCKS_PER_EPOCH {
+                    if utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height)
+                        && height <= BLOCKS_PER_EPOCH
+                    {
                         // This is the first time the finalized header is written to disk
                         first_header_stored.insert(validator_id, header);
                     } else if utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height) {
@@ -366,7 +368,6 @@ fn test_previous_header_hash_matches() {
                         }
                     } else {
                         assert!(utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height));
-
                     }
                 }
                 // There is an edge case where not all validators write a finalized header to disk.
@@ -445,7 +446,10 @@ fn test_single_engine_with_checkpoint() {
         let consensus_key2 = bls12381::PrivateKey::from_seed(101);
         let consensus_public_key2 = consensus_key2.public_key();
 
-        let validators = vec![(node_public_key.clone(), consensus_public_key), (node_public_key2, consensus_public_key2)];
+        let validators = vec![
+            (node_public_key.clone(), consensus_public_key),
+            (node_public_key2, consensus_public_key2),
+        ];
         let node_public_keys = vec![node_public_key.clone()];
         let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
