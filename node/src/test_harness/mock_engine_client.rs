@@ -350,7 +350,7 @@ impl EngineClient for MockEngineClient {
 
         // Wrap in envelope
         let block_num = state.next_block_number;
-        let execution_requests = self.execution_requests.lock().unwrap().remove(&block_num);
+        let execution_requests = self.execution_requests.lock().unwrap().get(&block_num).cloned();
         let envelope = ExecutionPayloadEnvelopeV4 {
             envelope_inner: ExecutionPayloadEnvelopeV3 {
                 execution_payload: new_block,
