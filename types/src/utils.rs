@@ -19,11 +19,11 @@ pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
 }
 
 pub fn is_last_block_of_epoch(height: u64, epoch_num_blocks: u64) -> bool {
-    height > 0 && height % epoch_num_blocks == 0
+    commonware_consensus::utils::is_last_block_in_epoch(epoch_num_blocks, height).is_some()
 }
 
 pub fn is_penultimate_block_of_epoch(height: u64, epoch_num_blocks: u64) -> bool {
-    height > 0 && (height + 1) % epoch_num_blocks == 0
+    is_last_block_of_epoch(height + 1, epoch_num_blocks)
 }
 
 #[cfg(any(feature = "base-bench", feature = "bench"))]
