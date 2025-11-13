@@ -42,7 +42,7 @@ const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
 const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
 const FREEZER_TABLE_INITIAL_SIZE: u32 = 1024 * 1024; // 100mb
-const MAX_REPAIR: NonZeroU64 = NonZeroU64::new(50).unwrap();
+const MAX_REPAIR: NonZeroU64 = NonZeroU64::new(10).unwrap();
 
 //
 // Onboarding config (set arbitrarily for now)

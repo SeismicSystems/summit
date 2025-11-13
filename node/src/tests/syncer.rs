@@ -14,7 +14,7 @@ use std::time::Duration;
 use summit_types::{PrivateKey, keystore::KeyStore};
 
 #[test_traced("INFO")]
-fn test_node_joins_later_no_checkpoint() {
+fn test_node_joins_later_no_checkpoint_in_genesis() {
     // Creates a network of 5 nodes, and starts only 4 of them.
     // The last node starts after 10 blocks, to ensure that the block backfilling
     // in the syncer_old works.
