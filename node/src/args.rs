@@ -593,7 +593,7 @@ pub fn run_node_with_runtime(
         let rpc_port = flags.rpc_port;
         let stop_signal = context.stopped();
         let rpc_handle = context
-            .with_label("rpc_genesis")
+            .with_label("rpc")
             .spawn(move |_context| async move {
                 if let Err(e) =
                     start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await

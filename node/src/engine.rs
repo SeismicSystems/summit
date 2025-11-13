@@ -182,6 +182,12 @@ where
                 rate_limit: cfg.fetch_rate_per_peer,
                 blocks_per_epoch: BLOCKS_PER_EPOCH,
                 partition_prefix: cfg.partition_prefix.clone(),
+                leader_timeout: cfg.leader_timeout,
+                notarization_timeout: cfg.notarization_timeout,
+                nullify_retry: cfg.nullify_retry,
+                fetch_timeout: cfg.fetch_timeout,
+                activity_timeout: cfg.activity_timeout,
+                skip_timeout: cfg.skip_timeout,
             },
         );
 

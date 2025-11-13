@@ -51,6 +51,14 @@ where
 
     // Partition prefix used for orchestrator metadata persistence
     pub partition_prefix: String,
+
+    // Consensus timeouts
+    pub leader_timeout: Duration,
+    pub notarization_timeout: Duration,
+    pub nullify_retry: Duration,
+    pub fetch_timeout: Duration,
+    pub activity_timeout: u64,
+    pub skip_timeout: u64,
 }
 
 pub struct Actor<E, B, V, C, A>
@@ -75,6 +83,14 @@ where
     rate_limit: governor::Quota,
     pool_ref: PoolRef,
     blocks_per_epoch: u64,
+
+    // Consensus timeouts
+    leader_timeout: Duration,
+    notarization_timeout: Duration,
+    nullify_retry: Duration,
+    fetch_timeout: Duration,
+    activity_timeout: u64,
+    skip_timeout: u64,
 }
 
 impl<E, B, V, C, A> Actor<E, B, V, C, A>
@@ -103,6 +119,12 @@ where
                 rate_limit: config.rate_limit,
                 pool_ref,
                 blocks_per_epoch: config.blocks_per_epoch,
+                leader_timeout: config.leader_timeout,
+                notarization_timeout: config.notarization_timeout,
+                nullify_retry: config.nullify_retry,
+                fetch_timeout: config.fetch_timeout,
+                activity_timeout: config.activity_timeout,
+                skip_timeout: config.skip_timeout,
             },
             Mailbox::new(sender),
         )
@@ -357,12 +379,12 @@ where
                 namespace: self.namespace.clone(),
                 replay_buffer: NZUsize!(1024 * 1024),
                 write_buffer: NZUsize!(1024 * 1024),
-                leader_timeout: Duration::from_secs(1),
-                notarization_timeout: Duration::from_secs(2),
-                nullify_retry: Duration::from_secs(10),
-                fetch_timeout: Duration::from_secs(1),
-                activity_timeout: 256,
-                skip_timeout: 10,
+                leader_timeout: self.leader_timeout,
+                notarization_timeout: self.notarization_timeout,
+                nullify_retry: self.nullify_retry,
+                fetch_timeout: self.fetch_timeout,
+                activity_timeout: self.activity_timeout,
+                skip_timeout: self.skip_timeout,
                 max_fetch_count: 32,
                 fetch_concurrent: 2,
                 fetch_rate_per_peer: Quota::per_second(NZU32!(1)),
