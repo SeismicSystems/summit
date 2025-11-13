@@ -624,9 +624,8 @@ fn test_deposit_and_withdrawal_request_single() {
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + BLOCKS_PER_EPOCH - 1)
-                / BLOCKS_PER_EPOCH;
-        let withdrawal_height = withdrawal_epoch * BLOCKS_PER_EPOCH;
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
+        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&(withdrawal_height))
             .expect("missing withdrawal");
@@ -864,9 +863,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // to the execution layer.
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + BLOCKS_PER_EPOCH - 1)
-                / BLOCKS_PER_EPOCH;
-        let withdrawal_height = withdrawal_epoch * BLOCKS_PER_EPOCH;
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
+        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");
@@ -1099,9 +1097,8 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + BLOCKS_PER_EPOCH - 1)
-                / BLOCKS_PER_EPOCH;
-        let withdrawal_height = withdrawal_epoch * BLOCKS_PER_EPOCH;
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
+        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");
