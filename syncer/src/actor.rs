@@ -796,7 +796,7 @@ impl<
         let (height, commitment) = (block.height(), block.commitment());
         let (ack_tx, ack_rx) = oneshot::channel();
 
-        if utils::is_last_block_in_epoch(next_height, self.epoch_length).is_some() {
+        if utils::is_last_block_in_epoch(self.epoch_length, next_height).is_some() {
             let finalize = self.get_finalization_by_height(next_height).await;
             application
                 .report(Update::Block((block, finalize), ack_tx))

@@ -12,7 +12,7 @@ use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
 use commonware_utils::from_hex_formatted;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use summit_types::PrivateKey;
+use summit_types::{utils, PrivateKey};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::keystore::KeyStore;
 
@@ -71,7 +71,7 @@ fn test_checkpoint_created() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let stop_height = BLOCKS_PER_EPOCH + 1;
+        let stop_height = BLOCKS_PER_EPOCH;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
         let initial_state = get_initial_state(
@@ -151,7 +151,7 @@ fn test_checkpoint_created() {
 
                 if metric.ends_with("consensus_state_stored") {
                     let height = value.parse::<u64>().unwrap();
-                    assert_eq!(height, BLOCKS_PER_EPOCH);
+                    assert_eq!(height, BLOCKS_PER_EPOCH - 1);
                     state_stored.insert(metric.to_string());
                 }
 
@@ -164,7 +164,7 @@ fn test_checkpoint_created() {
 
                 if metric.ends_with("finalized_header_stored") {
                     let height = value.parse::<u64>().unwrap();
-                    assert_eq!(height, BLOCKS_PER_EPOCH);
+                    assert_eq!(height, BLOCKS_PER_EPOCH - 1);
                     header_stored.insert(metric.to_string());
                 }
                 if header_stored.len() as u32 >= n
@@ -353,10 +353,10 @@ fn test_previous_header_hash_matches() {
                     let validator_id =
                         common::extract_validator_id(metric).expect("failed to parse validator id");
 
-                    if height == BLOCKS_PER_EPOCH {
+                    if utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height) && height <= BLOCKS_PER_EPOCH {
                         // This is the first time the finalized header is written to disk
                         first_header_stored.insert(validator_id, header);
-                    } else if height == 2 * BLOCKS_PER_EPOCH {
+                    } else if utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height) {
                         // This is the second time the finalized header is written to disk
                         if let Some(header_from_prev_epoch) = first_header_stored.get(&validator_id)
                         {
@@ -365,7 +365,8 @@ fn test_previous_header_hash_matches() {
                             second_header_stored.insert(validator_id);
                         }
                     } else {
-                        assert_eq!(height % BLOCKS_PER_EPOCH, 0);
+                        assert!(utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height));
+
                     }
                 }
                 // There is an edge case where not all validators write a finalized header to disk.
@@ -437,7 +438,14 @@ fn test_single_engine_with_checkpoint() {
             node_key,
             consensus_key,
         };
-        let validators = vec![(node_public_key.clone(), consensus_public_key)];
+
+        // Create a second set of keys to stop the single engine from producing blocks.
+        let node_key2 = PrivateKey::from_seed(101);
+        let node_public_key2 = node_key2.public_key();
+        let consensus_key2 = bls12381::PrivateKey::from_seed(101);
+        let consensus_public_key2 = consensus_key2.public_key();
+
+        let validators = vec![(node_public_key.clone(), consensus_public_key), (node_public_key2, consensus_public_key2)];
         let node_public_keys = vec![node_public_key.clone()];
         let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
