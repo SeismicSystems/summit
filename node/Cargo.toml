@@ -22,11 +22,6 @@ path = "src/bin/withdraw_and_exit.rs"
 required-features = ["e2e"]
 
 [[bin]]
-name = "block-fetcher"
-path = "src/bin/block_fetcher.rs"
-required-features = ["bench"]
-
-[[bin]]
 name = "execute-blocks"
 path = "src/bin/execute_blocks.rs"
 required-features = ["bench"]
