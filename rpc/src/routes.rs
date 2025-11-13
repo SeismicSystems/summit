@@ -33,6 +33,8 @@ impl RpcRoutes {
         let state = Arc::new(state);
 
         Router::new()
+            .route("/health", get(Self::handle_health_check))
+            .route("/get_public_key", get(Self::handle_get_pub_key_genesis))
             .route("/send_genesis", post(Self::handle_send_genesis))
             .with_state(state)
     }
@@ -42,6 +44,12 @@ impl RpcRoutes {
     }
 
     async fn handle_get_pub_key(State(state): State<Arc<RpcState>>) -> Result<String, String> {
+        let private_key = Self::read_ed_key_from_path(&state.key_path)?;
+
+        Ok(private_key.public_key().to_string())
+    }
+
+    async fn handle_get_pub_key_genesis(State(state): State<Arc<GenesisRpcState>>) -> Result<String, String> {
         let private_key = Self::read_ed_key_from_path(&state.key_path)?;
 
         Ok(private_key.public_key().to_string())
