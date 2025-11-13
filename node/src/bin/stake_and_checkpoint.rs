@@ -32,7 +32,7 @@ use std::{
     str::FromStr as _,
     thread::JoinHandle,
 };
-use summit::args::{RunFlags, run_node_with_runtime};
+use summit::args::{RunFlags, run_node_local};
 use summit::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
@@ -192,7 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     executor.start(|node_context| async move {
                         let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_with_runtime(ctx, flags, None).await.unwrap();
+                            run_node_local(ctx, flags, None).await.unwrap();
                         });
 
                         // Wait for stop signal or node completion

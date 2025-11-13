@@ -18,7 +18,7 @@ use std::{
 use alloy_node_bindings::Reth;
 use clap::Parser;
 use commonware_runtime::{Metrics as _, Runner as _, Spawner as _, tokio};
-use summit::args::{RunFlags, run_node_with_runtime};
+use summit::args::{RunFlags, run_node_local};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -166,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Start our consensus engine
                 let handle =
-                    run_node_with_runtime(context.with_label(&format!("node{x}")), flags, None);
+                    run_node_local(context.with_label(&format!("node{x}")), flags, None);
                 consensus_handles.push(handle);
             }
 
