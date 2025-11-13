@@ -5,14 +5,14 @@ use alloy_primitives::Address;
 #[cfg(debug_assertions)]
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::{DecodeExt as _, Encode, ReadExt as _};
+use commonware_codec::{Read as CodecRead, Write as CodecWrite};
 use commonware_consensus::Reporter;
-use commonware_consensus::simplex::signing_scheme::{Scheme, bls12381_multisig};
+use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::Finalization;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::TwoCap;
-use commonware_codec::{Read as CodecRead, Write as CodecWrite};
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt as _, select};
@@ -46,10 +46,9 @@ pub struct Finalizer<
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,
-    Z: Scheme<PublicKey = PublicKey>,
     V: Variant,
 > {
-    mailbox: mpsc::Receiver<FinalizerMessage<Z, Block<S, V>>>,
+    mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>>,
     pending_height_notifys: BTreeMap<u64, Vec<oneshot::Sender<()>>>,
     context: ContextCell<R>,
     engine_client: C,
@@ -76,14 +75,16 @@ impl<
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,
-    Z: Scheme<PublicKey = PublicKey>,
     V: Variant,
-> Finalizer<R, C, O, S, Z, V>
+> Finalizer<R, C, O, S, V>
 {
     pub async fn new(
         context: R,
         cfg: FinalizerConfig<C, O, V>,
-    ) -> (Self, FinalizerMailbox<Z, Block<S, V>>) {
+    ) -> (
+        Self,
+        FinalizerMailbox<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>,
+    ) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
         let state_cfg = StateConfig {
             log_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
@@ -213,11 +214,17 @@ impl<
         }
     }
 
+    #[allow(clippy::type_complexity)]
     async fn handle_execution_block(
         &mut self,
         ack_tx: oneshot::Sender<()>,
         block: Block<S, V>,
-        finalization: Option<Finalization<Z, <Block<S, V> as Digestible>::Digest>>,
+        finalization: Option<
+            Finalization<
+                bls12381_multisig::Scheme<PublicKey, V>,
+                <Block<S, V> as Digestible>::Digest,
+            >,
+        >,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
         #[cfg(feature = "prom")]
@@ -347,12 +354,13 @@ impl<
                 // TODO(matthias): figure out a good solution for making checkpoints available
                 debug_assert!(block.header.digest == finalization.proposal.payload);
 
+                // Get participant count from the certificate signers
+                let participant_count = finalization.certificate.signers.len();
+
                 // Store the finalized block header in the database
                 // Convert to concrete BLS scheme type by encoding and decoding
-                let finalized_header = FinalizedHeader {
-                    header: block.header.clone(),
-                    finalization,
-                };
+                let finalized_header =
+                    FinalizedHeader::new(block.header.clone(), finalization, participant_count);
                 let mut buf = Vec::new();
                 finalized_header.write(&mut buf);
                 let concrete_header = <FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, V>> as CodecRead>::read_cfg(&mut buf.as_slice(), &())
@@ -860,9 +868,8 @@ impl<
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,
-    Z: Scheme<PublicKey = PublicKey>,
     V: Variant,
-> Drop for Finalizer<R, C, O, S, Z, V>
+> Drop for Finalizer<R, C, O, S, V>
 {
     fn drop(&mut self) {
         self.cancellation_token.cancel();

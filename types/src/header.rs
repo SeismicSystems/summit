@@ -267,13 +267,19 @@ impl Read for Header {
 pub struct FinalizedHeader<S: Scheme> {
     pub header: Header,
     pub finalization: Finalization<S, Digest>,
+    pub participant_count: usize,
 }
 
 impl<S: Scheme> FinalizedHeader<S> {
-    pub fn new(header: Header, finalization: Finalization<S, Digest>) -> Self {
+    pub fn new(
+        header: Header,
+        finalization: Finalization<S, Digest>,
+        participant_count: usize,
+    ) -> Self {
         Self {
             header,
             finalization,
+            participant_count,
         }
     }
 }
@@ -284,14 +290,15 @@ impl<S: Scheme> ssz::Encode for FinalizedHeader<S> {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        // For simplicity, encode header first, then finalized proof using commonware encoding
+        // Encode header, participant count, and finalization
         let header_bytes = self.header.as_ssz_bytes();
         let mut finalized_bytes = Vec::new();
         self.finalization.write(&mut finalized_bytes);
 
-        let offset = 8; // Two 4-byte length prefixes
+        let offset = 8 + 4; // Two 4-byte offsets (for variable fields) + 4 bytes for u32
         let mut encoder = ssz::SszEncoder::container(buf, offset);
         encoder.append(&header_bytes);
+        encoder.append(&(self.participant_count as u32));
         encoder.append(&finalized_bytes);
         encoder.finalize();
     }
@@ -301,7 +308,7 @@ impl<S: Scheme> ssz::Encode for FinalizedHeader<S> {
         let mut finalized_bytes = Vec::new();
         self.finalization.write(&mut finalized_bytes);
 
-        header_bytes.len() + finalized_bytes.len() + 8 // Two 4-byte length prefixes
+        12 + header_bytes.len() + finalized_bytes.len() // Fixed part: 2 offsets + u32 = 12 bytes
     }
 }
 
@@ -316,28 +323,20 @@ where
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
         let mut builder = ssz::SszDecoderBuilder::new(bytes);
         builder.register_type::<Vec<u8>>()?; // header bytes
+        builder.register_type::<u32>()?; // participant count
         builder.register_type::<Vec<u8>>()?; // finalized bytes
 
         let mut decoder = builder.build()?;
         let header_bytes: Vec<u8> = decoder.decode_next()?;
+        let participant_count: u32 = decoder.decode_next()?;
         let finalized_bytes: Vec<u8> = decoder.decode_next()?;
 
         let header = Header::from_ssz_bytes(&header_bytes)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
-        // The certificate config needs to be derived from the buffer size (participant count)
-        // This works because we know bls12381_multisig::Certificate::Cfg = usize
-        // We construct it here where we have the concrete type information
+        // Decode the finalization using the stored participant count
         let mut finalized_buf = finalized_bytes.as_slice();
-
-        // For BLS multisig, the Cfg is the participant count, which we derive from buffer size
-        // This is a limitation of the SSZ decode not having access to external config
-        // The actual participant count should ideally come from the registry/validator set
-        let participant_count_bytes = finalized_buf.remaining();
-
-        // We need to convert usize to Cfg type, but can't use From without the bound
-        // So we're stuck needing the From bound here for SSZ compatibility
-        let cfg = <S::Certificate as Read>::Cfg::from(participant_count_bytes);
+        let cfg = <S::Certificate as Read>::Cfg::from(participant_count as usize);
         let finalization = Finalization::<S, Digest>::read_cfg(&mut finalized_buf, &cfg)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
@@ -351,6 +350,7 @@ where
         Ok(Self {
             header,
             finalization,
+            participant_count: participant_count as usize,
         })
     }
 }
@@ -397,16 +397,18 @@ mod test {
     use super::*;
     use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
-    use commonware_consensus::simplex::signing_scheme::ed25519;
+    use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
     use commonware_consensus::{
         simplex::{
-            signing_scheme::{ed25519::Certificate, utils::Signers},
+            signing_scheme::utils::Signers,
             types::{Finalization, Proposal},
         },
         types::Round,
     };
-    use commonware_cryptography::ed25519::PrivateKey;
-    use commonware_cryptography::{PrivateKeyExt, Signer};
+    use commonware_cryptography::bls12381::primitives::{
+        group::{Element, G2},
+        variant::MinPk,
+    };
     use ssz::Decode;
 
     fn create_test_public_key(seed: u8) -> PublicKey {
@@ -480,28 +482,33 @@ mod test {
             payload: header.digest,
         };
 
-        // Create valid signatures for the certificate
-        let signer1 = PrivateKey::from_seed(0);
-        let sig1 = signer1.sign(None, header.digest.as_ref());
-
-        let signer2 = PrivateKey::from_seed(1);
-        let sig2 = signer2.sign(None, header.digest.as_ref());
-
+        // Use BLS certificate
+        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let finalized = Finalization {
             proposal,
-            certificate: Certificate {
-                signers: Signers::from(3, [0, 2]), // 2 signers out of 3 participants
-                signatures: vec![sig1, sig2],
+            certificate: BlsCertificate {
+                signers: Signers::from(3, [0, 1, 2]),
+                signature: G2::one(),
             },
         };
 
-        let finalized_header = FinalizedHeader::<ed25519::Scheme>::new(header.clone(), finalized);
+        let finalized_header = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::new(
+            header.clone(),
+            finalized,
+            3,
+        );
 
         let encoded = finalized_header.encode();
-        let decoded = FinalizedHeader::<ed25519::Scheme>::decode(encoded).unwrap();
+        let decoded =
+            FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::decode(encoded)
+                .unwrap();
 
         assert_eq!(finalized_header.finalization, decoded.finalization);
         assert_eq!(finalized_header.header, decoded.header);
+        assert_eq!(
+            finalized_header.participant_count,
+            decoded.participant_count
+        );
 
         assert_eq!(finalized_header.header, header);
     }
@@ -532,31 +539,27 @@ mod test {
             payload: dummy_digest.into(), // Wrong digest
         };
 
-        // Create some dummy signatures for the certificate
-        let signer1 = PrivateKey::from_seed(0);
-        let sig1 = signer1.sign(None, &dummy_digest);
-
-        let signer2 = PrivateKey::from_seed(1);
-        let sig2 = signer2.sign(None, &dummy_digest);
-
-        let signer3 = PrivateKey::from_seed(2);
-        let sig3 = signer3.sign(None, &dummy_digest);
-
+        // Use BLS certificate with wrong payload
+        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let wrong_finalized = Finalization {
             proposal: wrong_proposal,
-            certificate: Certificate {
-                signers: Signers::from(5, [0, 2, 4]), // 3 signers out of 5 participants
-                signatures: vec![sig1, sig2, sig3],
+            certificate: BlsCertificate {
+                signers: Signers::from(5, [0, 2, 4]),
+                signature: G2::one(),
             },
         };
 
-        let finalized_header: FinalizedHeader<ed25519::Scheme> = FinalizedHeader {
-            header,
-            finalization: wrong_finalized,
-        };
+        let finalized_header: FinalizedHeader<bls12381_multisig::Scheme<PublicKey, MinPk>> =
+            FinalizedHeader {
+                header,
+                finalization: wrong_finalized,
+                participant_count: 5,
+            };
 
         let encoded = finalized_header.as_ssz_bytes();
-        let result = FinalizedHeader::<ed25519::Scheme>::from_ssz_bytes(&encoded);
+        let result = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::from_ssz_bytes(
+            &encoded,
+        );
 
         assert!(result.is_err());
         println!("{:?}", result);
@@ -589,15 +592,19 @@ mod test {
             payload: header.digest,
         };
 
+        // Use BLS certificate
+        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let finalized = Finalization {
             proposal,
-            certificate: Certificate {
-                signers: Signers::from(0, []),
-                signatures: Vec::new(),
+            certificate: BlsCertificate {
+                signers: Signers::from(4, [0, 1, 2, 3]),
+                signature: G2::one(),
             },
         };
 
-        let finalized_header = FinalizedHeader::<ed25519::Scheme>::new(header, finalized);
+        let finalized_header = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::new(
+            header, finalized, 4,
+        );
 
         let ssz_len = finalized_header.ssz_bytes_len();
         let encode_len = finalized_header.encode_size();
