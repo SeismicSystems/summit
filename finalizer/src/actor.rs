@@ -12,6 +12,7 @@ use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::TwoCap;
+use commonware_codec::{Read as CodecRead, Write as CodecWrite};
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt as _, select};
@@ -237,7 +238,7 @@ impl<
         // Verify withdrawal requests that were included in the block
         // Make sure that the included withdrawals match the expected withdrawals
         let expected_withdrawals: Vec<Withdrawal> =
-            if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+            if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
                 let pending_withdrawals = self.state.get_next_ready_withdrawals(
                     new_height,
                     self.validator_max_withdrawals_per_block,
@@ -331,7 +332,7 @@ impl<
         }
 
         let mut epoch_change = false; // Store finalizes checkpoint to database
-        if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+        if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
             // Increment epoch
             self.state.epoch += 1;
             // Set the epoch genesis hash for the next epoch
@@ -352,7 +353,6 @@ impl<
                     header: block.header.clone(),
                     finalization,
                 };
-                use commonware_codec::{Read as CodecRead, Write as CodecWrite};
                 let mut buf = Vec::new();
                 finalized_header.write(&mut buf);
                 let concrete_header = <FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, V>> as CodecRead>::read_cfg(&mut buf.as_slice(), &())
@@ -781,7 +781,7 @@ impl<
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
-        let aux_data = if is_last_block_of_epoch(height, self.epoch_num_of_blocks) {
+        let aux_data = if is_last_block_of_epoch(self.epoch_num_of_blocks, height) {
             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
             let checkpoint_hash = if let Some(checkpoint) = &self.state.pending_checkpoint {
                 checkpoint.digest
