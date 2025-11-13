@@ -23,7 +23,6 @@ pub struct GenesisConfig {
     skip_timeout_views: u64,
     max_message_size_bytes: u64,
     namespace: String,
-    pub identity: String,
     pub validators: Vec<Validator>,
 }
 
@@ -89,23 +88,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Network polynomial: {}", hex(&polynomial.encode()));
     println!("Network pub key: {}", poly::public::<MinPk>(&polynomial));
 
-    // Read the genesis config
     let mut genesis_config = GenesisConfig::load(&args.genesis_in)?;
-
-    // Update the identity with the hex of the polynomial
-    genesis_config.identity = hex(&polynomial.encode());
     genesis_config.validators = validators;
-
-    // Write the shares we generated
-    for (i, _v) in genesis_config.validators.iter().enumerate() {
-        let node_dir = format!("{}/node{i}", args.out_dir);
-        fs::create_dir_all(&node_dir)?;
-
-        let share_path = Path::new(&node_dir).join("share.pem");
-        let share_hex = hex(&shares[i].encode());
-        fs::write(&share_path, share_hex)?;
-        println!("Node {i}: wrote share to {share_path:?}");
-    }
 
     // Write the updated genesis config
     let updated_genesis = toml::to_string_pretty(&genesis_config)?;
