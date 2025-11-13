@@ -29,7 +29,7 @@ use std::{
     str::FromStr as _,
     thread::JoinHandle,
 };
-use summit::args::{RunFlags, run_node_with_runtime};
+use summit::args::{RunFlags, run_node_with_runtime, run_node_local};
 use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_MINIMUM_STAKE};
 use summit_types::PublicKey;
 use summit_types::reth::Reth;
@@ -182,7 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     executor.start(|node_context| async move {
                         let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_with_runtime(ctx, flags, None).await.unwrap();
+                            run_node_local(ctx, flags, None).await.unwrap();
                         });
 
                         // Wait for stop signal or node completion
