@@ -1,14 +1,8 @@
 use clap::Parser;
-use commonware_codec::{DecodeExt, Encode as _};
-use commonware_cryptography::bls12381::{
-    dkg::ops,
-    primitives::{poly, variant::MinPk},
-};
-use commonware_utils::{from_hex, hex, quorum};
-use rand::rngs::OsRng;
+use commonware_codec::DecodeExt;
+use commonware_utils::from_hex;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
 use summit_types::PublicKey;
 
 const DEFAULT_GENESIS_FILE: &str = "./example_genesis.toml";
@@ -80,13 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let validators = parse_validators(&args.validators_path)?;
     let node_count = validators.len() as u32;
-    let threshold = quorum(node_count);
-
-    let (polynomial, shares) =
-        ops::generate_shares::<_, MinPk>(&mut OsRng, None, node_count, threshold);
-
-    println!("Network polynomial: {}", hex(&polynomial.encode()));
-    println!("Network pub key: {}", poly::public::<MinPk>(&polynomial));
 
     let mut genesis_config = GenesisConfig::load(&args.genesis_in)?;
     genesis_config.validators = validators;
