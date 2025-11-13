@@ -95,8 +95,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .keep_stdout()
                     //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
                     .data_dir(format!("testnet/node{x}/data/reth_db"))
-                    .arg("--authrpc.jwtsecret")
-                    .arg("testnet/jwt.hex")
                     .arg("--enclave.mock-server")
                     .arg("--enclave.endpoint-port")
                     .arg(format!("1744{x}"))
@@ -127,8 +125,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .expect("Failed to write to log file");
                                 }
                             }
-                            Err(_e) => {
-                                //   eprintln!("[Node {}] Error reading line: {}", x, e);
+                            Err(e) => {
+                                eprintln!("[Node {}] Error reading line: {}", x, e);
                             }
                         }
                     }

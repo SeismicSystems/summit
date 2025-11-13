@@ -2,9 +2,9 @@ use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
-#[cfg(debug_assertions)]
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_codec::{DecodeExt as _, Encode, ReadExt as _};
+#[allow(unused)]
+use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_codec::{Read as CodecRead, Write as CodecWrite};
 use commonware_consensus::Reporter;
 use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
@@ -705,6 +705,7 @@ impl<
                     }
                     #[cfg(debug_assertions)]
                     {
+                        use commonware_codec::Encode;
                         let gauge: Gauge = Gauge::default();
                         gauge.set(validator_balance as i64);
                         self.context.register(
