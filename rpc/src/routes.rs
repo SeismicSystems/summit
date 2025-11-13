@@ -33,6 +33,8 @@ impl RpcRoutes {
         let state = Arc::new(state);
 
         Router::new()
+            .route("/health", get(Self::handle_health_check))
+            .route("/get_public_key", get(Self::handle_get_pub_key))
             .route("/send_genesis", post(Self::handle_send_genesis))
             .with_state(state)
     }
