@@ -294,12 +294,12 @@ fn test_deposit_request_top_up() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
-        let deposit_block_height = 5;
-        let withdrawal_block_height = 10;
-        let stop_height = withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + 5;
+        let deposit_block_height1 = 5;
+        let deposit_block_height2 = 10;
+        let stop_height = deposit_block_height2 + VALIDATOR_WITHDRAWAL_PERIOD + 5;
         let mut execution_requests_map = HashMap::new();
-        execution_requests_map.insert(deposit_block_height, requests1);
-        execution_requests_map.insert(withdrawal_block_height, requests2);
+        execution_requests_map.insert(deposit_block_height1, requests1);
+        execution_requests_map.insert(deposit_block_height2, requests2);
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
@@ -387,17 +387,14 @@ fn test_deposit_request_top_up() {
                         continue;
                     }
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
-                        let creds =
-                            common::parse_metric_substring(metric, "creds").expect("creds missing");
-                        assert_eq!(creds, hex::encode(test_deposit1.withdrawal_credentials));
-                        assert_eq!(ed_pubkey_hex, test_deposit1.node_pubkey.to_string());
-                        // The amount from both deposits should be added to the validator balance
-                        assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
-                        processed_requests.insert(metric.to_string());
-                    } else {
-                        println!("{}: {} (failed to parse pubkey)", metric, value);
-                    }
+                    let ed_pubkey_hex = common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
+                    let creds =
+                        common::parse_metric_substring(metric, "creds").expect("creds missing");
+                    assert_eq!(creds, hex::encode(test_deposit1.withdrawal_credentials));
+                    assert_eq!(ed_pubkey_hex, test_deposit1.node_pubkey.to_string());
+                    // The amount from both deposits should be added to the validator balance
+                    assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
+                    processed_requests.insert(metric.to_string());
                 }
                 if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
