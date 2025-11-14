@@ -60,20 +60,22 @@ impl PathSender {
 
 pub struct GenesisRpcState {
     genesis: PathSender,
+    key_path: String,
 }
 
 impl GenesisRpcState {
-    pub fn new(genesis: PathSender) -> Self {
-        Self { genesis }
+    pub fn new(genesis: PathSender, key_path: String) -> Self {
+        Self { genesis, key_path }
     }
 }
 
 pub async fn start_rpc_server_for_genesis(
     genesis: PathSender,
+    key_path: String,
     port: u16,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let state = GenesisRpcState::new(genesis);
+    let state = GenesisRpcState::new(genesis, key_path);
 
     let server = RpcRoutes::mount_for_genesis(state);
 
