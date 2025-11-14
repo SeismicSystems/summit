@@ -397,6 +397,7 @@ where
         let recovered_sc = recovered_mux.register(epoch).await.unwrap();
         let resolver_sc = resolver_mux.register(epoch).await.unwrap();
 
+        info!("orchestrator: starting Simplex engine for epoch {}", epoch);
         engine.start(pending_sc, recovered_sc, resolver_sc)
     }
 }

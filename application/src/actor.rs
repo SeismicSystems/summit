@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 use summit_finalizer::FinalizerMailbox;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::histogram;
@@ -146,7 +146,8 @@ impl<
                             parent,
                             mut response,
                         } => {
-                            info!("{rand_id} Handling message Propose round: {}", round);
+                            debug!("{rand_id} application: Handling message Propose for round {} (epoch {}, view {}), parent height: {}",
+                                round, round.epoch(), round.view(), parent.0);
 
                             let built = self.built_block.clone();
                             select! {
@@ -196,7 +197,8 @@ impl<
                             payload,
                             mut response,
                         } => {
-                            info!("{rand_id} Handling message Verify round: {}", round);
+                            debug!("{rand_id} application: Handling message Verify for round {} (epoch {}, view {}), parent height: {}",
+                                round, round.epoch(), round.view(), parent.0);
 
                             // Subscribe to blocks (will wait for them if not available)
                             let parent_request = if parent.1 == self.genesis_hash.into() {
