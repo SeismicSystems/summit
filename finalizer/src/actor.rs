@@ -317,6 +317,8 @@ impl<
             self.context.register("height", "chain height", gauge);
         }
         self.state.set_latest_height(new_height);
+        self.state.set_view(block.view());
+        assert_eq!(block.epoch(), self.state.epoch);
 
         // Periodically persist state to database as a blob
         // We build the checkpoint one height before the epoch end which

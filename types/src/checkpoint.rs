@@ -147,6 +147,7 @@ mod tests {
     fn test_checkpoint_ssz_encode_decode_empty() {
         let state = ConsensusState {
             epoch: 0,
+            view: 0,
             latest_height: 10,
             next_withdrawal_index: 100,
             deposit_queue: VecDeque::new(),
@@ -251,6 +252,7 @@ mod tests {
 
         let state = ConsensusState {
             epoch: 0,
+            view: 0,
             latest_height: 1000,
             next_withdrawal_index: 200,
             deposit_queue,
@@ -285,6 +287,7 @@ mod tests {
 
         let state = ConsensusState {
             epoch: 0,
+            view: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -396,6 +399,7 @@ mod tests {
 
         let state = ConsensusState {
             epoch: 0,
+            view: 0,
             latest_height: 2000,
             next_withdrawal_index: 300,
             deposit_queue,
@@ -435,6 +439,7 @@ mod tests {
 
         let state = ConsensusState {
             epoch: 0,
+            view: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -480,6 +485,7 @@ mod tests {
 
         let original_state = ConsensusState {
             epoch: 0,
+            view: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -521,6 +527,7 @@ mod tests {
 
         let original_state = ConsensusState {
             epoch: 0,
+            view: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -603,6 +610,7 @@ mod tests {
 
         let original_state = ConsensusState {
             epoch: 0,
+            view: 0,
             latest_height: 1000,
             next_withdrawal_index: 200,
             deposit_queue,

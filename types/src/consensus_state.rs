@@ -13,6 +13,7 @@ use std::collections::{HashMap, VecDeque};
 #[derive(Clone, Debug, Default)]
 pub struct ConsensusState {
     pub epoch: u64,
+    pub view: u64,
     pub latest_height: u64,
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
@@ -35,6 +36,22 @@ impl ConsensusState {
     }
 
     // State variable operations
+    pub fn get_epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.epoch = epoch;
+    }
+
+    pub fn get_view(&self) -> u64 {
+        self.view
+    }
+
+    pub fn set_view(&mut self, view: u64) {
+        self.view = view;
+    }
+
     pub fn get_latest_height(&self) -> u64 {
         self.latest_height
     }
@@ -43,10 +60,58 @@ impl ConsensusState {
         self.latest_height = height;
     }
 
+    pub fn get_next_withdrawal_index(&self) -> u64 {
+        self.next_withdrawal_index
+    }
+
+    pub fn set_next_withdrawal_index(&mut self, index: u64) {
+        self.next_withdrawal_index = index;
+    }
+
     fn get_and_increment_withdrawal_index(&mut self) -> u64 {
         let current = self.next_withdrawal_index;
         self.next_withdrawal_index += 1;
         current
+    }
+
+    pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
+        self.pending_checkpoint.as_ref()
+    }
+
+    pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
+        self.pending_checkpoint = checkpoint;
+    }
+
+    pub fn get_added_validators(&self) -> &Vec<PublicKey> {
+        &self.added_validators
+    }
+
+    pub fn set_added_validators(&mut self, validators: Vec<PublicKey>) {
+        self.added_validators = validators;
+    }
+
+    pub fn get_removed_validators(&self) -> &Vec<PublicKey> {
+        &self.removed_validators
+    }
+
+    pub fn set_removed_validators(&mut self, validators: Vec<PublicKey>) {
+        self.removed_validators = validators;
+    }
+
+    pub fn get_forkchoice(&self) -> &ForkchoiceState {
+        &self.forkchoice
+    }
+
+    pub fn set_forkchoice(&mut self, forkchoice: ForkchoiceState) {
+        self.forkchoice = forkchoice;
+    }
+
+    pub fn get_epoch_genesis_hash(&self) -> [u8; 32] {
+        self.epoch_genesis_hash
+    }
+
+    pub fn set_epoch_genesis_hash(&mut self, hash: [u8; 32]) {
+        self.epoch_genesis_hash = hash;
     }
 
     // Account operations
@@ -167,6 +232,7 @@ impl ConsensusState {
 impl EncodeSize for ConsensusState {
     fn encode_size(&self) -> usize {
         8 // epoch
+        + 8 // view
         + 8 // latest_height
         + 8 // next_withdrawal_index
         + 4 // deposit_queue length
@@ -193,6 +259,7 @@ impl Read for ConsensusState {
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
         let epoch = buf.get_u64();
+        let view = buf.get_u64();
         let latest_height = buf.get_u64();
         let next_withdrawal_index = buf.get_u64();
 
@@ -258,6 +325,7 @@ impl Read for ConsensusState {
 
         Ok(Self {
             epoch,
+            view,
             latest_height,
             next_withdrawal_index,
             deposit_queue,
@@ -275,6 +343,7 @@ impl Read for ConsensusState {
 impl Write for ConsensusState {
     fn write(&self, buf: &mut impl BufMut) {
         buf.put_u64(self.epoch);
+        buf.put_u64(self.view);
         buf.put_u64(self.latest_height);
         buf.put_u64(self.next_withdrawal_index);
 
@@ -401,6 +470,7 @@ mod tests {
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
         assert_eq!(decoded_state.epoch, original_state.epoch);
+        assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
             decoded_state.next_withdrawal_index,
@@ -429,6 +499,7 @@ mod tests {
         let mut original_state = ConsensusState::default();
 
         original_state.epoch = 7;
+        original_state.view = 123;
         original_state.set_latest_height(42);
         original_state.next_withdrawal_index = 5;
         original_state.epoch_genesis_hash = [42u8; 32];
@@ -454,6 +525,7 @@ mod tests {
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
         assert_eq!(decoded_state.epoch, original_state.epoch);
+        assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
             decoded_state.next_withdrawal_index,
@@ -490,6 +562,7 @@ mod tests {
         let mut state = ConsensusState::default();
 
         state.epoch = 3;
+        state.view = 456;
         state.set_latest_height(42);
         state.next_withdrawal_index = 5;
 
@@ -543,6 +616,7 @@ mod tests {
         // Create a populated ConsensusState
         let mut original_state = ConsensusState::default();
         original_state.epoch = 5;
+        original_state.view = 789;
         original_state.set_latest_height(100);
         original_state.next_withdrawal_index = 42;
         original_state.epoch_genesis_hash = [99u8; 32];
@@ -568,6 +642,7 @@ mod tests {
 
         // Verify the data matches
         assert_eq!(restored_state.epoch, original_state.epoch);
+        assert_eq!(restored_state.view, original_state.view);
         assert_eq!(restored_state.latest_height, original_state.latest_height);
         assert_eq!(
             restored_state.next_withdrawal_index,
