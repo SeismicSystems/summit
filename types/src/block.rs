@@ -186,6 +186,10 @@ impl<C: Signer, V: Variant> Block<C, V> {
     pub fn view(&self) -> u64 {
         self.header.view
     }
+
+    pub fn epoch(&self) -> u64 {
+        self.header.epoch
+    }
 }
 
 impl<C: Signer, V: Variant> ConsensusBlock for Block<C, V> {

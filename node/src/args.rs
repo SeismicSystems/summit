@@ -582,15 +582,13 @@ pub fn run_node_local(
         let key_store_path = flags.key_store_path.clone();
         let rpc_port = flags.rpc_port;
         let stop_signal = context.stopped();
-        let rpc_handle = context
-            .with_label("rpc")
-            .spawn(move |_context| async move {
-                if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
-                {
-                    error!("RPC server failed: {}", e);
-                }
-            });
+        let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+            if let Err(e) =
+                start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
+            {
+                error!("RPC server failed: {}", e);
+            }
+        });
 
         // Wait for any task to error
         if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
