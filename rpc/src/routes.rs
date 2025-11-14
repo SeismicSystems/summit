@@ -49,7 +49,9 @@ impl RpcRoutes {
         Ok(private_key.public_key().to_string())
     }
 
-    async fn handle_get_pub_key_genesis(State(state): State<Arc<GenesisRpcState>>) -> Result<String, String> {
+    async fn handle_get_pub_key_genesis(
+        State(state): State<Arc<GenesisRpcState>>,
+    ) -> Result<String, String> {
         let private_key = Self::read_ed_key_from_path(&state.key_path)?;
 
         Ok(private_key.public_key().to_string())
