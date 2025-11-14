@@ -131,18 +131,13 @@ impl KeySubCmd {
 }
 
 pub fn read_bls_key_from_file(path: &std::path::Path) -> Result<BlsPrivateKey> {
-    println!("Read BLS key: {}", path.display());
-
     if let Err(e) = std::fs::read_to_string(path) {
         println!("Failed to read BLS key: {}", e);
     }
 
     let encoded_pk = std::fs::read_to_string(path)?;
-    println!("Read BLS key 1");
     let key = from_hex_formatted(&encoded_pk).context("Invalid BLS key format")?;
-    println!("Read BLS key 2");
     let pk = BlsPrivateKey::decode(&*key)?;
-    println!("Read BLS key 3");
     Ok(pk)
 }
 
