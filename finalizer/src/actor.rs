@@ -257,6 +257,10 @@ impl<
 
         if payload_status.is_valid()
             && block.payload.payload_inner.withdrawals == expected_withdrawals
+            && self.state.forkchoice.head_block_hash
+                == payload_status
+                    .latest_valid_hash
+                    .expect("All valid payloads have this")
         {
             let eth_hash = block.eth_block_hash();
             info!(
@@ -308,6 +312,10 @@ impl<
                 histogram!("process_execution_requests_duration_millis")
                     .record(process_requests_duration);
             }
+        } else {
+            warn!(
+                "Height: {new_height} contains invalid eth payload. Not executing but keeping part of chain"
+            );
         }
 
         #[cfg(debug_assertions)]

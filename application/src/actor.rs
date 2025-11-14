@@ -442,9 +442,6 @@ impl<
 }
 
 fn handle_verify<K: Signer, V: Variant>(block: &Block<K, V>, parent: Block<K, V>) -> bool {
-    if block.eth_parent_hash() != parent.eth_block_hash() {
-        return false;
-    }
     if block.parent() != parent.digest() {
         return false;
     }

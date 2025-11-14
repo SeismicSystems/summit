@@ -410,7 +410,7 @@ impl EngineClient for MockEngineClient {
         }
 
         // Block is valid - store both status and block data
-        let status = PayloadStatus::new(PayloadStatusEnum::Valid, Some(block_hash));
+        let status = PayloadStatus::new(PayloadStatusEnum::Valid, Some(parent_hash));
         state.known_blocks.insert(block_hash, status.clone());
         state
             .validated_blocks
