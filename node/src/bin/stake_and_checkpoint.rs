@@ -273,13 +273,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Sign with node (ed25519) key
             let node_signature = ed25519_private_key.sign(None, &message);
-            let mut padded_node_signature = [0u8; 96];
-            padded_node_signature[32..96].copy_from_slice(node_signature.as_ref());
+            let node_signature_bytes: [u8; 64] = node_signature.as_ref().try_into().unwrap();
 
             // Sign with consensus (BLS) key
             let consensus_signature = bls_private_key.sign(None, &message);
-            let mut padded_consensus_signature = [0u8; 96];
-            padded_consensus_signature[..96].copy_from_slice(consensus_signature.as_ref());
+            let consensus_signature_slice: &[u8] = consensus_signature.as_ref();
+            let consensus_signature_bytes: [u8; 96] = consensus_signature_slice.try_into().unwrap();
 
             // Convert VALIDATOR_MINIMUM_STAKE (in gwei) to wei
             let deposit_amount = U256::from(amount) * U256::from(1_000_000_000u64); // gwei to wei
@@ -295,8 +294,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &ed25519_pubkey_bytes,
                 &bls_pubkey_bytes,
                 &withdrawal_credentials,
-                &padded_node_signature,
-                &padded_consensus_signature,
+                &node_signature_bytes,
+                &consensus_signature_bytes,
                 0, // nonce
             )
             .await
@@ -491,10 +490,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 flags.bench_block_dir = args.bench_block_dir.clone();
             }
 
-            let signer_path = format!("{}/node{}/data/node_key.pem", args.data_dir, x);
-            let encoded_priv_key = ed25519_private_key.to_string();
-            fs::write(&signer_path, encoded_priv_key).expect("Unable to write private key to disk");
-            flags.key_store_path = signer_path;
+            let node_key_path = format!("{}/node{}/data/node_key.pem", args.data_dir, x);
+            let consensus_key_path = format!("{}/node{}/data/consensus_key.pem", args.data_dir, x);
+
+            // Write node key
+            let encoded_node_key = ed25519_private_key.to_string();
+            fs::write(&node_key_path, encoded_node_key).expect("Unable to write node key to disk");
+
+            // Write consensus key
+            let encoded_consensus_key = bls_private_key.to_string();
+            fs::write(&consensus_key_path, encoded_consensus_key).expect("Unable to write consensus key to disk");
+
+            flags.key_store_path = format!("{}/node{}/data", args.data_dir, x);
             flags.ip = Some("127.0.0.1:26640".to_string());
 
             println!(
@@ -516,7 +523,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 executor.start(|node_context| async move {
                     let node_handle = node_context.clone().spawn(|ctx| async move {
-                        run_node_with_runtime(ctx, flags, Some(checkpoint_state)).await.unwrap();
+                        run_node_local(ctx, flags, Some(checkpoint_state)).await.unwrap();
                     });
 
                     // Wait for stop signal or node completion
@@ -644,7 +651,7 @@ async fn send_deposit_transaction<P>(
     node_pubkey: &[u8; 32],
     consensus_pubkey: &[u8; 48],
     withdrawal_credentials: &[u8; 32],
-    node_signature: &[u8; 96],
+    node_signature: &[u8; 64],
     consensus_signature: &[u8; 96],
     nonce: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -722,7 +729,7 @@ where
     call_data.extend_from_slice(&length_bytes);
     call_data.extend_from_slice(withdrawal_credentials);
 
-    // Node signature (96 bytes ed25519 padded)
+    // Node signature (64 bytes ed25519)
     length_bytes.fill(0);
     length_bytes[28..32].copy_from_slice(&(node_signature.len() as u32).to_be_bytes());
     call_data.extend_from_slice(&length_bytes);
@@ -762,7 +769,7 @@ fn compute_deposit_data_root(
     consensus_pubkey: &[u8; 48],
     withdrawal_credentials: &[u8; 32],
     amount: U256,
-    node_signature: &[u8; 96],
+    node_signature: &[u8; 64],
     consensus_signature: &[u8; 96],
 ) -> [u8; 32] {
     /*
@@ -851,7 +858,7 @@ fn get_node_flags(node: usize) -> RunFlags {
     let path = format!("testnet/node{node}/");
 
     RunFlags {
-        key_store_path: format!("{path}keys"),
+        key_store_path: path.clone(),
         store_path: format!("{path}db"),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,

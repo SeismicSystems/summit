@@ -202,7 +202,19 @@ impl<
                             let parent_request = if parent.1 == self.genesis_hash.into() {
                                 Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
                             } else {
-                                Either::Right(syncer.subscribe(None, parent.1).await)
+                                let parent_round = if parent.0 == 0 {
+                                    // Parent view is 0, which means that this is the first block of the epoch
+                                    // TODO(matthias): verify that the parent view of the first block is always 0 (nullify)
+                                    None
+                                } else {
+                                    Some(Round::new(round.epoch(), parent.0))
+                                };
+                                Either::Right(
+                                    syncer
+                                        .subscribe(parent_round, parent.1)
+                                        .await,
+                                )
+                                //Either::Right(syncer.subscribe(None, parent.1).await)
                             };
                             let block_request = syncer.subscribe(Some(round), payload).await;
 

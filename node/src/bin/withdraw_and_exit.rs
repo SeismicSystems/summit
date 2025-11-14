@@ -29,7 +29,7 @@ use std::{
     str::FromStr as _,
     thread::JoinHandle,
 };
-use summit::args::{RunFlags, run_node_with_runtime, run_node_local};
+use summit::args::{RunFlags, run_node_local};
 use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_MINIMUM_STAKE};
 use summit_types::PublicKey;
 use summit_types::reth::Reth;
