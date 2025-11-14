@@ -257,10 +257,7 @@ impl<
 
         if payload_status.is_valid()
             && block.payload.payload_inner.withdrawals == expected_withdrawals
-            && self.state.forkchoice.head_block_hash
-                == payload_status
-                    .latest_valid_hash
-                    .expect("All valid payloads have this")
+            && self.state.forkchoice.head_block_hash == block.eth_parent_hash()
         {
             let eth_hash = block.eth_block_hash();
             info!(
