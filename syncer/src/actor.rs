@@ -53,8 +53,6 @@ use summit_types::scheme::SchemeProvider;
 const LATEST_KEY: U64 = U64::new(0xFF);
 
 /// The first block height that is present in the [immutable::Archive] of finalized blocks.
-const FIRST_HEIGHT_IN_ARCHIVE: u64 = 1;
-
 /// A pending acknowledgement from the application for processing a block at the contained height/commitment.
 #[pin_project]
 struct PendingAck<B: Block> {
@@ -263,7 +261,8 @@ impl<
         )
         .await
         .expect("failed to initialize application metadata");
-        let last_processed_height = *application_metadata.get(&LATEST_KEY).unwrap_or(&0);
+        // The last processed height is passed in and comes from the finalizer
+        //let last_processed_height = *application_metadata.get(&LATEST_KEY).unwrap_or(&0);
 
         // Create metrics
         #[cfg(feature = "prom")]
@@ -280,7 +279,6 @@ impl<
                 "Processed height of application",
                 processed_height.clone(),
             );
-            let _ = processed_height.try_set(last_processed_height);
 
             // Initialize mailbox
             let (sender, mailbox) = mpsc::channel(config.mailbox_size);
@@ -295,7 +293,7 @@ impl<
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
                     last_processed_round: Round::new(0, 0),
-                    last_processed_height,
+                    last_processed_height: 0,
                     pending_ack: None.into(),
                     tip: 0,
                     block_subscriptions: BTreeMap::new(),
@@ -326,7 +324,7 @@ impl<
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
                     last_processed_round: Round::new(0, 0),
-                    last_processed_height,
+                    last_processed_height: 0,
                     pending_ack: None.into(),
                     tip: 0,
                     block_subscriptions: BTreeMap::new(),
@@ -349,6 +347,8 @@ impl<
         buffer: buffered::Mailbox<K, B>,
         resolver: (mpsc::Receiver<handler::Message<B>>, R),
         sync_height: u64,
+        sync_epoch: u64,
+        sync_view: u64,
     ) -> Handle<()>
     where
         R: Resolver<Key = handler::Request<B>>,
@@ -356,7 +356,15 @@ impl<
     {
         spawn_cell!(
             self.context,
-            self.run(application, buffer, resolver, sync_height).await
+            self.run(
+                application,
+                buffer,
+                resolver,
+                sync_height,
+                sync_epoch,
+                sync_view
+            )
+            .await
         )
     }
 
@@ -367,10 +375,21 @@ impl<
         mut buffer: buffered::Mailbox<K, B>,
         (mut resolver_rx, mut resolver): (mpsc::Receiver<handler::Message<B>>, R),
         sync_height: u64,
+        sync_epoch: u64,
+        sync_view: u64,
     ) where
         R: Resolver<Key = handler::Request<B>>,
         K: PublicKey,
     {
+        self.last_processed_height = sync_height;
+        self.last_processed_round = Round::new(sync_epoch, sync_view);
+        self.tip = sync_height;
+
+        #[cfg(feature = "prom")]
+        {
+            let _ = self.processed_height.try_set(self.last_processed_height);
+        }
+
         // Create a local pool for waiter futures.
         let mut waiters = AbortablePool::<(B::Commitment, B)>::default();
 
@@ -687,7 +706,6 @@ impl<
                                     }
 
                                     // Valid finalization received
-                                    debug!(height, "received finalization");
                                     let _ = response.send(true);
                                     self.finalize(
                                         height,
@@ -1069,7 +1087,6 @@ impl<
             // shrink the size of the gap if finalizations for the requests heights
             // exist. If not, we rely on the recursive digest fetch above.
             let gap_end = std::cmp::max(cursor.height(), gap_start);
-            debug!(gap_start, gap_end, "requesting any finalized blocks");
             for height in gap_start..gap_end {
                 if self.waiting_finalized.insert(height) {
                     resolver.fetch(Request::<B>::Finalized { height }).await;
@@ -1084,9 +1101,11 @@ impl<
     fn identify_gaps(&self) -> Vec<(u64, u64)> {
         let mut remaining = self.max_repair.get();
         let mut gaps = Vec::new();
-        let mut previous_end = FIRST_HEIGHT_IN_ARCHIVE.saturating_sub(1);
+        // Start from last_processed_height since blocks up to that height are already processed
+        let mut previous_end = self.last_processed_height;
+        let ranges: Vec<_> = self.finalized_blocks.ranges().collect();
 
-        for (range_start, range_end) in self.finalized_blocks.ranges() {
+        for (range_start, range_end) in ranges {
             if remaining == 0 {
                 break;
             }
@@ -1102,7 +1121,6 @@ impl<
 
             previous_end = range_end;
         }
-
         gaps
     }
 }

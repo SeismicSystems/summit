@@ -91,6 +91,8 @@ pub struct Engine<
     node_public_key: PublicKey,
     mailbox_size: usize,
     sync_height: u64,
+    sync_epoch: u64,
+    sync_view: u64,
     cancellation_token: CancellationToken,
 }
 
@@ -113,6 +115,8 @@ where
             SummitSchemeProvider::new(private_scalar);
 
         let sync_height = cfg.initial_state.latest_height;
+        let sync_epoch = cfg.initial_state.epoch;
+        let sync_view = cfg.initial_state.view;
 
         let cancellation_token = CancellationToken::new();
 
@@ -230,6 +234,8 @@ where
             node_public_key: cfg.key_store.node_key.public_key(),
             mailbox_size: cfg.mailbox_size,
             sync_height,
+            sync_epoch,
+            sync_view,
             cancellation_token,
         }
     }
@@ -338,6 +344,8 @@ where
             self.buffer_mailbox.clone(),
             (resolver_rx, resolver),
             self.sync_height,
+            self.sync_epoch,
+            self.sync_view,
         );
         // start the orchestrator
         let orchestrator_handle = self.orchestrator.start(

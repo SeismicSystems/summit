@@ -103,8 +103,16 @@ impl<
         // The initial state could be from the genesis or a checkpoint.
         // If we want to load a checkpoint, we have to make sure that the DB is cleared.
         let state = if let Some(state) = db.get_latest_consensus_state().await {
+            info!(
+                "Loading consensus state from database at epoch {} and height {}",
+                state.epoch, state.latest_height
+            );
             state
         } else {
+            info!(
+                "Consensus state not found in database, using provided state with epoch {} and height {} - epoch_num_of_blocks: {}",
+                cfg.initial_state.epoch, cfg.initial_state.latest_height, cfg.epoch_num_of_blocks
+            );
             cfg.initial_state
         };
 
@@ -329,7 +337,7 @@ impl<
         // We build the checkpoint one height before the epoch end which
         // allows the validators to sign the checkpoint hash in the last block
         // of the epoch
-        if is_penultimate_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+        if is_penultimate_block_of_epoch(self.epoch_num_of_blocks, new_height) {
             #[cfg(feature = "prom")]
             let checkpoint_creation_start = Instant::now();
 
@@ -631,7 +639,7 @@ impl<
     }
 
     async fn process_execution_requests(&mut self, block: &Block<S, V>, new_height: u64) {
-        if is_penultimate_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+        if is_penultimate_block_of_epoch(self.epoch_num_of_blocks, new_height) {
             for _ in 0..self.validator_onboarding_limit_per_block {
                 if let Some(request) = self.state.pop_deposit() {
                     let mut validator_balance = 0;
