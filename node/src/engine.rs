@@ -61,7 +61,7 @@ pub const BLOCKS_PER_EPOCH: u64 = 50;
 #[cfg(debug_assertions)]
 pub const BLOCKS_PER_EPOCH: u64 = 10;
 #[cfg(all(not(debug_assertions), not(feature = "e2e")))]
-const BLOCKS_PER_EPOCH: u64 = 1000;
+const BLOCKS_PER_EPOCH: u64 = 10000;
 const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 //
 
