@@ -8,12 +8,11 @@ use axum::{
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::Block as ConsensusBlock;
 use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_cryptography::{Committable, Signer};
-use commonware_cryptography::bls12381::primitives::{group, variant::MinPk};
+use commonware_cryptography::Committable;
 use commonware_utils::{from_hex_formatted, hex};
 use serde::{Deserialize, Serialize};
 use ssz::Encode;
-use summit_types::{PrivateKey, PublicKey, utils::get_expanded_path};
+use summit_types::{KeyPaths, PublicKey, utils::get_expanded_path};
 
 use crate::{GenesisRpcState, PathSender, RpcState};
 
@@ -70,12 +69,11 @@ impl RpcRoutes {
     async fn handle_get_pub_keys<S: Scheme, B: ConsensusBlock + Committable>(
         State(state): State<Arc<RpcState<S, B>>>,
     ) -> Result<String, String> {
-        let consensus_key = Self::read_ed_key_from_path(&state.key_path)?;
-        let share_pubkey = Self::read_share_public_key_from_path(&state.share_path)?;
+        let key_paths = KeyPaths::new(state.key_store_path.clone());
 
         let response = PublicKeysResponse {
-            consensus: consensus_key.public_key().to_string(),
-            share: share_pubkey,
+            consensus: key_paths.consensus_public_key()?,
+            share: key_paths.share_public_key()?,
         };
 
         serde_json::to_string(&response).map_err(|e| format!("Failed to serialize response: {}", e))
@@ -84,40 +82,14 @@ impl RpcRoutes {
     async fn handle_get_pub_keys_genesis(
         State(state): State<Arc<GenesisRpcState>>,
     ) -> Result<String, String> {
-        let consensus_key = Self::read_ed_key_from_path(&state.key_path)?;
-        let share_pubkey = Self::read_share_public_key_from_path(&state.share_path)?;
+        let key_paths = KeyPaths::new(state.key_store_path.clone());
 
         let response = PublicKeysResponse {
-            consensus: consensus_key.public_key().to_string(),
-            share: share_pubkey,
+            consensus: key_paths.consensus_public_key()?,
+            share: key_paths.share_public_key()?,
         };
 
         serde_json::to_string(&response).map_err(|e| format!("Failed to serialize response: {}", e))
-    }
-
-    fn read_ed_key_from_path(key_path: &str) -> Result<PrivateKey, String> {
-        let path = get_expanded_path(key_path).map_err(|_| "unable to get key_path")?;
-        let encoded_pk =
-            std::fs::read_to_string(path).map_err(|_| "Failed to read Private key file")?;
-
-        let key = from_hex_formatted(&encoded_pk).ok_or("Invalid hex format for private key")?;
-        let pk = PrivateKey::decode(&*key).map_err(|_| "unable to decode private key")?;
-
-        Ok(pk)
-    }
-
-    fn read_share_public_key_from_path(share_path: &str) -> Result<String, String> {
-        let path = get_expanded_path(share_path).map_err(|_| "unable to get share_path")?;
-        let encoded_share =
-            std::fs::read_to_string(path).map_err(|_| "Failed to read share file")?;
-
-        let share_bytes = from_hex_formatted(&encoded_share).ok_or("Invalid hex format for share")?;
-        let share = group::Share::decode(&*share_bytes).map_err(|_| "unable to decode share")?;
-
-        // Get the public key from the share and encode it as hex
-        let public_key: group::G1 = share.public::<MinPk>();
-        use commonware_codec::Encode as _;
-        Ok(hex(&public_key.encode()))
     }
 
     async fn handle_get_checkpoint<S: Scheme, B: ConsensusBlock + Committable>(

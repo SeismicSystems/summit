@@ -198,12 +198,9 @@ impl Command {
                 .with_label("rpc_genesis")
                 .spawn(move |_context| async move {
                     let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                    let key_path = format!("{}/consensus_key.pem", key_store_path);
-                    let share_path = format!("{}/share.pem", key_store_path);
                     if let Err(e) = start_rpc_server_for_genesis(
                         genesis_sender,
-                        key_path,
-                        share_path,
+                        key_store_path,
                         rpc_port,
                         cloned_token,
                     )
@@ -393,10 +390,8 @@ impl Command {
             let rpc_port = flags.rpc_port;
             let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                let key_path = format!("{}/consensus_key.pem", key_store_path);
-                let share_path = format!("{}/share.pem", key_store_path);
                 if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_path, share_path, rpc_port, stop_signal).await
+                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
                 {
                     error!("RPC server failed: {}", e);
                 }
@@ -430,10 +425,8 @@ pub fn run_node_local(
             .with_label("rpc_genesis")
             .spawn(move |_context| async move {
                 let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                let key_path = format!("{}/consensus_key.pem", key_store_path);
-                let share_path = format!("{}/share.pem", key_store_path);
                 if let Err(e) =
-                    start_rpc_server_for_genesis(genesis_sender, key_path, share_path, rpc_port, cloned_token)
+                    start_rpc_server_for_genesis(genesis_sender, key_store_path, rpc_port, cloned_token)
                         .await
                 {
                     error!("RPC server failed: {}", e);
@@ -598,10 +591,8 @@ pub fn run_node_local(
         let rpc_port = flags.rpc_port;
         let stop_signal = context.stopped();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            let key_path = format!("{}/consensus_key.pem", key_store_path);
-            let share_path = format!("{}/share.pem", key_store_path);
             if let Err(e) =
-                start_rpc_server(finalizer_mailbox, key_path, share_path, rpc_port, stop_signal).await
+                start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
             {
                 error!("RPC server failed: {}", e);
             }
