@@ -68,7 +68,10 @@ pub struct GenesisRpcState {
 
 impl GenesisRpcState {
     pub fn new(genesis: PathSender, key_store_path: String) -> Self {
-        Self { genesis, key_store_path }
+        Self {
+            genesis,
+            key_store_path,
+        }
     }
 }
 

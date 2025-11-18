@@ -1,7 +1,7 @@
 use crate::{PrivateKey, utils::get_expanded_path};
 use commonware_codec::{DecodeExt, Encode};
-use commonware_cryptography::bls12381::primitives::{group, variant::MinPk};
 use commonware_cryptography::Signer;
+use commonware_cryptography::bls12381::primitives::{group, variant::MinPk};
 use commonware_utils::{from_hex_formatted, hex};
 
 /// Helper struct for managing key paths and loading keys from a key store directory.
@@ -36,23 +36,20 @@ impl KeyPaths {
 
         let key = from_hex_formatted(&encoded_pk)
             .ok_or("Invalid hex format for consensus private key")?;
-        let pk = PrivateKey::decode(&*key)
-            .map_err(|_| "unable to decode consensus private key")?;
+        let pk = PrivateKey::decode(&*key).map_err(|_| "unable to decode consensus private key")?;
 
         Ok(pk)
     }
 
     /// Load the share private key from the key store
     pub fn share_private_key(&self) -> Result<group::Share, String> {
-        let path = get_expanded_path(&self.share_path())
-            .map_err(|_| "unable to get share path")?;
-        let encoded_share = std::fs::read_to_string(path)
-            .map_err(|_| "Failed to read share file")?;
+        let path = get_expanded_path(&self.share_path()).map_err(|_| "unable to get share path")?;
+        let encoded_share =
+            std::fs::read_to_string(path).map_err(|_| "Failed to read share file")?;
 
-        let share_bytes = from_hex_formatted(&encoded_share)
-            .ok_or("Invalid hex format for share")?;
-        let share = group::Share::decode(&*share_bytes)
-            .map_err(|_| "unable to decode share")?;
+        let share_bytes =
+            from_hex_formatted(&encoded_share).ok_or("Invalid hex format for share")?;
+        let share = group::Share::decode(&*share_bytes).map_err(|_| "unable to decode share")?;
 
         Ok(share)
     }

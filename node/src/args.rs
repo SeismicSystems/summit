@@ -425,9 +425,13 @@ pub fn run_node_local(
             .with_label("rpc_genesis")
             .spawn(move |_context| async move {
                 let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                if let Err(e) =
-                    start_rpc_server_for_genesis(genesis_sender, key_store_path, rpc_port, cloned_token)
-                        .await
+                if let Err(e) = start_rpc_server_for_genesis(
+                    genesis_sender,
+                    key_store_path,
+                    rpc_port,
+                    cloned_token,
+                )
+                .await
                 {
                     error!("RPC server failed: {}", e);
                 }
