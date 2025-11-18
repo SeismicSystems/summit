@@ -3,7 +3,7 @@ use alloy_primitives::Address;
 use anyhow::Context;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::bls12381;
-use commonware_utils::from_hex_formatted;
+use commonware_utils::{from_hex, from_hex_formatted};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -46,6 +46,17 @@ pub struct GenesisValidator {
     pub consensus_public_key: String,
     pub ip_address: String,
     pub withdrawal_credentials: String,
+}
+
+impl GenesisValidator {
+    fn ed25519_pubkey(key: &str) -> PublicKey {
+        let pubkey_bytes = from_hex(key).unwrap();
+        PublicKey::decode(&pubkey_bytes[..]).unwrap()
+    }
+
+    pub fn node_pubkey(&self) -> PublicKey {
+        GenesisValidator::ed25519_pubkey(&self.node_public_key)
+    }
 }
 
 #[derive(Debug, Clone)]

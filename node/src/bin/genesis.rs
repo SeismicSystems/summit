@@ -1,10 +1,7 @@
-use alloy_primitives::Address;
 use clap::Parser;
-use commonware_codec::DecodeExt;
-use commonware_utils::from_hex;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use summit_types::PublicKey;
+use summit_types::GenesisValidator;
 
 const DEFAULT_GENESIS_FILE: &str = "./example_genesis.toml";
 
@@ -18,7 +15,7 @@ pub struct GenesisConfig {
     skip_timeout_views: u64,
     max_message_size_bytes: u64,
     namespace: String,
-    pub validators: Vec<Validator>,
+    pub validators: Vec<GenesisValidator>,
 }
 
 impl GenesisConfig {
@@ -26,25 +23,6 @@ impl GenesisConfig {
         let genesis_content = std::fs::read_to_string(path)?;
         let genesis_config: GenesisConfig = toml::from_str(&genesis_content)?;
         Ok(genesis_config)
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Validator {
-    pub node_public_key: String,
-    pub consensus_public_key: String,
-    pub ip_address: String,
-    pub withdrawal_credentials: Address,
-}
-
-impl Validator {
-    fn ed25519_pubkey(key: &str) -> PublicKey {
-        let pubkey_bytes = from_hex(key).unwrap();
-        PublicKey::decode(&pubkey_bytes[..]).unwrap()
-    }
-
-    fn node_pubkey(&self) -> PublicKey {
-        Validator::ed25519_pubkey(&self.node_public_key)
     }
 }
 
@@ -63,9 +41,9 @@ struct Args {
 
 fn parse_validators(
     validators_path: &String,
-) -> Result<Vec<Validator>, Box<dyn std::error::Error>> {
+) -> Result<Vec<GenesisValidator>, Box<dyn std::error::Error>> {
     let rdr = std::fs::File::open(validators_path)?;
-    let mut validators: Vec<Validator> = serde_json::from_reader(rdr)?;
+    let mut validators: Vec<GenesisValidator> = serde_json::from_reader(rdr)?;
     // NOTE: (important!)
     // Sort public keys in the same order we do in summit
     validators.sort_by(|a, b| {
