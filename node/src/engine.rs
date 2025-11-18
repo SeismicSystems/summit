@@ -114,10 +114,6 @@ where
         let scheme_provider: SummitSchemeProvider<S, MinPk> =
             SummitSchemeProvider::new(private_scalar);
 
-        let sync_height = cfg.initial_state.latest_height;
-        let sync_epoch = cfg.initial_state.epoch;
-        let sync_view = cfg.initial_state.view;
-
         let cancellation_token = CancellationToken::new();
 
         // create application
@@ -196,7 +192,7 @@ where
         );
 
         // create finalizer
-        let (finalizer, finalizer_mailbox) = Finalizer::new(
+        let (finalizer, initial_state, finalizer_mailbox) = Finalizer::new(
             context.with_label("finalizer"),
             FinalizerConfig {
                 mailbox_size: cfg.mailbox_size,
@@ -219,6 +215,11 @@ where
             },
         )
         .await;
+        // Initialize the sync variables from the consensus state returned by the finalizer.
+        // This covers the case where the finalizer reads the consensus state from disk.
+        let sync_height = initial_state.latest_height;
+        let sync_epoch = initial_state.epoch;
+        let sync_view = initial_state.view;
 
         Self {
             context,
