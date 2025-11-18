@@ -29,13 +29,13 @@ impl KeyPaths {
 
     /// Load the node private key (ED25519) from the key store
     pub fn node_private_key(&self) -> Result<PrivateKey, String> {
-        let path = get_expanded_path(&self.node_key_path())
-            .map_err(|_| "unable to get node key path")?;
-        let encoded_pk = std::fs::read_to_string(path)
-            .map_err(|_| "Failed to read node private key file")?;
+        let path =
+            get_expanded_path(&self.node_key_path()).map_err(|_| "unable to get node key path")?;
+        let encoded_pk =
+            std::fs::read_to_string(path).map_err(|_| "Failed to read node private key file")?;
 
-        let key = from_hex_formatted(&encoded_pk)
-            .ok_or("Invalid hex format for node private key")?;
+        let key =
+            from_hex_formatted(&encoded_pk).ok_or("Invalid hex format for node private key")?;
         let pk = PrivateKey::decode(&*key).map_err(|_| "unable to decode node private key")?;
 
         Ok(pk)
@@ -43,13 +43,15 @@ impl KeyPaths {
 
     /// Load the consensus private key (BLS share) from the key store
     pub fn consensus_private_key(&self) -> Result<group::Share, String> {
-        let path = get_expanded_path(&self.consensus_key_path()).map_err(|_| "unable to get consensus key path")?;
+        let path = get_expanded_path(&self.consensus_key_path())
+            .map_err(|_| "unable to get consensus key path")?;
         let encoded_share =
             std::fs::read_to_string(path).map_err(|_| "Failed to read consensus key file")?;
 
         let share_bytes =
             from_hex_formatted(&encoded_share).ok_or("Invalid hex format for consensus key")?;
-        let share = group::Share::decode(&*share_bytes).map_err(|_| "unable to decode consensus key")?;
+        let share =
+            group::Share::decode(&*share_bytes).map_err(|_| "unable to decode consensus key")?;
 
         Ok(share)
     }
