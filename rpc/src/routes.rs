@@ -18,8 +18,8 @@ use crate::{GenesisRpcState, PathSender, RpcState};
 
 #[derive(Serialize)]
 struct PublicKeysResponse {
+    node: String,
     consensus: String,
-    share: String,
 }
 
 #[derive(Deserialize)]
@@ -72,8 +72,8 @@ impl RpcRoutes {
         let key_paths = KeyPaths::new(state.key_store_path.clone());
 
         let response = PublicKeysResponse {
+            node: key_paths.node_public_key()?,
             consensus: key_paths.consensus_public_key()?,
-            share: key_paths.share_public_key()?,
         };
 
         serde_json::to_string(&response).map_err(|e| format!("Failed to serialize response: {}", e))
@@ -85,8 +85,8 @@ impl RpcRoutes {
         let key_paths = KeyPaths::new(state.key_store_path.clone());
 
         let response = PublicKeysResponse {
+            node: key_paths.node_public_key()?,
             consensus: key_paths.consensus_public_key()?,
-            share: key_paths.share_public_key()?,
         };
 
         serde_json::to_string(&response).map_err(|e| format!("Failed to serialize response: {}", e))
