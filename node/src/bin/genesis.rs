@@ -31,8 +31,8 @@ impl GenesisConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Validator {
+    pub node_public_key: String,
     pub consensus_public_key: String,
-    pub share_public_key: String,
     pub ip_address: String,
     pub withdrawal_credentials: Address,
 }
@@ -43,8 +43,8 @@ impl Validator {
         PublicKey::decode(&pubkey_bytes[..]).unwrap()
     }
 
-    fn consensus_pubkey(&self) -> PublicKey {
-        Validator::ed25519_pubkey(&self.consensus_public_key)
+    fn node_pubkey(&self) -> PublicKey {
+        Validator::ed25519_pubkey(&self.node_public_key)
     }
 }
 
@@ -69,8 +69,8 @@ fn parse_validators(
     // NOTE: (important!)
     // Sort public keys in the same order we do in summit
     validators.sort_by(|a, b| {
-        let a_pubkey = a.consensus_pubkey();
-        let b_pubkey = b.consensus_pubkey();
+        let a_pubkey = a.node_pubkey();
+        let b_pubkey = b.node_pubkey();
         a_pubkey.partial_cmp(&b_pubkey).unwrap()
     });
     Ok(validators)

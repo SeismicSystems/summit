@@ -18,18 +18,18 @@ impl KeyPaths {
     }
 
     /// Get the path to the node key file (ED25519)
-    pub fn node_path(&self) -> String {
+    pub fn node_key_path(&self) -> String {
         format!("{}/consensus_key.pem", self.0)
     }
 
     /// Get the path to the consensus key file (BLS share)
-    pub fn consensus_path(&self) -> String {
+    pub fn consensus_key_path(&self) -> String {
         format!("{}/share.pem", self.0)
     }
 
     /// Load the node private key (ED25519) from the key store
     pub fn node_private_key(&self) -> Result<PrivateKey, String> {
-        let path = get_expanded_path(&self.node_path())
+        let path = get_expanded_path(&self.node_key_path())
             .map_err(|_| "unable to get node key path")?;
         let encoded_pk = std::fs::read_to_string(path)
             .map_err(|_| "Failed to read node private key file")?;
@@ -43,7 +43,7 @@ impl KeyPaths {
 
     /// Load the consensus private key (BLS share) from the key store
     pub fn consensus_private_key(&self) -> Result<group::Share, String> {
-        let path = get_expanded_path(&self.consensus_path()).map_err(|_| "unable to get consensus key path")?;
+        let path = get_expanded_path(&self.consensus_key_path()).map_err(|_| "unable to get consensus key path")?;
         let encoded_share =
             std::fs::read_to_string(path).map_err(|_| "Failed to read consensus key file")?;
 
