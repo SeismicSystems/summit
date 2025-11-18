@@ -83,6 +83,7 @@ impl<
         cfg: FinalizerConfig<C, O, V>,
     ) -> (
         Self,
+        ConsensusState,
         FinalizerMailbox<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>,
     ) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
@@ -126,7 +127,7 @@ impl<
                 pending_height_notifys: BTreeMap::new(),
                 epoch_num_of_blocks: cfg.epoch_num_of_blocks,
                 db,
-                state,
+                state: state.clone(),
                 validator_max_withdrawals_per_block: cfg.validator_max_withdrawals_per_block,
                 genesis_hash: cfg.genesis_hash,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
@@ -139,6 +140,7 @@ impl<
                 _signer_marker: PhantomData,
                 _variant_marker: PhantomData,
             },
+            state,
             FinalizerMailbox::new(tx),
         )
     }
