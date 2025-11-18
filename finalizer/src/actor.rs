@@ -357,7 +357,6 @@ impl<
 
         let mut epoch_change = false; // Store finalizes checkpoint to database
         if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
-
             if let Some(finalization) = finalization {
                 // The finalized signatures should always be included on the last block
                 // of the epoch. However, there is an edge case, where the block after
