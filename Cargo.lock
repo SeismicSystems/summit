@@ -5677,6 +5677,7 @@ dependencies = [
  "ethereum_ssz",
  "futures",
  "serde",
+ "serde_json",
  "summit-finalizer",
  "summit-types",
  "tokio",

@@ -9,12 +9,19 @@ use commonware_codec::DecodeExt as _;
 use commonware_consensus::Block as ConsensusBlock;
 use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_cryptography::{Committable, Signer};
+use commonware_cryptography::bls12381::primitives::{group, variant::MinPk};
 use commonware_utils::{from_hex_formatted, hex};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use ssz::Encode;
 use summit_types::{PrivateKey, PublicKey, utils::get_expanded_path};
 
 use crate::{GenesisRpcState, PathSender, RpcState};
+
+#[derive(Serialize)]
+struct PublicKeysResponse {
+    consensus: String,
+    share: String,
+}
 
 #[derive(Deserialize)]
 struct ValidatorBalanceQuery {
@@ -32,7 +39,7 @@ impl RpcRoutes {
 
         Router::new()
             .route("/health", get(Self::handle_health_check))
-            .route("/get_public_key", get(Self::handle_get_pub_key::<S, B>))
+            .route("/get_public_keys", get(Self::handle_get_pub_keys::<S, B>))
             .route("/get_checkpoint", get(Self::handle_get_checkpoint::<S, B>))
             .route(
                 "/get_latest_height",
@@ -51,7 +58,7 @@ impl RpcRoutes {
 
         Router::new()
             .route("/health", get(Self::handle_health_check))
-            .route("/get_public_key", get(Self::handle_get_pub_key_genesis))
+            .route("/get_public_keys", get(Self::handle_get_pub_keys_genesis))
             .route("/send_genesis", post(Self::handle_send_genesis))
             .with_state(state)
     }
@@ -60,20 +67,32 @@ impl RpcRoutes {
         "Ok"
     }
 
-    async fn handle_get_pub_key<S: Scheme, B: ConsensusBlock + Committable>(
+    async fn handle_get_pub_keys<S: Scheme, B: ConsensusBlock + Committable>(
         State(state): State<Arc<RpcState<S, B>>>,
     ) -> Result<String, String> {
-        let private_key = Self::read_ed_key_from_path(&state.key_path)?;
+        let consensus_key = Self::read_ed_key_from_path(&state.key_path)?;
+        let share_pubkey = Self::read_share_public_key_from_path(&state.share_path)?;
 
-        Ok(private_key.public_key().to_string())
+        let response = PublicKeysResponse {
+            consensus: consensus_key.public_key().to_string(),
+            share: share_pubkey,
+        };
+
+        serde_json::to_string(&response).map_err(|e| format!("Failed to serialize response: {}", e))
     }
 
-    async fn handle_get_pub_key_genesis(
+    async fn handle_get_pub_keys_genesis(
         State(state): State<Arc<GenesisRpcState>>,
     ) -> Result<String, String> {
-        let private_key = Self::read_ed_key_from_path(&state.key_path)?;
+        let consensus_key = Self::read_ed_key_from_path(&state.key_path)?;
+        let share_pubkey = Self::read_share_public_key_from_path(&state.share_path)?;
 
-        Ok(private_key.public_key().to_string())
+        let response = PublicKeysResponse {
+            consensus: consensus_key.public_key().to_string(),
+            share: share_pubkey,
+        };
+
+        serde_json::to_string(&response).map_err(|e| format!("Failed to serialize response: {}", e))
     }
 
     fn read_ed_key_from_path(key_path: &str) -> Result<PrivateKey, String> {
@@ -85,6 +104,20 @@ impl RpcRoutes {
         let pk = PrivateKey::decode(&*key).map_err(|_| "unable to decode private key")?;
 
         Ok(pk)
+    }
+
+    fn read_share_public_key_from_path(share_path: &str) -> Result<String, String> {
+        let path = get_expanded_path(share_path).map_err(|_| "unable to get share_path")?;
+        let encoded_share =
+            std::fs::read_to_string(path).map_err(|_| "Failed to read share file")?;
+
+        let share_bytes = from_hex_formatted(&encoded_share).ok_or("Invalid hex format for share")?;
+        let share = group::Share::decode(&*share_bytes).map_err(|_| "unable to decode share")?;
+
+        // Get the public key from the share and encode it as hex
+        let public_key: group::G1 = share.public::<MinPk>();
+        use commonware_codec::Encode as _;
+        Ok(hex(&public_key.encode()))
     }
 
     async fn handle_get_checkpoint<S: Scheme, B: ConsensusBlock + Committable>(

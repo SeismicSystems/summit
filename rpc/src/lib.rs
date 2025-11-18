@@ -12,13 +12,15 @@ use tokio_util::sync::CancellationToken;
 
 pub struct RpcState<S: Scheme, B: ConsensusBlock + Committable> {
     key_path: String,
+    share_path: String,
     finalizer_mailbox: FinalizerMailbox<S, B>,
 }
 
 impl<S: Scheme, B: ConsensusBlock + Committable> RpcState<S, B> {
-    pub fn new(key_path: String, finalizer_mailbox: FinalizerMailbox<S, B>) -> Self {
+    pub fn new(key_path: String, share_path: String, finalizer_mailbox: FinalizerMailbox<S, B>) -> Self {
         Self {
             key_path,
+            share_path,
             finalizer_mailbox,
         }
     }
@@ -27,10 +29,11 @@ impl<S: Scheme, B: ConsensusBlock + Committable> RpcState<S, B> {
 pub async fn start_rpc_server<S: Scheme, B: ConsensusBlock + Committable>(
     finalizer_mailbox: FinalizerMailbox<S, B>,
     key_path: String,
+    share_path: String,
     port: u16,
     stop_signal: Signal,
 ) -> anyhow::Result<()> {
-    let state = RpcState::new(key_path, finalizer_mailbox);
+    let state = RpcState::new(key_path, share_path, finalizer_mailbox);
 
     let server = RpcRoutes::mount(state);
 
@@ -64,21 +67,23 @@ impl PathSender {
 pub struct GenesisRpcState {
     genesis: PathSender,
     key_path: String,
+    share_path: String,
 }
 
 impl GenesisRpcState {
-    pub fn new(genesis: PathSender, key_path: String) -> Self {
-        Self { genesis, key_path }
+    pub fn new(genesis: PathSender, key_path: String, share_path: String) -> Self {
+        Self { genesis, key_path, share_path }
     }
 }
 
 pub async fn start_rpc_server_for_genesis(
     genesis: PathSender,
     key_path: String,
+    share_path: String,
     port: u16,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let state = GenesisRpcState::new(genesis, key_path);
+    let state = GenesisRpcState::new(genesis, key_path, share_path);
 
     let server = RpcRoutes::mount_for_genesis(state);
 
