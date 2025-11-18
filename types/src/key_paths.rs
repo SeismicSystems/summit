@@ -1,5 +1,5 @@
 use crate::{PrivateKey, utils::get_expanded_path};
-use commonware_codec::DecodeExt;
+use commonware_codec::{DecodeExt, Encode};
 use commonware_cryptography::bls12381::primitives::{group, variant::MinPk};
 use commonware_cryptography::Signer;
 use commonware_utils::{from_hex_formatted, hex};
@@ -67,7 +67,6 @@ impl KeyPaths {
     pub fn share_public_key(&self) -> Result<String, String> {
         let share = self.share_private_key()?;
         let public_key: group::G1 = share.public::<MinPk>();
-        use commonware_codec::Encode as _;
         Ok(hex(&public_key.encode()))
     }
 }
