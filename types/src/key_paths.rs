@@ -1,13 +1,14 @@
 use crate::{PrivateKey, utils::get_expanded_path};
-use commonware_codec::{DecodeExt, Encode};
+use anyhow::{Context, Result};
+use commonware_codec::DecodeExt;
 use commonware_cryptography::Signer;
-use commonware_cryptography::bls12381::primitives::{group, variant::MinPk};
-use commonware_utils::{from_hex_formatted, hex};
+use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;
+use commonware_utils::from_hex_formatted;
 
 /// Helper struct for managing key paths and loading keys from a key store directory.
 ///
 /// The key store directory should contain:
-/// - `consensus_key.pem`: ED25519 private key for node identity (node key)
+/// - `node_key.pem`: ED25519 private key for node identity (node key)
 /// - `share.pem`: BLS12-381 DKG share (consensus key)
 pub struct KeyPaths(String);
 
@@ -19,7 +20,7 @@ impl KeyPaths {
 
     /// Get the path to the node key file (ED25519)
     pub fn node_key_path(&self) -> String {
-        format!("{}/consensus_key.pem", self.0)
+        format!("{}/node_key.pem", self.0)
     }
 
     /// Get the path to the consensus key file (BLS share)
@@ -29,31 +30,12 @@ impl KeyPaths {
 
     /// Load the node private key (ED25519) from the key store
     pub fn node_private_key(&self) -> Result<PrivateKey, String> {
-        let path =
-            get_expanded_path(&self.node_key_path()).map_err(|_| "unable to get node key path")?;
-        let encoded_pk =
-            std::fs::read_to_string(path).map_err(|_| "Failed to read node private key file")?;
-
-        let key =
-            from_hex_formatted(&encoded_pk).ok_or("Invalid hex format for node private key")?;
-        let pk = PrivateKey::decode(&*key).map_err(|_| "unable to decode node private key")?;
-
-        Ok(pk)
+        self.read_node_key_from_file().map_err(|e| e.to_string())
     }
 
-    /// Load the consensus private key (BLS share) from the key store
-    pub fn consensus_private_key(&self) -> Result<group::Share, String> {
-        let path = get_expanded_path(&self.consensus_key_path())
-            .map_err(|_| "unable to get consensus key path")?;
-        let encoded_share =
-            std::fs::read_to_string(path).map_err(|_| "Failed to read consensus key file")?;
-
-        let share_bytes =
-            from_hex_formatted(&encoded_share).ok_or("Invalid hex format for consensus key")?;
-        let share =
-            group::Share::decode(&*share_bytes).map_err(|_| "unable to decode consensus key")?;
-
-        Ok(share)
+    /// Load the consensus private key (BLS) from the key store
+    pub fn consensus_private_key(&self) -> Result<BlsPrivateKey, String> {
+        self.read_bls_key_from_file().map_err(|e| e.to_string())
     }
 
     /// Get the node public key (ED25519) as a hex string
@@ -64,8 +46,27 @@ impl KeyPaths {
 
     /// Get the consensus public key (BLS) as a hex string
     pub fn consensus_public_key(&self) -> Result<String, String> {
-        let share = self.consensus_private_key()?;
-        let public_key: group::G1 = share.public::<MinPk>();
-        Ok(hex(&public_key.encode()))
+        let private_key = self.consensus_private_key()?;
+        Ok(private_key.public_key().to_string())
+    }
+
+    /// Read the node private key from file (using anyhow::Result for compatibility)
+    pub fn read_node_key_from_file(&self) -> Result<PrivateKey> {
+        let path = get_expanded_path(&self.node_key_path())?;
+        let encoded_pk = std::fs::read_to_string(&path)
+            .context(format!("Failed to read node key from {:?}", path))?;
+        let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for node key")?;
+        let pk = PrivateKey::decode(&*key).context("Unable to decode node private key")?;
+        Ok(pk)
+    }
+
+    /// Read the BLS private key from file (using anyhow::Result for compatibility)
+    pub fn read_bls_key_from_file(&self) -> Result<BlsPrivateKey> {
+        let path = get_expanded_path(&self.consensus_key_path())?;
+        let encoded_pk = std::fs::read_to_string(&path)
+            .context(format!("Failed to read BLS key from {:?}", path))?;
+        let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for BLS key")?;
+        let pk = BlsPrivateKey::decode(&*key).context("Unable to decode BLS private key")?;
+        Ok(pk)
     }
 }
