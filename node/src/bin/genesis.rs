@@ -1,14 +1,9 @@
+use alloy_primitives::Address;
 use clap::Parser;
-use commonware_codec::{DecodeExt, Encode as _};
-use commonware_cryptography::bls12381::{
-    dkg::ops,
-    primitives::{poly, variant::MinPk},
-};
-use commonware_utils::{from_hex, hex, quorum};
-use rand::rngs::OsRng;
+use commonware_codec::DecodeExt;
+use commonware_utils::from_hex;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
 use summit_types::PublicKey;
 
 const DEFAULT_GENESIS_FILE: &str = "./example_genesis.toml";
@@ -23,7 +18,6 @@ pub struct GenesisConfig {
     skip_timeout_views: u64,
     max_message_size_bytes: u64,
     namespace: String,
-    pub identity: String,
     pub validators: Vec<Validator>,
 }
 
@@ -37,14 +31,20 @@ impl GenesisConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Validator {
-    pub public_key: String,
+    pub consensus_public_key: String,
+    pub share_public_key: String,
     pub ip_address: String,
+    pub withdrawal_credentials: Address,
 }
 
 impl Validator {
-    pub fn ed25519_pubkey(&self) -> PublicKey {
-        let pubkey_bytes = from_hex(&self.public_key).unwrap();
+    fn ed25519_pubkey(key: &str) -> PublicKey {
+        let pubkey_bytes = from_hex(key).unwrap();
         PublicKey::decode(&pubkey_bytes[..]).unwrap()
+    }
+
+    fn consensus_pubkey(&self) -> PublicKey {
+        Validator::ed25519_pubkey(&self.consensus_public_key)
     }
 }
 
@@ -56,7 +56,7 @@ struct Args {
     /// output for genesis file
     #[arg(short = 'o', long)]
     out_dir: String,
-    /// Filepath with IP addresses/public keys
+    /// Filepath with IP addresses
     #[arg(short = 'v', long)]
     validators_path: String,
 }
@@ -69,8 +69,8 @@ fn parse_validators(
     // NOTE: (important!)
     // Sort public keys in the same order we do in summit
     validators.sort_by(|a, b| {
-        let a_pubkey = a.ed25519_pubkey();
-        let b_pubkey = b.ed25519_pubkey();
+        let a_pubkey = a.consensus_pubkey();
+        let b_pubkey = b.consensus_pubkey();
         a_pubkey.partial_cmp(&b_pubkey).unwrap()
     });
     Ok(validators)
@@ -81,31 +81,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let validators = parse_validators(&args.validators_path)?;
     let node_count = validators.len() as u32;
-    let threshold = quorum(node_count);
 
-    let (polynomial, shares) =
-        ops::generate_shares::<_, MinPk>(&mut OsRng, None, node_count, threshold);
-
-    println!("Network polynomial: {}", hex(&polynomial.encode()));
-    println!("Network pub key: {}", poly::public::<MinPk>(&polynomial));
-
-    // Read the genesis config
     let mut genesis_config = GenesisConfig::load(&args.genesis_in)?;
-
-    // Update the identity with the hex of the polynomial
-    genesis_config.identity = hex(&polynomial.encode());
     genesis_config.validators = validators;
-
-    // Write the shares we generated
-    for (i, _v) in genesis_config.validators.iter().enumerate() {
-        let node_dir = format!("{}/node{i}", args.out_dir);
-        fs::create_dir_all(&node_dir)?;
-
-        let share_path = Path::new(&node_dir).join("share.pem");
-        let share_hex = hex(&shares[i].encode());
-        fs::write(&share_path, share_hex)?;
-        println!("Node {i}: wrote share to {share_path:?}");
-    }
 
     // Write the updated genesis config
     let updated_genesis = toml::to_string_pretty(&genesis_config)?;
