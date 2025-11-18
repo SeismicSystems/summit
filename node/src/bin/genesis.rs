@@ -56,7 +56,7 @@ struct Args {
     /// output for genesis file
     #[arg(short = 'o', long)]
     out_dir: String,
-    /// Filepath with IP addresses
+    /// Filepath with IP addresses/public keys
     #[arg(short = 'v', long)]
     validators_path: String,
 }
