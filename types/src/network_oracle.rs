@@ -1,23 +1,56 @@
 use commonware_cryptography::PublicKey;
-use commonware_p2p::authenticated::discovery::Oracle;
-use commonware_runtime::{Metrics, Spawner};
+use commonware_p2p::{Blocker, Manager, authenticated::discovery::Oracle};
+use commonware_utils::set::Ordered;
+use std::future::Future;
 
 pub trait NetworkOracle<C: PublicKey>: Send + Sync + 'static {
     fn register(&mut self, index: u64, peers: Vec<C>) -> impl Future<Output = ()> + Send;
 }
 
-pub struct DiscoveryOracle<E: Spawner + Metrics, C: PublicKey> {
-    oracle: Oracle<E, C>,
+#[derive(Clone, Debug)]
+pub struct DiscoveryOracle<C: PublicKey> {
+    oracle: Oracle<C>,
 }
 
-impl<E: Spawner + Metrics, C: PublicKey> DiscoveryOracle<E, C> {
-    pub fn new(oracle: Oracle<E, C>) -> Self {
+impl<C: PublicKey> DiscoveryOracle<C> {
+    pub fn new(oracle: Oracle<C>) -> Self {
         Self { oracle }
     }
 }
 
-impl<E: Spawner + Metrics, C: PublicKey> NetworkOracle<C> for DiscoveryOracle<E, C> {
+impl<C: PublicKey> NetworkOracle<C> for DiscoveryOracle<C> {
     async fn register(&mut self, index: u64, peers: Vec<C>) {
-        self.oracle.register(index, peers).await;
+        self.oracle.update(index, Ordered::from(peers)).await;
+    }
+}
+
+impl<C: PublicKey> Blocker for DiscoveryOracle<C> {
+    type PublicKey = C;
+
+    async fn block(&mut self, public_key: Self::PublicKey) {
+        self.oracle.block(public_key).await
+    }
+}
+
+impl<C: PublicKey> Manager for DiscoveryOracle<C> {
+    type PublicKey = C;
+    type Peers = Ordered<C>;
+
+    fn update(&mut self, id: u64, peers: Self::Peers) -> impl Future<Output = ()> + Send {
+        self.oracle.update(id, peers)
+    }
+
+    async fn peer_set(&mut self, id: u64) -> Option<Ordered<Self::PublicKey>> {
+        self.oracle.peer_set(id).await
+    }
+
+    async fn subscribe(
+        &mut self,
+    ) -> futures::channel::mpsc::UnboundedReceiver<(
+        u64,
+        Ordered<Self::PublicKey>,
+        Ordered<Self::PublicKey>,
+    )> {
+        self.oracle.subscribe().await
     }
 }

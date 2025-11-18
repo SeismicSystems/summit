@@ -1,8 +1,9 @@
-use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
-use crate::test_harness::common::{DummyOracle, get_default_engine_config, get_initial_state};
+use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use alloy_primitives::{Address, hex};
+use commonware_cryptography::bls12381;
 use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_macros::test_traced;
 use commonware_p2p::simulated;
@@ -14,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::PrivateKey;
 use summit_types::execution_request::ExecutionRequest;
+use summit_types::keystore::KeyStore;
 
 use crate::engine::VALIDATOR_WITHDRAWAL_PERIOD;
 
@@ -37,25 +39,35 @@ fn test_deposit_request_single() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: true,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
         network.start();
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -64,7 +76,7 @@ fn test_deposit_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _) = common::create_deposit_request(
+        let (test_deposit, _, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
@@ -90,9 +102,9 @@ fn test_deposit_request_single() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -103,11 +115,11 @@ fn test_deposit_request_single() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -115,11 +127,18 @@ fn test_deposit_request_single() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
         // Poll metrics
         let mut height_reached = HashSet::new();
@@ -149,23 +168,25 @@ fn test_deposit_request_single() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
+                        println!("############################");
+                        println!("{metric}: {}", height_reached.len());
                         height_reached.insert(metric.to_string());
                     }
                 }
 
                 if metric.ends_with("validator_balance") {
                     let value = value.parse::<u64>().unwrap();
+                    //println!("*********************************");
+                    //println!("{metric}: size: {}", processed_requests.len());
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
-                        let creds =
-                            common::parse_metric_substring(metric, "creds").expect("creds missing");
-                        assert_eq!(creds, hex::encode(test_deposit.withdrawal_credentials));
-                        assert_eq!(pubkey_hex, test_deposit.pubkey.to_string());
-                        assert_eq!(value, test_deposit.amount);
-                        processed_requests.insert(metric.to_string());
-                    } else {
-                        println!("{}: {} (failed to parse pubkey)", metric, value);
-                    }
+                    let pubkey_hex =
+                        common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
+                    let creds =
+                        common::parse_metric_substring(metric, "creds").expect("creds missing");
+                    assert_eq!(creds, hex::encode(test_deposit.withdrawal_credentials));
+                    assert_eq!(pubkey_hex, test_deposit.node_pubkey.to_string());
+                    assert_eq!(value, test_deposit.amount);
+                    processed_requests.insert(metric.to_string());
                 }
                 if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
@@ -210,6 +231,8 @@ fn test_deposit_request_top_up() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -217,20 +240,28 @@ fn test_deposit_request_top_up() {
         network.start();
 
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         // Create the engine clients
         let genesis_hash =
@@ -240,14 +271,14 @@ fn test_deposit_request_top_up() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit1, private_key) = common::create_deposit_request(
+        let (test_deposit1, private_key, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
             None,
         );
-        let (test_deposit2, _) = common::create_deposit_request(
+        let (test_deposit2, _, _) = common::create_deposit_request(
             2,
             10_000_000_000,
             common::get_domain(),
@@ -263,12 +294,12 @@ fn test_deposit_request_top_up() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
-        let deposit_block_height = 5;
-        let withdrawal_block_height = 10;
-        let stop_height = withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + 5;
+        let deposit_block_height1 = 5;
+        let deposit_block_height2 = 10;
+        let stop_height = deposit_block_height2 + VALIDATOR_WITHDRAWAL_PERIOD + 5;
         let mut execution_requests_map = HashMap::new();
-        execution_requests_map.insert(deposit_block_height, requests1);
-        execution_requests_map.insert(withdrawal_block_height, requests2);
+        execution_requests_map.insert(deposit_block_height1, requests1);
+        execution_requests_map.insert(deposit_block_height2, requests2);
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
@@ -279,9 +310,9 @@ fn test_deposit_request_top_up() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -292,11 +323,11 @@ fn test_deposit_request_top_up() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -304,11 +335,18 @@ fn test_deposit_request_top_up() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -349,17 +387,15 @@ fn test_deposit_request_top_up() {
                         continue;
                     }
                     // Parse the pubkey from the metric name using helper function
-                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
-                        let creds =
-                            common::parse_metric_substring(metric, "creds").expect("creds missing");
-                        assert_eq!(creds, hex::encode(test_deposit1.withdrawal_credentials));
-                        assert_eq!(ed_pubkey_hex, test_deposit1.pubkey.to_string());
-                        // The amount from both deposits should be added to the validator balance
-                        assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
-                        processed_requests.insert(metric.to_string());
-                    } else {
-                        println!("{}: {} (failed to parse pubkey)", metric, value);
-                    }
+                    let ed_pubkey_hex =
+                        common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
+                    let creds =
+                        common::parse_metric_substring(metric, "creds").expect("creds missing");
+                    assert_eq!(creds, hex::encode(test_deposit1.withdrawal_credentials));
+                    assert_eq!(ed_pubkey_hex, test_deposit1.node_pubkey.to_string());
+                    // The amount from both deposits should be added to the validator balance
+                    assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
+                    processed_requests.insert(metric.to_string());
                 }
                 if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                     success = true;
@@ -407,6 +443,8 @@ fn test_deposit_and_withdrawal_request_single() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -414,20 +452,28 @@ fn test_deposit_and_withdrawal_request_single() {
         network.start();
 
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         // Create the engine clients
         let genesis_hash =
@@ -437,7 +483,7 @@ fn test_deposit_and_withdrawal_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _) = common::create_deposit_request(
+        let (test_deposit, _, _) = common::create_deposit_request(
             n as u64, // use a private key seed that doesn't exist on the consensus state
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
@@ -448,7 +494,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.pubkey.as_ref().try_into().unwrap(),
+            test_deposit.node_pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount,
         );
 
@@ -460,13 +506,13 @@ fn test_deposit_and_withdrawal_request_single() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
-        // The deposit request will be processed after 10 blocks because `EPOCH_NUM_BLOCKS`
+        // The deposit request will be processed after 10 blocks because `BLOCKS_PER_EPOCH`
         // is set to 10 in debug mode.
         // The withdrawal request should be added after block 10, otherwise it will be ignored, because
         // the account doesn't exist yet.
         let deposit_block_height = 5;
         let withdrawal_block_height = 11;
-        let stop_height = withdrawal_block_height + EPOCH_NUM_BLOCKS + 1;
+        let stop_height = withdrawal_block_height + BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -479,9 +525,9 @@ fn test_deposit_and_withdrawal_request_single() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -492,11 +538,11 @@ fn test_deposit_and_withdrawal_request_single() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -504,11 +550,18 @@ fn test_deposit_and_withdrawal_request_single() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -549,7 +602,7 @@ fn test_deposit_and_withdrawal_request_single() {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_withdrawal.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
+                        assert_eq!(ed_pubkey_hex, test_deposit.node_pubkey.to_string());
                         assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
                         processed_requests.insert(metric.to_string());
                     } else {
@@ -572,9 +625,8 @@ fn test_deposit_and_withdrawal_request_single() {
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
-                / EPOCH_NUM_BLOCKS;
-        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS;
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
+        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&(withdrawal_height))
             .expect("missing withdrawal");
@@ -615,6 +667,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -622,20 +676,28 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         network.start();
 
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         // Create the engine clients
         let genesis_hash =
@@ -645,7 +707,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _) = common::create_deposit_request(
+        let (test_deposit, _, _) = common::create_deposit_request(
             n as u64,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
@@ -656,7 +718,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal1 = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.pubkey.as_ref().try_into().unwrap(),
+            test_deposit.node_pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount / 2,
         );
         let mut test_withdrawal2 = test_withdrawal1.clone();
@@ -673,13 +735,13 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let requests3 = common::execution_requests_to_requests(execution_requests3);
 
         // Create execution requests map (add deposit to block 5)
-        // The deposit request will processed after 10 blocks because `EPOCH_NUM_BLOCKS`
+        // The deposit request will processed after 10 blocks because `BLOCKS_PER_EPOCH`
         // is set to 10 in debug mode.
         // The withdrawal request should be added after block 10, otherwise it will be ignored, because
         // the account doesn't exist yet.
         let deposit_block_height = 5;
         let withdrawal_block_height = 11;
-        let stop_height = withdrawal_block_height + EPOCH_NUM_BLOCKS + 1;
+        let stop_height = withdrawal_block_height + BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -699,9 +761,9 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -712,11 +774,11 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -724,11 +786,18 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -770,7 +839,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                         let creds =
                             common::parse_metric_substring(metric, "creds").expect("creds missing");
                         assert_eq!(creds, hex::encode(test_withdrawal1.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
+                        assert_eq!(ed_pubkey_hex, test_deposit.node_pubkey.to_string());
                         assert_eq!(balance, 0);
                         processed_requests.insert(metric.to_string());
                     } else {
@@ -795,9 +864,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // to the execution layer.
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
-                / EPOCH_NUM_BLOCKS;
-        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS;
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
+        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");
@@ -839,6 +907,8 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -846,20 +916,28 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         network.start();
 
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         // Create the engine clients
         let genesis_hash =
@@ -869,7 +947,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _) = common::create_deposit_request(
+        let (test_deposit, _, _) = common::create_deposit_request(
             n as u64,
             VALIDATOR_MINIMUM_STAKE / 2,
             common::get_domain(),
@@ -880,7 +958,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal = common::create_withdrawal_request(
             withdrawal_address,
-            test_deposit.pubkey.as_ref().try_into().unwrap(),
+            test_deposit.node_pubkey.as_ref().try_into().unwrap(),
             test_deposit.amount,
         );
 
@@ -892,13 +970,13 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         // Create execution requests map (add deposit to block 5)
-        // The deposit request will be processed after 10 blocks because `EPOCH_NUM_BLOCKS`
+        // The deposit request will be processed after 10 blocks because `BLOCKS_PER_EPOCH`
         // is set to 10 in debug mode.
         // The withdrawal request should be added after block 10, otherwise it will be ignored, because
         // the account doesn't exist yet.
         let deposit_block_height = 5;
         let withdrawal_block_height = 11;
-        let stop_height = withdrawal_block_height + EPOCH_NUM_BLOCKS + 1;
+        let stop_height = withdrawal_block_height + BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -912,9 +990,9 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -925,11 +1003,11 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -937,11 +1015,18 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -993,7 +1078,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                     let creds =
                         common::parse_metric_substring(metric, "creds").expect("creds missing");
                     assert_eq!(creds, hex::encode(test_withdrawal.source_address));
-                    assert_eq!(ed_pubkey_hex, test_deposit.pubkey.to_string());
+                    assert_eq!(ed_pubkey_hex, test_deposit.node_pubkey.to_string());
                     assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
                     processed_requests.insert(metric.to_string());
                 }
@@ -1013,9 +1098,8 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD + EPOCH_NUM_BLOCKS - 1)
-                / EPOCH_NUM_BLOCKS;
-        let withdrawal_height = withdrawal_epoch * EPOCH_NUM_BLOCKS;
+            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
+        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");
@@ -1053,6 +1137,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -1060,20 +1146,28 @@ fn test_deposit_and_withdrawal_request_multiple() {
         network.start();
 
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         // Create the engine clients
         let genesis_hash =
@@ -1086,7 +1180,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
         let mut deposit_reqs = HashMap::new();
         let mut withdrawal_reqs = HashMap::new();
         for i in 0..deposit_reqs.len() {
-            let (test_deposit, _) = common::create_deposit_request(
+            let (test_deposit, _, _) = common::create_deposit_request(
                 i as u64,
                 VALIDATOR_MINIMUM_STAKE,
                 common::get_domain(),
@@ -1098,10 +1192,10 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
             let test_withdrawal = common::create_withdrawal_request(
                 withdrawal_address,
-                test_deposit.pubkey.as_ref().try_into().unwrap(),
+                test_deposit.node_pubkey.as_ref().try_into().unwrap(),
                 test_deposit.amount,
             );
-            deposit_reqs.insert(hex::encode(test_deposit.pubkey.clone()), test_deposit);
+            deposit_reqs.insert(hex::encode(test_deposit.node_pubkey.clone()), test_deposit);
             withdrawal_reqs.insert(
                 hex::encode(test_withdrawal.validator_pubkey),
                 test_withdrawal,
@@ -1124,7 +1218,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
         let withdrawal_block_height = 11;
-        let stop_height = withdrawal_block_height + EPOCH_NUM_BLOCKS + 1;
+        let stop_height = withdrawal_block_height + BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -1138,9 +1232,9 @@ fn test_deposit_and_withdrawal_request_multiple() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -1151,11 +1245,11 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -1163,11 +1257,18 @@ fn test_deposit_and_withdrawal_request_multiple() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -1211,7 +1312,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
                     let creds =
                         common::parse_metric_substring(metric, "creds").expect("creds missing");
                     assert_eq!(creds, hex::encode(deposit_req.withdrawal_credentials));
-                    assert_eq!(ed_pubkey_hex, deposit_req.pubkey.to_string());
+                    assert_eq!(ed_pubkey_hex, deposit_req.node_pubkey.to_string());
                     assert_eq!(balance, deposit_req.amount);
                 }
 
@@ -1227,7 +1328,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
                     let balance = value.parse::<u64>().unwrap();
                     assert_eq!(creds, hex::encode(withdrawal_req.source_address));
-                    assert_eq!(ed_pubkey_hex, deposit_req.pubkey.to_string());
+                    assert_eq!(ed_pubkey_hex, deposit_req.node_pubkey.to_string());
                     assert_eq!(balance, deposit_req.amount - withdrawal_req.amount);
                 }
                 if height_reached.len() as u32 >= n {
@@ -1289,25 +1390,35 @@ fn test_deposit_request_invalid_signature() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
         network.start();
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = common::register_validators(&mut oracle, &validators).await;
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
 
         // Link all validators
-        common::link_validators(&mut oracle, &validators, link, None).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -1316,7 +1427,7 @@ fn test_deposit_request_invalid_signature() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (mut test_deposit, _) = common::create_deposit_request(
+        let (mut test_deposit, _, _) = common::create_deposit_request(
             1,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
@@ -1324,15 +1435,16 @@ fn test_deposit_request_invalid_signature() {
             None,
         );
 
-        let (test_deposit2, _) = common::create_deposit_request(
+        let (test_deposit2, _, _) = common::create_deposit_request(
             2,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
             None,
         );
-        // Use signature from another private key
-        test_deposit.signature = test_deposit2.signature;
+        // Use signatures from another private key (to make it invalid)
+        test_deposit.node_signature = test_deposit2.node_signature;
+        test_deposit.consensus_signature = test_deposit2.consensus_signature;
 
         // Convert to ExecutionRequest and then to Requests
         let execution_requests = vec![ExecutionRequest::Deposit(test_deposit.clone())];
@@ -1340,7 +1452,7 @@ fn test_deposit_request_invalid_signature() {
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
-        let stop_height = deposit_block_height + EPOCH_NUM_BLOCKS + 1;
+        let stop_height = deposit_block_height + BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests);
 
@@ -1353,9 +1465,9 @@ fn test_deposit_request_invalid_signature() {
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -1366,11 +1478,11 @@ fn test_deposit_request_invalid_signature() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -1378,11 +1490,18 @@ fn test_deposit_request_invalid_signature() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
         // Poll metrics
         let mut processed_requests = HashSet::new();
@@ -1408,13 +1527,13 @@ fn test_deposit_request_invalid_signature() {
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("deposit_request_invalid_sig") {
+                if metric.ends_with("deposit_request_invalid_node_sig") {
                     let value = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
                     if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let validator_id = common::extract_validator_id(metric)
                             .expect("failed to parse validator id");
-                        assert_eq!(pubkey_hex, test_deposit.pubkey.to_string());
+                        assert_eq!(pubkey_hex, test_deposit.node_pubkey.to_string());
                         processed_requests.insert(validator_id);
                     } else {
                         println!("{}: {} (failed to parse pubkey)", metric, value);

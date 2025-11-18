@@ -1,17 +1,22 @@
-use std::{num::NonZeroU32, time::Duration};
-
-use crate::keys::read_ed_key_from_path;
+use crate::keys::read_keys_from_keystore;
 use anyhow::{Context, Result};
+use commonware_cryptography::Signer;
+use commonware_cryptography::bls12381;
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
+use std::{num::NonZeroU32, time::Duration};
 use summit_types::consensus_state::ConsensusState;
+use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, Genesis, PrivateKey, PublicKey};
+use zeroize::ZeroizeOnDrop;
 /* DEFAULTS */
-pub const PENDING_CHANNEL: u32 = 0;
-pub const RESOLVER_CHANNEL: u32 = 1;
-pub const BROADCASTER_CHANNEL: u32 = 2;
-pub const BACKFILLER_CHANNEL: u32 = 3;
+pub const PENDING_CHANNEL: u64 = 0;
+pub const RECOVERED_CHANNEL: u64 = 1;
+pub const RESOLVER_CHANNEL: u64 = 2;
+pub const ORCHESTRATOR_CHANNEL: u64 = 3;
+pub const BROADCASTER_CHANNEL: u64 = 4;
+pub const BACKFILLER_CHANNEL: u64 = 5;
 pub const MAILBOX_SIZE: usize = 16384;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -23,11 +28,12 @@ pub const MESSAGE_BACKLOG: usize = 16384;
 const BACKFILL_QUOTA: u32 = 10; // in seconds
 const FETCH_RATE_P2P: u32 = 128; // in seconds
 
-pub struct EngineConfig<C: EngineClient, O: NetworkOracle<PublicKey>> {
+pub struct EngineConfig<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
+{
     pub engine_client: C,
     pub partition_prefix: String,
-    pub signer: PrivateKey,
-    pub participants: Vec<PublicKey>,
+    pub key_store: KeyStore<S>,
+    pub participants: Vec<(PublicKey, bls12381::PublicKey)>,
     pub mailbox_size: usize,
     pub backfill_quota: Quota,
     pub deque_size: usize,
@@ -51,12 +57,14 @@ pub struct EngineConfig<C: EngineClient, O: NetworkOracle<PublicKey>> {
     pub initial_state: ConsensusState,
 }
 
-impl<C: EngineClient, O: NetworkOracle<PublicKey>> EngineConfig<C, O> {
+impl<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
+    EngineConfig<C, S, O>
+{
     pub fn get_engine_config(
         engine_client: C,
         oracle: O,
-        signer: PrivateKey,
-        participants: Vec<PublicKey>,
+        key_store: KeyStore<S>,
+        participants: Vec<(PublicKey, bls12381::PublicKey)>,
         db_prefix: String,
         genesis: &Genesis,
         initial_state: ConsensusState,
@@ -64,7 +72,7 @@ impl<C: EngineClient, O: NetworkOracle<PublicKey>> EngineConfig<C, O> {
         Ok(Self {
             engine_client,
             partition_prefix: db_prefix,
-            signer,
+            key_store,
             participants,
             oracle,
             mailbox_size: MAILBOX_SIZE,
@@ -90,14 +98,20 @@ impl<C: EngineClient, O: NetworkOracle<PublicKey>> EngineConfig<C, O> {
     }
 }
 
-pub(crate) fn load_signer(key_path: &str) -> anyhow::Result<PrivateKey> {
-    read_ed_key_from_path(key_path).context("failed to load signer key")
+pub(crate) fn load_key_store(key_store_path: &str) -> Result<KeyStore<PrivateKey>> {
+    match read_keys_from_keystore(key_store_path).context("failed to load key store") {
+        Ok((node_key, consensus_key)) => Ok(KeyStore {
+            node_key,
+            consensus_key,
+        }),
+        Err(e) => Err(e),
+    }
 }
 
-pub(crate) fn expect_signer(key_path: &str) -> PrivateKey {
-    match load_signer(key_path) {
-        Ok(signer) => signer,
-        Err(e) => panic!("Signer error @ path {key_path}: {e}\n"),
+pub(crate) fn expect_key_store(key_store_path: &str) -> KeyStore<PrivateKey> {
+    match load_key_store(key_store_path) {
+        Ok(key_store) => key_store,
+        Err(e) => panic!("Key store error @ path {key_store_path}: {e}\n"),
     }
 }
 
@@ -105,7 +119,7 @@ pub(crate) fn expect_signer(key_path: &str) -> PrivateKey {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::config::expect_signer;
+    use crate::config::expect_key_store;
 
     #[test]
     fn test_expect_keys_node0() {
@@ -114,12 +128,12 @@ mod tests {
             let repo_root = node_crate_dir.parent().unwrap();
             repo_root.join("testnet/node0")
         };
-        expect_signer(&keys_dir.join("key.pem").to_string_lossy());
+        expect_key_store(&keys_dir.to_string_lossy());
     }
 
     #[test]
     #[should_panic]
     fn test_expect_keys_error_msg() {
-        expect_signer("missing-signer.pem");
+        expect_key_store("missing-key-store.pem");
     }
 }

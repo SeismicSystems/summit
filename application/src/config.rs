@@ -1,4 +1,5 @@
 use summit_types::EngineClient;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct ApplicationConfig<C: EngineClient> {
@@ -11,4 +12,6 @@ pub struct ApplicationConfig<C: EngineClient> {
     pub partition_prefix: String,
 
     pub genesis_hash: [u8; 32],
+
+    pub cancellation_token: CancellationToken,
 }

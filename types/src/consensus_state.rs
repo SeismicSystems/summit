@@ -1,16 +1,19 @@
 use crate::PublicKey;
-use crate::account::ValidatorAccount;
+use crate::account::{ValidatorAccount, ValidatorStatus};
 use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::PendingWithdrawal;
 use alloy_eips::eip4895::Withdrawal;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, EncodeSize, Error, Read, Write};
+use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
+use commonware_cryptography::bls12381;
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConsensusState {
+    pub epoch: u64,
+    pub view: u64,
     pub latest_height: u64,
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
@@ -20,17 +23,35 @@ pub struct ConsensusState {
     pub added_validators: Vec<PublicKey>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
+    pub epoch_genesis_hash: [u8; 32],
 }
 
 impl ConsensusState {
     pub fn new(forkchoice: ForkchoiceState) -> Self {
         Self {
             forkchoice,
+            epoch_genesis_hash: forkchoice.head_block_hash.into(),
             ..Default::default()
         }
     }
 
     // State variable operations
+    pub fn get_epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.epoch = epoch;
+    }
+
+    pub fn get_view(&self) -> u64 {
+        self.view
+    }
+
+    pub fn set_view(&mut self, view: u64) {
+        self.view = view;
+    }
+
     pub fn get_latest_height(&self) -> u64 {
         self.latest_height
     }
@@ -39,10 +60,58 @@ impl ConsensusState {
         self.latest_height = height;
     }
 
+    pub fn get_next_withdrawal_index(&self) -> u64 {
+        self.next_withdrawal_index
+    }
+
+    pub fn set_next_withdrawal_index(&mut self, index: u64) {
+        self.next_withdrawal_index = index;
+    }
+
     fn get_and_increment_withdrawal_index(&mut self) -> u64 {
         let current = self.next_withdrawal_index;
         self.next_withdrawal_index += 1;
         current
+    }
+
+    pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
+        self.pending_checkpoint.as_ref()
+    }
+
+    pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
+        self.pending_checkpoint = checkpoint;
+    }
+
+    pub fn get_added_validators(&self) -> &Vec<PublicKey> {
+        &self.added_validators
+    }
+
+    pub fn set_added_validators(&mut self, validators: Vec<PublicKey>) {
+        self.added_validators = validators;
+    }
+
+    pub fn get_removed_validators(&self) -> &Vec<PublicKey> {
+        &self.removed_validators
+    }
+
+    pub fn set_removed_validators(&mut self, validators: Vec<PublicKey>) {
+        self.removed_validators = validators;
+    }
+
+    pub fn get_forkchoice(&self) -> &ForkchoiceState {
+        &self.forkchoice
+    }
+
+    pub fn set_forkchoice(&mut self, forkchoice: ForkchoiceState) {
+        self.forkchoice = forkchoice;
+    }
+
+    pub fn get_epoch_genesis_hash(&self) -> [u8; 32] {
+        self.epoch_genesis_hash
+    }
+
+    pub fn set_epoch_genesis_hash(&mut self, hash: [u8; 32]) {
+        self.epoch_genesis_hash = hash;
     }
 
     // Account operations
@@ -114,11 +183,57 @@ impl ConsensusState {
             .cloned()
             .collect()
     }
+
+    pub fn get_validator_keys(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
+            .validator_accounts
+            .iter()
+            .filter(|(_, acc)| !(acc.status == ValidatorStatus::Inactive))
+            .map(|(v, acc)| {
+                let mut key_bytes = &v[..];
+                let node_public_key =
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let consensus_public_key = acc.consensus_public_key.clone();
+                (node_public_key, consensus_public_key)
+            })
+            .collect();
+        peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        peers
+    }
+
+    pub fn get_active_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
+            .validator_accounts
+            .iter()
+            .filter(|(_, acc)| acc.status == ValidatorStatus::Active)
+            .map(|(v, acc)| {
+                let mut key_bytes = &v[..];
+                let node_public_key =
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let consensus_public_key = acc.consensus_public_key.clone();
+                (node_public_key, consensus_public_key)
+            })
+            .collect();
+        peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        peers
+    }
+
+    pub fn get_active_validators_as<BLS: Clone>(&self) -> Vec<(PublicKey, BLS)>
+    where
+        bls12381::PublicKey: Into<BLS>,
+    {
+        self.get_active_validators()
+            .into_iter()
+            .map(|(pk, bls_pk)| (pk, bls_pk.into()))
+            .collect()
+    }
 }
 
 impl EncodeSize for ConsensusState {
     fn encode_size(&self) -> usize {
-        8 // latest_height
+        8 // epoch
+        + 8 // view
+        + 8 // latest_height
         + 8 // next_withdrawal_index
         + 4 // deposit_queue length
         + self.deposit_queue.iter().map(|req| req.encode_size()).sum::<usize>()
@@ -135,6 +250,7 @@ impl EncodeSize for ConsensusState {
         + 32 // forkchoice.head_block_hash
         + 32 // forkchoice.safe_block_hash
         + 32 // forkchoice.finalized_block_hash
+        + 32 // epoch_genesis_hash
     }
 }
 
@@ -142,6 +258,8 @@ impl Read for ConsensusState {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let epoch = buf.get_u64();
+        let view = buf.get_u64();
         let latest_height = buf.get_u64();
         let next_withdrawal_index = buf.get_u64();
 
@@ -202,7 +320,12 @@ impl Read for ConsensusState {
             finalized_block_hash: finalized_block_hash.into(),
         };
 
+        let mut epoch_genesis_hash = [0u8; 32];
+        buf.copy_to_slice(&mut epoch_genesis_hash);
+
         Ok(Self {
+            epoch,
+            view,
             latest_height,
             next_withdrawal_index,
             deposit_queue,
@@ -212,12 +335,15 @@ impl Read for ConsensusState {
             added_validators,
             removed_validators,
             forkchoice,
+            epoch_genesis_hash,
         })
     }
 }
 
 impl Write for ConsensusState {
     fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64(self.epoch);
+        buf.put_u64(self.view);
         buf.put_u64(self.latest_height);
         buf.put_u64(self.next_withdrawal_index);
 
@@ -261,6 +387,9 @@ impl Write for ConsensusState {
         buf.put_slice(self.forkchoice.head_block_hash.as_slice());
         buf.put_slice(self.forkchoice.safe_block_hash.as_slice());
         buf.put_slice(self.forkchoice.finalized_block_hash.as_slice());
+
+        // Write epoch_genesis_hash
+        buf.put_slice(&self.epoch_genesis_hash);
     }
 }
 
@@ -283,6 +412,7 @@ mod tests {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
+    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
         let mut withdrawal_credentials = [0u8; 32];
@@ -291,11 +421,14 @@ mod tests {
             withdrawal_credentials[12 + i] = index as u8;
         }
 
+        let consensus_key = bls12381::PrivateKey::from_seed(index);
         DepositRequest {
-            pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
+            node_pubkey: PublicKey::decode(&[1u8; 32][..]).unwrap(),
+            consensus_pubkey: consensus_key.public_key(),
             withdrawal_credentials,
             amount,
-            signature: [index as u8; 64],
+            node_signature: [index as u8; 64],
+            consensus_signature: [index as u8; 96],
             index,
         }
     }
@@ -318,7 +451,9 @@ mod tests {
     }
 
     fn create_test_validator_account(index: u64, balance: u64) -> ValidatorAccount {
+        let consensus_key = bls12381::PrivateKey::from_seed(1);
         ValidatorAccount {
+            consensus_public_key: consensus_key.public_key(),
             withdrawal_credentials: Address::from([index as u8; 20]),
             balance,
             pending_withdrawal_amount: 0,
@@ -334,6 +469,8 @@ mod tests {
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
+        assert_eq!(decoded_state.epoch, original_state.epoch);
+        assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
             decoded_state.next_withdrawal_index,
@@ -351,14 +488,21 @@ mod tests {
             decoded_state.validator_accounts.len(),
             original_state.validator_accounts.len()
         );
+        assert_eq!(
+            decoded_state.epoch_genesis_hash,
+            original_state.epoch_genesis_hash
+        );
     }
 
     #[test]
     fn test_serialization_deserialization_populated() {
         let mut original_state = ConsensusState::default();
 
+        original_state.epoch = 7;
+        original_state.view = 123;
         original_state.set_latest_height(42);
         original_state.next_withdrawal_index = 5;
+        original_state.epoch_genesis_hash = [42u8; 32];
 
         let deposit1 = create_test_deposit_request(1, 32000000000);
         let deposit2 = create_test_deposit_request(2, 16000000000);
@@ -380,10 +524,16 @@ mod tests {
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
+        assert_eq!(decoded_state.epoch, original_state.epoch);
+        assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
             decoded_state.next_withdrawal_index,
             original_state.next_withdrawal_index
+        );
+        assert_eq!(
+            decoded_state.epoch_genesis_hash,
+            original_state.epoch_genesis_hash
         );
 
         assert_eq!(decoded_state.deposit_queue.len(), 2);
@@ -411,6 +561,8 @@ mod tests {
     fn test_encode_size_accuracy() {
         let mut state = ConsensusState::default();
 
+        state.epoch = 3;
+        state.view = 456;
         state.set_latest_height(42);
         state.next_withdrawal_index = 5;
 
@@ -463,8 +615,11 @@ mod tests {
     fn test_try_from_checkpoint() {
         // Create a populated ConsensusState
         let mut original_state = ConsensusState::default();
+        original_state.epoch = 5;
+        original_state.view = 789;
         original_state.set_latest_height(100);
         original_state.next_withdrawal_index = 42;
+        original_state.epoch_genesis_hash = [99u8; 32];
 
         // Add some data
         let deposit = create_test_deposit_request(1, 32000000000);
@@ -486,10 +641,16 @@ mod tests {
             .expect("Failed to convert checkpoint back to ConsensusState");
 
         // Verify the data matches
+        assert_eq!(restored_state.epoch, original_state.epoch);
+        assert_eq!(restored_state.view, original_state.view);
         assert_eq!(restored_state.latest_height, original_state.latest_height);
         assert_eq!(
             restored_state.next_withdrawal_index,
             original_state.next_withdrawal_index
+        );
+        assert_eq!(
+            restored_state.epoch_genesis_hash,
+            original_state.epoch_genesis_hash
         );
         assert_eq!(
             restored_state.deposit_queue.len(),

@@ -17,9 +17,9 @@ path = "src/bin/stake_and_checkpoint.rs"
 required-features = ["e2e"]
 
 [[bin]]
-name = "block-fetcher"
-path = "src/bin/block_fetcher.rs"
-required-features = ["bench"]
+name = "withdraw-and-exit"
+path = "src/bin/withdraw_and_exit.rs"
+required-features = ["e2e"]
 
 [[bin]]
 name = "execute-blocks"
@@ -32,6 +32,7 @@ summit-application = { workspace = true, features = [] }
 summit-rpc.workspace = true
 summit-syncer.workspace = true
 summit-finalizer.workspace = true
+summit-orchestrator.workspace = true
 
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true
@@ -70,6 +71,7 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 
+zeroize.workspace = true
 futures.workspace = true
 governor.workspace = true
 http = { workspace = true, optional = true }

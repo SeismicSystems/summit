@@ -18,7 +18,7 @@ use std::{
 use alloy_node_bindings::Reth;
 use clap::Parser;
 use commonware_runtime::{Metrics as _, Runner as _, Spawner as _, tokio};
-use summit::args::{RunFlags, run_node_with_runtime};
+use summit::args::{RunFlags, run_node_local};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -95,8 +95,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .keep_stdout()
                     //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
                     .data_dir(format!("testnet/node{x}/data/reth_db"))
-                    .arg("--authrpc.jwtsecret")
-                    .arg("testnet/jwt.hex")
                     .arg("--enclave.mock-server")
                     .arg("--enclave.endpoint-port")
                     .arg(format!("1744{x}"))
@@ -127,8 +125,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .expect("Failed to write to log file");
                                 }
                             }
-                            Err(_e) => {
-                                //   eprintln!("[Node {}] Error reading line: {}", x, e);
+                            Err(e) => {
+                                eprintln!("[Node {}] Error reading line: {}", x, e);
                             }
                         }
                     }
@@ -167,8 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Start our consensus engine
-                let handle =
-                    run_node_with_runtime(context.with_label(&format!("node{x}")), flags, None);
+                let handle = run_node_local(context.with_label(&format!("node{x}")), flags, None);
                 consensus_handles.push(handle);
             }
 
@@ -193,7 +190,7 @@ fn get_node_flags(node: usize) -> RunFlags {
     let path = format!("testnet/node{node}/");
 
     RunFlags {
-        key_path: format!("{path}key.pem"),
+        key_store_path: path.clone(),
         store_path: format!("{path}db"),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,
@@ -205,6 +202,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(any(feature = "base-bench", feature = "bench"))]
         bench_block_dir: None,
+        checkpoint_path: None,
         ip: None,
     }
 }

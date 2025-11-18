@@ -1,5 +1,8 @@
 pub mod routes;
 use crate::routes::RpcRoutes;
+use commonware_consensus::Block as ConsensusBlock;
+use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_cryptography::Committable;
 use commonware_runtime::signal::Signal;
 use futures::channel::oneshot;
 use std::sync::Mutex;
@@ -7,13 +10,13 @@ use summit_finalizer::FinalizerMailbox;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-pub struct RpcState {
+pub struct RpcState<S: Scheme, B: ConsensusBlock + Committable> {
     key_path: String,
-    finalizer_mailbox: FinalizerMailbox,
+    finalizer_mailbox: FinalizerMailbox<S, B>,
 }
 
-impl RpcState {
-    pub fn new(key_path: String, finalizer_mailbox: FinalizerMailbox) -> Self {
+impl<S: Scheme, B: ConsensusBlock + Committable> RpcState<S, B> {
+    pub fn new(key_path: String, finalizer_mailbox: FinalizerMailbox<S, B>) -> Self {
         Self {
             key_path,
             finalizer_mailbox,
@@ -21,8 +24,8 @@ impl RpcState {
     }
 }
 
-pub async fn start_rpc_server(
-    finalizer_mailbox: FinalizerMailbox,
+pub async fn start_rpc_server<S: Scheme, B: ConsensusBlock + Committable>(
+    finalizer_mailbox: FinalizerMailbox<S, B>,
     key_path: String,
     port: u16,
     stop_signal: Signal,

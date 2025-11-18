@@ -1,26 +1,35 @@
-use crate::{Header, PublicKey, Signature};
+use crate::{Header, PublicKey};
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
 use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, ReadExt as _, Write};
-use commonware_consensus::Block as Bl;
+use commonware_consensus::Block as ConsensusBlock;
 use commonware_consensus::{
     Viewable,
-    simplex::types::{Finalization, Notarization},
+    simplex::{
+        signing_scheme::bls12381_multisig::Scheme,
+        types::{Finalization, Notarization},
+    },
 };
-use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest};
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::{
+    Committable, Digestible, Hasher, Sha256, Signer, ed25519, sha256::Digest,
+};
 use ssz::Encode as _;
+use std::marker::PhantomData;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Block {
+pub struct Block<C: Signer = ed25519::PrivateKey, V: Variant = MinPk> {
     pub header: Header,
     pub payload: ExecutionPayloadV3,
     pub execution_requests: Vec<AlloyBytes>,
+    pub _signer_marker: PhantomData<C>,
+    pub _variant_marker: PhantomData<V>,
 }
 
-impl Block {
+impl<C: Signer, V: Variant> Block<C, V> {
     pub fn eth_block_hash(&self) -> [u8; 32] {
         // if genesis return your own digest
         if self.header.height == 0 {
@@ -42,6 +51,7 @@ impl Block {
         payload: ExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
         block_value: U256,
+        epoch: u64,
         view: u64,
         checkpoint_hash: Option<Digest>,
         prev_epoch_header_hash: Digest,
@@ -72,6 +82,7 @@ impl Block {
             parent,
             height,
             timestamp,
+            epoch,
             view,
             payload_hash,
             execution_request_hash,
@@ -86,6 +97,8 @@ impl Block {
             header,
             payload,
             execution_requests,
+            _signer_marker: PhantomData,
+            _variant_marker: PhantomData,
         }
     }
 
@@ -118,6 +131,8 @@ impl Block {
             header,
             payload,
             execution_requests,
+            _signer_marker: PhantomData,
+            _variant_marker: PhantomData,
         })
     }
 
@@ -132,6 +147,7 @@ impl Block {
             parent: genesis_hash.into(),
             height: 0,
             timestamp: 0,
+            epoch: 0,
             view: 1,
             payload_hash,
             execution_request_hash: [0; 32].into(),
@@ -146,6 +162,8 @@ impl Block {
             header,
             payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
             execution_requests: Default::default(),
+            _signer_marker: PhantomData,
+            _variant_marker: PhantomData,
         }
     }
 
@@ -168,9 +186,13 @@ impl Block {
     pub fn view(&self) -> u64 {
         self.header.view
     }
+
+    pub fn epoch(&self) -> u64 {
+        self.header.epoch
+    }
 }
 
-impl Bl for Block {
+impl<C: Signer, V: Variant> ConsensusBlock for Block<C, V> {
     fn height(&self) -> u64 {
         self.header.height
     }
@@ -180,15 +202,13 @@ impl Bl for Block {
     }
 }
 
-impl Viewable for Block {
-    type View = u64;
-
-    fn view(&self) -> commonware_consensus::simplex::types::View {
+impl<C: Signer, V: Variant> Viewable for Block<C, V> {
+    fn view(&self) -> commonware_consensus::types::View {
         self.header.view
     }
 }
 
-impl ssz::Encode for Block {
+impl<C: Signer, V: Variant> ssz::Encode for Block<C, V> {
     fn is_ssz_fixed_len() -> bool {
         false
     }
@@ -213,7 +233,7 @@ impl ssz::Encode for Block {
     }
 }
 
-impl ssz::Decode for Block {
+impl<C: Signer, V: Variant> ssz::Decode for Block<C, V> {
     fn is_ssz_fixed_len() -> bool {
         false
     }
@@ -235,13 +255,13 @@ impl ssz::Decode for Block {
     }
 }
 
-impl EncodeSize for Block {
+impl<C: Signer, V: Variant> EncodeSize for Block<C, V> {
     fn encode_size(&self) -> usize {
         self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
     }
 }
 
-impl Write for Block {
+impl<C: Signer, V: Variant> Write for Block<C, V> {
     fn write(&self, buf: &mut impl BufMut) {
         let ssz_bytes = &*self.as_ssz_bytes();
         let bytes_len = ssz_bytes.len() as u32;
@@ -251,7 +271,7 @@ impl Write for Block {
     }
 }
 
-impl Read for Block {
+impl<C: Signer, V: Variant> Read for Block<C, V> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
@@ -265,7 +285,7 @@ impl Read for Block {
     }
 }
 
-impl Digestible for Block {
+impl<C: Signer, V: Variant> Digestible for Block<C, V> {
     type Digest = Digest;
 
     fn digest(&self) -> Digest {
@@ -273,7 +293,7 @@ impl Digestible for Block {
     }
 }
 
-impl Committable for Block {
+impl<C: Signer, V: Variant> Committable for Block<C, V> {
     type Commitment = Digest;
 
     fn commitment(&self) -> Digest {
@@ -282,29 +302,30 @@ impl Committable for Block {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notarized {
-    pub proof: Notarization<Signature, Digest>,
-    pub block: Block,
+pub struct Notarized<C: Signer, V: Variant> {
+    pub proof: Notarization<Scheme<C::PublicKey, V>, Digest>,
+    pub block: Block<C, V>,
 }
 
-impl Notarized {
-    pub fn new(proof: Notarization<Signature, Digest>, block: Block) -> Self {
+impl<C: Signer, V: Variant> Notarized<C, V> {
+    pub fn new(proof: Notarization<Scheme<C::PublicKey, V>, Digest>, block: Block<C, V>) -> Self {
         Self { proof, block }
     }
 }
 
-impl Write for Notarized {
+impl<C: Signer, V: Variant> Write for Notarized<C, V> {
     fn write(&self, buf: &mut impl BufMut) {
         self.proof.write(buf);
         self.block.write(buf);
     }
 }
 
-impl Read for Notarized {
+impl<C: Signer, V: Variant> Read for Notarized<C, V> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Notarization::<Signature, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
+        let proof =
+            Notarization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -318,36 +339,37 @@ impl Read for Notarized {
     }
 }
 
-impl EncodeSize for Notarized {
+impl<C: Signer, V: Variant> EncodeSize for Notarized<C, V> {
     fn encode_size(&self) -> usize {
         self.proof.encode_size() + self.block.encode_size()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Finalized {
-    pub proof: Finalization<Signature, Digest>,
-    pub block: Block,
+pub struct Finalized<C: Signer, V: Variant> {
+    pub proof: Finalization<Scheme<C::PublicKey, V>, Digest>,
+    pub block: Block<C, V>,
 }
 
-impl Finalized {
-    pub fn new(proof: Finalization<Signature, Digest>, block: Block) -> Self {
+impl<C: Signer, V: Variant> Finalized<C, V> {
+    pub fn new(proof: Finalization<Scheme<C::PublicKey, V>, Digest>, block: Block<C, V>) -> Self {
         Self { proof, block }
     }
 }
 
-impl Write for Finalized {
+impl<C: Signer, V: Variant> Write for Finalized<C, V> {
     fn write(&self, buf: &mut impl BufMut) {
         self.proof.write(buf);
         self.block.write(buf);
     }
 }
 
-impl Read for Finalized {
+impl<C: Signer, V: Variant> Read for Finalized<C, V> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof = Finalization::<Signature, Digest>::read_cfg(buf, &buf.remaining())?;
+        let proof =
+            Finalization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(buf, &buf.remaining())?;
         let block = Block::read(buf)?;
 
         // Ensure the proof is for the block
@@ -361,16 +383,82 @@ impl Read for Finalized {
     }
 }
 
-impl EncodeSize for Finalized {
+impl<C: Signer, V: Variant> EncodeSize for Finalized<C, V> {
     fn encode_size(&self) -> usize {
         self.proof.encode_size() + self.block.encode_size()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BlockEnvelope {
-    pub block: Block,
-    pub finalized: Option<Finalization<Signature, Digest>>,
+pub struct BlockWithFinalization<C: Signer, V: Variant> {
+    pub block: Block<C, V>,
+    pub finalized: Option<Finalization<Scheme<C::PublicKey, V>, Digest>>,
+}
+
+impl<C: Signer, V: Variant> Digestible for BlockWithFinalization<C, V> {
+    type Digest = Digest;
+
+    fn digest(&self) -> Digest {
+        self.block.header.digest
+    }
+}
+
+impl<C: Signer, V: Variant> Committable for BlockWithFinalization<C, V> {
+    type Commitment = Digest;
+
+    fn commitment(&self) -> Digest {
+        self.block.header.digest
+    }
+}
+
+impl<C: Signer, V: Variant> ConsensusBlock for BlockWithFinalization<C, V> {
+    fn height(&self) -> u64 {
+        self.block.header.height
+    }
+
+    fn parent(&self) -> Self::Commitment {
+        self.block.header.parent
+    }
+}
+
+impl<C: Signer, V: Variant> Read for BlockWithFinalization<C, V> {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
+        let block = Block::<C, V>::read(buf)?;
+        let has_finalized = buf.get_u8();
+        let finalized = if has_finalized == 1 {
+            Some(Finalization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(
+                buf,
+                &buf.remaining(),
+            )?)
+        } else {
+            None
+        };
+        Ok(Self { block, finalized })
+    }
+}
+
+impl<C: Signer, V: Variant> Write for BlockWithFinalization<C, V> {
+    fn write(&self, buf: &mut impl BufMut) {
+        self.block.write(buf);
+        if let Some(ref finalized) = self.finalized {
+            buf.put_u8(1u8);
+            finalized.write(buf);
+        } else {
+            buf.put_u8(0u8);
+        }
+    }
+}
+
+impl<C: Signer, V: Variant> EncodeSize for BlockWithFinalization<C, V> {
+    fn encode_size(&self) -> usize {
+        let mut size = self.block.encode_size() + 1; // +1 for the has_finalized flag
+        if let Some(ref finalized) = self.finalized {
+            size += finalized.encode_size();
+        }
+        size
+    }
 }
 
 #[cfg(test)]
@@ -379,6 +467,8 @@ mod test {
     use alloy_primitives::{Bytes as AlloyBytes, U256, hex};
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
     use commonware_codec::{DecodeExt as _, Encode as _};
+    use commonware_cryptography::bls12381::primitives::variant::MinPk;
+    use commonware_cryptography::ed25519;
 
     fn create_test_public_key(seed: u8) -> PublicKey {
         let test_keys = [
@@ -435,7 +525,7 @@ mod test {
         };
 
         let (added_validators, removed_validators) = create_test_validators();
-        let block = Block::compute_digest(
+        let block = Block::<ed25519::PrivateKey, MinPk>::compute_digest(
             [27u8; 32].into(),
             27,
             2727,
@@ -443,6 +533,7 @@ mod test {
             vec![Default::default()],
             U256::ZERO,
             42,
+            1,
             Some([0u8; 32].into()),
             [0u8; 32].into(),
             added_validators,
@@ -491,6 +582,7 @@ mod test {
             Vec::new(),
             U256::ZERO,
             42,
+            1,
             Some([0u8; 32].into()),
             [0u8; 32].into(),
             added_validators,
@@ -499,23 +591,23 @@ mod test {
 
         let encoded = block.encode();
 
-        let decoded = Block::decode(encoded).unwrap();
+        let decoded = Block::<ed25519::PrivateKey, MinPk>::decode(encoded).unwrap();
 
         assert_eq!(block, decoded);
     }
 
     #[test]
     fn test_serialization() {
-        let block = Block::genesis([0; 32]);
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
 
         let bytes = block.encode();
 
-        Block::decode(bytes).unwrap();
+        Block::<ed25519::PrivateKey, MinPk>::decode(bytes).unwrap();
     }
 
     #[test]
     fn test_block_encode_size() {
-        let block = Block::genesis([0; 32]);
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
 
         let ssz_len = block.ssz_bytes_len();
         let encode_len = block.encode_size();
@@ -532,5 +624,76 @@ mod test {
         // The Write implementation adds a 4-byte length prefix
         assert_eq!(actual_encoded.len(), pure_ssz.len() + 4);
         assert_eq!(actual_encoded.len(), encode_len);
+    }
+
+    #[test]
+    fn test_block_envelope_without_finalization() {
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
+        let envelope = BlockWithFinalization {
+            block: block.clone(),
+            finalized: None,
+        };
+
+        // Test encoding and decoding
+        let encoded = envelope.encode();
+        let decoded =
+            BlockWithFinalization::<ed25519::PrivateKey, MinPk>::decode(encoded.clone()).unwrap();
+
+        // Verify round-trip: encode the decoded value and compare bytes
+        let re_encoded = decoded.encode();
+        assert_eq!(
+            encoded, re_encoded,
+            "Round-trip encoding should be identical"
+        );
+
+        // Verify structure
+        assert!(decoded.finalized.is_none());
+        assert_eq!(envelope.block.header.height, decoded.block.header.height);
+        assert_eq!(
+            envelope.block.header.timestamp,
+            decoded.block.header.timestamp
+        );
+    }
+
+    #[test]
+    fn test_block_envelope_encode_size_without_finalization() {
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
+        let envelope = BlockWithFinalization {
+            block: block.clone(),
+            finalized: None,
+        };
+
+        let encode_size = envelope.encode_size();
+        let actual_encoded = envelope.encode();
+
+        // Size should be block size + 1 byte for the flag
+        assert_eq!(actual_encoded.len(), encode_size);
+        assert_eq!(encode_size, block.encode_size() + 1);
+    }
+
+    #[test]
+    fn test_block_envelope_digestible() {
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
+        let envelope = BlockWithFinalization {
+            block: block.clone(),
+            finalized: None,
+        };
+
+        // BlockEnvelope digest should match the underlying block digest
+        assert_eq!(envelope.digest(), block.digest());
+        assert_eq!(envelope.commitment(), block.commitment());
+    }
+
+    #[test]
+    fn test_block_envelope_consensus_block() {
+        let block = Block::<ed25519::PrivateKey, MinPk>::genesis([0; 32]);
+        let envelope = BlockWithFinalization {
+            block: block.clone(),
+            finalized: None,
+        };
+
+        // BlockEnvelope should expose the same ConsensusBlock properties as the underlying block
+        assert_eq!(envelope.height(), block.height());
+        assert_eq!(envelope.parent(), block.parent());
     }
 }

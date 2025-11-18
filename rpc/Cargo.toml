@@ -15,6 +15,7 @@ tokio-util.workspace = true
 futures.workspace = true
 axum = { version = "0.8.4"}
 summit-types = { workspace = true }
+commonware-consensus = { workspace = true }
 commonware-cryptography = { workspace = true }
 commonware-utils = { workspace = true }
 commonware-codec = { workspace = true }

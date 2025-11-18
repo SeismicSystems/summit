@@ -20,7 +20,7 @@ alloy-provider.workspace = true
 alloy-transport-ipc.workspace = true
 
 futures.workspace = true
-
+zeroize.workspace = true
 # for reth.rs module (e2e feature only)
 alloy-genesis = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
