@@ -1,8 +1,8 @@
-use crate::engine::{EPOCH_NUM_BLOCKS, Engine, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
-use crate::test_harness::common::{DummyOracle, get_default_engine_config, get_initial_state};
+use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
-use commonware_cryptography::{PrivateKeyExt, Signer};
+use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
 use commonware_macros::test_traced;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
@@ -11,13 +11,13 @@ use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
 use commonware_utils::from_hex_formatted;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use summit_types::PrivateKey;
+use summit_types::{PrivateKey, keystore::KeyStore};
 
 #[test_traced("INFO")]
-fn test_node_joins_later_no_checkpoint() {
+fn test_node_joins_later_no_checkpoint_in_genesis() {
     // Creates a network of 5 nodes, and starts only 4 of them.
     // The last node starts after 10 blocks, to ensure that the block backfilling
-    // in the syncer works.
+    // in the syncer_old works.
     let n = 5;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -33,28 +33,41 @@ fn test_node_joins_later_no_checkpoint() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
         network.start();
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
 
         // Separate initial validators from late joiner
         let initial_validators = &validators[..validators.len() - 1];
+        let initial_node_public_keys: Vec<_> = initial_validators
+            .iter()
+            .map(|(pk, _)| pk.clone())
+            .collect();
 
         // Register and link only initial validators
-        let mut registrations = common::register_validators(&mut oracle, initial_validators).await;
-        common::link_validators(&mut oracle, initial_validators, link.clone(), None).await;
+        let mut registrations =
+            common::register_validators(&oracle, &initial_node_public_keys).await;
+        common::link_validators(&mut oracle, &initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -76,11 +89,11 @@ fn test_node_joins_later_no_checkpoint() {
         let mut consensus_state_queries = HashMap::new();
 
         // Start all the engines, except for one
-        let signer_joining_later = signers.pop().unwrap();
+        let key_store_joining_later = key_stores.pop().unwrap();
 
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -91,11 +104,11 @@ fn test_node_joins_later_no_checkpoint() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -103,11 +116,18 @@ fn test_node_joins_later_no_checkpoint() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Wait for the validators to checkpoint
@@ -120,14 +140,14 @@ fn test_node_joins_later_no_checkpoint() {
         };
 
         // Now register and join the final validator to the network
-        let public_key = signer_joining_later.public_key();
+        let public_key = key_store_joining_later.node_key.public_key();
 
         // Register the late joining validator
         let late_registrations =
             common::register_validators(&mut oracle, &[public_key.clone()]).await;
 
         // Join the validator to the network
-        common::join_validator(&mut oracle, &public_key, initial_validators, link).await;
+        common::join_validator(&mut oracle, &public_key, &initial_node_public_keys, link).await;
 
         // Allow p2p connections to establish before starting engine
         context.sleep(Duration::from_millis(100)).await;
@@ -142,25 +162,32 @@ fn test_node_joins_later_no_checkpoint() {
 
         let config = get_default_engine_config(
             engine_client,
-            DummyOracle::default(),
+            SimulatedOracle::new(oracle.clone()),
             uid.clone(),
             genesis_hash,
             namespace,
-            signer_joining_later,
+            key_store_joining_later,
             validators.clone(),
             initial_state, // pass initial state (start from genesis)
         );
         let engine = Engine::new(context.with_label(&uid), config).await;
 
         // Get networking from late registrations
-        let (pending, resolver, broadcast, backfill) =
+        let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
             late_registrations.into_iter().next().unwrap().1;
 
         // Start engine
-        engine.start(pending, resolver, broadcast, backfill);
+        engine.start(
+            pending,
+            recovered,
+            resolver,
+            orchestrator,
+            broadcast,
+            backfill,
+        );
 
         // Poll metrics
-        let stop_height = 2 * EPOCH_NUM_BLOCKS;
+        let stop_height = 2 * BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();
@@ -223,7 +250,7 @@ fn test_node_joins_later_no_checkpoint() {
 fn test_node_joins_later_no_checkpoint_not_in_genesis() {
     // Creates a network of 5 nodes, and starts only 4 of them.
     // The last node starts after 10 blocks, to ensure that the block backfilling
-    // in the syncer works.
+    // in the syncer_old works.
     // In this test the joining node is not included in the list of peers that is passed to the engine.
     let n = 5;
     let link = Link {
@@ -240,28 +267,41 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
         network.start();
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
 
         // Separate initial validators from late joiner
         let initial_validators = &validators[..validators.len() - 1];
+        let initial_node_public_keys: Vec<_> = initial_validators
+            .iter()
+            .map(|(pk, _)| pk.clone())
+            .collect();
 
         // Register and link only initial validators
-        let mut registrations = common::register_validators(&mut oracle, initial_validators).await;
-        common::link_validators(&mut oracle, initial_validators, link.clone(), None).await;
+        let mut registrations =
+            common::register_validators(&oracle, &initial_node_public_keys).await;
+        common::link_validators(&mut oracle, &initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
         let genesis_hash =
             from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
@@ -283,11 +323,11 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         let mut consensus_state_queries = HashMap::new();
 
         // Start all the engines, except for one
-        let signer_joining_later = signers.pop().unwrap();
+        let key_store_joining_later = key_stores.pop().unwrap();
 
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -298,11 +338,11 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 initial_validators.to_vec(),
                 initial_state.clone(),
             );
@@ -310,11 +350,18 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Wait for the validators to checkpoint
@@ -327,14 +374,14 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         };
 
         // Now register and join the final validator to the network
-        let public_key = signer_joining_later.public_key();
+        let public_key = key_store_joining_later.node_key.public_key();
 
         // Register the late joining validator
         let late_registrations =
             common::register_validators(&mut oracle, &[public_key.clone()]).await;
 
         // Join the validator to the network
-        common::join_validator(&mut oracle, &public_key, initial_validators, link).await;
+        common::join_validator(&mut oracle, &public_key, &initial_node_public_keys, link).await;
 
         // Allow p2p connections to establish before starting engine
         context.sleep(Duration::from_millis(100)).await;
@@ -347,29 +394,36 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
 
         let engine_client = engine_client_network.create_client(uid.clone());
 
-        // Joining node uses initial_validators for syncer verification
+        // Joining node uses initial_validators for syncer_old verification
         // since historical blocks were finalized by only those 4 validators
         let config = get_default_engine_config(
             engine_client,
-            DummyOracle::default(),
+            SimulatedOracle::new(oracle.clone()),
             uid.clone(),
             genesis_hash,
             namespace,
-            signer_joining_later,
+            key_store_joining_later,
             initial_validators.to_vec(),
             initial_state, // pass initial state (start from genesis)
         );
         let engine = Engine::new(context.with_label(&uid), config).await;
 
         // Get networking from late registrations
-        let (pending, resolver, broadcast, backfill) =
+        let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
             late_registrations.into_iter().next().unwrap().1;
 
         // Start engine
-        engine.start(pending, resolver, broadcast, backfill);
+        engine.start(
+            pending,
+            recovered,
+            resolver,
+            orchestrator,
+            broadcast,
+            backfill,
+        );
 
         // Poll metrics
-        let stop_height = 2 * EPOCH_NUM_BLOCKS;
+        let stop_height = 2 * BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();

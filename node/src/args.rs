@@ -1,7 +1,8 @@
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RESOLVER_CHANNEL, expect_signer,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG,
+        ORCHESTRATOR_CHANNEL, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL,
+        expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -13,12 +14,12 @@ use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_codec::ReadExt;
 use commonware_utils::from_hex_formatted;
 use futures::{channel::oneshot, future::try_join_all};
 use governor::Quota;
+use ssz::Decode;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::NonZeroU32,
@@ -35,12 +36,13 @@ use crate::engine::VALIDATOR_MINIMUM_STAKE;
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
+use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
+use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::DiscoveryOracle;
-use summit_types::{Genesis, PublicKey, utils::get_expanded_path};
+use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use tracing::{Level, error};
 
-pub const DEFAULT_KEY_PATH: &str = "~/.seismic/consensus/key.pem";
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
 pub const DEFAULT_ENGINE_IPC_PATH: &str = "/tmp/reth_engine_api.ipc";
@@ -71,9 +73,9 @@ pub enum Command {
 
 #[derive(Args, Debug, Clone)]
 pub struct RunFlags {
-    /// Path to your private key or where you want it generated
-    #[arg(long, default_value_t = DEFAULT_KEY_PATH.into())]
-    pub key_path: String,
+    /// Path to your keystore directory containing node_key.pem and consensus_key.pem
+    #[arg(long, default_value_t = String::from("~/.seismic/consensus/keys"))]
+    pub key_store_path: String,
     /// Path to the folder we will keep the consensus DB
     #[arg(long, default_value_t = DEFAULT_DB_FOLDER.into())]
     pub store_path: String,
@@ -116,6 +118,9 @@ pub struct RunFlags {
         default_value_t = String::from("./example_genesis.toml")
     )]
     pub genesis_path: String,
+    /// Path to a checkpoint file
+    #[arg(long)]
+    pub checkpoint_path: Option<String>,
     /// IP address for this node (optional, will use genesis if not provided)
     #[arg(long)]
     pub ip: Option<String>,
@@ -157,8 +162,19 @@ impl Command {
             console_subscriber::init();
         }
 
+        let maybe_checkpoint = flags.checkpoint_path.as_ref().map(|path| {
+            // TODO(matthias): verify the checkpoint
+            let checkpoint_bytes: Vec<u8> =
+                std::fs::read(path).expect("failed to read checkpoint from disk");
+            let checkpoint =
+                Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
+            ConsensusState::try_from(checkpoint)
+                .expect("failed to create consensus state from checkpoint")
+        });
+
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
-        let signer = expect_signer(&flags.key_path);
+        let key_store = expect_key_store(&flags.key_store_path);
+        let signer = key_store.node_key.clone();
 
         // Initialize runtime
         let cfg = tokio::Config::default()
@@ -202,24 +218,16 @@ impl Command {
             let genesis =
                 Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
-            let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
-                .validators
-                .iter()
-                .map(|v| v.try_into().expect("Invalid validator in genesis"))
-                .collect();
-            committee.sort();
+            let mut committee: Vec<Validator> =
+                genesis.get_validators().expect("Failed to get validators");
+            committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
 
-            let initial_state = get_initial_state(&genesis, &committee, None);
-            let mut peers: Vec<PublicKey> = initial_state
-                .validator_accounts
-                .iter()
-                .filter(|(_, acc)| !(acc.status == ValidatorStatus::Inactive))
-                .map(|(v, _)| {
-                    let mut key_bytes = &v[..];
-                    PublicKey::read(&mut key_bytes).expect("failed to parse public key")
-                })
-                .collect();
-            peers.sort();
+            let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+                .map(|hash_bytes| hash_bytes.try_into())
+                .expect("bad eth_genesis_hash")
+                .expect("bad eth_genesis_hash");
+            let initial_state = get_initial_state(genesis_hash, &committee, maybe_checkpoint);
+            let peers = initial_state.get_validator_keys();
 
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
                 .expect("failed to expand engine ipc path");
@@ -258,27 +266,20 @@ impl Command {
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-            let our_ip = if let Some(ref ip_str) = flags.ip {
-                ip_str
-                    .parse::<SocketAddr>()
-                    .expect("Invalid IP address format")
-            } else {
-                committee
-                    .iter()
-                    .find_map(|v| {
-                        if v.0 == signer.public_key() {
-                            Some(v.1)
-                        } else {
-                            None
-                        }
-                    })
-                    .expect("This node is not on the committee")
-            };
+            let our_ip = get_node_ip(flags, &key_store, &committee);
+
+            let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
+                .into_iter()
+                .map(|v| (v.node_public_key, v.ip_address))
+                .collect();
 
             let our_public_key = signer.public_key();
-            if !committee.iter().any(|(key, _)| key == &our_public_key) {
-                committee.push((our_public_key, our_ip));
-                committee.sort();
+            if !network_committee
+                .iter()
+                .any(|(key, _)| key == &our_public_key)
+            {
+                network_committee.push((our_public_key, our_ip));
+                network_committee.sort();
             }
 
             // Configure telemetry
@@ -315,28 +316,25 @@ impl Command {
             }
 
             // configure network
-            let mut p2p_cfg = authenticated::discovery::Config::aggressive(
+            let mut p2p_cfg = authenticated::discovery::Config::recommended(
                 signer.clone(),
                 genesis.namespace.as_bytes(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
                 our_ip,
-                committee.clone(),
+                network_committee.clone(),
                 genesis.max_message_size_bytes as usize,
             );
             p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
             // Start p2p
-            let (mut network, mut oracle) =
+            let (mut network, oracle) =
                 authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
-
-            // Provide authorized peers
-            oracle.register(0, peers.clone()).await;
 
             let oracle = DiscoveryOracle::new(oracle);
             let config = EngineConfig::get_engine_config(
                 engine_client,
                 oracle,
-                signer,
+                key_store,
                 peers,
                 flags.db_prefix.clone(),
                 &genesis,
@@ -345,12 +343,21 @@ impl Command {
             .unwrap();
 
             // Register pending channel
-            let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
+            let pending_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
             let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
+            // Register recovered channel
+            let recovered_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
+
             // Register resolver channel
-            let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
+            let resolver_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
             let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
+
+            // Register orchestrator channel
+            let orchestrator_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let orchestrator =
+                network.register(ORCHESTRATOR_CHANNEL, orchestrator_limit, MESSAGE_BACKLOG);
 
             // Register broadcast channel
             let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
@@ -363,20 +370,28 @@ impl Command {
             // Create network
             let p2p = network.start();
             // create engine
-            let engine = Engine::new(context.with_label("engine"), config).await;
+            let engine: Engine<_, _, _, _> =
+                Engine::new(context.with_label("engine"), config).await;
 
             let finalizer_mailbox = engine.finalizer_mailbox.clone();
 
             // Start engine
-            let engine = engine.start(pending, resolver, broadcaster, backfiller);
+            let engine = engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcaster,
+                backfiller,
+            );
 
             // Start RPC server
-            let key_path = flags.key_path.clone();
+            let key_store_path = flags.key_store_path.clone();
             let rpc_port = flags.rpc_port;
             let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
                 if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_path, rpc_port, stop_signal).await
+                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
                 {
                     error!("RPC server failed: {}", e);
                 }
@@ -390,13 +405,13 @@ impl Command {
     }
 }
 
-pub fn run_node_with_runtime(
+pub fn run_node_local(
     context: tokio::Context,
     flags: RunFlags,
     checkpoint: Option<ConsensusState>,
 ) -> Handle<()> {
     context.spawn(async move |context| {
-        let signer = expect_signer(&flags.key_path);
+        let key_store = expect_key_store(&flags.key_store_path);
 
         let (genesis_tx, genesis_rx) = oneshot::channel();
 
@@ -426,24 +441,16 @@ pub fn run_node_with_runtime(
         let genesis =
             Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
 
-        let mut committee: Vec<(PublicKey, SocketAddr)> = genesis
-            .validators
-            .iter()
-            .map(|v| v.try_into().expect("Invalid validator in genesis"))
-            .collect();
-        committee.sort();
+        let mut committee: Vec<Validator> =
+            genesis.get_validators().expect("Failed to get validators");
+        committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
 
-        let initial_state = get_initial_state(&genesis, &committee, checkpoint);
-        let mut peers: Vec<PublicKey> = initial_state
-            .validator_accounts
-            .iter()
-            .filter(|(_, acc)| !(acc.status == ValidatorStatus::Inactive))
-            .map(|(v, _)| {
-                let mut key_bytes = &v[..];
-                PublicKey::read(&mut key_bytes).expect("failed to parse public key")
-            })
-            .collect();
-        peers.sort();
+        let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+            .map(|hash_bytes| hash_bytes.try_into())
+            .expect("bad eth_genesis_hash")
+            .expect("bad eth_genesis_hash");
+        let initial_state = get_initial_state(genesis_hash, &committee, checkpoint);
+        let peers = initial_state.get_validator_keys();
 
         let engine_ipc_path =
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
@@ -479,53 +486,42 @@ pub fn run_node_with_runtime(
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-        let our_ip = if let Some(ref ip_str) = flags.ip {
-            ip_str
-                .parse::<SocketAddr>()
-                .expect("Invalid IP address format")
-        } else {
-            committee
-                .iter()
-                .find_map(|v| {
-                    if v.0 == signer.public_key() {
-                        Some(v.1)
-                    } else {
-                        None
-                    }
-                })
-                .expect("This node is not on the committee")
-        };
+        let our_ip = get_node_ip(&flags, &key_store, &committee);
 
-        let our_public_key = signer.public_key();
-        if !committee.iter().any(|(key, _)| key == &our_public_key) {
-            committee.push((our_public_key, our_ip));
-            committee.sort();
+        let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
+            .into_iter()
+            .map(|v| (v.node_public_key, v.ip_address))
+            .collect();
+        let our_public_key = key_store.node_key.public_key();
+        if !network_committee
+            .iter()
+            .any(|(key, _)| key == &our_public_key)
+        {
+            network_committee.push((our_public_key, our_ip));
+            network_committee.sort();
         }
 
         // configure network
-        let mut p2p_cfg = authenticated::discovery::Config::aggressive(
-            signer.clone(),
+        let mut p2p_cfg = authenticated::discovery::Config::local(
+            key_store.node_key.clone(),
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
             our_ip,
-            committee,
+            network_committee,
             genesis.max_message_size_bytes as usize,
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
         // Start p2p
-        let (mut network, mut oracle) =
+        let (mut network, oracle) =
             authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
-
-        // Provide authorized peers
-        oracle.register(0, peers.clone()).await;
 
         let oracle = DiscoveryOracle::new(oracle);
 
         let config = EngineConfig::get_engine_config(
             engine_client,
             oracle,
-            signer,
+            key_store,
             peers,
             flags.db_prefix.clone(),
             &genesis,
@@ -534,12 +530,21 @@ pub fn run_node_with_runtime(
         .unwrap();
 
         // Register pending channel
-        let pending_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
+        let pending_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
         let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
+        // Register recovered channel
+        let recovered_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
+
         // Register resolver channel
-        let resolver_limit = Quota::per_second(NonZeroU32::new(128).unwrap());
+        let resolver_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
         let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
+
+        // Register orchestrator channel
+        let orchestrator_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let orchestrator =
+            network.register(ORCHESTRATOR_CHANNEL, orchestrator_limit, MESSAGE_BACKLOG);
 
         // Register broadcast channel
         let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
@@ -551,11 +556,18 @@ pub fn run_node_with_runtime(
         // Create network
         let p2p = network.start();
         // create engine
-        let engine = Engine::new(context.with_label("engine"), config).await;
+        let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
 
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Start engine
-        let engine = engine.start(pending, resolver, broadcaster, backfiller);
+        let engine = engine.start(
+            pending,
+            recovered,
+            resolver,
+            orchestrator,
+            broadcaster,
+            backfiller,
+        );
 
         // Start prometheus endpoint
         #[cfg(feature = "prom")]
@@ -575,18 +587,16 @@ pub fn run_node_with_runtime(
         }
 
         // Start RPC server
-        let key_path = flags.key_path.clone();
+        let key_store_path = flags.key_store_path.clone();
         let rpc_port = flags.rpc_port;
         let stop_signal = context.stopped();
-        let rpc_handle = context
-            .with_label("rpc_genesis")
-            .spawn(move |_context| async move {
-                if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_path, rpc_port, stop_signal).await
-                {
-                    error!("RPC server failed: {}", e);
-                }
-            });
+        let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+            if let Err(e) =
+                start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
+            {
+                error!("RPC server failed: {}", e);
+            }
+        });
 
         // Wait for any task to error
         if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
@@ -596,14 +606,10 @@ pub fn run_node_with_runtime(
 }
 
 fn get_initial_state(
-    genesis: &Genesis,
-    committee: &Vec<(PublicKey, SocketAddr)>,
+    genesis_hash: [u8; 32],
+    genesis_committee: &Vec<Validator>,
     checkpoint: Option<ConsensusState>,
 ) -> ConsensusState {
-    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
-        .map(|hash_bytes| hash_bytes.try_into())
-        .expect("bad eth_genesis_hash")
-        .expect("bad eth_genesis_hash");
     let genesis_hash: B256 = genesis_hash.into();
     checkpoint.unwrap_or_else(|| {
         let forkchoice = ForkchoiceState {
@@ -613,14 +619,15 @@ fn get_initial_state(
         };
         let mut state = ConsensusState::new(forkchoice);
         // Add the genesis nodes to the consensus state with the minimum stake balance.
-        for (pubkey, _) in committee {
-            let pubkey_bytes: [u8; 32] = pubkey
+        for validator in genesis_committee {
+            let pubkey_bytes: [u8; 32] = validator
+                .node_public_key
                 .as_ref()
                 .try_into()
                 .expect("Public key must be 32 bytes");
             let account = ValidatorAccount {
-                // TODO(matthias): we have to add a withdrawal address to the genesis
-                withdrawal_credentials: Address::ZERO,
+                consensus_public_key: validator.consensus_public_key.clone(),
+                withdrawal_credentials: validator.withdrawal_credentials,
                 balance: VALIDATOR_MINIMUM_STAKE,
                 pending_withdrawal_amount: 0,
                 status: ValidatorStatus::Active,
@@ -635,4 +642,27 @@ fn get_initial_state(
         }
         state
     })
+}
+
+fn get_node_ip(
+    flags: &RunFlags,
+    key_store: &KeyStore<PrivateKey>,
+    committee: &[Validator],
+) -> SocketAddr {
+    if let Some(ref ip_str) = flags.ip {
+        ip_str
+            .parse::<SocketAddr>()
+            .expect("Invalid IP address format")
+    } else {
+        committee
+            .iter()
+            .find_map(|v| {
+                if v.node_public_key == key_store.node_key.public_key() {
+                    Some(v.ip_address)
+                } else {
+                    None
+                }
+            })
+            .expect("This node is not on the committee")
+    }
 }

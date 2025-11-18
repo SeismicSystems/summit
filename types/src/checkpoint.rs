@@ -130,6 +130,7 @@ mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use commonware_codec::DecodeExt;
+    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
     use ssz::{Decode, Encode};
     use std::collections::{HashMap, VecDeque};
 
@@ -145,6 +146,8 @@ mod tests {
     #[test]
     fn test_checkpoint_ssz_encode_decode_empty() {
         let state = ConsensusState {
+            epoch: 0,
+            view: 0,
             latest_height: 10,
             next_withdrawal_index: 100,
             deposit_queue: VecDeque::new(),
@@ -154,6 +157,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -177,23 +181,29 @@ mod tests {
         use ssz::{Decode, Encode};
 
         // Create sample data for the populated state
+        let consensus_key1 = bls12381::PrivateKey::from_seed(100);
         let deposit1 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
             ),
+            consensus_pubkey: consensus_key1.public_key(),
             withdrawal_credentials: [1u8; 32],
             amount: 32_000_000_000, // 32 ETH in gwei
-            signature: [42u8; 64],
+            node_signature: [42u8; 64],
+            consensus_signature: [1u8; 96],
             index: 100,
         };
 
+        let consensus_key2 = bls12381::PrivateKey::from_seed(101);
         let deposit2 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
             ),
+            consensus_pubkey: consensus_key2.public_key(),
             withdrawal_credentials: [2u8; 32],
             amount: 16_000_000_000, // 16 ETH in gwei
-            signature: [43u8; 64],
+            node_signature: [43u8; 64],
+            consensus_signature: [2u8; 96],
             index: 101,
         };
 
@@ -208,7 +218,9 @@ mod tests {
             pubkey: [5u8; 32],
         };
 
+        let consensus_key1 = bls12381::PrivateKey::from_seed(1);
         let validator_account1 = ValidatorAccount {
+            consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,
@@ -216,7 +228,9 @@ mod tests {
             last_deposit_index: 100,
         };
 
+        let consensus_key2 = bls12381::PrivateKey::from_seed(2);
         let validator_account2 = ValidatorAccount {
+            consensus_public_key: consensus_key2.public_key(),
             withdrawal_credentials: Address::from([8u8; 20]),
             balance: 16_000_000_000,                  // 16 ETH
             pending_withdrawal_amount: 8_000_000_000, // 8 ETH pending
@@ -237,6 +251,8 @@ mod tests {
         validator_accounts.insert([11u8; 32], validator_account2);
 
         let state = ConsensusState {
+            epoch: 0,
+            view: 0,
             latest_height: 1000,
             next_withdrawal_index: 200,
             deposit_queue,
@@ -246,6 +262,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -269,6 +286,8 @@ mod tests {
         use std::collections::{HashMap, VecDeque};
 
         let state = ConsensusState {
+            epoch: 0,
+            view: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -278,6 +297,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -308,23 +328,29 @@ mod tests {
         use commonware_codec::{EncodeSize, ReadExt, Write};
 
         // Create sample data for the populated state
+        let consensus_key1 = bls12381::PrivateKey::from_seed(100);
         let deposit1 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
             ),
+            consensus_pubkey: consensus_key1.public_key(),
             withdrawal_credentials: [1u8; 32],
             amount: 32_000_000_000, // 32 ETH in gwei
-            signature: [42u8; 64],
+            node_signature: [42u8; 64],
+            consensus_signature: [1u8; 96],
             index: 100,
         };
 
+        let consensus_key2 = bls12381::PrivateKey::from_seed(101);
         let deposit2 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
             ),
+            consensus_pubkey: consensus_key2.public_key(),
             withdrawal_credentials: [2u8; 32],
             amount: 16_000_000_000, // 16 ETH in gwei
-            signature: [43u8; 64],
+            node_signature: [43u8; 64],
+            consensus_signature: [2u8; 96],
             index: 101,
         };
 
@@ -339,7 +365,9 @@ mod tests {
             pubkey: [5u8; 32],
         };
 
+        let consensus_key1 = bls12381::PrivateKey::from_seed(1);
         let validator_account1 = ValidatorAccount {
+            consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,
@@ -347,7 +375,9 @@ mod tests {
             last_deposit_index: 100,
         };
 
+        let consensus_key2 = bls12381::PrivateKey::from_seed(2);
         let validator_account2 = ValidatorAccount {
+            consensus_public_key: consensus_key2.public_key(),
             withdrawal_credentials: Address::from([8u8; 20]),
             balance: 16_000_000_000,                  // 16 ETH
             pending_withdrawal_amount: 8_000_000_000, // 8 ETH pending
@@ -368,6 +398,8 @@ mod tests {
         validator_accounts.insert([11u8; 32], validator_account2);
 
         let state = ConsensusState {
+            epoch: 0,
+            view: 0,
             latest_height: 2000,
             next_withdrawal_index: 300,
             deposit_queue,
@@ -377,6 +409,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -405,6 +438,8 @@ mod tests {
         use std::collections::{HashMap, VecDeque};
 
         let state = ConsensusState {
+            epoch: 0,
+            view: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -414,6 +449,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -448,6 +484,8 @@ mod tests {
         use std::collections::{HashMap, VecDeque};
 
         let original_state = ConsensusState {
+            epoch: 0,
+            view: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -457,11 +495,13 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&original_state);
         let converted_state = ConsensusState::try_from(&checkpoint).unwrap();
 
+        assert_eq!(converted_state.epoch, original_state.epoch);
         assert_eq!(converted_state.latest_height, original_state.latest_height);
         assert_eq!(
             converted_state.next_withdrawal_index,
@@ -486,6 +526,8 @@ mod tests {
         use std::collections::{HashMap, VecDeque};
 
         let original_state = ConsensusState {
+            epoch: 0,
+            view: 0,
             latest_height: 42,
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
@@ -495,6 +537,7 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let mut checkpoint = Checkpoint::new(&original_state);
@@ -521,13 +564,16 @@ mod tests {
         use alloy_primitives::Address;
 
         // Create sample data for the populated state
+        let consensus_key1 = bls12381::PrivateKey::from_seed(100);
         let deposit1 = DepositRequest {
-            pubkey: parse_public_key(
+            node_pubkey: parse_public_key(
                 "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
             ),
+            consensus_pubkey: consensus_key1.public_key(),
             withdrawal_credentials: [1u8; 32],
             amount: 32_000_000_000, // 32 ETH in gwei
-            signature: [42u8; 64],
+            node_signature: [42u8; 64],
+            consensus_signature: [1u8; 96],
             index: 100,
         };
 
@@ -542,7 +588,9 @@ mod tests {
             pubkey: [5u8; 32],
         };
 
+        let consensus_key1 = bls12381::PrivateKey::from_seed(1);
         let validator_account1 = ValidatorAccount {
+            consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,
@@ -561,6 +609,8 @@ mod tests {
         validator_accounts.insert([10u8; 32], validator_account1);
 
         let original_state = ConsensusState {
+            epoch: 0,
+            view: 0,
             latest_height: 1000,
             next_withdrawal_index: 200,
             deposit_queue,
@@ -570,12 +620,14 @@ mod tests {
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
         };
 
         let checkpoint = Checkpoint::new(&original_state);
         let converted_state = ConsensusState::try_from(&checkpoint).unwrap();
 
         // Verify all fields match
+        assert_eq!(converted_state.epoch, original_state.epoch);
         assert_eq!(converted_state.latest_height, original_state.latest_height);
         assert_eq!(
             converted_state.next_withdrawal_index,

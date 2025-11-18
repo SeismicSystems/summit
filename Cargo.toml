@@ -1,5 +1,5 @@
 [workspace]
-members = [ "application", "node", "rpc", "types", "syncer", "finalizer"]
+members = [ "application", "node", "rpc", "types", "finalizer", "orchestrator", "syncer"]
 resolver = "3"
 
 [workspace.package]
@@ -10,20 +10,21 @@ edition = "2024"
 # Our crates
 summit-types = { path = "types" }
 summit-application = { path = "application" }
-summit-syncer = {path = "syncer"}
+summit-syncer = {path = "syncer" }
 summit-finalizer = {path = "finalizer"}
 summit-rpc = {path = "rpc"}
+summit-orchestrator = {path = "orchestrator"}
 
-commonware-consensus = "0.0.62"
-commonware-cryptography = "0.0.62"
-commonware-storage = "0.0.62"
-commonware-runtime = "0.0.62"
-commonware-codec = "0.0.62"
-commonware-p2p = "0.0.62"
-commonware-broadcast = "0.0.62"
-commonware-utils = "0.0.62"
-commonware-resolver = "0.0.62"
-commonware-macros = "0.0.62"
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
 
 alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }
@@ -46,6 +47,7 @@ url = "2.5"
 
 futures = "0.3.31"
 http = "1.0"
+hex = "0.4"
 http-body-util = "0.1.3"
 reqwest = "0.12"
 socket2 = "0.6"
@@ -53,14 +55,16 @@ tower = "0.5.2"
 tokio = "1.46.0"
 tokio-util = "0.7.16"
 console-subscriber = "0.4"
+pin-project = "1.1.10"
 
 ethereum_ssz = "0.9.0"
 ethereum_ssz_derive = "0.9.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 toml = "0.9"
+zeroize = "1.8"
 
-anyhow = "1.0.98"
+anyhow = "1.0.99"
 eyre = "0.6"
 
 bytes = "1.10.1"

@@ -1,4 +1,4 @@
-use commonware_cryptography::{Hasher, PrivateKeyExt, Sha256, Signer};
+use commonware_cryptography::{Hasher, PrivateKeyExt, Sha256, Signer, bls12381};
 
 use crate::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
@@ -8,6 +8,7 @@ use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::Write;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
+use commonware_p2p::{Blocker, Manager};
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
     deterministic::{self, Runner},
@@ -22,6 +23,7 @@ use std::{
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
+use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
 
@@ -81,7 +83,7 @@ pub async fn join_validator(
 }
 
 pub async fn register_validators(
-    oracle: &mut Oracle<PublicKey>,
+    oracle: &Oracle<PublicKey>,
     validators: &[PublicKey],
 ) -> HashMap<
     PublicKey,
@@ -90,23 +92,26 @@ pub async fn register_validators(
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
         (Sender<PublicKey>, Receiver<PublicKey>),
+        (Sender<PublicKey>, Receiver<PublicKey>),
+        (Sender<PublicKey>, Receiver<PublicKey>),
     ),
 > {
     let mut registrations = HashMap::new();
     for validator in validators.iter() {
-        let (pending_sender, pending_receiver) =
-            oracle.register(validator.clone(), 0).await.unwrap();
-        let (resolver_sender, resolver_receiver) =
-            oracle.register(validator.clone(), 1).await.unwrap();
-        let (broadcast_sender, broadcast_receiver) =
-            oracle.register(validator.clone(), 2).await.unwrap();
-        let (backfill_sender, backfill_receiver) =
-            oracle.register(validator.clone(), 3).await.unwrap();
+        let mut control = oracle.control(validator.clone());
+        let (pending_sender, pending_receiver) = control.register(0).await.unwrap();
+        let (recovered_sender, recovered_receiver) = control.register(1).await.unwrap();
+        let (resolver_sender, resolver_receiver) = control.register(2).await.unwrap();
+        let (orchestrator_sender, orchestrator_receiver) = control.register(3).await.unwrap();
+        let (broadcast_sender, broadcast_receiver) = control.register(4).await.unwrap();
+        let (backfill_sender, backfill_receiver) = control.register(5).await.unwrap();
         registrations.insert(
             validator.clone(),
             (
                 (pending_sender, pending_receiver),
+                (recovered_sender, recovered_receiver),
                 (resolver_sender, resolver_receiver),
+                (orchestrator_sender, orchestrator_receiver),
                 (broadcast_sender, broadcast_receiver),
                 (backfill_sender, backfill_receiver),
             ),
@@ -131,6 +136,8 @@ pub fn run_until_height(
             context.with_label("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                disconnect_on_block: true,
+                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -138,20 +145,29 @@ pub fn run_until_height(
         network.start();
 
         // Register participants
-        let mut signers = Vec::new();
+        let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let signer = PrivateKey::from_seed(i as u64);
-            let pk = signer.public_key();
-            signers.push(signer);
-            validators.push(pk);
+            let node_key = PrivateKey::from_seed(i as u64);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
         }
-        validators.sort();
-        signers.sort_by_key(|s| s.public_key());
-        let mut registrations = register_validators(&mut oracle, &validators).await;
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by(|lhs, rhs| lhs.node_key.public_key().cmp(&rhs.node_key.public_key()));
+
+        let node_public_keys: Vec<PublicKey> =
+            validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
-        link_validators(&mut oracle, &validators, link, None).await;
+        link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         // Create the engine clients
         let genesis_hash = from_hex_formatted(GENESIS_HASH).expect("failed to decode genesis hash");
@@ -170,9 +186,9 @@ pub fn run_until_height(
         // Create instances
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
-        for (idx, signer) in signers.into_iter().enumerate() {
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
             // Create signer context
-            let public_key = signer.public_key();
+            let public_key = key_store.node_key.public_key();
             public_keys.insert(public_key.clone());
 
             // Configure engine
@@ -183,11 +199,11 @@ pub fn run_until_height(
 
             let config = get_default_engine_config(
                 engine_client,
-                DummyOracle::default(),
+                SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
                 genesis_hash,
                 namespace,
-                signer,
+                key_store,
                 validators.clone(),
                 initial_state.clone(),
             );
@@ -196,11 +212,18 @@ pub fn run_until_height(
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, resolver, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(pending, resolver, broadcast, backfill);
+            engine.start(
+                pending,
+                recovered,
+                resolver,
+                orchestrator,
+                broadcast,
+                backfill,
+            );
         }
 
         // Poll metrics
@@ -266,7 +289,7 @@ pub fn get_domain() -> Digest {
 
 pub fn get_initial_state(
     genesis_hash: [u8; 32],
-    committee: &Vec<PublicKey>,
+    committee: &Vec<(PublicKey, bls12381::PublicKey)>,
     withdrawal_credentials: Option<&Vec<Address>>,
     checkpoint: Option<ConsensusState>,
     balance: u64,
@@ -282,12 +305,13 @@ pub fn get_initial_state(
         };
         let mut state = ConsensusState::new(forkchoice);
         // Add the genesis nodes to the consensus state with the minimum stake balance.
-        for (pubkey, address) in committee.iter().zip(addresses.iter()) {
-            let pubkey_bytes: [u8; 32] = pubkey
+        for ((node_pubkey, consensus_pubkey), address) in committee.iter().zip(addresses.iter()) {
+            let pubkey_bytes: [u8; 32] = node_pubkey
                 .as_ref()
                 .try_into()
                 .expect("Public key must be 32 bytes");
             let account = ValidatorAccount {
+                consensus_public_key: consensus_pubkey.clone(),
                 // TODO(matthias): we have to add a withdrawal address to the genesis
                 withdrawal_credentials: *address,
                 balance,
@@ -346,29 +370,30 @@ pub fn extract_validator_id(metric: &str) -> Option<String> {
     Some(metric[..end].to_string())
 }
 
-/// Create a single DepositRequest for testing with a valid ED25519 signature
+/// Create a single DepositRequest for testing with valid ED25519 and BLS signatures
 ///
 /// This function creates a test deposit request with all required fields, including
-/// a cryptographically valid signature that can be verified against the deposit message.
+/// cryptographically valid signatures that can be verified against the deposit message.
 ///
 /// # Arguments
 /// * `index` - The deposit index value used for generating deterministic keys and in the signature
-/// * `amount` - The deposit amount in gwei  
+/// * `amount` - The deposit amount in gwei
 /// * `domain` - The domain value used in the signature (typically genesis hash)
 /// * `private_key` - Optional ED25519 private key to use; if None, generates deterministic key from index
 /// * `withdrawal_credentials` - Optional withdrawal credentials; if None, generates Eth1 format credentials
 ///
 /// # Returns
-/// * `(DepositRequest, PrivateKey)` - A tuple containing:
-///   - `DepositRequest` - A complete deposit request with valid signature
-///   - `PrivateKey` - The private key used to sign the request (for further testing)
+/// * `(DepositRequest, PrivateKey, bls12381::PrivateKey)` - A tuple containing:
+///   - `DepositRequest` - A complete deposit request with valid signatures
+///   - `PrivateKey` - The ED25519 private key used to sign the request
+///   - `bls12381::PrivateKey` - The BLS private key used to sign the request
 pub fn create_deposit_request(
     index: u64,
     amount: u64,
     domain: Digest,
     private_key: Option<PrivateKey>,
     withdrawal_credentials: Option<[u8; 32]>,
-) -> (DepositRequest, PrivateKey) {
+) -> (DepositRequest, PrivateKey, bls12381::PrivateKey) {
     let withdrawal_credentials = if let Some(withdrawal_credentials) = withdrawal_credentials {
         withdrawal_credentials
     } else {
@@ -382,31 +407,43 @@ pub fn create_deposit_request(
         withdrawal_credentials
     };
 
+    // Generate node (ED25519) key
     let ed25519_private_key = if let Some(private_key) = private_key {
         private_key
     } else {
-        // Create deterministic but seed-based keys
-        // Generate a valid ED25519 private key using the seed
         PrivateKey::from_seed(index)
     };
+    let node_pubkey = ed25519_private_key.public_key();
 
-    let pubkey = ed25519_private_key.public_key();
+    // Generate consensus (BLS) key
+    let bls_private_key = bls12381::PrivateKey::from_seed(index);
+    let consensus_pubkey = bls_private_key.public_key();
 
     let mut deposit = DepositRequest {
-        pubkey,
+        node_pubkey,
+        consensus_pubkey,
         withdrawal_credentials,
         amount,
-        signature: [0u8; 64],
+        node_signature: [0u8; 64],
+        consensus_signature: [0u8; 96],
         index,
     };
 
-    // Create the message to sign: hash of pubkey + withdrawal_credentials + amount
+    // Create the message to sign
     let message = deposit.as_message(domain);
 
-    //// Generate a valid ED25519 signature
-    let signature_bytes = ed25519_private_key.sign(None, &message);
-    deposit.signature.copy_from_slice(&signature_bytes);
-    (deposit, ed25519_private_key)
+    // Generate both signatures
+    let node_signature_bytes = ed25519_private_key.sign(None, &message);
+    deposit
+        .node_signature
+        .copy_from_slice(&node_signature_bytes);
+
+    let consensus_signature_bytes = bls_private_key.sign(None, &message);
+    deposit
+        .consensus_signature
+        .copy_from_slice(&consensus_signature_bytes);
+
+    (deposit, ed25519_private_key, bls_private_key)
 }
 
 /// Create a single WithdrawalRequest for testing
@@ -462,23 +499,28 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 ///
 /// # Returns
 /// * `EngineConfig<C>` - A fully configured engine config with sensible defaults for testing
-pub fn get_default_engine_config<C: EngineClient, O: NetworkOracle<PublicKey>>(
+pub fn get_default_engine_config<
+    C: EngineClient,
+    O: NetworkOracle<PublicKey> + Blocker<PublicKey = PublicKey> + Manager<PublicKey = PublicKey>,
+>(
     engine_client: C,
     oracle: O,
     partition_prefix: String,
     genesis_hash: [u8; 32],
     namespace: String,
-    signer: PrivateKey,
-    participants: Vec<PublicKey>,
+    key_store: KeyStore<PrivateKey>,
+    participants: Vec<(PublicKey, bls12381::PublicKey)>,
     initial_state: ConsensusState,
-) -> EngineConfig<C, O> {
+) -> EngineConfig<C, PrivateKey, O> {
+    // For tests, generate a dummy BLS key
+
     EngineConfig {
         engine_client,
         oracle,
         partition_prefix,
         genesis_hash,
         namespace,
-        signer,
+        key_store,
         participants,
         mailbox_size: 1024,
         deque_size: 10,
@@ -497,14 +539,51 @@ pub fn get_default_engine_config<C: EngineClient, O: NetworkOracle<PublicKey>>(
     }
 }
 
-pub struct DummyOracle {}
+#[derive(Clone, Debug)]
+pub struct SimulatedOracle {
+    inner: simulated::Manager<PublicKey>,
+}
 
-impl Default for DummyOracle {
-    fn default() -> Self {
-        Self {}
+impl SimulatedOracle {
+    pub fn new(oracle: Oracle<PublicKey>) -> Self {
+        Self {
+            inner: oracle.manager(),
+        }
     }
 }
 
-impl<C: commonware_cryptography::PublicKey> NetworkOracle<C> for DummyOracle {
-    async fn register(&mut self, _index: u64, _peers: Vec<C>) {}
+impl NetworkOracle<PublicKey> for SimulatedOracle {
+    async fn register(&mut self, index: u64, peers: Vec<PublicKey>) {
+        self.inner
+            .update(index, commonware_utils::set::Ordered::from(peers))
+            .await
+    }
+}
+
+impl Blocker for SimulatedOracle {
+    type PublicKey = PublicKey;
+
+    async fn block(&mut self, _public_key: Self::PublicKey) {
+        // Simulated oracle doesn't support blocking individual peers
+        // This is only used in production for misbehaving peers
+    }
+}
+
+impl Manager for SimulatedOracle {
+    type PublicKey = PublicKey;
+    type Peers = commonware_utils::set::Ordered<PublicKey>;
+
+    async fn update(&mut self, id: u64, peers: Self::Peers) {
+        self.inner.update(id, peers).await
+    }
+
+    async fn peer_set(&mut self, id: u64) -> Option<Self::Peers> {
+        self.inner.peer_set(id).await
+    }
+
+    async fn subscribe(
+        &mut self,
+    ) -> futures::channel::mpsc::UnboundedReceiver<(u64, Self::Peers, Self::Peers)> {
+        self.inner.subscribe().await
+    }
 }

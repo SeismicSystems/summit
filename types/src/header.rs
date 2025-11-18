@@ -1,9 +1,10 @@
 use std::ops::Deref as _;
 
-use crate::{PublicKey, Signature};
+use crate::PublicKey;
 use alloy_primitives::U256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
+use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_consensus::simplex::types::Finalization;
 use commonware_cryptography::{Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
@@ -13,6 +14,7 @@ pub struct Header {
     pub parent: Digest,
     pub height: u64,
     pub timestamp: u64,
+    pub epoch: u64,
     pub view: u64,
     pub payload_hash: Digest,
     pub execution_request_hash: Digest,
@@ -31,6 +33,7 @@ impl Header {
         parent: Digest,
         height: u64,
         timestamp: u64,
+        epoch: u64,
         view: u64,
         payload_hash: Digest,
         execution_request_hash: Digest,
@@ -67,6 +70,7 @@ impl Header {
             parent,
             height,
             timestamp,
+            epoch,
             view,
             payload_hash,
             execution_request_hash,
@@ -87,7 +91,7 @@ impl ssz::Encode for Header {
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
         let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
-            + <u64 as ssz::Encode>::ssz_fixed_len() * 3 // height, timestamp, view
+            + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
             + <U256 as ssz::Encode>::ssz_fixed_len() // block_value
             + <Vec<[u8; 32]> as ssz::Encode>::ssz_fixed_len() * 2; // added_validators, removed_validators offsets
 
@@ -130,6 +134,7 @@ impl ssz::Encode for Header {
         encoder.append(&parent);
         encoder.append(&self.height);
         encoder.append(&self.timestamp);
+        encoder.append(&self.epoch);
         encoder.append(&self.view);
         encoder.append(&payload_hash);
         encoder.append(&execution_request_hash);
@@ -143,7 +148,7 @@ impl ssz::Encode for Header {
 
     fn ssz_bytes_len(&self) -> usize {
         let fixed_size = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
-            + <u64 as ssz::Encode>::ssz_fixed_len() * 3 // height, timestamp, view
+            + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
             + <U256 as ssz::Encode>::ssz_fixed_len(); // block_value
 
         // Calculate length as if they were Vec<[u8; 32]>
@@ -167,6 +172,7 @@ impl ssz::Decode for Header {
         builder.register_type::<[u8; 32]>()?; // parent
         builder.register_type::<u64>()?; // height
         builder.register_type::<u64>()?; // timestamp
+        builder.register_type::<u64>()?; // epoch
         builder.register_type::<u64>()?; // view
         builder.register_type::<[u8; 32]>()?; // payload_hash
         builder.register_type::<[u8; 32]>()?; // execution_request_hash
@@ -181,6 +187,7 @@ impl ssz::Decode for Header {
         let parent: [u8; 32] = decoder.decode_next()?;
         let height: u64 = decoder.decode_next()?;
         let timestamp: u64 = decoder.decode_next()?;
+        let epoch: u64 = decoder.decode_next()?;
         let view: u64 = decoder.decode_next()?;
         let payload_hash: [u8; 32] = decoder.decode_next()?;
         let execution_request_hash: [u8; 32] = decoder.decode_next()?;
@@ -213,6 +220,7 @@ impl ssz::Decode for Header {
             parent.into(),
             height,
             timestamp,
+            epoch,
             view,
             payload_hash.into(),
             execution_request_hash.into(),
@@ -256,31 +264,41 @@ impl Read for Header {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FinalizedHeader {
+pub struct FinalizedHeader<S: Scheme> {
     pub header: Header,
-    pub finalized: Finalization<Signature, Digest>,
+    pub finalization: Finalization<S, Digest>,
+    pub participant_count: usize,
 }
 
-impl FinalizedHeader {
-    pub fn new(header: Header, finalized: Finalization<Signature, Digest>) -> Self {
-        Self { header, finalized }
+impl<S: Scheme> FinalizedHeader<S> {
+    pub fn new(
+        header: Header,
+        finalization: Finalization<S, Digest>,
+        participant_count: usize,
+    ) -> Self {
+        Self {
+            header,
+            finalization,
+            participant_count,
+        }
     }
 }
 
-impl ssz::Encode for FinalizedHeader {
+impl<S: Scheme> ssz::Encode for FinalizedHeader<S> {
     fn is_ssz_fixed_len() -> bool {
         false
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        // For simplicity, encode header first, then finalized proof using commonware encoding
+        // Encode header, participant count, and finalization
         let header_bytes = self.header.as_ssz_bytes();
         let mut finalized_bytes = Vec::new();
-        self.finalized.write(&mut finalized_bytes);
+        self.finalization.write(&mut finalized_bytes);
 
-        let offset = 8; // Two 4-byte length prefixes
+        let offset = 8 + 4; // Two 4-byte offsets (for variable fields) + 4 bytes for u32
         let mut encoder = ssz::SszEncoder::container(buf, offset);
         encoder.append(&header_bytes);
+        encoder.append(&(self.participant_count as u32));
         encoder.append(&finalized_bytes);
         encoder.finalize();
     }
@@ -288,13 +306,16 @@ impl ssz::Encode for FinalizedHeader {
     fn ssz_bytes_len(&self) -> usize {
         let header_bytes = self.header.as_ssz_bytes();
         let mut finalized_bytes = Vec::new();
-        self.finalized.write(&mut finalized_bytes);
+        self.finalization.write(&mut finalized_bytes);
 
-        header_bytes.len() + finalized_bytes.len() + 8 // Two 4-byte length prefixes
+        12 + header_bytes.len() + finalized_bytes.len() // Fixed part: 2 offsets + u32 = 12 bytes
     }
 }
 
-impl ssz::Decode for FinalizedHeader {
+impl<S: Scheme> ssz::Decode for FinalizedHeader<S>
+where
+    <S::Certificate as Read>::Cfg: From<usize>,
+{
     fn is_ssz_fixed_len() -> bool {
         false
     }
@@ -302,37 +323,45 @@ impl ssz::Decode for FinalizedHeader {
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
         let mut builder = ssz::SszDecoderBuilder::new(bytes);
         builder.register_type::<Vec<u8>>()?; // header bytes
+        builder.register_type::<u32>()?; // participant count
         builder.register_type::<Vec<u8>>()?; // finalized bytes
 
         let mut decoder = builder.build()?;
         let header_bytes: Vec<u8> = decoder.decode_next()?;
+        let participant_count: u32 = decoder.decode_next()?;
         let finalized_bytes: Vec<u8> = decoder.decode_next()?;
 
         let header = Header::from_ssz_bytes(&header_bytes)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
+        // Decode the finalization using the stored participant count
         let mut finalized_buf = finalized_bytes.as_slice();
-        let finalized = Finalization::read_cfg(&mut finalized_buf, &finalized_bytes.len())
+        let cfg = <S::Certificate as Read>::Cfg::from(participant_count as usize);
+        let finalization = Finalization::<S, Digest>::read_cfg(&mut finalized_buf, &cfg)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
         // Ensure the finalization is for the header
-        if finalized.proposal.payload != header.digest {
+        if finalization.proposal.payload != header.digest {
             return Err(ssz::DecodeError::BytesInvalid(
                 "Finalization payload does not match header digest".to_string(),
             ));
         }
 
-        Ok(Self { header, finalized })
+        Ok(Self {
+            header,
+            finalization,
+            participant_count: participant_count as usize,
+        })
     }
 }
 
-impl EncodeSize for FinalizedHeader {
+impl<S: Scheme> EncodeSize for FinalizedHeader<S> {
     fn encode_size(&self) -> usize {
         self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
     }
 }
 
-impl Write for FinalizedHeader {
+impl<S: Scheme> Write for FinalizedHeader<S> {
     fn write(&self, buf: &mut impl BufMut) {
         let ssz_bytes = &*self.as_ssz_bytes();
         let bytes_len = ssz_bytes.len() as u32;
@@ -342,7 +371,10 @@ impl Write for FinalizedHeader {
     }
 }
 
-impl Read for FinalizedHeader {
+impl<S: Scheme> Read for FinalizedHeader<S>
+where
+    <S::Certificate as Read>::Cfg: From<usize>,
+{
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
@@ -365,7 +397,18 @@ mod test {
     use super::*;
     use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
-    use commonware_consensus::simplex::types::{Finalization, Proposal};
+    use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
+    use commonware_consensus::{
+        simplex::{
+            signing_scheme::utils::Signers,
+            types::{Finalization, Proposal},
+        },
+        types::Round,
+    };
+    use commonware_cryptography::bls12381::primitives::{
+        group::{Element, G2},
+        variant::MinPk,
+    };
     use ssz::Decode;
 
     fn create_test_public_key(seed: u8) -> PublicKey {
@@ -399,6 +442,7 @@ mod test {
             27,
             2727,
             42,
+            1,
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
@@ -422,6 +466,7 @@ mod test {
             27,
             2727,
             42,
+            1,
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
@@ -432,22 +477,39 @@ mod test {
         );
 
         let proposal = Proposal {
-            view: header.view,
+            round: Round::new(0, header.view),
             parent: header.height,
             payload: header.digest,
         };
 
+        // Use BLS certificate
+        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let finalized = Finalization {
             proposal,
-            signatures: Vec::new(),
+            certificate: BlsCertificate {
+                signers: Signers::from(3, [0, 1, 2]),
+                signature: G2::one(),
+            },
         };
 
-        let finalized_header = FinalizedHeader::new(header.clone(), finalized);
+        let finalized_header = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::new(
+            header.clone(),
+            finalized,
+            3,
+        );
 
         let encoded = finalized_header.encode();
-        let decoded = FinalizedHeader::decode(encoded).unwrap();
+        let decoded =
+            FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::decode(encoded)
+                .unwrap();
 
-        assert_eq!(finalized_header, decoded);
+        assert_eq!(finalized_header.finalization, decoded.finalization);
+        assert_eq!(finalized_header.header, decoded.header);
+        assert_eq!(
+            finalized_header.participant_count,
+            decoded.participant_count
+        );
+
         assert_eq!(finalized_header.header, header);
     }
 
@@ -459,6 +521,7 @@ mod test {
             27,
             2727,
             42,
+            1,
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
@@ -469,26 +532,37 @@ mod test {
         );
 
         // Create a finalization with wrong payload
+        let dummy_digest = [99u8; 32];
         let wrong_proposal = Proposal {
-            view: header.view,
+            round: Round::new(0, header.view),
             parent: header.height,
-            payload: [99u8; 32].into(), // Wrong digest
+            payload: dummy_digest.into(), // Wrong digest
         };
 
+        // Use BLS certificate with wrong payload
+        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let wrong_finalized = Finalization {
             proposal: wrong_proposal,
-            signatures: Vec::new(),
+            certificate: BlsCertificate {
+                signers: Signers::from(5, [0, 2, 4]),
+                signature: G2::one(),
+            },
         };
 
-        let finalized_header = FinalizedHeader {
-            header,
-            finalized: wrong_finalized,
-        };
+        let finalized_header: FinalizedHeader<bls12381_multisig::Scheme<PublicKey, MinPk>> =
+            FinalizedHeader {
+                header,
+                finalization: wrong_finalized,
+                participant_count: 5,
+            };
 
         let encoded = finalized_header.as_ssz_bytes();
-        let result = FinalizedHeader::from_ssz_bytes(&encoded);
+        let result = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::from_ssz_bytes(
+            &encoded,
+        );
 
         assert!(result.is_err());
+        println!("{:?}", result);
         assert!(
             matches!(result.unwrap_err(), ssz::DecodeError::BytesInvalid(msg) if msg.contains("Finalization payload does not match header digest"))
         );
@@ -502,6 +576,7 @@ mod test {
             27,
             2727,
             42,
+            1,
             [1u8; 32].into(),
             [2u8; 32].into(),
             [3u8; 32].into(),
@@ -512,17 +587,24 @@ mod test {
         );
 
         let proposal = Proposal {
-            view: header.view,
+            round: Round::new(0, header.view),
             parent: header.height,
             payload: header.digest,
         };
 
+        // Use BLS certificate
+        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let finalized = Finalization {
             proposal,
-            signatures: Vec::new(),
+            certificate: BlsCertificate {
+                signers: Signers::from(4, [0, 1, 2, 3]),
+                signature: G2::one(),
+            },
         };
 
-        let finalized_header = FinalizedHeader::new(header, finalized);
+        let finalized_header = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::new(
+            header, finalized, 4,
+        );
 
         let ssz_len = finalized_header.ssz_bytes_len();
         let encode_len = finalized_header.encode_size();

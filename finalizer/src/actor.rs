@@ -1,14 +1,17 @@
 use crate::db::{Config as StateConfig, FinalizerState};
-use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage, block_fetcher::BlockFetcher};
+use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
-#[cfg(debug_assertions)]
-use alloy_primitives::hex;
 use alloy_rpc_types_engine::ForkchoiceState;
+#[allow(unused)]
 use commonware_codec::{DecodeExt as _, ReadExt as _};
-use commonware_cryptography::{Hasher, Sha256, Verifier as _};
-use commonware_resolver::p2p::Coordinator;
-use commonware_runtime::{Clock, Handle, Metrics, Spawner, Storage};
+use commonware_codec::{Read as CodecRead, Write as CodecWrite};
+use commonware_consensus::Reporter;
+use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
+use commonware_consensus::simplex::types::Finalization;
+use commonware_cryptography::bls12381::primitives::variant::Variant;
+use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
+use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
@@ -19,34 +22,37 @@ use metrics::{counter, histogram};
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::Instant;
-use summit_syncer::Orchestrator;
+use summit_orchestrator::Message;
+use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::network_oracle::NetworkOracle;
-use summit_types::registry::Registry;
+use summit_types::scheme::EpochTransition;
 use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
-use summit_types::{BlockEnvelope, EngineClient, consensus_state::ConsensusState};
+use summit_types::{EngineClient, consensus_state::ConsensusState};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
-const REGISTRY_CHANGE_VIEW_DELTA: u64 = 5;
 
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
+    S: Signer<PublicKey = PublicKey>,
+    V: Variant,
 > {
-    mailbox: mpsc::Receiver<FinalizerMessage>,
+    mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>>,
     pending_height_notifys: BTreeMap<u64, Vec<oneshot::Sender<()>>>,
-    context: R,
+    context: ContextCell<R>,
     engine_client: C,
-    registry: Registry,
-    db: FinalizerState<R>,
+    db: FinalizerState<R, V>,
     state: ConsensusState,
     genesis_hash: [u8; 32],
     validator_max_withdrawals_per_block: usize,
@@ -56,136 +62,184 @@ pub struct Finalizer<
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
     oracle: O,
+    orchestrator_mailbox: summit_orchestrator::Mailbox,
+    node_public_key: PublicKey,
+    validator_exit: bool,
+    cancellation_token: CancellationToken,
+    _signer_marker: PhantomData<S>,
+    _variant_marker: PhantomData<V>,
 }
 
 impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
-> Finalizer<R, C, O>
+    S: Signer<PublicKey = PublicKey>,
+    V: Variant,
+> Finalizer<R, C, O, S, V>
 {
-    pub async fn new(context: R, cfg: FinalizerConfig<C, O>) -> (Self, FinalizerMailbox) {
+    pub async fn new(
+        context: R,
+        cfg: FinalizerConfig<C, O, V>,
+    ) -> (
+        Self,
+        ConsensusState,
+        FinalizerMailbox<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>,
+    ) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
         let state_cfg = StateConfig {
-            log_journal_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
+            log_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
             log_write_buffer: WRITE_BUFFER,
             log_compression: None,
             log_codec_config: (),
             log_items_per_section: NZU64!(262_144),
-            locations_journal_partition: format!("{}-finalizer_state-locations", cfg.db_prefix),
-            locations_items_per_blob: NZU64!(262_144), // todo: No reference for this config option look into this
             translator: TwoCap,
             buffer_pool: cfg.buffer_pool,
         };
 
-        let db = FinalizerState::new(context.with_label("finalizer_state"), state_cfg).await;
+        let db =
+            FinalizerState::<R, V>::new(context.with_label("finalizer_state"), state_cfg).await;
 
         // Check if the state exists in the database. Otherwise, use the initial state.
         // The initial state could be from the genesis or a checkpoint.
         // If we want to load a checkpoint, we have to make sure that the DB is cleared.
         let state = if let Some(state) = db.get_latest_consensus_state().await {
+            info!(
+                "Loading consensus state from database at epoch {} and height {}",
+                state.epoch, state.latest_height
+            );
             state
         } else {
+            info!(
+                "Consensus state not found in database, using provided state with epoch {} and height {} - epoch_num_of_blocks: {}",
+                cfg.initial_state.epoch, cfg.initial_state.latest_height, cfg.epoch_num_of_blocks
+            );
             cfg.initial_state
         };
 
         (
             Self {
-                context,
+                context: ContextCell::new(context),
                 mailbox: rx,
                 engine_client: cfg.engine_client,
                 oracle: cfg.oracle,
+                orchestrator_mailbox: cfg.orchestrator_mailbox,
                 pending_height_notifys: BTreeMap::new(),
-                registry: cfg.registry,
                 epoch_num_of_blocks: cfg.epoch_num_of_blocks,
                 db,
-                state,
+                state: state.clone(),
                 validator_max_withdrawals_per_block: cfg.validator_max_withdrawals_per_block,
                 genesis_hash: cfg.genesis_hash,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
                 validator_minimum_stake: cfg.validator_minimum_stake,
                 validator_withdrawal_period: cfg.validator_withdrawal_period,
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
+                node_public_key: cfg.node_public_key,
+                validator_exit: false,
+                cancellation_token: cfg.cancellation_token,
+                _signer_marker: PhantomData,
+                _variant_marker: PhantomData,
             },
+            state,
             FinalizerMailbox::new(tx),
         )
     }
 
-    pub fn start(
-        mut self,
-        orchestrator: Orchestrator,
-        sync_height: u64,
-        finalization_notify: mpsc::Receiver<()>,
-    ) -> Handle<()> {
-        self.context.spawn_ref()(self.run(orchestrator, sync_height, finalization_notify))
+    pub fn start(mut self) -> Handle<()> {
+        spawn_cell!(self.context, self.run().await)
     }
 
-    pub async fn run(
-        mut self,
-        orchestrator: Orchestrator,
-        sync_height: u64,
-        finalization_notify: mpsc::Receiver<()>,
-    ) {
-        let (block_fetcher, mut rx_finalize_blocks) = BlockFetcher::new(
-            orchestrator,
-            finalization_notify,
-            self.epoch_num_of_blocks,
-            sync_height,
-        );
-        self.context
-            .with_label("block-fetcher")
-            .spawn(|_| block_fetcher.run());
-
+    pub async fn run(mut self) {
         let mut last_committed_timestamp: Option<Instant> = None;
         let mut signal = self.context.stopped().fuse();
-        loop {
-            select! {
-                msg = rx_finalize_blocks.next() => {
-                    let Some((envelope, notifier)) = msg else {
-                            warn!("All senders to finalizer dropped");
-                            break;
-                        };
-                    self.handle_execution_block(notifier,envelope, &mut last_committed_timestamp).await;
+        let cancellation_token = self.cancellation_token.clone();
 
-                }
+        // Initialize the current epoch with the validator set
+        // This ensures the orchestrator can start consensus immediately
+        let active_validators = self.state.get_active_validators();
+        let network_keys: Vec<_> = active_validators
+            .iter()
+            .map(|(node_key, _)| node_key.clone())
+            .collect();
+        self.oracle.register(self.state.epoch, network_keys).await;
+
+        self.orchestrator_mailbox
+            .report(Message::Enter(EpochTransition {
+                epoch: self.state.epoch,
+                validator_keys: active_validators,
+            }))
+            .await;
+
+        loop {
+            if self.validator_exit {
+                // If the validator was removed from the committee, trigger coordinated shutdown
+                info!("Validator no longer on the committee, shutting down");
+                self.cancellation_token.cancel();
+                break;
+            }
+            select! {
                 mailbox_message = self.mailbox.next() => {
                     let mail = mailbox_message.expect("Finalizer mailbox closed");
                     match mail {
+                        FinalizerMessage::SyncerUpdate { update } => {
+                            match update {
+                                Update::Tip(_height, _digest) => {
+                                    // I don't think we need this
+                                }
+                                Update::Block((block, finalization), ack_tx) => {
+                                    self.handle_execution_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
+                                }
+                            }
+                        },
                         FinalizerMessage::NotifyAtHeight { height, response } => {
                             let last_indexed = self.state.get_latest_height();
                             if last_indexed >= height {
                                 let _ = response.send(());
                                 continue;
                             }
-
                             self.pending_height_notifys.entry(height).or_default().push(response);
                         },
                         FinalizerMessage::GetAuxData { height, response } => {
                             self.handle_aux_data_mailbox(height, response).await;
+                        },
+                        FinalizerMessage::GetEpochGenesisHash { epoch, response } => {
+                            // TODO(matthias): verify that this can never happen
+                            assert_eq!(epoch, self.state.epoch);
+                            let _ = response.send(self.state.epoch_genesis_hash);
                         },
                         FinalizerMessage::QueryState { request, response } => {
                             self.handle_consensus_state_query(request, response).await;
                         },
                     }
                 }
+                _ = cancellation_token.cancelled().fuse() => {
+                    info!("finalizer received cancellation signal, exiting");
+                    break;
+                },
                 sig = &mut signal => {
-                    info!("finalizer terminated: {}", sig.unwrap());
+                    info!("runtime terminated, shutting down finalizer: {}", sig.unwrap());
                     break;
                 }
             }
         }
     }
 
+    #[allow(clippy::type_complexity)]
     async fn handle_execution_block(
         &mut self,
-        notifier: oneshot::Sender<()>,
-        envelope: BlockEnvelope,
+        ack_tx: oneshot::Sender<()>,
+        block: Block<S, V>,
+        finalization: Option<
+            Finalization<
+                bls12381_multisig::Scheme<PublicKey, V>,
+                <Block<S, V> as Digestible>::Digest,
+            >,
+        >,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
         #[cfg(feature = "prom")]
         let block_processing_start = Instant::now();
 
-        let BlockEnvelope { block, finalized } = envelope;
         // check the payload
         #[cfg(feature = "prom")]
         let payload_check_start = Instant::now();
@@ -201,7 +255,7 @@ impl<
         // Verify withdrawal requests that were included in the block
         // Make sure that the included withdrawals match the expected withdrawals
         let expected_withdrawals: Vec<Withdrawal> =
-            if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+            if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
                 let pending_withdrawals = self.state.get_next_ready_withdrawals(
                     new_height,
                     self.validator_max_withdrawals_per_block,
@@ -213,6 +267,7 @@ impl<
 
         if payload_status.is_valid()
             && block.payload.payload_inner.withdrawals == expected_withdrawals
+            && self.state.forkchoice.head_block_hash == block.eth_parent_hash()
         {
             let eth_hash = block.eth_block_hash();
             info!(
@@ -264,6 +319,10 @@ impl<
                 histogram!("process_execution_requests_duration_millis")
                     .record(process_requests_duration);
             }
+        } else {
+            warn!(
+                "Height: {new_height} contains invalid eth payload. Not executing but keeping part of chain"
+            );
         }
 
         #[cfg(debug_assertions)]
@@ -273,12 +332,14 @@ impl<
             self.context.register("height", "chain height", gauge);
         }
         self.state.set_latest_height(new_height);
+        self.state.set_view(block.view());
+        assert_eq!(block.epoch(), self.state.epoch);
 
         // Periodically persist state to database as a blob
         // We build the checkpoint one height before the epoch end which
         // allows the validators to sign the checkpoint hash in the last block
         // of the epoch
-        if is_penultimate_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+        if is_penultimate_block_of_epoch(self.epoch_num_of_blocks, new_height) {
             #[cfg(feature = "prom")]
             let checkpoint_creation_start = Instant::now();
 
@@ -294,25 +355,31 @@ impl<
             }
         }
 
-        // Store finalizes checkpoint to database
-        if is_last_block_of_epoch(new_height, self.epoch_num_of_blocks) {
-            let view = block.view();
-            if let Some(finalized) = finalized {
+        let mut epoch_change = false; // Store finalizes checkpoint to database
+        if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
+
+            if let Some(finalization) = finalization {
                 // The finalized signatures should always be included on the last block
                 // of the epoch. However, there is an edge case, where the block after
                 // last block of the epoch arrived out of order.
                 // This is not critical and will likely never happen on all validators
                 // at the same time.
                 // TODO(matthias): figure out a good solution for making checkpoints available
-                debug_assert!(block.header.digest == finalized.proposal.payload);
+                debug_assert!(block.header.digest == finalization.proposal.payload);
+
+                // Get participant count from the certificate signers
+                let participant_count = finalization.certificate.signers.len();
 
                 // Store the finalized block header in the database
-                let finalized_header = FinalizedHeader {
-                    header: block.header,
-                    finalized,
-                };
+                // Convert to concrete BLS scheme type by encoding and decoding
+                let finalized_header =
+                    FinalizedHeader::new(block.header.clone(), finalization, participant_count);
+                let mut buf = Vec::new();
+                finalized_header.write(&mut buf);
+                let concrete_header = <FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, V>> as CodecRead>::read_cfg(&mut buf.as_slice(), &())
+                    .expect("failed to convert finalized header to concrete type");
                 self.db
-                    .store_finalized_header(new_height, &finalized_header)
+                    .store_finalized_header(new_height, &concrete_header)
                     .await;
 
                 #[cfg(debug_assertions)]
@@ -341,20 +408,24 @@ impl<
                     account.status = ValidatorStatus::Active;
                 }
 
-                // TODO(matthias): remove keys in removed_validators from state or set inactive?
-                self.registry.update_registry(
-                    // We add a delta to the view because the views are initialized with fixed-size
-                    // arrays in Simplex. Adding a validator to an ongoing view can cause an
-                    // out-of-bounds array access.
-                    view + REGISTRY_CHANGE_VIEW_DELTA,
-                    //view,
-                    std::mem::take(&mut self.state.added_validators),
-                    std::mem::take(&mut self.state.removed_validators),
-                );
-                let participants = self.registry.peers().clone();
-                // TODO(matthias): should we wait until view `view + REGISTRY_CHANGE_VIEW_DELTA`
-                // to update the oracle?
-                self.oracle.register(view, participants).await;
+                for key in self.state.removed_validators.iter() {
+                    // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
+                    let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+                    if let Some(account) = self.state.validator_accounts.get_mut(&key_bytes) {
+                        account.status = ValidatorStatus::Inactive;
+                    }
+                }
+
+                // If the node's public key is contained in the removed validator list,
+                // trigger an exit
+                if self
+                    .state
+                    .removed_validators
+                    .iter()
+                    .any(|pk| pk == &self.node_public_key)
+                {
+                    self.validator_exit = true;
+                }
             }
 
             #[cfg(feature = "prom")]
@@ -376,6 +447,38 @@ impl<
                 histogram!("database_operations_duration_millis").record(db_operations_duration);
             }
 
+            // Increment epoch
+            self.state.epoch += 1;
+            // Set the epoch genesis hash for the next epoch
+            self.state.epoch_genesis_hash = block.digest().0;
+
+            // Create the list of validators for the new epoch
+            let active_validators = self.state.get_active_validators();
+            let network_keys = active_validators
+                .iter()
+                .map(|(node_key, _)| node_key.clone())
+                .collect();
+            self.oracle.register(self.state.epoch, network_keys).await;
+
+            // Send the new validator list to the orchestrator amd start the Simplex engine
+            // for the new epoch
+            let active_validators = self.state.get_active_validators();
+            self.orchestrator_mailbox
+                .report(Message::Enter(EpochTransition {
+                    epoch: self.state.epoch,
+                    validator_keys: active_validators,
+                }))
+                .await;
+            epoch_change = true;
+
+            // Only clear the added and removed validators after saving the state to disk
+            if !self.state.added_validators.is_empty() {
+                self.state.added_validators.clear();
+            }
+            if !self.state.removed_validators.is_empty() {
+                self.state.removed_validators.clear();
+            }
+
             #[cfg(debug_assertions)]
             {
                 let gauge: Gauge = Gauge::default();
@@ -395,11 +498,18 @@ impl<
         }
 
         self.height_notify_up_to(new_height);
-        let _ = notifier.send(());
+        let _ = ack_tx.send(());
         info!(new_height, "finalized block");
+
+        if epoch_change {
+            // Shut down the Simplex engine for the old epoch
+            self.orchestrator_mailbox
+                .report(Message::Exit(self.state.epoch - 1))
+                .await;
+        }
     }
 
-    async fn parse_execution_requests(&mut self, block: &Block, new_height: u64) {
+    async fn parse_execution_requests(&mut self, block: &Block<S, V>, new_height: u64) {
         for request_bytes in &block.execution_requests {
             match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
                 Ok(execution_request) => {
@@ -407,29 +517,67 @@ impl<
                         ExecutionRequest::Deposit(deposit_request) => {
                             let message = deposit_request.as_message(self.protocol_version_digest);
 
-                            let mut signature_bytes = &deposit_request.signature[..];
-                            let Ok(signature) = Signature::read(&mut signature_bytes) else {
+                            let mut node_signature_bytes = &deposit_request.node_signature[..];
+                            let Ok(node_signature) = Signature::read(&mut node_signature_bytes)
+                            else {
                                 info!(
-                                    "Failed to parse signature from deposit request: {deposit_request:?}"
+                                    "Failed to parse node signature from deposit request: {deposit_request:?}"
                                 );
                                 continue; // Skip this deposit request
                             };
-                            if !deposit_request.pubkey.verify(None, &message, &signature) {
+                            if !deposit_request
+                                .node_pubkey
+                                .verify(None, &message, &node_signature)
+                            {
                                 #[cfg(debug_assertions)]
                                 {
                                     let gauge: Gauge = Gauge::default();
                                     gauge.set(new_height as i64);
                                     self.context.register(
                                         format!(
-                                            "<pubkey>{}</pubkey>_deposit_request_invalid_sig",
-                                            hex::encode(&deposit_request.pubkey)
+                                            "<pubkey>{}</pubkey>_deposit_request_invalid_node_sig",
+                                            hex::encode(&deposit_request.node_pubkey)
                                         ),
                                         "height",
                                         gauge,
                                     );
                                 }
                                 info!(
-                                    "Failed to verify signature from deposit request: {deposit_request:?}"
+                                    "Failed to verify node signature from deposit request: {deposit_request:?}"
+                                );
+                                continue; // Skip this deposit request
+                            }
+
+                            let mut consensus_signature_bytes =
+                                &deposit_request.consensus_signature[..];
+                            let Ok(consensus_signature) =
+                                bls12381::Signature::read(&mut consensus_signature_bytes)
+                            else {
+                                info!(
+                                    "Failed to parse consensus signature from deposit request: {deposit_request:?}"
+                                );
+                                continue; // Skip this deposit request
+                            };
+                            if !deposit_request.consensus_pubkey.verify(
+                                None,
+                                &message,
+                                &consensus_signature,
+                            ) {
+                                #[cfg(debug_assertions)]
+                                {
+                                    let gauge: Gauge = Gauge::default();
+                                    gauge.set(new_height as i64);
+                                    self.context.register(
+                                        format!(
+                                            "<pubkey>{}</pubkey>_deposit_request_invalid_consensus_sig",
+                                            hex::encode(&deposit_request.consensus_pubkey)
+                                        ),
+                                        "height",
+                                        gauge,
+                                    );
+                                }
+                                info!(
+                                    "Failed to verify consensus signature from deposit request: {deposit_request:?}"
                                 );
                                 continue; // Skip this deposit request
                             }
@@ -461,7 +609,6 @@ impl<
                                 {
                                     continue; // Skip this withdrawal request
                                 }
-
                                 // If after this withdrawal the validator balance would be less than the
                                 // minimum stake, then the full validator balance is withdrawn.
                                 if account.balance
@@ -494,15 +641,15 @@ impl<
         }
     }
 
-    async fn process_execution_requests(&mut self, block: &Block, new_height: u64) {
-        if is_penultimate_block_of_epoch(new_height, self.epoch_num_of_blocks) {
+    async fn process_execution_requests(&mut self, block: &Block<S, V>, new_height: u64) {
+        if is_penultimate_block_of_epoch(self.epoch_num_of_blocks, new_height) {
             for _ in 0..self.validator_onboarding_limit_per_block {
                 if let Some(request) = self.state.pop_deposit() {
                     let mut validator_balance = 0;
                     let mut account_exists = false;
                     if let Some(mut account) = self
                         .state
-                        .get_account(request.pubkey.as_ref().try_into().unwrap())
+                        .get_account(request.node_pubkey.as_ref().try_into().unwrap())
                         .cloned()
                     {
                         if request.index > account.last_deposit_index {
@@ -515,8 +662,10 @@ impl<
                             }
                             account.last_deposit_index = request.index;
                             validator_balance = account.balance;
-                            self.state
-                                .set_account(request.pubkey.as_ref().try_into().unwrap(), account);
+                            self.state.set_account(
+                                request.node_pubkey.as_ref().try_into().unwrap(),
+                                account,
+                            );
                             account_exists = true;
                         }
                     } else {
@@ -550,6 +699,7 @@ impl<
 
                         // Create new ValidatorAccount from DepositRequest
                         let new_account = ValidatorAccount {
+                            consensus_public_key: request.consensus_pubkey.clone(),
                             withdrawal_credentials: Address::from_slice(
                                 &request.withdrawal_credentials[12..32],
                             ), // Take last 20 bytes
@@ -558,23 +708,28 @@ impl<
                             status: ValidatorStatus::Inactive,
                             last_deposit_index: request.index,
                         };
-                        self.state
-                            .set_account(request.pubkey.as_ref().try_into().unwrap(), new_account);
+                        self.state.set_account(
+                            request.node_pubkey.as_ref().try_into().unwrap(),
+                            new_account,
+                        );
                         validator_balance = request.amount;
                     }
                     if !account_exists && validator_balance >= self.validator_minimum_stake {
                         // If the node shuts down, before the account changes are committed,
                         // then everything should work normally, because the registry is not persisted to disk
-                        self.state.added_validators.push(request.pubkey.clone());
+                        self.state
+                            .added_validators
+                            .push(request.node_pubkey.clone());
                     }
                     #[cfg(debug_assertions)]
                     {
+                        use commonware_codec::Encode;
                         let gauge: Gauge = Gauge::default();
                         gauge.set(validator_balance as i64);
                         self.context.register(
                             format!("<registry>{}</registry><creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
                                     !account_exists && validator_balance >= self.validator_minimum_stake,
-                                    hex::encode(request.withdrawal_credentials), hex::encode(request.pubkey)),
+                                    hex::encode(request.withdrawal_credentials), hex::encode(request.node_pubkey.encode())),
                             "Validator balance",
                             gauge
                         );
@@ -650,13 +805,10 @@ impl<
         height: u64,
         sender: oneshot::Sender<BlockAuxData>,
     ) {
-        // TODO(matthias): the height notify should take care of the synchronization, but verify this
-        // Get ready withdrawals at the current height
-
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
-        let aux_data = if is_last_block_of_epoch(height, self.epoch_num_of_blocks) {
+        let aux_data = if is_last_block_of_epoch(self.epoch_num_of_blocks, height) {
             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
             let checkpoint_hash = if let Some(checkpoint) = &self.state.pending_checkpoint {
                 checkpoint.digest
@@ -679,6 +831,7 @@ impl<
                 .state
                 .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
             BlockAuxData {
+                epoch: self.state.epoch,
                 withdrawals: ready_withdrawals,
                 checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
@@ -688,6 +841,7 @@ impl<
             }
         } else {
             BlockAuxData {
+                epoch: self.state.epoch,
                 withdrawals: vec![],
                 checkpoint_hash: None,
                 header_hash: [0; 32].into(),
@@ -713,6 +867,30 @@ impl<
                 let height = self.state.get_latest_height();
                 let _ = sender.send(ConsensusStateResponse::LatestHeight(height));
             }
+            ConsensusStateRequest::GetValidatorBalance(public_key) => {
+                let mut key_bytes = [0u8; 32];
+                key_bytes.copy_from_slice(&public_key);
+
+                let balance = self
+                    .state
+                    .validator_accounts
+                    .get(&key_bytes)
+                    .map(|account| account.balance);
+                let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
+            }
         }
+    }
+}
+
+impl<
+    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    C: EngineClient,
+    O: NetworkOracle<PublicKey>,
+    S: Signer<PublicKey = PublicKey>,
+    V: Variant,
+> Drop for Finalizer<R, C, O, S, V>
+{
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
     }
 }
