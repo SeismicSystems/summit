@@ -357,10 +357,6 @@ impl<
 
         let mut epoch_change = false; // Store finalizes checkpoint to database
         if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
-            // Increment epoch
-            self.state.epoch += 1;
-            // Set the epoch genesis hash for the next epoch
-            self.state.epoch_genesis_hash = block.digest().0;
 
             if let Some(finalization) = finalization {
                 // The finalized signatures should always be included on the last block
@@ -432,25 +428,6 @@ impl<
                 }
             }
 
-            // Create the list of validators for the new epoch
-            let active_validators = self.state.get_active_validators();
-            let network_keys = active_validators
-                .iter()
-                .map(|(node_key, _)| node_key.clone())
-                .collect();
-            self.oracle.register(self.state.epoch, network_keys).await;
-
-            // Send the new validator list to the orchestrator amd start the Simplex engine
-            // for the new epoch
-            let active_validators = self.state.get_active_validators();
-            self.orchestrator_mailbox
-                .report(Message::Enter(EpochTransition {
-                    epoch: self.state.epoch,
-                    validator_keys: active_validators,
-                }))
-                .await;
-            epoch_change = true;
-
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
             // This pending checkpoint should always exist, because it was created at the previous height.
@@ -469,6 +446,30 @@ impl<
                 let db_operations_duration = db_operations_start.elapsed().as_millis() as f64;
                 histogram!("database_operations_duration_millis").record(db_operations_duration);
             }
+
+            // Increment epoch
+            self.state.epoch += 1;
+            // Set the epoch genesis hash for the next epoch
+            self.state.epoch_genesis_hash = block.digest().0;
+
+            // Create the list of validators for the new epoch
+            let active_validators = self.state.get_active_validators();
+            let network_keys = active_validators
+                .iter()
+                .map(|(node_key, _)| node_key.clone())
+                .collect();
+            self.oracle.register(self.state.epoch, network_keys).await;
+
+            // Send the new validator list to the orchestrator amd start the Simplex engine
+            // for the new epoch
+            let active_validators = self.state.get_active_validators();
+            self.orchestrator_mailbox
+                .report(Message::Enter(EpochTransition {
+                    epoch: self.state.epoch,
+                    validator_keys: active_validators,
+                }))
+                .await;
+            epoch_change = true;
 
             // Only clear the added and removed validators after saving the state to disk
             if !self.state.added_validators.is_empty() {
