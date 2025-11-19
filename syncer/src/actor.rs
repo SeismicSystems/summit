@@ -37,6 +37,8 @@ use futures::{
 };
 use governor::clock::Clock as GClock;
 #[cfg(feature = "prom")]
+use metrics::{counter, histogram};
+#[cfg(feature = "prom")]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
 use std::{
@@ -135,6 +137,13 @@ pub struct Actor<
     waiting_blocks: BTreeSet<B::Commitment>,
     // Outstanding requests for finalized blocks
     waiting_finalized: BTreeSet<u64>,
+    // Timestamps for tracking block fetch request durations
+    #[cfg(feature = "prom")]
+    fetch_timestamps_block: BTreeMap<B::Commitment, Instant>,
+    #[cfg(feature = "prom")]
+    fetch_timestamps_finalized: BTreeMap<u64, Instant>,
+    #[cfg(feature = "prom")]
+    fetch_timestamps_notarized: BTreeMap<Round, Instant>,
 
     // ---------- Storage ----------
     // Prunable cache
@@ -299,6 +308,9 @@ impl<
                     block_subscriptions: BTreeMap::new(),
                     waiting_blocks: BTreeSet::new(),
                     waiting_finalized: BTreeSet::new(),
+                    fetch_timestamps_block: BTreeMap::new(),
+                    fetch_timestamps_finalized: BTreeMap::new(),
+                    fetch_timestamps_notarized: BTreeMap::new(),
                     cache,
                     application_metadata,
                     finalizations_by_height,
@@ -495,6 +507,11 @@ impl<
                                 self.cache_block(round, commitment, block).await;
                             } else {
                                 debug!(?round, "notarized block missing");
+                                #[cfg(feature = "prom")]
+                                {
+                                    counter!("syncer_block_fetch_requests_total", "type" => "notarized").increment(1);
+                                    self.fetch_timestamps_notarized.insert(round, Instant::now());
+                                }
                                 resolver.fetch(Request::<B>::Notarized { round }).await;
                             }
                         }
@@ -522,6 +539,11 @@ impl<
                             } else {
                                 // Otherwise, fetch the block from the network.
                                 debug!(?round, ?commitment, "finalized block missing");
+                                #[cfg(feature = "prom")]
+                                {
+                                    counter!("syncer_block_fetch_requests_total", "type" => "finalized").increment(1);
+                                    self.fetch_timestamps_block.insert(commitment, Instant::now());
+                                }
                                 resolver.fetch(Request::<B>::Block(commitment)).await;
                             }
                         }
@@ -572,6 +594,11 @@ impl<
                                 // If this is a valid view, this request should be fine to keep open
                                 // until resolution or pruning (even if the oneshot is canceled).
                                 debug!(?round, ?commitment, "requested block missing");
+                                #[cfg(feature = "prom")]
+                                {
+                                    counter!("syncer_block_fetch_requests_total", "type" => "subscribe").increment(1);
+                                    self.fetch_timestamps_notarized.insert(round, Instant::now());
+                                }
                                 resolver.fetch(Request::<B>::Notarized { round }).await;
                             }
 
@@ -676,6 +703,14 @@ impl<
                                     )
                                     .await;
                                     debug!(?commitment, height, "received block");
+                                    #[cfg(feature = "prom")]
+                                    {
+                                        counter!("syncer_block_delivered_total", "type" => "block").increment(1);
+                                        if let Some(start_time) = self.fetch_timestamps_block.remove(&commitment) {
+                                            let duration_ms = start_time.elapsed().as_millis() as f64;
+                                            histogram!("syncer_block_fetch_duration_millis", "type" => "block").record(duration_ms);
+                                        }
+                                    }
                                     let _ = response.send(true);
                                 },
                                 Request::Finalized { height } => {
@@ -706,6 +741,14 @@ impl<
                                     }
 
                                     // Valid finalization received
+                                    #[cfg(feature = "prom")]
+                                    {
+                                        counter!("syncer_block_delivered_total", "type" => "finalized").increment(1);
+                                        if let Some(start_time) = self.fetch_timestamps_finalized.remove(&height) {
+                                            let duration_ms = start_time.elapsed().as_millis() as f64;
+                                            histogram!("syncer_block_fetch_duration_millis", "type" => "finalized").record(duration_ms);
+                                        }
+                                    }
                                     let _ = response.send(true);
                                     self.finalize(
                                         height,
@@ -745,6 +788,14 @@ impl<
                                     }
 
                                     // Valid notarization received
+                                    #[cfg(feature = "prom")]
+                                    {
+                                        counter!("syncer_block_delivered_total", "type" => "notarized").increment(1);
+                                        if let Some(start_time) = self.fetch_timestamps_notarized.remove(&round) {
+                                            let duration_ms = start_time.elapsed().as_millis() as f64;
+                                            histogram!("syncer_block_fetch_duration_millis", "type" => "notarized").record(duration_ms);
+                                        }
+                                    }
                                     let _ = response.send(true);
                                     let commitment = block.commitment();
                                     debug!(?round, ?commitment, "received notarization");
