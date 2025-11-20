@@ -1,3 +1,4 @@
+use alloy_primitives::FixedBytes;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -37,6 +38,9 @@ struct Args {
     /// Filepath with IP addresses
     #[arg(short = 'v', long)]
     validators_path: String,
+    /// Genesis hash
+    #[arg(short = 'g', long)]
+    genesis_hash: Option<FixedBytes<32>>,
 }
 
 fn parse_validators(
@@ -61,6 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_count = validators.len() as u32;
 
     let mut genesis_config = GenesisConfig::load(&args.genesis_in)?;
+    if let Some(genesis_hash) = args.genesis_hash {
+        let hash_str = genesis_hash.to_string();
+        println!("Overriding eth_genesis_hash to {hash_str}");
+        genesis_config.eth_genesis_hash = hash_str;
+    }
     genesis_config.validators = validators;
 
     // Write the updated genesis config
