@@ -25,7 +25,7 @@ impl KeyPaths {
 
     /// Get the path to the consensus key file (BLS share)
     pub fn consensus_key_path(&self) -> String {
-        format!("{}/share.pem", self.0)
+        format!("{}/consensus_key.pem", self.0)
     }
 
     /// Load the node private key (ED25519) from the key store
