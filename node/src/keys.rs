@@ -54,12 +54,12 @@ impl KeySubCmd {
     }
 
     fn generate_keys(&self, flags: &KeyFlags) {
-        let keystore_dir = get_expanded_path(&flags.key_store_path).expect("Invalid path");
         let key_paths = KeyPaths::new(flags.key_store_path.clone());
-        let node_key_path_str = key_paths.node_key_path();
-        let consensus_key_path_str = key_paths.consensus_key_path();
-        let node_key_path = Path::new(&node_key_path_str);
-        let consensus_key_path = Path::new(&consensus_key_path_str);
+        let keystore_dir = key_paths.expanded().expect("Invalid --key-store-path");
+        let node_key_path = key_paths.node_key_path().expect("Invalid node key path");
+        let consensus_key_path = key_paths
+            .consensus_key_path()
+            .expect("Invalid consensus key path");
 
         // Check if key files already exist
         let keys_exist = node_key_path.exists() || consensus_key_path.exists();

@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use crate::{PrivateKey, utils::get_expanded_path};
 use anyhow::{Context, Result};
 use commonware_codec::DecodeExt;
@@ -18,14 +20,26 @@ impl KeyPaths {
         Self(key_store_path)
     }
 
+    pub fn expanded(&self) -> anyhow::Result<PathBuf> {
+        get_expanded_path(&self.0)
+    }
+
     /// Get the path to the node key file (ED25519)
-    pub fn node_key_path(&self) -> String {
+    pub fn node_key_path_str(&self) -> String {
         format!("{}/node_key.pem", self.0)
     }
 
     /// Get the path to the consensus key file (BLS share)
-    pub fn consensus_key_path(&self) -> String {
+    pub fn consensus_key_path_str(&self) -> String {
         format!("{}/consensus_key.pem", self.0)
+    }
+
+    pub fn node_key_path(&self) -> anyhow::Result<PathBuf> {
+        get_expanded_path(&self.node_key_path_str())
+    }
+
+    pub fn consensus_key_path(&self) -> anyhow::Result<PathBuf> {
+        get_expanded_path(&self.consensus_key_path_str())
     }
 
     /// Load the node private key (ED25519) from the key store
@@ -52,7 +66,7 @@ impl KeyPaths {
 
     /// Read the node private key from file (using anyhow::Result for compatibility)
     pub fn read_node_key_from_file(&self) -> Result<PrivateKey> {
-        let path = get_expanded_path(&self.node_key_path())?;
+        let path = self.node_key_path()?;
         let encoded_pk = std::fs::read_to_string(&path)
             .context(format!("Failed to read node key from {:?}", path))?;
         let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for node key")?;
@@ -62,7 +76,7 @@ impl KeyPaths {
 
     /// Read the BLS private key from file (using anyhow::Result for compatibility)
     pub fn read_bls_key_from_file(&self) -> Result<BlsPrivateKey> {
-        let path = get_expanded_path(&self.consensus_key_path())?;
+        let path = self.consensus_key_path()?;
         let encoded_pk = std::fs::read_to_string(&path)
             .context(format!("Failed to read BLS key from {:?}", path))?;
         let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for BLS key")?;
