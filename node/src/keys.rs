@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use clap::{Args, Subcommand};
 use std::io::{self, Write};
 use std::path::Path;
@@ -6,9 +6,6 @@ use std::path::Path;
 use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;
 use commonware_cryptography::{PrivateKeyExt as _, Signer};
 use summit_types::{KeyPaths, PrivateKey, utils::get_expanded_path};
-
-const NODE_KEY_FILENAME: &str = "node_key.pem";
-const CONSENSUS_KEY_FILENAME: &str = "consensus_key.pem";
 
 #[derive(Subcommand, PartialEq, Eq, Debug, Clone)]
 pub enum KeySubCmd {
