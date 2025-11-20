@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};
 use std::io::{self, Write};
 use std::path::Path;
@@ -6,6 +6,9 @@ use std::path::Path;
 use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;
 use commonware_cryptography::{PrivateKeyExt as _, Signer};
 use summit_types::{KeyPaths, PrivateKey, utils::get_expanded_path};
+
+const NODE_KEY_FILENAME: &str = "node_key.pem";
+const CONSENSUS_KEY_FILENAME: &str = "consensus_key.pem";
 
 #[derive(Subcommand, PartialEq, Eq, Debug, Clone)]
 pub enum KeySubCmd {
@@ -24,7 +27,7 @@ pub enum KeySubCmd {
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct KeyFlags {
-    /// Path to your keystore directory containing node_key.pem and share.pem
+    /// Path to your keystore directory containing node_key.pem and consensus_key.pem
     #[arg(long, default_value_t = String::from("~/.seismic/consensus/keys"))]
     pub key_store_path: String,
     #[arg(short = 'n', long, conflicts_with = "yes_overwrite")]
@@ -117,7 +120,9 @@ impl KeySubCmd {
     fn show_key(&self, flags: &KeyFlags) {
         let key_paths = KeyPaths::new(flags.key_store_path.clone());
 
-        let node_pub_key = key_paths.node_public_key().expect("Unable to read node key from disk");
+        let node_pub_key = key_paths
+            .node_public_key()
+            .expect("Unable to read node key from disk");
         let consensus_pub_key = key_paths
             .consensus_public_key()
             .expect("Unable to read consensus key from disk");
