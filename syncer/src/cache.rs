@@ -233,10 +233,20 @@ impl<
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
         };
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
         let result = cache
             .verified_blocks
             .put_sync(round.view(), commitment, block)
             .await;
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            metrics::histogram!("syncer_storage_operation_duration_millis", "operation" => "write", "archive" => "cache_verified").record(duration_ms);
+        }
+
         Self::handle_result(result, round, "verified");
     }
 
@@ -245,10 +255,20 @@ impl<
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
         };
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
         let result = cache
             .notarized_blocks
             .put_sync(round.view(), commitment, block)
             .await;
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            metrics::histogram!("syncer_storage_operation_duration_millis", "operation" => "write", "archive" => "cache_notarized").record(duration_ms);
+        }
+
         Self::handle_result(result, round, "notarized");
     }
 
@@ -262,10 +282,20 @@ impl<
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
         };
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
         let result = cache
             .notarizations
             .put_sync(round.view(), commitment, notarization)
             .await;
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            metrics::histogram!("syncer_storage_operation_duration_millis", "operation" => "write", "archive" => "cache_notarizations").record(duration_ms);
+        }
+
         Self::handle_result(result, round, "notarization");
     }
 
@@ -279,10 +309,20 @@ impl<
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
         };
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
         let result = cache
             .finalizations
             .put_sync(round.view(), commitment, finalization)
             .await;
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            metrics::histogram!("syncer_storage_operation_duration_millis", "operation" => "write", "archive" => "cache_finalizations").record(duration_ms);
+        }
+
         Self::handle_result(result, round, "finalization");
     }
 
@@ -306,12 +346,23 @@ impl<
         &self,
         round: Round,
     ) -> Option<Notarization<S, B::Commitment>> {
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
         let cache = self.caches.get(&round.epoch())?;
-        cache
+        let result = cache
             .notarizations
             .get(Identifier::Index(round.view()))
             .await
-            .expect("failed to get notarization")
+            .expect("failed to get notarization");
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            metrics::histogram!("syncer_storage_operation_duration_millis", "operation" => "read", "archive" => "cache_notarizations").record(duration_ms);
+        }
+
+        result
     }
 
     /// Get a finalization from the prunable archive by commitment.
@@ -319,13 +370,30 @@ impl<
         &self,
         commitment: B::Commitment,
     ) -> Option<Finalization<S, B::Commitment>> {
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
         for cache in self.caches.values().rev() {
             match cache.finalizations.get(Identifier::Key(&commitment)).await {
-                Ok(Some(finalization)) => return Some(finalization),
+                Ok(Some(finalization)) => {
+                    #[cfg(feature = "prom")]
+                    {
+                        let duration_ms = start.elapsed().as_millis() as f64;
+                        metrics::histogram!("syncer_storage_operation_duration_millis", "operation" => "read", "archive" => "cache_finalizations").record(duration_ms);
+                    }
+                    return Some(finalization);
+                }
                 Ok(None) => continue,
                 Err(e) => panic!("failed to get cached finalization: {e}"),
             }
         }
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            metrics::histogram!("syncer_storage_operation_duration_millis", "operation" => "read", "archive" => "cache_finalizations").record(duration_ms);
+        }
+
         None
     }
 
@@ -340,6 +408,9 @@ impl<
                 .await
                 .expect("failed to get verified block")
             {
+                #[cfg(feature = "prom")]
+                metrics::counter!("syncer_block_source_total", "source" => "cache_verified")
+                    .increment(1);
                 return Some(block);
             }
 
@@ -350,6 +421,9 @@ impl<
                 .await
                 .expect("failed to get notarized block")
             {
+                #[cfg(feature = "prom")]
+                metrics::counter!("syncer_block_source_total", "source" => "cache_notarized")
+                    .increment(1);
                 return Some(block);
             }
         }

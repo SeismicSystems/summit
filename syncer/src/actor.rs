@@ -897,9 +897,19 @@ impl<
             let _ = self.processed_height.try_set(height);
         }
         self.last_processed_height = height;
+
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
         self.application_metadata
             .put_sync(LATEST_KEY.clone(), height)
             .await?;
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            histogram!("syncer_storage_operation_duration_millis", "operation" => "write", "archive" => "metadata").record(duration_ms);
+        }
 
         resolver.cancel(Request::<B>::Block(commitment)).await;
         self.waiting_blocks.remove(&commitment);
@@ -946,10 +956,21 @@ impl<
 
     /// Get a finalized block from the immutable archive.
     async fn get_finalized_block(&self, height: u64) -> Option<B> {
-        match self.finalized_blocks.get(ArchiveID::Index(height)).await {
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
+        let result = match self.finalized_blocks.get(ArchiveID::Index(height)).await {
             Ok(block) => block,
             Err(e) => panic!("failed to get block: {e}"),
+        };
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            histogram!("syncer_storage_operation_duration_millis", "operation" => "read", "archive" => "finalized_blocks").record(duration_ms);
         }
+
+        result
     }
 
     /// Get a finalization from the archive by height.
@@ -957,14 +978,25 @@ impl<
         &self,
         height: u64,
     ) -> Option<Finalization<S, B::Commitment>> {
-        match self
+        #[cfg(feature = "prom")]
+        let start = Instant::now();
+
+        let result = match self
             .finalizations_by_height
             .get(ArchiveID::Index(height))
             .await
         {
             Ok(finalization) => finalization,
             Err(e) => panic!("failed to get finalization: {e}"),
+        };
+
+        #[cfg(feature = "prom")]
+        {
+            let duration_ms = start.elapsed().as_millis() as f64;
+            histogram!("syncer_storage_operation_duration_millis", "operation" => "read", "archive" => "finalizations").record(duration_ms);
         }
+
+        result
     }
 
     /// Add a finalized block, and optionally a finalization, to the archive, and
@@ -1001,15 +1033,38 @@ impl<
         self.notify_subscribers(commitment, &block).await;
 
         // In parallel, update the finalized blocks and finalizations archives
+        #[cfg(feature = "prom")]
+        let start_blocks = Instant::now();
+        #[cfg(feature = "prom")]
+        let start_finalizations = Instant::now();
+
         if let Err(e) = try_join!(
             // Update the finalized blocks archive
-            self.finalized_blocks.put_sync(height, commitment, block),
+            async {
+                let result = self
+                    .finalized_blocks
+                    .put_sync(height, commitment, block)
+                    .await;
+                #[cfg(feature = "prom")]
+                {
+                    let duration_ms = start_blocks.elapsed().as_millis() as f64;
+                    histogram!("syncer_storage_operation_duration_millis", "operation" => "write", "archive" => "finalized_blocks").record(duration_ms);
+                }
+                result
+            },
             // Update the finalizations archive (if provided)
             async {
                 if let Some(finalization) = finalization {
-                    self.finalizations_by_height
+                    let result = self
+                        .finalizations_by_height
                         .put_sync(height, commitment, finalization)
-                        .await?;
+                        .await;
+                    #[cfg(feature = "prom")]
+                    {
+                        let duration_ms = start_finalizations.elapsed().as_millis() as f64;
+                        histogram!("syncer_storage_operation_duration_millis", "operation" => "write", "archive" => "finalizations").record(duration_ms);
+                    }
+                    result?;
                 }
                 Ok::<_, _>(())
             }
@@ -1061,6 +1116,8 @@ impl<
     ) -> Option<B> {
         // Check buffer.
         if let Some(block) = buffer.get(None, commitment, None).await.into_iter().next() {
+            #[cfg(feature = "prom")]
+            counter!("syncer_block_source_total", "source" => "buffer").increment(1);
             return Some(block);
         }
         // Check verified / notarized blocks via cache manager.
@@ -1069,7 +1126,16 @@ impl<
         }
         // Check finalized blocks.
         match self.finalized_blocks.get(ArchiveID::Key(&commitment)).await {
-            Ok(block) => block, // may be None
+            Ok(Some(block)) => {
+                #[cfg(feature = "prom")]
+                counter!("syncer_block_source_total", "source" => "finalized").increment(1);
+                Some(block)
+            }
+            Ok(None) => {
+                #[cfg(feature = "prom")]
+                counter!("syncer_block_source_total", "source" => "miss").increment(1);
+                None
+            }
             Err(e) => panic!("failed to get block: {e}"),
         }
     }
