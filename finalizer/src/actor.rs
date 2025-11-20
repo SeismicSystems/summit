@@ -294,7 +294,16 @@ impl<
                 *last_committed_timestamp = Some(Instant::now());
             }
 
+            #[cfg(feature = "prom")]
+            let commit_hash_start = Instant::now();
+
             self.engine_client.commit_hash(forkchoice).await;
+
+            #[cfg(feature = "prom")]
+            {
+                let commit_hash_duration = commit_hash_start.elapsed().as_millis() as f64;
+                histogram!("commit_hash_duration_millis").record(commit_hash_duration);
+            }
 
             self.state.forkchoice = forkchoice;
 
