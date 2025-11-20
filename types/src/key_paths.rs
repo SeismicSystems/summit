@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::{PrivateKey, utils::get_expanded_path};
 use anyhow::{Context, Result};
