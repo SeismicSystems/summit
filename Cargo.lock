@@ -5707,7 +5707,6 @@ dependencies = [
  "prometheus-client",
  "rand 0.8.5",
  "summit-types",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

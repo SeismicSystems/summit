@@ -21,7 +21,6 @@ bytes.workspace = true
 futures.workspace = true
 governor.workspace = true
 rand.workspace = true
-tokio-util.workspace = true
 tracing.workspace = true
 pin-project.workspace = true
 

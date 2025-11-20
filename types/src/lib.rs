@@ -7,7 +7,6 @@ pub mod engine_client;
 pub mod execution_request;
 pub mod genesis;
 pub mod header;
-pub mod key_paths;
 pub mod keystore;
 pub mod network_oracle;
 #[cfg(feature = "e2e")]
@@ -21,7 +20,6 @@ pub use block::*;
 pub use engine_client::*;
 pub use genesis::*;
 pub use header::*;
-pub use key_paths::*;
 use withdrawal::PendingWithdrawal;
 
 use commonware_consensus::simplex::types::Activity as CActivity;

@@ -437,6 +437,12 @@ impl<
             if let Some(checkpoint) = &self.state.pending_checkpoint {
                 self.db.store_finalized_checkpoint(checkpoint).await;
             }
+
+            // Increment epoch
+            self.state.epoch += 1;
+            // Set the epoch genesis hash for the next epoch
+            self.state.epoch_genesis_hash = block.digest().0;
+
             self.db.store_consensus_state(new_height, &self.state).await;
             // This will commit all changes to the state db
             self.db.commit().await;
@@ -445,11 +451,6 @@ impl<
                 let db_operations_duration = db_operations_start.elapsed().as_millis() as f64;
                 histogram!("database_operations_duration_millis").record(db_operations_duration);
             }
-
-            // Increment epoch
-            self.state.epoch += 1;
-            // Set the epoch genesis hash for the next epoch
-            self.state.epoch_genesis_hash = block.digest().0;
 
             // Create the list of validators for the new epoch
             let active_validators = self.state.get_active_validators();

@@ -99,8 +99,8 @@ mod tests {
         resolver::p2p as resolver,
     };
     use crate::ingress::mailbox::Identifier;
+    use crate::mocks::fixtures::{Fixture, bls12381_threshold};
     use commonware_broadcast::buffered;
-    use commonware_consensus::simplex::mocks::fixtures::{Fixture, bls12381_threshold};
     use commonware_consensus::simplex::signing_scheme::bls12381_threshold;
     use commonware_consensus::simplex::types::{
         Activity, Finalization, Finalize, Notarization, Notarize, Proposal,
@@ -184,7 +184,7 @@ mod tests {
             mailbox_size: 100,
             namespace: NAMESPACE.to_vec(),
             view_retention_timeout: 10,
-            max_repair: 10,
+            max_repair: NZU64!(10),
             block_codec_config: (),
             partition_prefix: format!("validator-{}", validator.clone()),
             prunable_items_per_section: NZU64!(10),
@@ -205,7 +205,7 @@ mod tests {
         let backfill = control.register(1).await.unwrap();
         let resolver_cfg = resolver::Config {
             public_key: validator.clone(),
-            manager: oracle.clone(),
+            manager: oracle.manager(),
             mailbox_size: config.mailbox_size,
             requester_config: requester::Config {
                 me: Some(validator.clone()),
@@ -217,7 +217,8 @@ mod tests {
             priority_requests: false,
             priority_responses: false,
         };
-        let resolver = resolver::init(&context, resolver_cfg, backfill);
+        let (resolver_receiver, resolver_mailbox, _resolver_handle) =
+            resolver::init(&context, resolver_cfg, backfill);
 
         // Create a buffered broadcast engine and get its mailbox
         let broadcast_config = buffered::Config {
@@ -235,7 +236,14 @@ mod tests {
         let application = Application::<B, S>::default();
 
         // Start the application
-        actor.start(application.clone(), buffer, resolver, 0);
+        actor.start(
+            application.clone(),
+            buffer,
+            (resolver_receiver, resolver_mailbox),
+            0,
+            0,
+            0,
+        );
 
         (application, mailbox)
     }
@@ -335,7 +343,10 @@ mod tests {
             let mut actors = Vec::new();
 
             // Register the initial peer set.
-            oracle.update(0, participants.clone().into()).await;
+            oracle
+                .manager()
+                .update(0, participants.clone().into())
+                .await;
             for (i, validator) in participants.iter().enumerate() {
                 let (application, actor) = setup_validator(
                     context.with_label(&format!("validator-{i}")),

@@ -1,11 +1,15 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};
+use commonware_codec::extensions::DecodeExt;
 use std::io::{self, Write};
-use std::path::Path;
 
 use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;
 use commonware_cryptography::{PrivateKeyExt as _, Signer};
-use summit_types::{KeyPaths, PrivateKey, utils::get_expanded_path};
+use commonware_utils::from_hex_formatted;
+use summit_types::{PrivateKey, utils::get_expanded_path};
+
+const NODE_KEY_FILENAME: &str = "node_key.pem";
+const CONSENSUS_KEY_FILENAME: &str = "consensus_key.pem";
 
 #[derive(Subcommand, PartialEq, Eq, Debug, Clone)]
 pub enum KeySubCmd {
@@ -24,7 +28,7 @@ pub enum KeySubCmd {
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct KeyFlags {
-    /// Path to your keystore directory containing node_key.pem and share.pem
+    /// Path to your keystore directory containing node_key.pem and consensus_key.pem
     #[arg(long, default_value_t = String::from("~/.seismic/consensus/keys"))]
     pub key_store_path: String,
     #[arg(short = 'n', long, conflicts_with = "yes_overwrite")]
@@ -55,11 +59,8 @@ impl KeySubCmd {
 
     fn generate_keys(&self, flags: &KeyFlags) {
         let keystore_dir = get_expanded_path(&flags.key_store_path).expect("Invalid path");
-        let key_paths = KeyPaths::new(flags.key_store_path.clone());
-        let node_key_path_str = key_paths.node_key_path();
-        let consensus_key_path_str = key_paths.consensus_key_path();
-        let node_key_path = Path::new(&node_key_path_str);
-        let consensus_key_path = Path::new(&consensus_key_path_str);
+        let node_key_path = keystore_dir.join(NODE_KEY_FILENAME);
+        let consensus_key_path = keystore_dir.join(CONSENSUS_KEY_FILENAME);
 
         // Check if key files already exist
         let keys_exist = node_key_path.exists() || consensus_key_path.exists();
@@ -100,13 +101,13 @@ impl KeySubCmd {
         let node_private_key = PrivateKey::from_rng(&mut rand::thread_rng());
         let node_pub_key = node_private_key.public_key();
         let encoded_node_key = node_private_key.to_string();
-        std::fs::write(node_key_path, encoded_node_key).expect("Unable to write node key to disk");
+        std::fs::write(&node_key_path, encoded_node_key).expect("Unable to write node key to disk");
 
         // Generate BLS consensus key
         let consensus_private_key = BlsPrivateKey::from_rng(&mut rand::thread_rng());
         let consensus_pub_key = consensus_private_key.public_key();
         let encoded_consensus_key = consensus_private_key.to_string();
-        std::fs::write(consensus_key_path, encoded_consensus_key)
+        std::fs::write(&consensus_key_path, encoded_consensus_key)
             .expect("Unable to write consensus key to disk");
 
         println!("Keys generated at {}:", keystore_dir.display());
@@ -115,22 +116,43 @@ impl KeySubCmd {
     }
 
     fn show_key(&self, flags: &KeyFlags) {
-        let key_paths = KeyPaths::new(flags.key_store_path.clone());
+        let keystore_dir = get_expanded_path(&flags.key_store_path).expect("Invalid path");
+        let node_key_path = keystore_dir.join(NODE_KEY_FILENAME);
+        let consensus_key_path = keystore_dir.join(CONSENSUS_KEY_FILENAME);
 
-        let node_pub_key = key_paths.node_public_key().expect("Unable to read node key from disk");
-        let consensus_pub_key = key_paths
-            .consensus_public_key()
+        let node_pk =
+            read_ed_key_from_file(&node_key_path).expect("Unable to read node key from disk");
+        let consensus_pk = read_bls_key_from_file(&consensus_key_path)
             .expect("Unable to read consensus key from disk");
 
-        println!("Node Public Key (ed25519): {}", node_pub_key);
-        println!("Consensus Public Key (BLS): {}", consensus_pub_key);
+        println!("Node Public Key (ed25519): {}", node_pk.public_key());
+        println!("Consensus Public Key (BLS): {}", consensus_pk.public_key());
     }
 }
 
+pub fn read_bls_key_from_file(path: &std::path::Path) -> Result<BlsPrivateKey> {
+    if let Err(e) = std::fs::read_to_string(path) {
+        println!("Failed to read BLS key: {}", e);
+    }
+
+    let encoded_pk = std::fs::read_to_string(path)?;
+    let key = from_hex_formatted(&encoded_pk).context("Invalid BLS key format")?;
+    let pk = BlsPrivateKey::decode(&*key)?;
+    Ok(pk)
+}
+
+pub fn read_ed_key_from_file(path: &std::path::Path) -> Result<PrivateKey> {
+    let encoded_pk = std::fs::read_to_string(path)?;
+    let key = from_hex_formatted(&encoded_pk).context("Invalid ed25519 key format")?;
+    let pk = PrivateKey::decode(&*key)?;
+    Ok(pk)
+}
+
 pub fn read_keys_from_keystore(keystore_path: &str) -> Result<(PrivateKey, BlsPrivateKey)> {
-    let key_paths = KeyPaths::new(keystore_path.to_string());
-    let node_key = key_paths.read_node_key_from_file()?;
-    let consensus_key = key_paths.read_bls_key_from_file()?;
+    let keystore_dir = get_expanded_path(keystore_path)?;
+    println!("Keystore directory: {}", keystore_dir.display());
+    let node_key = read_ed_key_from_file(&keystore_dir.join(NODE_KEY_FILENAME))?;
+    let consensus_key = read_bls_key_from_file(&keystore_dir.join(CONSENSUS_KEY_FILENAME))?;
     Ok((node_key, consensus_key))
 }
 
