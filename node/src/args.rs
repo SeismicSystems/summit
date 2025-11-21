@@ -90,6 +90,9 @@ pub struct RunFlags {
     #[arg(long, default_value_t = 18551)]
     pub port: u16,
 
+    /// Prometheus address
+    #[arg(long, default_value_t = String::from("0.0.0.0"))]
+    pub prom_ip: String,
     /// Port Consensus runs on
     #[arg(long, default_value_t = 9090)]
     pub prom_port: u16,
@@ -307,7 +310,7 @@ impl Command {
 
                 let hooks = Hooks::builder().build();
 
-                let listen_addr = format!("0.0.0.0:{}", flags.prom_port)
+                let listen_addr = format!("{}:{}", flags.prom_ip, flags.prom_port)
                     .parse::<SocketAddr>()
                     .unwrap();
                 let config = MetricServerConfig::new(listen_addr, hooks);
@@ -582,7 +585,7 @@ pub fn run_node_local(
 
             let hooks = Hooks::builder().build();
 
-            let listen_addr = format!("0.0.0.0:{}", flags.prom_port)
+            let listen_addr = format!("{}:{}", flags.prom_ip, flags.prom_port)
                 .parse::<SocketAddr>()
                 .unwrap();
             let stop_signal = context.stopped();
