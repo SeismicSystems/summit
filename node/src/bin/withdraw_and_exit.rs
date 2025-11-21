@@ -386,6 +386,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         store_path: format!("{path}db"),
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,
+        prom_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
         worker_threads: 2,
         log_level: "debug".into(),
