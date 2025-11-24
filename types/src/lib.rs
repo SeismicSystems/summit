@@ -29,6 +29,8 @@ use commonware_consensus::simplex::types::Activity as CActivity;
 pub type Digest = commonware_cryptography::sha256::Digest;
 pub type Activity = CActivity<Signature, Digest>;
 
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// Auxiliary data needed for block construction
 #[derive(Debug, Clone)]
 pub struct BlockAuxData {
