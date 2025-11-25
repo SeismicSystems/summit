@@ -26,6 +26,10 @@ name = "execute-blocks"
 path = "src/bin/execute_blocks.rs"
 required-features = ["bench"]
 
+[[bin]]
+name = "inspect-db"
+path = "src/bin/inspect_db.rs"
+
 [dependencies]
 summit-types.workspace = true
 summit-application = { workspace = true, features = [] }
@@ -40,10 +44,12 @@ commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime.workspace = true
+commonware-storage.workspace = true
 commonware-utils.workspace = true
 
 anyhow.workspace = true
 eyre = { workspace = true, optional = true }
+hex.workspace = true
 rand.workspace = true
 tracing.workspace = true
 clap.workspace = true
