@@ -79,18 +79,18 @@ fn main() -> Result<()> {
             immutable::Config {
                 metadata_partition: format!("{}-finalized_blocks-metadata", db_prefix),
                 freezer_table_partition: format!("{}-finalized_blocks-freezer-table", db_prefix),
-                freezer_table_initial_size: 0,
-                freezer_table_resize_frequency: 0,
-                freezer_table_resize_chunk_size: 0,
+                freezer_table_initial_size: 1024 * 1024, // 1MB - must be power of 2
+                freezer_table_resize_frequency: 4,
+                freezer_table_resize_chunk_size: 65536, // 64KB
                 freezer_journal_partition: format!("{}-finalized_blocks-freezer-journal", db_prefix),
-                freezer_journal_target_size: 0,
-                freezer_journal_compression: None,
+                freezer_journal_target_size: 1024 * 1024 * 1024, // 1GB
+                freezer_journal_compression: Some(3),
                 freezer_journal_buffer_pool: buffer_pool.clone(),
                 ordinal_partition: format!("{}-finalized_blocks-ordinal", db_prefix),
-                items_per_section: NonZero::new(1).unwrap(),
+                items_per_section: NonZero::new(262144).unwrap(),
                 codec_config: (),
-                replay_buffer: NonZero::new(1).unwrap(),
-                write_buffer: NonZero::new(1).unwrap(),
+                replay_buffer: NonZero::new(8 * 1024 * 1024).unwrap(),
+                write_buffer: NonZero::new(1024 * 1024).unwrap(),
             },
         )
         .await
