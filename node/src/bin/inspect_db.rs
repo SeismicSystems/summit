@@ -7,7 +7,6 @@ use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::sequence::U64;
 use std::num::NonZero;
 use summit_types::{Block, Digest, utils::get_expanded_path};
-use tracing::info;
 
 /// Key used in metadata store to track the latest processed block height
 const LATEST_KEY: U64 = U64::new(0xFF);
@@ -46,16 +45,14 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
     let args = Args::parse();
 
     // Expand store path
     let store_path_expanded = get_expanded_path(&args.store_path)?;
 
-    info!("Opening database at: {:?}", store_path_expanded);
-    info!("Database prefix: {}", args.db_prefix);
-    info!("");
+    println!("Opening database at: {:?}", store_path_expanded);
+    println!("Database prefix: {}", args.db_prefix);
+    println!();
 
     // Initialize runtime with storage directory
     let cfg = tokio::Config::default()
@@ -72,29 +69,31 @@ fn main() -> Result<()> {
 
     executor.start(move |context| async move {
         // Create a buffer pool for the archives
+        // Larger buffers = better read performance for sequential scans
         let buffer_pool = PoolRef::new(
-            NonZero::new(4096).unwrap(),  // page size
-            NonZero::new(8192).unwrap(),  // capacity
+            NonZero::new(65536).unwrap(),   // 64KB pages for better I/O
+            NonZero::new(131072).unwrap(),  // 8GB total cache (131072 * 64KB)
         );
 
-        // Open the finalized_blocks archive (read-only mode - minimal settings)
-        info!("Opening finalized_blocks archive...");
+        // Open the finalized_blocks archive
+        // Use read-optimized settings: larger replay buffer for caching decompressed data
+        println!("Opening finalized_blocks archive...");
         let finalized_blocks = immutable::Archive::<tokio::Context, Digest, Block>::init(
             context.with_label("finalized_blocks"),
             immutable::Config {
                 metadata_partition: format!("{}-finalized_blocks-metadata", db_prefix),
                 freezer_table_partition: format!("{}-finalized_blocks-freezer-table", db_prefix),
-                freezer_table_initial_size: 1, // Minimal - just needs to be power of 2, archive already exists
-                freezer_table_resize_frequency: 0, // No resizing needed for read-only
-                freezer_table_resize_chunk_size: 0, // No resizing needed for read-only
+                freezer_table_initial_size: 1, // Minimal - archive already exists
+                freezer_table_resize_frequency: 0, // No resizing for read-only
+                freezer_table_resize_chunk_size: 0, // No resizing for read-only
                 freezer_journal_partition: format!("{}-finalized_blocks-freezer-journal", db_prefix),
-                freezer_journal_target_size: 0, // No writes needed
-                freezer_journal_compression: None, // No writes needed
+                freezer_journal_target_size: 0, // No writes
+                freezer_journal_compression: None, // Matches write config
                 freezer_journal_buffer_pool: buffer_pool.clone(),
                 ordinal_partition: format!("{}-finalized_blocks-ordinal", db_prefix),
-                items_per_section: NonZero::new(1).unwrap(), // Minimal for read-only
+                items_per_section: NonZero::new(262144).unwrap(), // Match production settings
                 codec_config: (),
-                replay_buffer: NonZero::new(1).unwrap(), // Minimal for read-only
+                replay_buffer: NonZero::new(256 * 1024 * 1024).unwrap(), // 256MB cache for decompressed data
                 write_buffer: NonZero::new(1).unwrap(), // Minimal for read-only
             },
         )
@@ -102,7 +101,7 @@ fn main() -> Result<()> {
         .expect("failed to init finalized_blocks");
 
         // Open application metadata
-        info!("Opening application_metadata...");
+        println!("Opening application_metadata...");
         let application_metadata = Metadata::<tokio::Context, U64, u64>::init(
             context.with_label("application_metadata"),
             metadata::Config {
@@ -113,41 +112,41 @@ fn main() -> Result<()> {
         .await
         .expect("failed to init application_metadata");
 
-        info!("");
-        info!("=== DATABASE OVERVIEW ===");
-        info!("");
+        println!("");
+        println!("=== DATABASE OVERVIEW ===");
+        println!("");
 
         // Get block ranges
         let block_ranges: Vec<_> = finalized_blocks.ranges().collect();
 
         if block_ranges.is_empty() {
-            info!("finalized_blocks: EMPTY");
+            println!("finalized_blocks: EMPTY");
         } else {
-            info!("finalized_blocks ranges:");
+            println!("finalized_blocks ranges:");
             for &(range_start, range_end) in &block_ranges {
-                info!("  - blocks {}-{} ({} blocks)", range_start, range_end, range_end - range_start + 1);
+                println!("  - blocks {}-{} ({} blocks)", range_start, range_end, range_end - range_start + 1);
             }
         }
 
         // Get application metadata
-        info!("");
-        info!("application_metadata:");
+        println!("");
+        println!("application_metadata:");
         match application_metadata.get(&LATEST_KEY) {
-            Some(height) => info!("  - latest processed height: {}", height),
-            None => info!("  - latest processed height: NOT SET"),
+            Some(height) => println!("  - latest processed height: {}", height),
+            None => println!("  - latest processed height: NOT SET"),
         }
 
         // Skip scanning if overview_only flag is set
         if overview_only {
-            info!("");
-            info!("Overview complete (use --from-block and --to-block to scan specific ranges)");
+            println!("");
+            println!("Overview complete (use --from-block and --to-block to scan specific ranges)");
             return;
         }
 
         // Determine scan range
         let (start_height, end_height) = if block_ranges.is_empty() {
-            info!("");
-            info!("No blocks to scan.");
+            println!("");
+            println!("No blocks to scan.");
             return;
         } else {
             let &(first_available, _) = block_ranges.first().unwrap();
@@ -163,11 +162,11 @@ fn main() -> Result<()> {
             (start, end)
         };
 
-        info!("");
-        info!("=== SCANNING BLOCKS {}-{} ===", start_height, end_height);
+        println!("");
+        println!("=== SCANNING BLOCKS {}-{} ===", start_height, end_height);
         let total_to_scan = end_height - start_height + 1;
-        info!("Total blocks to scan: {}", total_to_scan);
-        info!("");
+        println!("Total blocks to scan: {}", total_to_scan);
+        println!("");
 
         let mut missing_blocks = Vec::new();
         let mut block_count = 0;
@@ -176,7 +175,7 @@ fn main() -> Result<()> {
         for height in start_height..=end_height {
             // Show progress for large scans
             if !show_details && (height - start_height) % progress_interval == 0 && height > start_height {
-                info!("Progress: scanned {} / {} blocks...", height - start_height, total_to_scan);
+                println!("Progress: scanned {} / {} blocks...", height - start_height, total_to_scan);
             }
 
             // Only fetch and deserialize if we need details
@@ -186,21 +185,21 @@ fn main() -> Result<()> {
 
                 if let Some(ref b) = block {
                     block_count += 1;
-                    info!("Block {}", height);
-                    info!("  Height: {}", b.height());
-                    info!("  View: {}", b.view());
-                    info!("  Epoch: {}", b.epoch());
-                    info!("  Parent digest: {:?}", b.parent());
-                    info!("  Block hash: {:?}", b.payload.payload_inner.payload_inner.block_hash);
-                    info!("  Parent hash: {:?}", b.payload.payload_inner.payload_inner.parent_hash);
-                    info!("  Timestamp: {}", b.payload.payload_inner.payload_inner.timestamp);
-                    info!("  Gas used: {}", b.payload.payload_inner.payload_inner.gas_used);
-                    info!("  Transactions: {}", b.payload.payload_inner.payload_inner.transactions.len());
-                    info!("");
+                    println!("Block {}", height);
+                    println!("  Height: {}", b.height());
+                    println!("  View: {}", b.view());
+                    println!("  Epoch: {}", b.epoch());
+                    println!("  Parent digest: {:?}", b.parent());
+                    println!("  Block hash: {:?}", b.payload.payload_inner.payload_inner.block_hash);
+                    println!("  Parent hash: {:?}", b.payload.payload_inner.payload_inner.parent_hash);
+                    println!("  Timestamp: {}", b.payload.payload_inner.payload_inner.timestamp);
+                    println!("  Gas used: {}", b.payload.payload_inner.payload_inner.gas_used);
+                    println!("  Transactions: {}", b.payload.payload_inner.payload_inner.transactions.len());
+                    println!("");
                 } else {
                     missing_blocks.push(height);
-                    info!("Block {}: MISSING", height);
-                    info!("");
+                    println!("Block {}: MISSING", height);
+                    println!("");
                 }
             } else {
                 // Fast path: just check existence
@@ -213,18 +212,18 @@ fn main() -> Result<()> {
             }
         }
 
-        info!("");
-        info!("=== SUMMARY ===");
-        info!("");
-        info!("Total blocks found: {}", block_count);
-        info!("Total blocks scanned: {}", end_height - start_height + 1);
+        println!("");
+        println!("=== SUMMARY ===");
+        println!("");
+        println!("Total blocks found: {}", block_count);
+        println!("Total blocks scanned: {}", end_height - start_height + 1);
 
         if check_gaps || !missing_blocks.is_empty() {
-            info!("");
+            println!("");
             if missing_blocks.is_empty() {
-                info!("✓ No missing blocks in range");
+                println!("✓ No missing blocks in range");
             } else {
-                info!("✗ Missing blocks ({} total):", missing_blocks.len());
+                println!("✗ Missing blocks ({} total):", missing_blocks.len());
 
                 // Group consecutive missing blocks into ranges
                 let mut ranges = Vec::new();
@@ -244,15 +243,15 @@ fn main() -> Result<()> {
 
                 for (start, end) in ranges {
                     if start == end {
-                        info!("  - block {}", start);
+                        println!("  - block {}", start);
                     } else {
-                        info!("  - blocks {}-{} ({} missing)", start, end, end - start + 1);
+                        println!("  - blocks {}-{} ({} missing)", start, end, end - start + 1);
                     }
                 }
             }
         }
 
-        info!("");
+        println!("");
     });
 
     Ok(())
