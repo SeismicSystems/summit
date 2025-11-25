@@ -94,7 +94,7 @@ fn main() -> Result<()> {
                 freezer_table_resize_chunk_size: 0, // No resizing for read-only
                 freezer_journal_partition: format!("{}-finalized_blocks-freezer-journal", db_prefix),
                 freezer_journal_target_size: 0, // No writes
-                freezer_journal_compression: None, // Matches write config
+                freezer_journal_compression: Some(3), // Match production compression level
                 freezer_journal_buffer_pool: buffer_pool.clone(),
                 ordinal_partition: format!("{}-finalized_blocks-ordinal", db_prefix),
                 items_per_section: NonZero::new(262144).unwrap(), // Match production settings
