@@ -16,11 +16,11 @@ const LATEST_KEY: U64 = U64::new(0xFF);
 #[command(name = "Inspect Database", version = "1.0")]
 struct Args {
     /// Path to Summit's store directory
-    #[arg(short, long, default_value = "/persistent/summit/store")]
+    #[arg(short, long, default_value = "/persistent/summit/db")]
     store_path: String,
 
     /// Database prefix used by Summit
-    #[arg(short = 'p', long, default_value = "quartz")]
+    #[arg(short = 'p', long, default_value = "quarts")]
     db_prefix: String,
 
     /// Start block height (defaults to first available)
