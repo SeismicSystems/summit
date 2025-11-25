@@ -2,8 +2,9 @@ use anyhow::Result;
 use clap::Parser;
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Metrics, Runner, tokio};
-use commonware_storage::archive::{Archive as _, Identifier as ArchiveID, immutable};
+use commonware_storage::archive::{Archive as _, Identifier as ArchiveID, immutable, prunable};
 use commonware_storage::metadata::{self, Metadata};
+use commonware_storage::translator::TwoCap;
 use commonware_utils::{fixed_bytes, sequence::{FixedBytes, U64}};
 use std::num::NonZero;
 use summit_types::{Block, Digest, utils::get_expanded_path};
@@ -172,9 +173,76 @@ fn main() -> Result<()> {
                         Some(&(min_epoch, max_epoch)) => {
                             println!("Cached epochs: {} to {} ({} epochs)", min_epoch, max_epoch, max_epoch - min_epoch + 1);
                             println!("");
-                            println!("Cache directories found:");
+
+                            // Open cache archives for each epoch and show what's in them
                             for epoch in min_epoch..=max_epoch {
-                                println!("  - Epoch {}: {}-cache-cache-{}-*", epoch, db_prefix, epoch);
+                                println!("=== Epoch {} Cache ===", epoch);
+
+                                // Try to open the verified blocks archive for this epoch
+                                let verified_result = prunable::Archive::<TwoCap, tokio::Context, Digest, Block>::init(
+                                    context.with_label(&format!("cache_verified_{}", epoch)),
+                                    prunable::Config {
+                                        partition: format!("{}-cache-cache-{}-verified", db_prefix, epoch),
+                                        translator: TwoCap,
+                                        items_per_section: NonZero::new(262144).unwrap(),
+                                        compression: Some(3),
+                                        codec_config: (),
+                                        buffer_pool: buffer_pool.clone(),
+                                        replay_buffer: NonZero::new(8 * 1024 * 1024).unwrap(),
+                                        write_buffer: NonZero::new(1).unwrap(),
+                                    },
+                                ).await;
+
+                                match verified_result {
+                                    Ok(archive) => {
+                                        let ranges: Vec<_> = archive.ranges().collect();
+                                        if ranges.is_empty() {
+                                            println!("  Verified blocks: EMPTY");
+                                        } else {
+                                            println!("  Verified blocks:");
+                                            for (start, end) in ranges {
+                                                println!("    - views {}-{} ({} blocks)", start, end, end - start + 1);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("  Verified blocks: ERROR ({})", e);
+                                    }
+                                }
+
+                                // Try notarized blocks
+                                let notarized_result = prunable::Archive::<TwoCap, tokio::Context, Digest, Block>::init(
+                                    context.with_label(&format!("cache_notarized_{}", epoch)),
+                                    prunable::Config {
+                                        partition: format!("{}-cache-cache-{}-notarized", db_prefix, epoch),
+                                        translator: TwoCap,
+                                        items_per_section: NonZero::new(262144).unwrap(),
+                                        compression: Some(3),
+                                        codec_config: (),
+                                        buffer_pool: buffer_pool.clone(),
+                                        replay_buffer: NonZero::new(8 * 1024 * 1024).unwrap(),
+                                        write_buffer: NonZero::new(1).unwrap(),
+                                    },
+                                ).await;
+
+                                match notarized_result {
+                                    Ok(archive) => {
+                                        let ranges: Vec<_> = archive.ranges().collect();
+                                        if ranges.is_empty() {
+                                            println!("  Notarized blocks: EMPTY");
+                                        } else {
+                                            println!("  Notarized blocks:");
+                                            for (start, end) in ranges {
+                                                println!("    - views {}-{} ({} blocks)", start, end, end - start + 1);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("  Notarized blocks: ERROR ({})", e);
+                                    }
+                                }
+
+                                println!("");
                             }
                         }
                         None => {
