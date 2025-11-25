@@ -39,6 +39,10 @@ struct Args {
     /// Check for gaps in the block sequence
     #[arg(short, long)]
     gaps: bool,
+
+    /// Only show overview, skip block scanning
+    #[arg(long)]
+    overview_only: bool,
 }
 
 fn main() -> Result<()> {
@@ -64,6 +68,7 @@ fn main() -> Result<()> {
     let to_block = args.to_block;
     let show_details = args.details;
     let check_gaps = args.gaps;
+    let overview_only = args.overview_only;
 
     executor.start(move |context| async move {
         // Create a buffer pool for the archives
@@ -132,6 +137,13 @@ fn main() -> Result<()> {
             None => info!("  - latest processed height: NOT SET"),
         }
 
+        // Skip scanning if overview_only flag is set
+        if overview_only {
+            info!("");
+            info!("Overview complete (use --from-block and --to-block to scan specific ranges)");
+            return;
+        }
+
         // Determine scan range
         let (start_height, end_height) = if block_ranges.is_empty() {
             info!("");
@@ -153,22 +165,25 @@ fn main() -> Result<()> {
 
         info!("");
         info!("=== SCANNING BLOCKS {}-{} ===", start_height, end_height);
+        let total_to_scan = end_height - start_height + 1;
+        info!("Total blocks to scan: {}", total_to_scan);
         info!("");
 
         let mut missing_blocks = Vec::new();
         let mut block_count = 0;
+        let progress_interval = if total_to_scan > 1000 { 1000 } else { 100 };
 
         for height in start_height..=end_height {
-            // Get block
-            let block = finalized_blocks.get(ArchiveID::Index(height)).await.expect("failed to get block");
-
-            let has_block = block.is_some();
-
-            if !has_block {
-                missing_blocks.push(height);
+            // Show progress for large scans
+            if !show_details && (height - start_height) % progress_interval == 0 && height > start_height {
+                info!("Progress: scanned {} / {} blocks...", height - start_height, total_to_scan);
             }
 
+            // Only fetch and deserialize if we need details
+            // Otherwise just check existence which should be faster
             if show_details {
+                let block = finalized_blocks.get(ArchiveID::Index(height)).await.expect("failed to get block");
+
                 if let Some(ref b) = block {
                     block_count += 1;
                     info!("Block {}", height);
@@ -183,11 +198,18 @@ fn main() -> Result<()> {
                     info!("  Transactions: {}", b.payload.payload_inner.payload_inner.transactions.len());
                     info!("");
                 } else {
+                    missing_blocks.push(height);
                     info!("Block {}: MISSING", height);
                     info!("");
                 }
-            } else if has_block {
-                block_count += 1;
+            } else {
+                // Fast path: just check existence
+                let block = finalized_blocks.get(ArchiveID::Index(height)).await.expect("failed to get block");
+                if block.is_some() {
+                    block_count += 1;
+                } else {
+                    missing_blocks.push(height);
+                }
             }
         }
 
