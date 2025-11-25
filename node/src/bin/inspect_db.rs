@@ -191,15 +191,32 @@ fn main() -> Result<()> {
                     Ok(Some(ref b)) => {
                         block_count += 1;
                         println!("Block {}", height);
-                        println!("  Height: {}", b.height());
-                        println!("  View: {}", b.view());
-                        println!("  Epoch: {}", b.epoch());
-                        println!("  Parent digest: {:?}", b.parent());
+                        println!("  === Header Info ===");
+                        println!("  Height: {}", b.header.height);
+                        println!("  View: {}", b.header.view);
+                        println!("  Epoch: {}", b.header.epoch);
+                        println!("  Timestamp: {}", b.header.timestamp);
+                        println!("  Parent digest: {:?}", b.header.parent);
+                        println!("  Block digest: {:?}", b.header.digest);
+                        println!("  Payload hash: {:?}", b.header.payload_hash);
+                        println!("  Execution request hash: {:?}", b.header.execution_request_hash);
+                        println!("  Checkpoint hash: {:?}", b.header.checkpoint_hash);
+                        println!("  Prev epoch header hash: {:?}", b.header.prev_epoch_header_hash);
+                        println!("  Block value: {}", b.header.block_value);
+                        println!("  Added validators: {} ({:?})", b.header.added_validators.len(), b.header.added_validators);
+                        println!("  Removed validators: {} ({:?})", b.header.removed_validators.len(), b.header.removed_validators);
+                        println!("  === Ethereum Payload ===");
                         println!("  Block hash: {:?}", b.payload.payload_inner.payload_inner.block_hash);
                         println!("  Parent hash: {:?}", b.payload.payload_inner.payload_inner.parent_hash);
-                        println!("  Timestamp: {}", b.payload.payload_inner.payload_inner.timestamp);
+                        println!("  Fee recipient: {:?}", b.payload.payload_inner.payload_inner.fee_recipient);
+                        println!("  State root: {:?}", b.payload.payload_inner.payload_inner.state_root);
+                        println!("  Receipts root: {:?}", b.payload.payload_inner.payload_inner.receipts_root);
+                        println!("  Gas limit: {}", b.payload.payload_inner.payload_inner.gas_limit);
                         println!("  Gas used: {}", b.payload.payload_inner.payload_inner.gas_used);
+                        println!("  Base fee per gas: {}", b.payload.payload_inner.payload_inner.base_fee_per_gas);
                         println!("  Transactions: {}", b.payload.payload_inner.payload_inner.transactions.len());
+                        println!("  Withdrawals: {}", b.payload.payload_inner.withdrawals.len());
+                        println!("  Execution requests: {}", b.execution_requests.len());
                         println!("");
                     }
                     Ok(None) => {
