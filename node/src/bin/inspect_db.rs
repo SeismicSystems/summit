@@ -187,33 +187,47 @@ fn main() -> Result<()> {
             // Only fetch and deserialize if we need details
             // Otherwise just check existence which should be faster
             if show_details {
-                let block = finalized_blocks.get(ArchiveID::Index(height)).await.expect("failed to get block");
-
-                if let Some(ref b) = block {
-                    block_count += 1;
-                    println!("Block {}", height);
-                    println!("  Height: {}", b.height());
-                    println!("  View: {}", b.view());
-                    println!("  Epoch: {}", b.epoch());
-                    println!("  Parent digest: {:?}", b.parent());
-                    println!("  Block hash: {:?}", b.payload.payload_inner.payload_inner.block_hash);
-                    println!("  Parent hash: {:?}", b.payload.payload_inner.payload_inner.parent_hash);
-                    println!("  Timestamp: {}", b.payload.payload_inner.payload_inner.timestamp);
-                    println!("  Gas used: {}", b.payload.payload_inner.payload_inner.gas_used);
-                    println!("  Transactions: {}", b.payload.payload_inner.payload_inner.transactions.len());
-                    println!("");
-                } else {
-                    missing_blocks.push(height);
-                    println!("Block {}: MISSING", height);
-                    println!("");
+                match finalized_blocks.get(ArchiveID::Index(height)).await {
+                    Ok(Some(ref b)) => {
+                        block_count += 1;
+                        println!("Block {}", height);
+                        println!("  Height: {}", b.height());
+                        println!("  View: {}", b.view());
+                        println!("  Epoch: {}", b.epoch());
+                        println!("  Parent digest: {:?}", b.parent());
+                        println!("  Block hash: {:?}", b.payload.payload_inner.payload_inner.block_hash);
+                        println!("  Parent hash: {:?}", b.payload.payload_inner.payload_inner.parent_hash);
+                        println!("  Timestamp: {}", b.payload.payload_inner.payload_inner.timestamp);
+                        println!("  Gas used: {}", b.payload.payload_inner.payload_inner.gas_used);
+                        println!("  Transactions: {}", b.payload.payload_inner.payload_inner.transactions.len());
+                        println!("");
+                    }
+                    Ok(None) => {
+                        missing_blocks.push(height);
+                        println!("Block {}: MISSING", height);
+                        println!("");
+                    }
+                    Err(e) => {
+                        missing_blocks.push(height);
+                        println!("Block {}: CORRUPTED ({})", height, e);
+                        println!("");
+                    }
                 }
             } else {
                 // Fast path: just check existence
-                let block = finalized_blocks.get(ArchiveID::Index(height)).await.expect("failed to get block");
-                if block.is_some() {
-                    block_count += 1;
-                } else {
-                    missing_blocks.push(height);
+                match finalized_blocks.get(ArchiveID::Index(height)).await {
+                    Ok(Some(_)) => {
+                        block_count += 1;
+                    }
+                    Ok(None) => {
+                        missing_blocks.push(height);
+                    }
+                    Err(e) => {
+                        missing_blocks.push(height);
+                        if show_details {
+                            println!("Block {}: CORRUPTED ({})", height, e);
+                        }
+                    }
                 }
             }
         }
