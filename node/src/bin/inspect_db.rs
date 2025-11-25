@@ -53,6 +53,12 @@ fn main() -> Result<()> {
     println!("Opening database at: {:?}", store_path_expanded);
     println!("Database prefix: {}", args.db_prefix);
     println!();
+    println!("Looking for partitions:");
+    println!("  - {}-finalized_blocks-metadata", args.db_prefix);
+    println!("  - {}-finalized_blocks-freezer-table", args.db_prefix);
+    println!("  - {}-finalized_blocks-freezer-journal", args.db_prefix);
+    println!("  - {}-finalized_blocks-ordinal", args.db_prefix);
+    println!();
 
     // Initialize runtime with storage directory
     let cfg = tokio::Config::default()
