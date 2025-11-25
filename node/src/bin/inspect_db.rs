@@ -4,12 +4,15 @@ use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Metrics, Runner, tokio};
 use commonware_storage::archive::{Archive as _, Identifier as ArchiveID, immutable};
 use commonware_storage::metadata::{self, Metadata};
-use commonware_utils::sequence::U64;
+use commonware_utils::{fixed_bytes, sequence::{FixedBytes, U64}};
 use std::num::NonZero;
 use summit_types::{Block, Digest, utils::get_expanded_path};
 
 /// Key used in metadata store to track the latest processed block height
 const LATEST_KEY: U64 = U64::new(0xFF);
+
+/// Key used in cache metadata to track cached epochs
+const CACHED_EPOCHS_KEY: FixedBytes<1> = fixed_bytes!("0x00");
 
 /// Inspects Summit's syncer database archives
 #[derive(Parser, Debug)]
@@ -42,6 +45,10 @@ struct Args {
     /// Only show overview, skip block scanning
     #[arg(long)]
     overview_only: bool,
+
+    /// Show cache info (non-finalized blocks)
+    #[arg(short = 'c', long)]
+    show_cache: bool,
 }
 
 fn main() -> Result<()> {
@@ -72,6 +79,7 @@ fn main() -> Result<()> {
     let show_details = args.details;
     let check_gaps = args.gaps;
     let overview_only = args.overview_only;
+    let show_cache = args.show_cache;
 
     executor.start(move |context| async move {
         // Create a buffer pool for the archives
@@ -140,6 +148,44 @@ fn main() -> Result<()> {
         match application_metadata.get(&LATEST_KEY) {
             Some(height) => println!("  - latest processed height: {}", height),
             None => println!("  - latest processed height: NOT SET"),
+        }
+
+        // Show cache info if requested
+        if show_cache {
+            println!("");
+            println!("=== CACHE INFO (Non-Finalized Blocks) ===");
+            println!("");
+
+            // Open cache metadata
+            let cache_metadata = Metadata::<tokio::Context, FixedBytes<1>, (u64, u64)>::init(
+                context.with_label("cache_metadata"),
+                metadata::Config {
+                    partition: format!("{}-cache-metadata", db_prefix),
+                    codec_config: ((), ()),
+                },
+            )
+            .await;
+
+            match cache_metadata {
+                Ok(metadata) => {
+                    match metadata.get(&CACHED_EPOCHS_KEY) {
+                        Some(&(min_epoch, max_epoch)) => {
+                            println!("Cached epochs: {} to {} ({} epochs)", min_epoch, max_epoch, max_epoch - min_epoch + 1);
+                            println!("");
+                            println!("Cache directories found:");
+                            for epoch in min_epoch..=max_epoch {
+                                println!("  - Epoch {}: {}-cache-cache-{}-*", epoch, db_prefix, epoch);
+                            }
+                        }
+                        None => {
+                            println!("No cached epochs metadata found");
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Could not open cache metadata: {}", e);
+                }
+            }
         }
 
         // Skip scanning if overview_only flag is set
