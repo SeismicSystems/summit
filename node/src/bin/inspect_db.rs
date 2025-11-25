@@ -72,25 +72,25 @@ fn main() -> Result<()> {
             NonZero::new(8192).unwrap(),  // capacity
         );
 
-        // Open the finalized_blocks archive
+        // Open the finalized_blocks archive (read-only mode - minimal settings)
         info!("Opening finalized_blocks archive...");
         let finalized_blocks = immutable::Archive::<tokio::Context, Digest, Block>::init(
             context.with_label("finalized_blocks"),
             immutable::Config {
                 metadata_partition: format!("{}-finalized_blocks-metadata", db_prefix),
                 freezer_table_partition: format!("{}-finalized_blocks-freezer-table", db_prefix),
-                freezer_table_initial_size: 1024 * 1024, // 1MB - must be power of 2
-                freezer_table_resize_frequency: 4,
-                freezer_table_resize_chunk_size: 65536, // 64KB
+                freezer_table_initial_size: 1, // Minimal - just needs to be power of 2, archive already exists
+                freezer_table_resize_frequency: 0, // No resizing needed for read-only
+                freezer_table_resize_chunk_size: 0, // No resizing needed for read-only
                 freezer_journal_partition: format!("{}-finalized_blocks-freezer-journal", db_prefix),
-                freezer_journal_target_size: 1024 * 1024 * 1024, // 1GB
-                freezer_journal_compression: Some(3),
+                freezer_journal_target_size: 0, // No writes needed
+                freezer_journal_compression: None, // No writes needed
                 freezer_journal_buffer_pool: buffer_pool.clone(),
                 ordinal_partition: format!("{}-finalized_blocks-ordinal", db_prefix),
-                items_per_section: NonZero::new(262144).unwrap(),
+                items_per_section: NonZero::new(1).unwrap(), // Minimal for read-only
                 codec_config: (),
-                replay_buffer: NonZero::new(8 * 1024 * 1024).unwrap(),
-                write_buffer: NonZero::new(1024 * 1024).unwrap(),
+                replay_buffer: NonZero::new(1).unwrap(), // Minimal for read-only
+                write_buffer: NonZero::new(1).unwrap(), // Minimal for read-only
             },
         )
         .await
@@ -127,8 +127,10 @@ fn main() -> Result<()> {
         // Get application metadata
         info!("");
         info!("application_metadata:");
-        let latest_height = application_metadata.get(&LATEST_KEY).expect("failed to get metadata");
-        info!("  - latest processed height: {}", latest_height);
+        match application_metadata.get(&LATEST_KEY) {
+            Some(height) => info!("  - latest processed height: {}", height),
+            None => info!("  - latest processed height: NOT SET"),
+        }
 
         // Determine scan range
         let (start_height, end_height) = if block_ranges.is_empty() {
