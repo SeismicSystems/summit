@@ -14,7 +14,7 @@ Summit's architecture follows the actor model with these key principles:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Engine                                │
+│                        Engine                               │
 │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
 │  │ Application │  │ Orchestrator │  │     Finalizer       │ │
 │  │   Actor     │  │    Actor     │  │      Actor          │ │
