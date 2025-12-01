@@ -64,7 +64,7 @@ impl RpcRoutes {
                 get(Self::handle_get_validator_balance::<S, B>),
             )
             .route(
-                "/get_deposit_signature/:amount/:address",
+                "/get_deposit_signature/{amount}/{address}",
                 get(Self::handle_get_deposit_signature),
             )
             .with_state(state)
