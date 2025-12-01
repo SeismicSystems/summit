@@ -1,0 +1,9 @@
+{
+  "short_name": "Alto",
+  "name": "commonware > Alto",
+  "icons": [],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+}

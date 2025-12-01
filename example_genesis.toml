@@ -8,8 +8,8 @@ max_message_size_bytes = 104857600
 namespace = "_SEISMIC_BFT"
 
 [[validators]]
-node_public_key = " 68a1a6f64b6e734c40c1fb8a71823fa6337b5af5431bdab3f50c232ca2a59d3c"
-consensus_public_key = "8e2f44d46beb80892e363b66f8873ca52bc07fc242136b961092cc3cd4e27a6de47e0a2158a65988af330fc26edcb86d"
+node_public_key = " 9ebe38d838fe0011affeb5eabedcc5f82bf01b363a47108df1ad7b07ba69aeff"
+consensus_public_key = "b13a2c529d7a2c5708e9559be51ad1bcbc3898da629d8795412ff8fa82899364d7c948eaf877974da1301b1780d724d3"
 ip_address = "127.0.0.1:26600"
 withdrawal_credentials = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
