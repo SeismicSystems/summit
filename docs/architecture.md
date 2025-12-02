@@ -6,7 +6,7 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Summit Consensus Client                   │
+│                    Summit Consensus Client                  │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
 │  │ RPC Server  │  │ Orchestrator │  │    Application      │ │
@@ -132,7 +132,7 @@ pub struct Actor<E, O, V, S, A> {
 ```
 
 **Key Responsibilities:**
-- Consensus protocol execution
+- Handles Simplex instances for each epoch
 - Activity broadcast and reception
 - Timeout management
 - View change coordination
@@ -141,7 +141,7 @@ pub struct Actor<E, O, V, S, A> {
 
 ### Block Production Flow
 
-1. **Leader Selection**: Orchestrator determines block proposer based on consensus round
+1. **Leader Selection**: Leader election is handled by the current Simplex instance
 2. **Block Building**: Finalizer requests block from execution client via Engine API
 3. **Block Proposal**: Finalizer broadcasts proposed block to network
 4. **Block Validation**: Peer validators validate block via execution client
