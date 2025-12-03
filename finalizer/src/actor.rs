@@ -501,7 +501,7 @@ impl<
 
         self.height_notify_up_to(new_height);
         ack_tx.acknowledge();
-        info!(new_height, "finalized block");
+        info!(new_height, self.state.epoch, "finalized block");
 
         if epoch_change {
             // Shut down the Simplex engine for the old epoch
@@ -595,6 +595,9 @@ impl<
                             {
                                 // If the validator already submitted an exit request, we skip this withdrawal request
                                 if matches!(account.status, ValidatorStatus::SubmittedExitRequest) {
+                                    info!(
+                                        "Failed to parse withdrawal request because the validator already submitted a request: {withdrawal_request:?}"
+                                    );
                                     continue; // Skip this withdrawal request
                                 }
 
@@ -602,6 +605,9 @@ impl<
                                 if account.balance - account.pending_withdrawal_amount
                                     < withdrawal_request.amount
                                 {
+                                    info!(
+                                        "Failed to parse withdrawal request due to insufficient balance: {withdrawal_request:?}"
+                                    );
                                     continue; // Skip this withdrawal request
                                 }
 
@@ -609,6 +615,9 @@ impl<
                                 if withdrawal_request.source_address
                                     != account.withdrawal_credentials
                                 {
+                                    info!(
+                                        "Failed to parse withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
+                                    );
                                     continue; // Skip this withdrawal request
                                 }
                                 // If after this withdrawal the validator balance would be less than the

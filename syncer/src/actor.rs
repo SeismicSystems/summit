@@ -37,6 +37,8 @@ use futures::{
 };
 use governor::clock::Clock as GClock;
 #[cfg(feature = "prom")]
+use metrics::counter;
+#[cfg(feature = "prom")]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::{CryptoRng, Rng};
 use std::num::NonZeroUsize;
@@ -497,6 +499,18 @@ where
                                     // This means that something else was finalized in that round,
                                     // so we drop the response to indicate that the block may never
                                     // be available.
+                                    warn!(
+                                        ?round,
+                                        ?commitment,
+                                        last_processed_round = ?self.last_processed_round,
+                                        last_processed_height = self.last_processed_height,
+                                        tip = self.tip,
+                                        "subscription for block in past round that wasn't finalized - possible notarize-nullify race"
+                                    );
+
+                                    #[cfg(feature = "prom")]
+                                    counter!("syncer_stuck_subscription_total").increment(1);
+
                                     continue;
                                 }
                                 // Attempt to fetch the block (with notarization) from the resolver.

@@ -29,7 +29,7 @@ use summit_finalizer::FinalizerMailbox;
 use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "prom")]
-use metrics::histogram;
+use metrics::{counter, histogram};
 use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
 use summit_types::{Block, Digest, EngineClient};
 
@@ -150,6 +150,9 @@ impl<
                                 round, round.epoch(), round.view(), parent.0);
 
                             let built = self.built_block.clone();
+                            #[cfg(feature = "prom")]
+                            let proposal_start = std::time::Instant::now();
+
                             select! {
                                     res = self.handle_proposal((parent.0.get(), parent.1), &mut syncer, &mut finalizer, round) => {
                                         match res {
@@ -169,7 +172,27 @@ impl<
                                     },
                                     _ = oneshot_closed_future(&mut response) => {
                                         // simplex dropped receiver
-                                        warn!("proposal aborted for round {round}");
+                                        #[cfg(feature = "prom")]
+                                        {
+                                            let elapsed = proposal_start.elapsed();
+                                            warn!(
+                                                round = ?round,
+                                                parent_height = parent.0.get(),
+                                                parent_digest = ?parent.1,
+                                                elapsed_ms = elapsed.as_millis(),
+                                                "proposal aborted - consensus timed out waiting for block (possible notarize-nullify race)"
+                                            );
+                                            counter!("proposal_timeout_total").increment(1);
+                                            histogram!("proposal_timeout_elapsed_ms").record(elapsed.as_millis() as f64);
+                                        }
+
+                                        #[cfg(not(feature = "prom"))]
+                                        warn!(
+                                            round = ?round,
+                                            parent_height = parent.0.get(),
+                                            parent_digest = ?parent.1,
+                                            "proposal aborted - consensus timed out waiting for block (possible notarize-nullify race)"
+                                        );
                                     }
                             }
                         }
