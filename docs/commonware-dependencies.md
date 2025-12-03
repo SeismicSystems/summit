@@ -2,10 +2,6 @@
 
 Summit leverages the [Commonware library](https://commonware.xyz) extensively for consensus, cryptography, networking, and storage primitives. This document provides a comprehensive analysis of how Commonware components are integrated and used.
 
-## Commonware Overview
-
-Commonware is a collection of battle-tested blockchain primitives designed for building high-performance consensus systems. Summit uses Commonware to avoid reimplementing complex consensus and cryptographic logic.
-
 ## Core Dependencies
 
 ### 1. Consensus (`commonware-consensus`)
@@ -103,9 +99,9 @@ use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
 **Used for**: Persistent storage of consensus state and blocks
 
 **Key Components:**
-- Storage traits - Generic storage interface
-- Database implementations - Pluggable storage backends
-- Atomic operations - Transactional state updates
+- **Storage traits**: Generic storage interface
+- **Database implementations**: Pluggable storage backends
+- **Atomic operations**: Transactional state updates
 
 **Integration Points:**
 
@@ -252,7 +248,7 @@ use commonware_resolver::{Consumer, p2p::Producer};
 - **Byzantine Tolerance**: Tolerates f < n/3 Byzantine validators
 - **Liveness**: Guaranteed progress under synchrony assumptions
 - **Safety**: Cryptographic finality guarantees
-- **Implementation**: Directly uses Commonware's audited Simplex implementation
+- **Implementation**: Directly uses Commonware's Simplex implementation
 
 **Message Authentication:**
 - All consensus messages signed with validator keys
@@ -267,9 +263,7 @@ use commonware_resolver::{Consumer, p2p::Producer};
 - Protection against Sybil attacks
 
 **Message Integrity:**
-- Cryptographic hashing of all messages
-- Signature verification on all consensus activities
-- Protection against message tampering
+- All messages are hashed & signed
 
 ## Performance Characteristics
 
@@ -324,12 +318,6 @@ Summit can upgrade Commonware components independently by updating the git revis
 commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
 ```
 
-This allows for:
-- Security patches without full system updates
-- Performance improvements from Commonware team
-- New features as they become available
-- Independent auditing of Commonware components
-
 ## Audit Recommendations
 
 When auditing Summit's Commonware usage:
@@ -338,6 +326,3 @@ When auditing Summit's Commonware usage:
 2. **Integration Points**: Review how Summit integrates Commonware APIs
 3. **Configuration**: Verify Commonware components configured securely
 4. **Error Handling**: Ensure proper error handling around Commonware calls
-5. **Upgrade Process**: Review process for updating Commonware dependencies
-
-The extensive use of Commonware significantly reduces Summit's attack surface by delegating complex cryptographic and consensus logic to battle-tested libraries.
