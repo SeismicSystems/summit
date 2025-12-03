@@ -1,14 +1,13 @@
 # Actor System Architecture
 
-Summit implements an actor-based architecture where independent components communicate through typed message passing. This document details the actor system design, message flows, and coordination patterns.
+Summit implements an actor-based architecture where independent components communicate by passing typed messages. This document details the actor system design, message flows, and coordination patterns.
 
 ## Actor Model Overview
 
 Summit's architecture follows the actor model with these key principles:
 
 - **Isolation**: Each actor maintains its own state and memory
-- **Message Passing**: Actors communicate exclusively through messages
-- **Asynchronous**: All actor interactions are non-blocking
+- **Asynchronous**: All actors communicate through non-blocking messages
 - **Type Safety**: Message types are statically verified
 - **Supervision**: Actors can supervise and restart child actors
 
@@ -268,68 +267,6 @@ impl<E, O, V, S, A> Actor<E, O, V, S, A> {
         
         Ok(())
     }
-}
-```
-
-## Message Passing Patterns
-
-### 1. Request-Response Pattern
-
-Used for synchronous queries where the sender waits for a response:
-
-```rust
-// Example: Getting validator set from Application
-pub async fn get_validators(
-    application_mailbox: &ApplicationMailbox<PublicKey>
-) -> Result<Vec<PublicKey>> {
-    let (tx, rx) = oneshot::channel();
-    
-    application_mailbox
-        .send(ApplicationMessage::GetValidators(tx))
-        .await?;
-        
-    let validators = rx.await?;
-    Ok(validators)
-}
-```
-
-### 2. Fire-and-Forget Pattern
-
-Used for asynchronous notifications where no response is expected:
-
-```rust
-// Example: Notifying about new block
-pub async fn notify_new_block(
-    syncer_mailbox: &SyncerMailbox<Scheme, Block>,
-    block: Block
-) -> Result<()> {
-    syncer_mailbox
-        .send(SyncerMessage::ReceiveBlock(block))
-        .await?;
-        
-    Ok(())
-}
-```
-
-### 3. Broadcast Pattern
-
-Used for distributing messages to multiple actors:
-
-```rust
-// Example: Broadcasting consensus activity
-pub async fn broadcast_activity(
-    activity: Activity,
-    orchestrator_mailboxes: &[OrchestratorMailbox<Signer, Activity>]
-) -> Result<()> {
-    let broadcast_futures: Vec<_> = orchestrator_mailboxes
-        .iter()
-        .map(|mailbox| {
-            mailbox.send(OrchestratorMessage::ReceiveActivity(activity.clone()))
-        })
-        .collect();
-        
-    futures::future::try_join_all(broadcast_futures).await?;
-    Ok(())
 }
 ```
 
@@ -604,5 +541,3 @@ async fn test_block_processing_flow() {
     assert!(application.has_block(&test_block.hash()));
 }
 ```
-
-The actor system provides a robust foundation for Summit's consensus operations with clear separation of concerns, type safety, and fault tolerance.

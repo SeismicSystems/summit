@@ -15,7 +15,7 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
 │  └─────────────┘  └──────────────┘  └─────────────────────┘ │
 │         │                │                      │           │
 │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
-│  │   Syncer    │  │  Finalizer   │  │    Buffer/Broadcast │ │
+│  │   Syncer    │  │  Finalizer   │  │  Buffer/Broadcast   │ │
 │  │ (Block Sync │  │ (Block Prod. │  │ (Network Buffering) │ │
 │  │ & Validation│  │ & Finality)  │  │                     │ │
 │  └─────────────┘  └──────────────┘  └─────────────────────┘ │
@@ -29,8 +29,8 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
                            │
                     ┌──────────────┐
                     │   Reth/Geth  │
-                    │ (Execution   │
-                    │  Client)     │
+                    │  (Execution  │
+                    │   Client)    │
                     └──────────────┘
 ```
 
