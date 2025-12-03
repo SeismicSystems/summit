@@ -266,67 +266,6 @@ impl RethEngineClient {
 }
 ```
 
-## Storage Security
-
-### Data Integrity
-
-All stored data includes cryptographic integrity protection:
-
-```rust
-// Storage with cryptographic verification
-pub struct VerifiedBlock<S, V> {
-    block: Block<S, V>,
-    hash: Digest,
-    signatures: Vec<Signature>,
-}
-
-impl<S, V> VerifiedBlock<S, V> {
-    pub fn verify_integrity(&self) -> bool {
-        // Verify block hash matches content
-        let computed_hash = self.block.compute_hash();
-        if computed_hash != self.hash {
-            return false;
-        }
-        
-        // Verify all signatures
-        for signature in &self.signatures {
-            if !signature.verify(&self.hash.as_bytes(), &signature.signer) {
-                return false;
-            }
-        }
-        
-        true
-    }
-}
-```
-
-### Immutable Storage
-
-Consensus data is stored immutably with cryptographic verification:
-
-```rust
-// Immutable block storage
-pub struct BlockStorage {
-    finalized_blocks: ImmutableLog<VerifiedBlock>,
-    block_index: HashMap<Digest, u64>,
-}
-
-impl BlockStorage {
-    pub fn store_finalized_block(&mut self, block: VerifiedBlock) -> Result<()> {
-        // Verify block integrity before storage
-        if !block.verify_integrity() {
-            return Err("Block integrity verification failed");
-        }
-        
-        // Store immutably
-        let height = self.finalized_blocks.append(block.clone())?;
-        self.block_index.insert(block.hash, height);
-        
-        Ok(())
-    }
-}
-```
-
 ## Threat Model
 
 ### Covered Threats

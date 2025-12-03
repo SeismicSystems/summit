@@ -1,16 +1,16 @@
 # Engine API Integration
 
-Summit communicates with execution clients (Reth, Geth) exclusively through the Engine API. This document details the integration patterns, communication flows, and security considerations for this critical interface.
+Summit communicates with execution clients (e.g. reth) exclusively through the Engine API. This document details the integration patterns, communication flows, and security considerations for this critical interface.
 
 ## Engine API Overview
 
-The Engine API is the standard interface between consensus and execution layers in Ethereum-like systems. Summit acts as the consensus client, while Reth/Geth handle transaction execution and state management.
+The Engine API is the standard interface between consensus and execution layers in Ethereum-like systems. Summit acts as the consensus client, while reth handles transaction execution and state management.
 
 ```
 ┌─────────────────┐    Engine API     ┌─────────────────┐
-│                 │ ←─────────────→   │                 │
-│ Summit          │     (IPC)         │ Reth/Geth       │
-│ (Consensus)     │                   │ (Execution)     │
+│                 │  ←─────────────→  │                 │
+│     Summit      │       (IPC)       │    Reth/Geth    │
+│   (Consensus)   │                   │   (Execution)   │
 │                 │                   │                 │
 └─────────────────┘                   └─────────────────┘
 ```
@@ -72,7 +72,6 @@ impl RethEngineClient {
 **Connection Details:**
 - **Transport**: IPC socket (default: `/tmp/reth_engine_api.ipc`)
 - **Protocol**: JSON-RPC over IPC
-- **Authentication**: JWT tokens for secure communication
 - **Persistence**: Long-lived connection with reconnection logic
 
 ## Engine API Methods
@@ -321,10 +320,9 @@ where
 
 ### Authentication
 
-Engine API communication is secured through usinc a unix socket inside the secure VM. We feel this is safer then using http secured with a JWT
+Engine API communication is secured using a unix socket inside the secure VM. We feel this is safer then using http secured with a JWT
 
 ```rust
-// JWT authentication configured in provider
 let provider = ProviderBuilder::default()
     .connect_ipc_with_auth(ipc)
     .await?;
@@ -334,43 +332,15 @@ let provider = ProviderBuilder::default()
 
 ### Metrics
 
-Summit tracks Engine API performance metrics:
-
-```rust
-// Example metrics (implementation in prom module)
-- engine_api_request_duration_seconds
-- engine_api_request_total
-- engine_api_error_total
-- payload_build_duration_seconds
-```
+Summit uses Prometheus to collect metrics
 
 ### Logging
 
-Detailed logging for Engine API interactions:
-
-```rust
-use tracing::{info, warn, error, debug};
-
-debug!("Starting block build: forkchoice={:?}", fork_choice_state);
-info!("Block build completed: payload_id={:?}", payload_id);
-warn!("Engine client syncing, retrying: {:?}", status);
-error!("Engine API error: {:?}", error);
-```
+Summit uses the `tracing` crate for logging
 
 ### Health Checks
 
-Summit monitors execution client health:
-
-```rust
-// Periodic health checks
-async fn check_engine_health(client: &impl EngineClient) -> bool {
-    // Check if client is responsive and not syncing
-    match client.get_latest_forkchoice().await {
-        Ok(state) if !state.is_syncing() => true,
-        _ => false,
-    }
-}
-```
+Summit exposes an HTTP API bound to port 3030 by default. This API exposes a method `GET /health`
 
 ## Testing Strategies
 
@@ -389,21 +359,3 @@ impl EngineClient for MockEngineClient {
     // Deterministic responses for testing
 }
 ```
-
-### Integration Tests
-
-Tests verify Engine API integration:
-
-```rust
-#[tokio::test]
-async fn test_block_production_flow() {
-    let engine_client = RethEngineClient::new(test_ipc_path).await;
-    
-    // Test complete block production flow
-    let payload_id = engine_client.start_building_block(...).await;
-    let envelope = engine_client.get_payload(payload_id).await;
-    // Verify payload properties...
-}
-```
-
-The Engine API integration is critical for Summit's operation and is designed with robust error handling, security, and performance optimizations to ensure reliable communication with execution clients.
