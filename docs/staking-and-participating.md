@@ -9,7 +9,7 @@ The changes that were made were only to accomodate every consensus node needing 
 ## Becoming a validator E2E
 
 1. Deploy the Summit image on TDX VM. This will start seismic-reth and Summit as well as enclave
-2. The deposit function requires a signature with the nodes keys, and they are only available from within the secure enclave, an rpc endpoint is exposed to received the signed calldata that includes the signature from the node at default port 3030 `/get_deposit_signature?amount=32000000000&address=0x0000000000000000000000000000000000000000` Amount should be the staking amount and address should be your ethereum address you want to be able to withdrawl too. 
+2. The deposit function requires a signature with the node's keys, and they are only available from within the secure enclave, an rpc endpoint is exposed to received the signed calldata that includes the signature from the node at default port 3030 `/get_deposit_signature?amount=32000000000&address=0x0000000000000000000000000000000000000000` Amount should be the staking amount and address should be your ethereum address you want to be able to withdrawl too. 
 3. Send a signed transaction into the network to the deposit contract with the calldata from the previous step along with a value == to the amount needing to be staked(0x00000000219ab540356cBB839Cbe05303d7705Fa same as ethereum)
 4. Download the latest checkpoint and load it into the node: WIP
 5. Keep your node running and it will start participating in the next epoch
@@ -24,4 +24,11 @@ This section is a WIP
 
 
 ## Withdrawing
-WIP
+Withdrawing deposited funds is in accordance with [EIP-7002](https://eips.ethereum.org/EIPS/eip-7002).
+To submit a withdrawal request, a validator must send a transaction to the pre-deployed withdrawal contract.
+As defined in EIP-7002, the calldata for this transaction is 56 bytes
+- 48 bytes for the validator pubkey
+- 8 bytes big-endian uint64 for the amount
+Note that the validator pubkey is the ED25519 key (left-padded with zeros), and not the BLS key.
+When depositing funds into the staking contract (see above), an Ethereum address was specified (withdrawal_credentials).
+A valid withdrawal transaction has to be signed by the private key associated with this Ethereum address.
