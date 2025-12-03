@@ -48,4 +48,4 @@ When auditing Summit, focus on these critical areas:
 - **Tokio**: Async runtime and utilities
 - **OpenSSL/Ring**: Cryptographic backends (via Commonware)
 
-Summit does not implement custom cryptography or consensus algorithms - it leverages battle-tested libraries and focuses on integration and optimization.
+Summit does not implement custom cryptography or consensus algorithms

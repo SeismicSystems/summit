@@ -2,10 +2,6 @@
 
 Summit leverages the [Commonware library](https://commonware.xyz) extensively for consensus, cryptography, networking, and storage primitives. This document provides a comprehensive analysis of how Commonware components are integrated and used.
 
-## Commonware Overview
-
-Commonware is a collection of battle-tested blockchain primitives designed for building high-performance consensus systems. Summit uses Commonware to avoid reimplementing complex consensus and cryptographic logic.
-
 ## Core Dependencies
 
 ### 1. Consensus (`commonware-consensus`)
@@ -17,21 +13,6 @@ Commonware is a collection of battle-tested blockchain primitives designed for b
 - `simplex::types::Activity` - Consensus activities/messages
 - `simplex::signing_scheme::Scheme` - Signature verification
 - `Block` trait - Block interface definition
-
-**Integration Points:**
-
-```rust
-// types/src/lib.rs
-use commonware_consensus::simplex::types::Activity as CActivity;
-pub type Activity = CActivity<Signature, Digest>;
-
-// orchestrator/src/actor.rs
-use commonware_consensus::{
-    simplex::{SimplexConsensus, types::*},
-    Block, types::{Epoch, Round},
-    Reporter, utils
-};
-```
 
 **Critical Usage:**
 - **Consensus Protocol**: All consensus logic delegated to Commonware's Simplex implementation
@@ -49,20 +30,6 @@ use commonware_consensus::{
 - `sha256` - Cryptographic hashing
 - `Signer` trait - Generic signing interface
 
-**Integration Points:**
-
-```rust
-// types/src/lib.rs
-pub use commonware_cryptography::bls12381;
-pub type PublicKey = commonware_cryptography::ed25519::PublicKey;
-pub type PrivateKey = commonware_cryptography::ed25519::PrivateKey;
-pub type Signature = commonware_cryptography::ed25519::Signature;
-pub type Digest = commonware_cryptography::sha256::Digest;
-
-// Throughout codebase
-use commonware_cryptography::{Signer, PrivateKeyExt};
-```
-
 **Critical Usage:**
 - **Consensus Signatures**: BLS12-381 MinPk variant for consensus activities and multisig schemes
 - **Network Authentication**: Ed25519 for P2P communication and validator identity
@@ -79,19 +46,6 @@ use commonware_cryptography::{Signer, PrivateKeyExt};
 - `Sender`/`Receiver` - Message transmission
 - `utils::requester` - Request-response patterns
 
-**Integration Points:**
-
-```rust
-// orchestrator/src/actor.rs
-use commonware_p2p::{
-    authenticated::{Handshake, Receiver, Sender},
-    Blocker, Manager, utils::requester
-};
-
-// node/src/engine.rs
-use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
-```
-
 **Critical Usage:**
 - **Validator Discovery**: Automatic peer discovery and connection
 - **Message Authentication**: Cryptographically authenticated channels
@@ -103,23 +57,9 @@ use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
 **Used for**: Persistent storage of consensus state and blocks
 
 **Key Components:**
-- Storage traits - Generic storage interface
-- Database implementations - Pluggable storage backends
-- Atomic operations - Transactional state updates
-
-**Integration Points:**
-
-```rust
-// syncer/src/cache.rs
-use commonware_storage::{
-    freezer::{Freezer, FreezerConfig},
-    journal::{Journal, JournalConfig},
-    Payload, Storage, database
-};
-
-// Throughout storage code
-use commonware_runtime::{Storage};
-```
+- **Storage traits**: Generic storage interface
+- **Database implementations**: Pluggable storage backends
+- **Atomic operations**: Transactional state updates
 
 **Critical Usage:**
 - **State Persistence**: Consensus state and validator set storage
@@ -137,16 +77,6 @@ use commonware_runtime::{Storage};
 - `Metrics` - Performance monitoring
 - `buffer::PoolRef` - Memory pool management
 
-**Integration Points:**
-
-```rust
-// Throughout codebase
-use commonware_runtime::{
-    Clock, Handle, Metrics, Network, Spawner, Storage,
-    buffer::PoolRef, deterministic, tokio
-};
-```
-
 **Critical Usage:**
 - **Task Management**: Async task spawning and coordination
 - **Time Management**: Consensus timeouts and timing
@@ -163,17 +93,6 @@ use commonware_runtime::{
 - `sequence` - Sequence number management
 - Hex utilities - Hexadecimal encoding/decoding
 
-**Integration Points:**
-
-```rust
-// Throughout codebase
-use commonware_utils::{
-    NZU32, NZU64, NZUsize, Span,
-    fixed_bytes, sequence::FixedBytes,
-    from_hex_formatted
-};
-```
-
 ### 7. Codec (`commonware-codec`)
 
 **Used for**: Efficient serialization and deserialization
@@ -184,17 +103,6 @@ use commonware_utils::{
 - `ReadExt`/`WriteExt` - Stream utilities
 - `varint` - Variable-length integer encoding
 
-**Integration Points:**
-
-```rust
-// Throughout networking code
-use commonware_codec::{
-    Decode, DecodeExt, Encode, EncodeSize,
-    Error as CodecError, Read, ReadExt, Write,
-    varint::UInt
-};
-```
-
 ### 8. Broadcasting (`commonware-broadcast`)
 
 **Used for**: Reliable message broadcasting to validator set
@@ -204,16 +112,6 @@ use commonware_codec::{
 - `Broadcaster` - Message broadcasting interface
 - Reliable delivery - Ensuring message delivery to all validators
 
-**Integration Points:**
-
-```rust
-// node/src/engine.rs
-use commonware_broadcast::buffered;
-
-// syncer/src/actor.rs
-use commonware_broadcast::{Broadcaster, buffered};
-```
-
 ### 9. Resolution (`commonware-resolver`)
 
 **Used for**: Missing data resolution and backfill
@@ -222,13 +120,6 @@ use commonware_broadcast::{Broadcaster, buffered};
 - `Resolver` - Generic resolution interface
 - `Consumer`/`Producer` - Data request/response
 - `p2p::Producer` - P2P data resolution
-
-**Integration Points:**
-
-```rust
-// syncer/src/ingress/handler.rs
-use commonware_resolver::{Consumer, p2p::Producer};
-```
 
 ## Security Analysis
 
@@ -252,7 +143,7 @@ use commonware_resolver::{Consumer, p2p::Producer};
 - **Byzantine Tolerance**: Tolerates f < n/3 Byzantine validators
 - **Liveness**: Guaranteed progress under synchrony assumptions
 - **Safety**: Cryptographic finality guarantees
-- **Implementation**: Directly uses Commonware's audited Simplex implementation
+- **Implementation**: Directly uses Commonware's Simplex implementation
 
 **Message Authentication:**
 - All consensus messages signed with validator keys
@@ -267,9 +158,7 @@ use commonware_resolver::{Consumer, p2p::Producer};
 - Protection against Sybil attacks
 
 **Message Integrity:**
-- Cryptographic hashing of all messages
-- Signature verification on all consensus activities
-- Protection against message tampering
+- All messages are hashed & signed
 
 ## Performance Characteristics
 
@@ -324,12 +213,6 @@ Summit can upgrade Commonware components independently by updating the git revis
 commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
 ```
 
-This allows for:
-- Security patches without full system updates
-- Performance improvements from Commonware team
-- New features as they become available
-- Independent auditing of Commonware components
-
 ## Audit Recommendations
 
 When auditing Summit's Commonware usage:
@@ -338,6 +221,3 @@ When auditing Summit's Commonware usage:
 2. **Integration Points**: Review how Summit integrates Commonware APIs
 3. **Configuration**: Verify Commonware components configured securely
 4. **Error Handling**: Ensure proper error handling around Commonware calls
-5. **Upgrade Process**: Review process for updating Commonware dependencies
-
-The extensive use of Commonware significantly reduces Summit's attack surface by delegating complex cryptographic and consensus logic to battle-tested libraries.

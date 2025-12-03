@@ -15,22 +15,22 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
 │  └─────────────┘  └──────────────┘  └─────────────────────┘ │
 │         │                │                      │           │
 │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
-│  │   Syncer    │  │  Finalizer   │  │    Buffer/Broadcast │ │
+│  │   Syncer    │  │  Finalizer   │  │  Buffer/Broadcast   │ │
 │  │ (Block Sync │  │ (Block Prod. │  │ (Network Buffering) │ │
-│  │ & Validation│  │ & Finality)  │  │                     │ │
+│  │  & Valid'n) │  │  & Finality) │  │                     │ │
 │  └─────────────┘  └──────────────┘  └─────────────────────┘ │
 │         │                │                      │           │
 │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
 │  │  Storage    │  │ Engine Client│  │      P2P Network    │ │
-│  │ (Consensus  │  │ (Execution   │  │ (Validator Comm.)   │ │
-│  │  State)     │  │ Interface)   │  │                     │ │
+│  │ (Consensus  │  │ (Execution   │  │  (Validator Comm.)  │ │
+│  │  State)     │  │  Interface)  │  │                     │ │
 │  └─────────────┘  └──────────────┘  └─────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
                            │
                     ┌──────────────┐
                     │   Reth/Geth  │
-                    │ (Execution   │
-                    │  Client)     │
+                    │  (Execution  │
+                    │   Client)    │
                     └──────────────┘
 ```
 
@@ -38,20 +38,7 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
 
 ### 1. Engine (`node/src/engine.rs`)
 
-The central coordinator that orchestrates all components:
-
-```rust
-pub struct Engine<E, C, O, S> {
-    context: E,                    // Runtime context
-    application: Application<...>, // State management
-    buffer: BufferedEngine<...>,   // Network buffering
-    syncer: SyncerActor<...>,     // Block synchronization
-    finalizer: Finalizer<...>,    // Block production/finality
-    orchestrator: Orchestrator<...>, // Consensus coordination
-    oracle: O,                    // Network discovery
-    // ...
-}
-```
+The central coordinator that orchestrates all components
 
 **Key Responsibilities:**
 - Component lifecycle management
@@ -61,17 +48,7 @@ pub struct Engine<E, C, O, S> {
 
 ### 2. Finalizer (`finalizer/`)
 
-Handles block production, validation, and finalization with Reth:
-
-```rust
-pub struct Finalizer<E, C, O, S, V> {
-    engine_client: C,        // Interface to execution client
-    oracle: O,               // Network state
-    signer: S,               // Cryptographic operations
-    consensus_state: ConsensusState<V>, // Current consensus view
-    // ...
-}
-```
+Handles block production, validation, and finalization with Reth
 
 **Key Responsibilities:**
 - Block proposal when selected as leader
@@ -81,16 +58,7 @@ pub struct Finalizer<E, C, O, S, V> {
 
 ### 3. Syncer (`syncer/`)
 
-Manages block synchronization and network state:
-
-```rust
-pub struct Actor<E, B, P, S> {
-    cache: Cache<...>,           // Block cache
-    resolver: Resolver<...>,     // Missing block resolution
-    broadcast: Broadcaster<...>, // Block propagation
-    // ...
-}
-```
+Manages block synchronization and network state
 
 **Key Responsibilities:**
 - Block reception and validation
@@ -100,16 +68,7 @@ pub struct Actor<E, B, P, S> {
 
 ### 4. Application (`application/`)
 
-Manages consensus state and validator set:
-
-```rust
-pub struct Actor<E, C, S, PK, SGN, V> {
-    consensus_state: ConsensusState<V>,
-    validators: ValidatorSet<PK>,
-    engine_client: C,
-    // ...
-}
-```
+Manages consensus state and validator set
 
 **Key Responsibilities:**
 - Validator set management
@@ -119,17 +78,7 @@ pub struct Actor<E, C, S, PK, SGN, V> {
 
 ### 5. Orchestrator (`orchestrator/`)
 
-Coordinates consensus activities:
-
-```rust
-pub struct Actor<E, O, V, S, A> {
-    oracle: O,                   // Network oracle
-    signer: S,                   // Cryptographic signer
-    application_mailbox: A,      // Application communication
-    consensus: SimplexConsensus<...>, // Consensus protocol
-    // ...
-}
-```
+Coordinates consensus activities
 
 **Key Responsibilities:**
 - Handles Simplex instances for each epoch
@@ -177,19 +126,7 @@ Syncer → Resolver → Peers → EngineClient → Reth → Application → Cons
 
 ## Actor Communication
 
-Summit uses message passing between actors with typed mailboxes:
-
-```rust
-// Example: Finalizer to Application communication
-pub enum ApplicationMessage<S> {
-    ProcessBlock(Block<S>),
-    GetValidators(oneshot::Sender<Vec<PublicKey>>),
-    UpdateValidatorSet(ValidatorUpdate),
-}
-
-// Mailbox for type-safe message passing
-pub type ApplicationMailbox<PK> = Mailbox<ApplicationMessage<PK>>;
-```
+Summit uses message passing between actors with typed mailboxes
 
 **Message Flow Patterns:**
 - **Request-Response**: Synchronous queries (e.g., validator set queries)
@@ -198,17 +135,7 @@ pub type ApplicationMailbox<PK> = Mailbox<ApplicationMessage<PK>>;
 
 ## Storage Architecture
 
-Summit uses Commonware's storage primitives for persistent state:
-
-```rust
-// Storage layout
-~/.seismic/consensus/store/
-├── consensus_state/          # Current consensus view
-├── finalized_blocks/         # Finalized block data
-├── validator_state/          # Validator set and stakes
-├── checkpoints/              # Epoch checkpoints
-└── cache/                    # Temporary block cache
-```
+Summit uses Commonware's storage primitives for persistent state
 
 **Storage Patterns:**
 - **Immutable Blocks**: Once finalized, blocks never change
