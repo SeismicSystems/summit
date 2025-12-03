@@ -14,21 +14,6 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 - `simplex::signing_scheme::Scheme` - Signature verification
 - `Block` trait - Block interface definition
 
-**Integration Points:**
-
-```rust
-// types/src/lib.rs
-use commonware_consensus::simplex::types::Activity as CActivity;
-pub type Activity = CActivity<Signature, Digest>;
-
-// orchestrator/src/actor.rs
-use commonware_consensus::{
-    simplex::{SimplexConsensus, types::*},
-    Block, types::{Epoch, Round},
-    Reporter, utils
-};
-```
-
 **Critical Usage:**
 - **Consensus Protocol**: All consensus logic delegated to Commonware's Simplex implementation
 - **Byzantine Fault Tolerance**: Handles f < n/3 Byzantine validators
@@ -44,20 +29,6 @@ use commonware_consensus::{
 - `ed25519` - EdDSA signatures for networking
 - `sha256` - Cryptographic hashing
 - `Signer` trait - Generic signing interface
-
-**Integration Points:**
-
-```rust
-// types/src/lib.rs
-pub use commonware_cryptography::bls12381;
-pub type PublicKey = commonware_cryptography::ed25519::PublicKey;
-pub type PrivateKey = commonware_cryptography::ed25519::PrivateKey;
-pub type Signature = commonware_cryptography::ed25519::Signature;
-pub type Digest = commonware_cryptography::sha256::Digest;
-
-// Throughout codebase
-use commonware_cryptography::{Signer, PrivateKeyExt};
-```
 
 **Critical Usage:**
 - **Consensus Signatures**: BLS12-381 MinPk variant for consensus activities and multisig schemes
@@ -75,19 +46,6 @@ use commonware_cryptography::{Signer, PrivateKeyExt};
 - `Sender`/`Receiver` - Message transmission
 - `utils::requester` - Request-response patterns
 
-**Integration Points:**
-
-```rust
-// orchestrator/src/actor.rs
-use commonware_p2p::{
-    authenticated::{Handshake, Receiver, Sender},
-    Blocker, Manager, utils::requester
-};
-
-// node/src/engine.rs
-use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
-```
-
 **Critical Usage:**
 - **Validator Discovery**: Automatic peer discovery and connection
 - **Message Authentication**: Cryptographically authenticated channels
@@ -102,20 +60,6 @@ use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
 - **Storage traits**: Generic storage interface
 - **Database implementations**: Pluggable storage backends
 - **Atomic operations**: Transactional state updates
-
-**Integration Points:**
-
-```rust
-// syncer/src/cache.rs
-use commonware_storage::{
-    freezer::{Freezer, FreezerConfig},
-    journal::{Journal, JournalConfig},
-    Payload, Storage, database
-};
-
-// Throughout storage code
-use commonware_runtime::{Storage};
-```
 
 **Critical Usage:**
 - **State Persistence**: Consensus state and validator set storage
@@ -133,16 +77,6 @@ use commonware_runtime::{Storage};
 - `Metrics` - Performance monitoring
 - `buffer::PoolRef` - Memory pool management
 
-**Integration Points:**
-
-```rust
-// Throughout codebase
-use commonware_runtime::{
-    Clock, Handle, Metrics, Network, Spawner, Storage,
-    buffer::PoolRef, deterministic, tokio
-};
-```
-
 **Critical Usage:**
 - **Task Management**: Async task spawning and coordination
 - **Time Management**: Consensus timeouts and timing
@@ -159,17 +93,6 @@ use commonware_runtime::{
 - `sequence` - Sequence number management
 - Hex utilities - Hexadecimal encoding/decoding
 
-**Integration Points:**
-
-```rust
-// Throughout codebase
-use commonware_utils::{
-    NZU32, NZU64, NZUsize, Span,
-    fixed_bytes, sequence::FixedBytes,
-    from_hex_formatted
-};
-```
-
 ### 7. Codec (`commonware-codec`)
 
 **Used for**: Efficient serialization and deserialization
@@ -180,17 +103,6 @@ use commonware_utils::{
 - `ReadExt`/`WriteExt` - Stream utilities
 - `varint` - Variable-length integer encoding
 
-**Integration Points:**
-
-```rust
-// Throughout networking code
-use commonware_codec::{
-    Decode, DecodeExt, Encode, EncodeSize,
-    Error as CodecError, Read, ReadExt, Write,
-    varint::UInt
-};
-```
-
 ### 8. Broadcasting (`commonware-broadcast`)
 
 **Used for**: Reliable message broadcasting to validator set
@@ -200,16 +112,6 @@ use commonware_codec::{
 - `Broadcaster` - Message broadcasting interface
 - Reliable delivery - Ensuring message delivery to all validators
 
-**Integration Points:**
-
-```rust
-// node/src/engine.rs
-use commonware_broadcast::buffered;
-
-// syncer/src/actor.rs
-use commonware_broadcast::{Broadcaster, buffered};
-```
-
 ### 9. Resolution (`commonware-resolver`)
 
 **Used for**: Missing data resolution and backfill
@@ -218,13 +120,6 @@ use commonware_broadcast::{Broadcaster, buffered};
 - `Resolver` - Generic resolution interface
 - `Consumer`/`Producer` - Data request/response
 - `p2p::Producer` - P2P data resolution
-
-**Integration Points:**
-
-```rust
-// syncer/src/ingress/handler.rs
-use commonware_resolver::{Consumer, p2p::Producer};
-```
 
 ## Security Analysis
 

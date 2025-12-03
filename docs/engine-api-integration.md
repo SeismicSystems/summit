@@ -56,17 +56,6 @@ The `RethEngineClient` implements the trait using Alloy's Engine API client:
 pub struct RethEngineClient {
     provider: RootProvider,
 }
-
-impl RethEngineClient {
-    pub async fn new(engine_ipc_path: String) -> Self {
-        let ipc = IpcConnect::new(engine_ipc_path);
-        let provider = ProviderBuilder::default()
-            .connect_ipc(ipc)
-            .await
-            .unwrap();
-        Self { provider }
-    }
-}
 ```
 
 **Connection Details:**
@@ -78,106 +67,15 @@ impl RethEngineClient {
 
 ### 1. `engine_forkchoiceUpdatedV3`
 
-**Purpose**: Updates the execution client's view of the canonical chain and optionally starts building a new block.
-
-```rust
-async fn start_building_block(
-    &self,
-    fork_choice_state: ForkchoiceState,
-    timestamp: u64,
-    withdrawals: Vec<Withdrawal>,
-) -> Option<PayloadId> {
-    let payload_attributes = PayloadAttributes {
-        timestamp,
-        prev_randao: [0; 32].into(),
-        suggested_fee_recipient: [1; 20].into(),
-        withdrawals: Some(withdrawals),
-        parent_beacon_block_root: Some([1; 32].into()),
-    };
-    
-    let res = self.provider
-        .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
-        .await
-        .unwrap();
-    
-    res.payload_id
-}
-```
-
-**Usage Scenarios:**
-
-1. **Block Production Start**: When validator is selected to propose
-   ```rust
-   // In finalizer when starting block production
-   let payload_id = engine_client.start_building_block(
-       fork_choice_state,
-       block_timestamp,
-       pending_withdrawals
-   ).await;
-   ```
-
-2. **Finality Commitment**: When block reaches finality
-   ```rust
-   // In finalizer when committing finalized block
-   engine_client.commit_hash(new_fork_choice_state).await;
-   ```
+Updates the execution client's view of the canonical chain and optionally starts building a new block.
 
 ### 2. `engine_getPayloadV4`
 
-**Purpose**: Retrieves a built block from the execution client. Called shortly after start_building block
-
-```rust
-async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
-    self.provider.get_payload_v4(payload_id).await.unwrap()
-}
-```
-
-**Usage Pattern:**
-```rust
-// After starting block building, retrieve the payload
-let payload_id = engine_client.start_building_block(...).await?;
-// Wait for block to be built...
-let envelope = engine_client.get_payload(payload_id).await;
-let execution_payload = envelope.execution_payload;
-```
+Retrieves a built block from the execution client. Called shortly after start_building block
 
 ### 3. `engine_newPayloadV4`
 
-**Purpose**: Validates and stores a block without committing it to the canonical chain. Used when validitating received blocks to verify with execution
-
-```rust
-async fn check_payload<C: Signer, V: Variant>(
-    &self, 
-    block: &Block<C, V>
-) -> PayloadStatus {
-    self.provider
-        .new_payload_v4(
-            block.payload.clone(),
-            Vec::new(),                    // versioned_hashes
-            [1; 32].into(),               // parent_beacon_block_root
-            block.execution_requests.clone(),
-        )
-        .await
-        .unwrap()
-}
-```
-
-**Validation Flow:**
-```rust
-// When receiving block from network
-let status = engine_client.check_payload(&received_block).await;
-match status.status {
-    PayloadStatusEnum::Valid => {
-        // Block is valid, participate in consensus
-    },
-    PayloadStatusEnum::Invalid => {
-        // Block is invalid, reject
-    },
-    PayloadStatusEnum::Syncing => {
-        // Execution client is syncing, wait
-    }
-}
-```
+Validates and stores a block without committing it to the canonical chain. Used when validitating received blocks to verify with execution
 
 ## Communication Patterns
 
@@ -253,32 +151,7 @@ sequenceDiagram
 
 ### Engine API Errors
 
-The Engine API can return several types of errors that Summit must handle:
-
-```rust
-impl EngineClient for RethEngineClient {
-    async fn start_building_block(...) -> Option<PayloadId> {
-        let res = self.provider
-            .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
-            .await
-            .unwrap();
-
-        if res.is_invalid() {
-            error!("invalid returned for forkchoice state {fork_choice_state:?}: {res:?}");
-            return None;
-        }
-        
-        if res.is_syncing() {
-            warn!("syncing returned for forkchoice state {fork_choice_state:?}: {res:?}");
-            return None;
-        }
-
-        res.payload_id
-    }
-}
-```
-
-**Error Categories:**
+The Engine API can return several types of errors that Summit must handle. These include:
 
 1. **Invalid State**: Execution client rejects forkchoice update
    - **Cause**: Invalid block hash or inconsistent state
@@ -292,70 +165,20 @@ impl EngineClient for RethEngineClient {
    - **Cause**: Socket errors, timeouts, or client restarts
    - **Handling**: Reconnect and retry with backoff
 
-### Retry Logic
-
-Summit implements retry logic for transient failures:
-
-```rust
-// Pseudocode for retry pattern
-async fn retry_engine_call<F, T>(operation: F, max_retries: u32) -> Result<T>
-where
-    F: Fn() -> Future<Output = Result<T>>,
-{
-    for attempt in 0..max_retries {
-        match operation().await {
-            Ok(result) => return Ok(result),
-            Err(e) if is_retryable(&e) => {
-                tokio::time::sleep(backoff_duration(attempt)).await;
-                continue;
-            },
-            Err(e) => return Err(e),
-        }
-    }
-    Err("Max retries exceeded")
-}
-```
-
 ## Security Considerations
 
 ### Authentication
 
-Engine API communication is secured using a unix socket inside the secure VM. We feel this is safer then using http secured with a JWT
+Engine API communication is secured using a unix socket inside the secure VM. We feel this is safer then using http secured with a JWT. We use `alloy` for this:
 
 ```rust
-let provider = ProviderBuilder::default()
-    .connect_ipc_with_auth(ipc)
-    .await?;
+let provider = ProviderBuilder::default().connect_ipc(ipc).await?;
 ```
 
 ## Monitoring and Observability
 
-### Metrics
+**Metrics**: Summit uses Prometheus to collect metrics (enabled with `feature = "prom"`)
 
-Summit uses Prometheus to collect metrics
+**Logging**: Summit uses the `tracing` crate for logging
 
-### Logging
-
-Summit uses the `tracing` crate for logging
-
-### Health Checks
-
-Summit exposes an HTTP API bound to port 3030 by default. This API exposes a method `GET /health`
-
-## Testing Strategies
-
-### Mock Engine Client
-
-For testing, Summit includes a mock engine client:
-
-```rust
-// test_harness/mock_engine_client.rs
-pub struct MockEngineClient {
-    payloads: HashMap<PayloadId, ExecutionPayload>,
-    // ...
-}
-
-impl EngineClient for MockEngineClient {
-    // Deterministic responses for testing
-}
-```
+**Health Checks**: Summit exposes an HTTP API bound to port 3030 by default. This API includes the method `GET /health` which will reply with `"OK"` if you are lucky. While this API is fairly minimal at the time of this writing, we would not be surprised this bloats up in the future
