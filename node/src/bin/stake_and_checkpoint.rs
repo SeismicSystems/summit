@@ -33,10 +33,12 @@ use std::{
     thread::JoinHandle,
 };
 use summit::args::{RunFlags, run_node_local};
-use summit::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
+use summit::engine::VALIDATOR_MINIMUM_STAKE;
+use summit_types::PROTOCOL_VERSION;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::DepositRequest;
+use summit_types::execution_request::compute_deposit_data_root;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
 use tracing::Level;
@@ -762,96 +764,6 @@ where
         }
         Err(e) => panic!("Error sending transaction: {}", e),
     }
-}
-
-fn compute_deposit_data_root(
-    node_pubkey: &[u8; 32],
-    consensus_pubkey: &[u8; 48],
-    withdrawal_credentials: &[u8; 32],
-    amount: U256,
-    node_signature: &[u8; 64],
-    consensus_signature: &[u8; 96],
-) -> [u8; 32] {
-    /*
-    Solidity computation:
-    bytes32 consensus_pubkey_hash = sha256(abi.encodePacked(consensus_pubkey, bytes16(0)));
-    bytes32 pubkey_root = sha256(abi.encodePacked(node_pubkey, consensus_pubkey_hash));
-    bytes32 node_signature_hash = sha256(node_signature);
-    bytes32 consensus_signature_hash = sha256(abi.encodePacked(
-        sha256(abi.encodePacked(consensus_signature[:64])),
-        sha256(abi.encodePacked(consensus_signature[64:], bytes32(0)))
-    ));
-    bytes32 signature_root = sha256(abi.encodePacked(node_signature_hash, consensus_signature_hash));
-    bytes32 node = sha256(abi.encodePacked(
-        sha256(abi.encodePacked(pubkey_root, withdrawal_credentials)),
-        sha256(abi.encodePacked(amount, bytes24(0), signature_root))
-    ));
-    */
-
-    // 1. consensus_pubkey_hash = sha256(consensus_pubkey || bytes16(0))
-    let mut hasher = Sha256::new();
-    hasher.update(consensus_pubkey);
-    hasher.update(&[0u8; 16]); // bytes16(0)
-    let consensus_pubkey_hash = hasher.finalize();
-
-    // 2. pubkey_root = sha256(node_pubkey || consensus_pubkey_hash)
-    let mut hasher = Sha256::new();
-    hasher.update(node_pubkey);
-    hasher.update(&consensus_pubkey_hash);
-    let pubkey_root = hasher.finalize();
-
-    // 3. node_signature_hash = sha256(node_signature)
-    let mut hasher = Sha256::new();
-    hasher.update(node_signature);
-    let node_signature_hash = hasher.finalize();
-
-    // 4. consensus_signature_hash = sha256(sha256(consensus_signature[0:64]) || sha256(consensus_signature[64:96] || bytes32(0)))
-    let mut hasher = Sha256::new();
-    hasher.update(&consensus_signature[0..64]);
-    let consensus_sig_part1 = hasher.finalize();
-
-    let mut hasher = Sha256::new();
-    hasher.update(&consensus_signature[64..96]);
-    hasher.update(&[0u8; 32]); // bytes32(0)
-    let consensus_sig_part2 = hasher.finalize();
-
-    let mut hasher = Sha256::new();
-    hasher.update(&consensus_sig_part1);
-    hasher.update(&consensus_sig_part2);
-    let consensus_signature_hash = hasher.finalize();
-
-    // 5. signature_root = sha256(node_signature_hash || consensus_signature_hash)
-    let mut hasher = Sha256::new();
-    hasher.update(&node_signature_hash);
-    hasher.update(&consensus_signature_hash);
-    let signature_root = hasher.finalize();
-
-    // 3. Convert amount to 8-byte little-endian (gwei)
-    let amount_gwei = amount / U256::from(10).pow(U256::from(9)); // Convert wei to gwei
-    let amount_u64 = amount_gwei.to::<u64>(); // Convert to u64 (should fit for reasonable amounts)
-    let amount_bytes = amount_u64.to_le_bytes(); // 8 bytes little-endian
-
-    // 4. node = sha256(sha256(pubkey_root || withdrawal_credentials) || sha256(amount || bytes24(0) || signature_root))
-    let mut hasher = Sha256::new();
-    hasher.update(&pubkey_root);
-    hasher.update(withdrawal_credentials);
-    let left_node = hasher.finalize();
-
-    let mut hasher = Sha256::new();
-    hasher.update(&amount_bytes);
-    hasher.update(&[0u8; 24]); // bytes24(0)
-    hasher.update(&signature_root);
-    let right_node = hasher.finalize();
-
-    let mut hasher = Sha256::new();
-    hasher.update(&left_node);
-    hasher.update(&right_node);
-    let deposit_data_root = hasher.finalize();
-
-    let digest_bytes: &[u8] = deposit_data_root.as_ref();
-    digest_bytes
-        .try_into()
-        .expect("SHA-256 digest is always 32 bytes")
 }
 
 fn get_node_flags(node: usize) -> RunFlags {

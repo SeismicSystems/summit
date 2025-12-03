@@ -5666,6 +5666,7 @@ dependencies = [
 name = "summit-rpc"
 version = "0.0.0"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
  "axum 0.8.4",
  "commonware-codec",
