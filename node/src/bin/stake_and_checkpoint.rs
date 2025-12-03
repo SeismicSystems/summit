@@ -274,11 +274,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let message = deposit_request.as_message(protocol_version_digest);
 
             // Sign with node (ed25519) key
-            let node_signature = ed25519_private_key.sign(None, &message);
+            let node_signature = ed25519_private_key.sign(&[], &message);
             let node_signature_bytes: [u8; 64] = node_signature.as_ref().try_into().unwrap();
 
             // Sign with consensus (BLS) key
-            let consensus_signature = bls_private_key.sign(None, &message);
+            let consensus_signature = bls_private_key.sign(&[], &message);
             let consensus_signature_slice: &[u8] = consensus_signature.as_ref();
             let consensus_signature_bytes: [u8; 96] = consensus_signature_slice.try_into().unwrap();
 

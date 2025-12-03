@@ -529,7 +529,7 @@ impl<
                             };
                             if !deposit_request
                                 .node_pubkey
-                                .verify(None, &message, &node_signature)
+                                .verify(&[], &message, &node_signature)
                             {
                                 #[cfg(debug_assertions)]
                                 {
@@ -561,7 +561,7 @@ impl<
                                 continue; // Skip this deposit request
                             };
                             if !deposit_request.consensus_pubkey.verify(
-                                None,
+                                &[],
                                 &message,
                                 &consensus_signature,
                             ) {

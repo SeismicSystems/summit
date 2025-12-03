@@ -15,16 +15,16 @@ summit-finalizer = {path = "finalizer"}
 summit-rpc = {path = "rpc"}
 summit-orchestrator = {path = "orchestrator"}
 
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "a86b517aeb820880e13cb83a30e1a69412ec2394" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
 
 alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }

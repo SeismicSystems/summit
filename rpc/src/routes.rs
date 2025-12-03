@@ -135,14 +135,14 @@ impl RpcRoutes {
         let message = req.as_message(protocol_version_digest);
 
         // Sign with node (ed25519) key
-        let node_signature = node_priv_key.sign(None, &message);
+        let node_signature = node_priv_key.sign(&[], &message);
         let node_signature_bytes: [u8; 64] = node_signature
             .as_ref()
             .try_into()
             .expect("ed25519 sig is alway 64 bytes");
 
         // Sign with consensus (BLS) key
-        let consensus_signature = consenus_priv_key.sign(None, &message);
+        let consensus_signature = consenus_priv_key.sign(&[], &message);
         let consensus_signature_slice: &[u8] = consensus_signature.as_ref();
         let consensus_signature_bytes: [u8; 96] = consensus_signature_slice
             .try_into()
