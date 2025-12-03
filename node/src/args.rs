@@ -64,7 +64,7 @@ pub enum Command {
     /// Start the validator
     Run {
         #[command(flatten)]
-        flags: RunFlags,
+        flags: Box<RunFlags>,
     },
     /// Key management utilities
     #[command(subcommand)]

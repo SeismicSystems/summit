@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, ReadExt as _, Write};
 use commonware_consensus::Block as ConsensusBlock;
+use commonware_consensus::types::View;
 use commonware_consensus::{
     Viewable,
     simplex::{
@@ -203,8 +204,8 @@ impl<C: Signer, V: Variant> ConsensusBlock for Block<C, V> {
 }
 
 impl<C: Signer, V: Variant> Viewable for Block<C, V> {
-    fn view(&self) -> commonware_consensus::types::View {
-        self.header.view
+    fn view(&self) -> View {
+        View::new(self.header.view)
     }
 }
 

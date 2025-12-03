@@ -1,4 +1,4 @@
-eth_genesis_hash = "0xd9e1aa836f4c56454176276f86a3a132c53cc0a7ce4d7b39726e022c7ee2c30a"
+eth_genesis_hash = "0x7a1a4b5e14b0e611bfe79f128bbcf2861dda517d7fc6f98c071c7e5cc349e0b8"
 leader_timeout_ms = 2000
 notarization_timeout_ms = 4000
 nullify_timeout_ms = 4000
