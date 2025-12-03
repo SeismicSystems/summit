@@ -32,7 +32,7 @@ hex.workspace = true
 # the test flag is only active in application for tests that are run inside of application.
 # But e2e tests are in the node crate.
 # commonware depends on it, so we have to build it anyway.
-prometheus-client = "0.22.3"
+prometheus-client = "0.24.0"
 
 
 # For metrics - activate with `prom` feature

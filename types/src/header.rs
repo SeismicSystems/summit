@@ -398,6 +398,7 @@ mod test {
     use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
+    use commonware_consensus::types::{Epoch, View};
     use commonware_consensus::{
         simplex::{
             signing_scheme::utils::Signers,
@@ -477,8 +478,8 @@ mod test {
         );
 
         let proposal = Proposal {
-            round: Round::new(0, header.view),
-            parent: header.height,
+            round: Round::new(Epoch::new(0), View::new(header.view)),
+            parent: View::new(header.height),
             payload: header.digest,
         };
 
@@ -534,8 +535,8 @@ mod test {
         // Create a finalization with wrong payload
         let dummy_digest = [99u8; 32];
         let wrong_proposal = Proposal {
-            round: Round::new(0, header.view),
-            parent: header.height,
+            round: Round::new(Epoch::new(0), View::new(header.view)),
+            parent: View::new(header.height),
             payload: dummy_digest.into(), // Wrong digest
         };
 
@@ -587,8 +588,8 @@ mod test {
         );
 
         let proposal = Proposal {
-            round: Round::new(0, header.view),
-            parent: header.height,
+            round: Round::new(Epoch::new(0), View::new(header.view)),
+            parent: View::new(header.height),
             payload: header.digest,
         };
 

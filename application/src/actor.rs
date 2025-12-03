@@ -15,7 +15,7 @@ use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
 use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_consensus::types::Round;
+use commonware_consensus::types::{Round, View};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
 use futures::task::Poll;
@@ -130,11 +130,11 @@ impl<
                     };
                     match message {
                         Message::Genesis { response, epoch } => {
-                            if epoch == 0 {
+                            if epoch.get() == 0 {
                                 let _ = response.send(self.genesis_hash.into());
                             } else {
                                 let epoch_genesis_hash = finalizer
-                                    .get_epoch_genesis_hash(epoch)
+                                    .get_epoch_genesis_hash(epoch.get())
                                     .await
                                     .await
                                     .expect("failed to get epoch genesis hash from finalizer");
@@ -151,7 +151,7 @@ impl<
 
                             let built = self.built_block.clone();
                             select! {
-                                    res = self.handle_proposal(parent, &mut syncer, &mut finalizer, round) => {
+                                    res = self.handle_proposal((parent.0.get(), parent.1), &mut syncer, &mut finalizer, round) => {
                                         match res {
                                             Ok(block) => {
                                                 // store block
@@ -204,7 +204,7 @@ impl<
                             let parent_request = if parent.1 == self.genesis_hash.into() {
                                 Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
                             } else {
-                                let parent_round = if parent.0 == 0 {
+                                let parent_round = if parent.0.get() == 0 {
                                     // Parent view is 0, which means that this is the first block of the epoch
                                     // TODO(matthias): verify that the parent view of the first block is always 0 (nullify)
                                     None
@@ -284,7 +284,7 @@ impl<
                 // TODO(matthias): verify that the parent view of the first block is always 0 (nullify)
                 None
             } else {
-                Some(Round::new(round.epoch(), parent.0))
+                Some(Round::new(round.epoch(), View::new(parent.0)))
             };
             Either::Right(
                 syncer
@@ -330,7 +330,7 @@ impl<
             histogram!("handle_proposal_aux_data_duration_millis").record(aux_data_duration);
         }
 
-        if aux_data.epoch != round.epoch() {
+        if aux_data.epoch != round.epoch().get() {
             // This might happen because the finalizer notifies the orchestrator at the end of an
             // epoch to shut down Simplex. While Simplex is being shutdown, it will still continue to produce blocks.
             return Err(anyhow!(
@@ -405,8 +405,8 @@ impl<
             payload_envelope.envelope_inner.execution_payload,
             payload_envelope.execution_requests.to_vec(),
             payload_envelope.envelope_inner.block_value,
-            round.epoch(),
-            round.view(),
+            round.epoch().get(),
+            round.view().get(),
             checkpoint_hash,
             aux_data.header_hash,
             aux_data.added_validators,
