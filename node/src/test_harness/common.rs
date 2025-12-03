@@ -433,12 +433,12 @@ pub fn create_deposit_request(
     let message = deposit.as_message(domain);
 
     // Generate both signatures
-    let node_signature_bytes = ed25519_private_key.sign(None, &message);
+    let node_signature_bytes = ed25519_private_key.sign(&[], &message);
     deposit
         .node_signature
         .copy_from_slice(&node_signature_bytes);
 
-    let consensus_signature_bytes = bls_private_key.sign(None, &message);
+    let consensus_signature_bytes = bls_private_key.sign(&[], &message);
     deposit
         .consensus_signature
         .copy_from_slice(&consensus_signature_bytes);

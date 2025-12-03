@@ -9,7 +9,7 @@ use commonware_consensus::{
         self,
         types::{Context, Voter},
     },
-    types::Epoch,
+    types::{Epoch, ViewDelta},
     utils::last_block_in_epoch,
 };
 use commonware_cryptography::{Signer, bls12381::primitives::variant::Variant};
@@ -57,8 +57,8 @@ where
     pub notarization_timeout: Duration,
     pub nullify_retry: Duration,
     pub fetch_timeout: Duration,
-    pub activity_timeout: u64,
-    pub skip_timeout: u64,
+    pub activity_timeout: ViewDelta,
+    pub skip_timeout: ViewDelta,
 }
 
 pub struct Actor<E, B, V, C, A>
@@ -89,8 +89,8 @@ where
     notarization_timeout: Duration,
     nullify_retry: Duration,
     fetch_timeout: Duration,
-    activity_timeout: u64,
-    skip_timeout: u64,
+    activity_timeout: ViewDelta,
+    skip_timeout: ViewDelta,
 }
 
 impl<E, B, V, C, A> Actor<E, B, V, C, A>
@@ -202,10 +202,13 @@ where
         mux.start();
 
         // Create rate limiter for orchestrators
-        let rate_limiter = RateLimiter::hashmap_with_clock(self.rate_limit, &self.context);
+        let rate_limiter = RateLimiter::hashmap_with_clock(
+            self.rate_limit,
+            self.context.with_label("rate_limiter"),
+        );
 
         // Wait for instructions to transition epochs.
-        let mut engines = BTreeMap::new();
+        let mut engines: BTreeMap<Epoch, Handle<()>> = BTreeMap::new();
         loop {
             select! {
                 message = pending_backup.next() => {
@@ -219,8 +222,8 @@ where
                         debug!(their_epoch, ?from, "received message from unregistered epoch with no known epochs");
                         continue;
                     };
-                    if their_epoch <= our_epoch {
-                        debug!(their_epoch, our_epoch, ?from, "received message from past epoch");
+                    if their_epoch <= our_epoch.get() {
+                        debug!(their_epoch, our_epoch = our_epoch.get(), ?from, "received message from past epoch");
                         continue;
                     }
 
@@ -244,7 +247,7 @@ where
                     // Send the request to the orchestrator. This operation is best-effort.
                     if orchestrator_sender.send(
                         Recipients::One(from),
-                        UInt(our_epoch).encode().freeze(),
+                        UInt(our_epoch.get()).encode().freeze(),
                         true
                     ).await.is_err() {
                         warn!("failed to send orchestrator request, shutting down orchestrator");
@@ -256,8 +259,8 @@ where
                         warn!("orchestrator channel closed, shutting down orchestrator");
                         break;
                     };
-                    let epoch = match UInt::<Epoch>::decode(bytes.as_ref()) {
-                        Ok(epoch) => epoch.0,
+                    let epoch = match UInt::<u64>::decode(bytes.as_ref()) {
+                        Ok(epoch_u64) => Epoch::new(epoch_u64.0),
                         Err(err) => {
                             debug!(?err, ?from, "failed to decode epoch from orchestrator request");
                             self.oracle.block(from).await;
@@ -270,11 +273,11 @@ where
                     // peer will need to fetch it from another node on the network.
                     let boundary_height = last_block_in_epoch(self.blocks_per_epoch, epoch);
                     let Some(finalization) = self.syncer_mailbox.get_finalization(boundary_height).await else {
-                        debug!(epoch, ?from, "missing finalization for old epoch");
+                        debug!(epoch = epoch.get(), ?from, "missing finalization for old epoch");
                         continue;
                     };
                     debug!(
-                        epoch,
+                        epoch = epoch.get(),
                         boundary_height,
                         ?from,
                         "received message on pending network from old epoch. forwarding orchestrator"
@@ -286,7 +289,7 @@ where
                     let message = Voter::<MultisigScheme<C, V>, Digest>::Finalization(finalization);
                     if recovered_global_sender
                         .send(
-                            epoch,
+                            epoch.get(),
                             Recipients::One(from),
                             message.encode().freeze(),
                             false,
@@ -306,7 +309,7 @@ where
                         Message::Enter(transition) => {
                             // If the epoch is already in the map, ignore.
                             if engines.contains_key(&transition.epoch) {
-                                warn!(epoch = transition.epoch, "entered existing epoch");
+                                warn!(epoch = transition.epoch.get(), "entered existing epoch");
                                 continue;
                             }
 
@@ -326,12 +329,12 @@ where
                                 .await;
                             engines.insert(transition.epoch, engine);
 
-                            info!(epoch = transition.epoch, "entered epoch");
+                            info!(epoch = transition.epoch.get(), "entered epoch");
                         }
                         Message::Exit(epoch) => {
                             // Remove the engine and abort it.
                             let Some(engine) = engines.remove(&epoch) else {
-                                warn!(epoch, "exited non-existent epoch");
+                                warn!(epoch = epoch.get(), "exited non-existent epoch");
                                 continue;
                             };
                             engine.abort();
@@ -339,7 +342,7 @@ where
                             // Unregister the signing scheme for the epoch.
                             assert!(self.scheme_provider.unregister(&epoch));
 
-                            info!(epoch, "exited epoch");
+                            info!(epoch = epoch.get(), "exited epoch");
                         }
                     }
                 },
@@ -385,7 +388,6 @@ where
                 fetch_timeout: self.fetch_timeout,
                 activity_timeout: self.activity_timeout,
                 skip_timeout: self.skip_timeout,
-                max_fetch_count: 32,
                 fetch_concurrent: 2,
                 fetch_rate_per_peer: Quota::per_second(NZU32!(1)),
                 buffer_pool: self.pool_ref.clone(),
@@ -393,9 +395,9 @@ where
         );
 
         // Create epoch-specific subchannels
-        let pending_sc = pending_mux.register(epoch).await.unwrap();
-        let recovered_sc = recovered_mux.register(epoch).await.unwrap();
-        let resolver_sc = resolver_mux.register(epoch).await.unwrap();
+        let pending_sc = pending_mux.register(epoch.get()).await.unwrap();
+        let recovered_sc = recovered_mux.register(epoch.get()).await.unwrap();
+        let resolver_sc = resolver_mux.register(epoch.get()).await.unwrap();
 
         info!("orchestrator: starting Simplex engine for epoch {}", epoch);
         engine.start(pending_sc, recovered_sc, resolver_sc)

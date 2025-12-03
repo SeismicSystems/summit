@@ -2,19 +2,22 @@ use crate::config::EngineConfig;
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::types::ViewDelta;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
+use commonware_storage::archive::immutable;
+use commonware_utils::acknowledgement::Exact;
 use commonware_utils::{NZU64, NZUsize};
 use futures::FutureExt;
 use futures::future::try_join_all;
 use governor::{Quota, clock::Clock as GClock};
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
-use std::num::{NonZero, NonZeroU32, NonZeroU64};
+use std::num::{NonZero, NonZeroU32};
 use std::time::Duration;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
@@ -42,7 +45,7 @@ const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
 const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
 const FREEZER_TABLE_INITIAL_SIZE: u32 = 1024 * 1024; // 100mb
-const MAX_REPAIR: NonZeroU64 = NonZeroU64::new(10).unwrap();
+const MAX_REPAIR: NonZero<usize> = NZUsize!(10);
 
 //
 // Onboarding config (set arbitrarily for now)
@@ -81,6 +84,16 @@ pub struct Engine<
         Block<S, MinPk>,
         SummitSchemeProvider<S, MinPk>,
         MultisigScheme<S, MinPk>,
+        immutable::Archive<
+            E,
+            summit_types::Digest,
+            commonware_consensus::simplex::types::Finalization<
+                MultisigScheme<S, MinPk>,
+                summit_types::Digest,
+            >,
+        >,
+        immutable::Archive<E, summit_types::Digest, Block<S, MinPk>>,
+        Exact,
     >,
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
     finalizer: Finalizer<E, C, O, S, MinPk>,
@@ -142,22 +155,79 @@ where
         );
 
         // create the syncer
+        // Initialize finalizations by height archive
+        let finalizations_by_height = immutable::Archive::init(
+            context.with_label("finalizations_by_height"),
+            immutable::Config {
+                metadata_partition: format!(
+                    "{}-finalizations-by-height-metadata",
+                    cfg.partition_prefix
+                ),
+                freezer_table_partition: format!(
+                    "{}-finalizations-by-height-freezer-table",
+                    cfg.partition_prefix
+                ),
+                freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+                freezer_journal_partition: format!(
+                    "{}-finalizations-by-height-freezer-journal",
+                    cfg.partition_prefix
+                ),
+                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
+                freezer_journal_buffer_pool: buffer_pool.clone(),
+                ordinal_partition: format!(
+                    "{}-finalizations-by-height-ordinal",
+                    cfg.partition_prefix
+                ),
+                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+                codec_config: MultisigScheme::<S, MinPk>::certificate_codec_config_unbounded(),
+                replay_buffer: REPLAY_BUFFER,
+                write_buffer: WRITE_BUFFER,
+            },
+        )
+        .await
+        .expect("failed to initialize finalizations by height archive");
+
+        // Initialize finalized blocks archive
+        let finalized_blocks = immutable::Archive::init(
+            context.with_label("finalized_blocks"),
+            immutable::Config {
+                metadata_partition: format!("{}-finalized_blocks-metadata", cfg.partition_prefix),
+                freezer_table_partition: format!(
+                    "{}-finalized_blocks-freezer-table",
+                    cfg.partition_prefix
+                ),
+                freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+                freezer_journal_partition: format!(
+                    "{}-finalized_blocks-freezer-journal",
+                    cfg.partition_prefix
+                ),
+                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
+                freezer_journal_buffer_pool: buffer_pool.clone(),
+                ordinal_partition: format!("{}-finalized_blocks-ordinal", cfg.partition_prefix),
+                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+                codec_config: (),
+                replay_buffer: REPLAY_BUFFER,
+                write_buffer: WRITE_BUFFER,
+            },
+        )
+        .await
+        .expect("failed to initialize finalized blocks archive");
+
         let syncer_config = summit_syncer::Config {
             scheme_provider: scheme_provider.clone(),
             epoch_length: BLOCKS_PER_EPOCH,
             partition_prefix: cfg.partition_prefix.clone(),
             mailbox_size: cfg.mailbox_size,
-            view_retention_timeout: cfg.activity_timeout,
+            view_retention_timeout: ViewDelta::new(cfg.activity_timeout),
             namespace: cfg.namespace.as_bytes().to_vec(),
-
             prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
-            immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-            freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
-            freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-            freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-            freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-            freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
-            freezer_journal_buffer_pool: buffer_pool.clone(),
+            buffer_pool: buffer_pool.clone(),
             replay_buffer: REPLAY_BUFFER,
             write_buffer: WRITE_BUFFER,
             block_codec_config: (),
@@ -165,8 +235,13 @@ where
             _marker: PhantomData,
         };
 
-        let (syncer, syncer_mailbox) =
-            summit_syncer::Actor::init(context.with_label("syncer"), syncer_config).await;
+        let (syncer, syncer_mailbox) = summit_syncer::Actor::init(
+            context.with_label("syncer"),
+            finalizations_by_height,
+            finalized_blocks,
+            syncer_config,
+        )
+        .await;
 
         // create orchestrator
         let (orchestrator, orchestrator_mailbox) = summit_orchestrator::Actor::new(
@@ -186,8 +261,8 @@ where
                 notarization_timeout: cfg.notarization_timeout,
                 nullify_retry: cfg.nullify_retry,
                 fetch_timeout: cfg.fetch_timeout,
-                activity_timeout: cfg.activity_timeout,
-                skip_timeout: cfg.skip_timeout,
+                activity_timeout: ViewDelta::new(cfg.activity_timeout),
+                skip_timeout: ViewDelta::new(cfg.skip_timeout),
             },
         );
 
@@ -324,6 +399,7 @@ where
         let resolver_config = summit_syncer::resolver::p2p::Config {
             public_key: self.node_public_key.clone(),
             manager: self.oracle.clone(),
+            blocker: self.oracle.clone(),
             mailbox_size: self.mailbox_size,
             requester_config: requester::Config {
                 me: Some(self.node_public_key.clone()),
@@ -335,7 +411,7 @@ where
             priority_requests: false,
             priority_responses: false,
         };
-        let (resolver_rx, resolver, resolver_handle) =
+        let (resolver_rx, resolver) =
             summit_syncer::resolver::p2p::init(&self.context, resolver_config, backfill_network);
 
         let finalizer_handle = self.finalizer.start();
@@ -363,7 +439,6 @@ where
             finalizer_handle,
             syncer_handle,
             orchestrator_handle,
-            resolver_handle,
         ])
         .fuse();
         let cancellation_fut = self.cancellation_token.cancelled().fuse();

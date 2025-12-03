@@ -1,6 +1,7 @@
 use crate::Update;
 use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_consensus::{Block, Reporter};
+use commonware_utils::Acknowledgement;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -47,7 +48,7 @@ impl<B: Block, S: Scheme> Reporter for Application<B, S> {
             }
             Update::Block((block, _), ack_tx) => {
                 self.blocks.lock().unwrap().insert(block.height(), block);
-                let _ = ack_tx.send(());
+                ack_tx.acknowledge();
             }
         }
     }

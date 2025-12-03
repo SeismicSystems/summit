@@ -29,6 +29,10 @@
 //! to a potential block in the chain. The actor will only finalize a block (and its ancestors)
 //! if it has a corresponding finalization from consensus.
 //!
+//! _It is possible that there may exist multiple finalizations for the same block in different views. Marshal
+//! only concerns itself with verifying a valid finalization exists for a block, not that a specific finalization
+//! exists. This means different Marshals may have different finalizations for the same block persisted to disk._
+//!
 //! ## Backfill
 //!
 //! The actor provides a backfill mechanism for missing blocks. If the actor notices a gap in its
@@ -37,19 +41,24 @@
 //!
 //! ## Storage
 //!
-//! The actor uses a combination of prunable and immutable storage to store blocks and
-//! finalizations. Prunable storage is used to store data that is only needed for a short
-//! period of time, such as unverified blocks or notarizations. Immutable storage is used to
-//! store data that needs to be persisted indefinitely, such as finalized blocks. This allows
-//! the actor to keep its storage footprint small while still providing a full history of the
-//! chain.
+//! The actor uses a combination of internal and external ([commonware_storage::archive]) storage
+//! to store blocks and finalizations. Internal storage is used to store data that is only needed for a short
+//! period of time, such as unverified blocks or notarizations. External storage is used to
+//! store data that needs to be persisted indefinitely, such as finalized blocks.
+//!
+//! Marshal will store all blocks after a configurable starting height (or, floor) onward.
+//! This allows for state sync from a specific height rather than from genesis. When
+//! updating the starting height, marshal will attempt to prune blocks in external storage
+//! that are no longer needed.
+//!
+//! _Setting a configurable starting height will prevent others from backfilling blocks below said height. This
+//! feature is only recommended for applications that support state sync (i.e., those that don't require full
+//! block history to participate in consensus)._
 //!
 //! ## Limitations and Future Work
 //!
 //! - Only works with [crate::simplex] rather than general consensus.
 //! - Assumes at-most one notarization per view, incompatible with some consensus protocols.
-//! - No state sync supported. Will attempt to sync every block in the history of the chain.
-//! - Stores the entire history of the chain, which requires indefinite amounts of disk space.
 //! - Uses [`broadcast::buffered`](`commonware_broadcast::buffered`) for broadcasting and receiving
 //!   uncertified blocks from the network.
 
@@ -65,26 +74,25 @@ pub mod resolver;
 use commonware_consensus::Block;
 use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_consensus::simplex::types::Finalization;
-use futures::channel::oneshot;
+use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 
 /// An update reported to the application, either a new finalized tip or a finalized block.
 ///
 /// Finalized tips are reported as soon as known, whether or not we hold all blocks up to that height.
 /// Finalized blocks are reported to the application in monotonically increasing order (no gaps permitted).
-#[derive(Debug)]
-pub enum Update<B: Block, S: Scheme> {
+#[derive(Clone, Debug)]
+pub enum Update<B: Block, S: Scheme, A: Acknowledgement = Exact> {
     /// A new finalized tip.
     Tip(u64, B::Commitment),
-    /// A new finalized block and a channel to acknowledge the update.
+    /// A new finalized block and an [Acknowledgement] for the application to signal once processed.
     ///
-    /// To ensure all blocks are delivered at least once, marshal waits to mark
-    /// a block as delivered until the application explicitly acknowledges the update.
-    /// If the sender is dropped before acknowledgement, marshal will exit (assuming
-    /// the application is shutting down).
-    Block(
-        (B, Option<Finalization<S, B::Commitment>>),
-        oneshot::Sender<()>,
-    ),
+    /// To ensure all blocks are delivered at least once, marshal waits to mark a block as delivered
+    /// until the application explicitly acknowledges the update. If the [Acknowledgement] is dropped before
+    /// handling, marshal will exit (assuming the application is shutting down).
+    ///
+    /// Because the [Acknowledgement] is clonable, the application can pass [Update] to multiple consumers
+    /// (and marshal will only consider the block delivered once all consumers have acknowledged it).
+    Block((B, Option<Finalization<S, B::Commitment>>), A),
 }
 
 #[cfg(test)]
@@ -101,11 +109,11 @@ mod tests {
     use crate::ingress::mailbox::Identifier;
     use crate::mocks::fixtures::{Fixture, bls12381_threshold};
     use commonware_broadcast::buffered;
-    use commonware_consensus::simplex::signing_scheme::bls12381_threshold;
+    use commonware_consensus::simplex::signing_scheme::{Scheme as _, bls12381_threshold};
     use commonware_consensus::simplex::types::{
         Activity, Finalization, Finalize, Notarization, Notarize, Proposal,
     };
-    use commonware_consensus::types::{Epoch, Round};
+    use commonware_consensus::types::{Epoch, Round, View, ViewDelta};
     use commonware_consensus::{Block as _, Reporter, utils};
     use commonware_cryptography::{
         Digestible, Hasher as _,
@@ -120,6 +128,7 @@ mod tests {
         utils::requester,
     };
     use commonware_runtime::{Clock, Metrics, Runner, buffer::PoolRef, deterministic};
+    use commonware_storage::archive::immutable;
     use commonware_utils::{NZU64, NZUsize};
     use governor::Quota;
     use rand::{Rng, seq::SliceRandom};
@@ -128,9 +137,10 @@ mod tests {
         marker::PhantomData,
         num::{NonZeroU32, NonZeroUsize},
         sync::Arc,
-        time::Duration,
+        time::{Duration, Instant},
     };
     use summit_types::scheme::SchemeProvider;
+    use tracing::info;
 
     type D = Sha256Digest;
     type B = Block<D>;
@@ -178,25 +188,23 @@ mod tests {
         validator: K,
         scheme_provider: P,
     ) -> (Application<B, S>, crate::ingress::mailbox::Mailbox<S, B>) {
-        let config = Config {
+        let buffer_pool = PoolRef::new(PAGE_SIZE, PAGE_CACHE_SIZE);
+        let scheme = scheme_provider
+            .scheme(Epoch::new(0))
+            .expect("scheme for epoch 0");
+        let config: Config<B, _, _> = Config {
             scheme_provider,
             epoch_length: BLOCKS_PER_EPOCH,
             mailbox_size: 100,
             namespace: NAMESPACE.to_vec(),
-            view_retention_timeout: 10,
-            max_repair: NZU64!(10),
+            view_retention_timeout: ViewDelta::new(10),
+            max_repair: NZUsize!(10),
             block_codec_config: (),
             partition_prefix: format!("validator-{}", validator.clone()),
             prunable_items_per_section: NZU64!(10),
+            buffer_pool,
             replay_buffer: NZUsize!(1024),
             write_buffer: NZUsize!(1024),
-            freezer_table_initial_size: 64,
-            freezer_table_resize_frequency: 10,
-            freezer_table_resize_chunk_size: 10,
-            freezer_journal_target_size: 1024,
-            freezer_journal_compression: None,
-            freezer_journal_buffer_pool: PoolRef::new(PAGE_SIZE, PAGE_CACHE_SIZE),
-            immutable_items_per_section: NZU64!(10),
             _marker: PhantomData,
         };
 
@@ -206,6 +214,7 @@ mod tests {
         let resolver_cfg = resolver::Config {
             public_key: validator.clone(),
             manager: oracle.manager(),
+            blocker: control.clone(),
             mailbox_size: config.mailbox_size,
             requester_config: requester::Config {
                 me: Some(validator.clone()),
@@ -217,7 +226,7 @@ mod tests {
             priority_requests: false,
             priority_responses: false,
         };
-        let (resolver_receiver, resolver_mailbox, _resolver_handle) =
+        let (resolver_receiver, resolver_mailbox) =
             resolver::init(&context, resolver_cfg, backfill);
 
         // Create a buffered broadcast engine and get its mailbox
@@ -232,7 +241,84 @@ mod tests {
         let network = control.register(2).await.unwrap();
         broadcast_engine.start(network);
 
-        let (actor, mailbox) = actor::Actor::init(context.clone(), config).await;
+        // Initialize finalizations by height
+        let start = Instant::now();
+        let finalizations_by_height = immutable::Archive::init(
+            context.with_label("finalizations_by_height"),
+            immutable::Config {
+                metadata_partition: format!(
+                    "{}-finalizations-by-height-metadata",
+                    config.partition_prefix
+                ),
+                freezer_table_partition: format!(
+                    "{}-finalizations-by-height-freezer-table",
+                    config.partition_prefix
+                ),
+                freezer_table_initial_size: 64,
+                freezer_table_resize_frequency: 10,
+                freezer_table_resize_chunk_size: 10,
+                freezer_journal_partition: format!(
+                    "{}-finalizations-by-height-freezer-journal",
+                    config.partition_prefix
+                ),
+                freezer_journal_target_size: 1024,
+                freezer_journal_compression: None,
+                freezer_journal_buffer_pool: config.buffer_pool.clone(),
+                ordinal_partition: format!(
+                    "{}-finalizations-by-height-ordinal",
+                    config.partition_prefix
+                ),
+                items_per_section: NZU64!(10),
+                codec_config: scheme.certificate_codec_config(),
+                replay_buffer: config.replay_buffer,
+                write_buffer: config.write_buffer,
+            },
+        )
+        .await
+        .expect("failed to initialize finalizations by height archive");
+        info!(elapsed = ?start.elapsed(), "restored finalizations by height archive");
+
+        // Initialize finalized blocks
+        let start = Instant::now();
+        let finalized_blocks = immutable::Archive::init(
+            context.with_label("finalized_blocks"),
+            immutable::Config {
+                metadata_partition: format!(
+                    "{}-finalized_blocks-metadata",
+                    config.partition_prefix
+                ),
+                freezer_table_partition: format!(
+                    "{}-finalized_blocks-freezer-table",
+                    config.partition_prefix
+                ),
+                freezer_table_initial_size: 64,
+                freezer_table_resize_frequency: 10,
+                freezer_table_resize_chunk_size: 10,
+                freezer_journal_partition: format!(
+                    "{}-finalized_blocks-freezer-journal",
+                    config.partition_prefix
+                ),
+                freezer_journal_target_size: 1024,
+                freezer_journal_compression: None,
+                freezer_journal_buffer_pool: config.buffer_pool.clone(),
+                ordinal_partition: format!("{}-finalized_blocks-ordinal", config.partition_prefix),
+                items_per_section: NZU64!(10),
+                codec_config: config.block_codec_config,
+                replay_buffer: config.replay_buffer,
+                write_buffer: config.write_buffer,
+            },
+        )
+        .await
+        .expect("failed to initialize finalized blocks archive");
+        info!(elapsed = ?start.elapsed(), "restored finalized blocks archive");
+
+        let (actor, mailbox) = actor::Actor::init(
+            context.clone(),
+            finalizations_by_height,
+            finalized_blocks,
+            config,
+        )
+        .await;
         let application = Application::<B, S>::default();
 
         // Start the application
@@ -380,7 +466,7 @@ mod tests {
 
                 // Calculate the epoch and round for the block
                 let epoch = utils::epoch(BLOCKS_PER_EPOCH, height);
-                let round = Round::new(epoch, height);
+                let round = Round::new(epoch, View::new(height));
 
                 // Broadcast block by one validator
                 let actor_index: usize = (height % (NUM_VALIDATORS as u64)) as usize;
@@ -395,7 +481,7 @@ mod tests {
                 // Notarize block by the validator that broadcasted it
                 let proposal = Proposal {
                     round,
-                    parent: height.checked_sub(1).unwrap(),
+                    parent: View::new(height.checked_sub(1).unwrap()),
                     payload: block.digest(),
                 };
                 let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
@@ -409,7 +495,7 @@ mod tests {
                     // Always finalize 1) the last block in each epoch 2) the last block in the chain.
                     // Otherwise, finalize randomly.
                     if height == NUM_BLOCKS
-                        || utils::is_last_block_in_epoch(BLOCKS_PER_EPOCH, epoch).is_some()
+                        || utils::is_last_block_in_epoch(BLOCKS_PER_EPOCH, height).is_some()
                         || context.gen_bool(0.2)
                     // 20% chance to finalize randomly
                     {
@@ -480,13 +566,17 @@ mod tests {
             let block = B::new::<Sha256>(parent, 1, 1);
             let commitment = block.digest();
 
-            let subscription_rx = actor.subscribe(Some(Round::from((0, 1))), commitment).await;
+            let subscription_rx = actor
+                .subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment)
+                .await;
 
-            actor.verified(Round::from((0, 1)), block.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(1)), block.clone())
+                .await;
 
             let proposal = Proposal {
-                round: Round::new(0, 1),
-                parent: 0,
+                round: Round::new(Epoch::new(0), View::new(1)),
+                parent: View::new(0),
                 payload: commitment,
             };
             let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
@@ -534,22 +624,26 @@ mod tests {
             let commitment2 = block2.digest();
 
             let sub1_rx = actor
-                .subscribe(Some(Round::from((0, 1))), commitment1)
+                .subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1)
                 .await;
             let sub2_rx = actor
-                .subscribe(Some(Round::from((0, 2))), commitment2)
+                .subscribe(Some(Round::new(Epoch::new(0), View::new(2))), commitment2)
                 .await;
             let sub3_rx = actor
-                .subscribe(Some(Round::from((0, 1))), commitment1)
+                .subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1)
                 .await;
 
-            actor.verified(Round::from((0, 1)), block1.clone()).await;
-            actor.verified(Round::from((0, 2)), block2.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
+                .await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
+                .await;
 
-            for (view, block) in [(1, block1.clone()), (2, block2.clone())] {
+            for (view, block) in [(1u64, block1.clone()), (2u64, block2.clone())] {
                 let proposal = Proposal {
-                    round: Round::new(0, view),
-                    parent: view.checked_sub(1).unwrap(),
+                    round: Round::new(Epoch::new(0), View::new(view)),
+                    parent: View::new(view.checked_sub(1).unwrap()),
                     payload: block.digest(),
                 };
                 let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
@@ -605,21 +699,25 @@ mod tests {
             let commitment2 = block2.digest();
 
             let sub1_rx = actor
-                .subscribe(Some(Round::from((0, 1))), commitment1)
+                .subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1)
                 .await;
             let sub2_rx = actor
-                .subscribe(Some(Round::from((0, 2))), commitment2)
+                .subscribe(Some(Round::new(Epoch::new(0), View::new(2))), commitment2)
                 .await;
 
             drop(sub1_rx);
 
-            actor.verified(Round::from((0, 1)), block1.clone()).await;
-            actor.verified(Round::from((0, 2)), block2.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
+                .await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
+                .await;
 
-            for (view, block) in [(1, block1.clone()), (2, block2.clone())] {
+            for (view, block) in [(1u64, block1.clone()), (2u64, block2.clone())] {
                 let proposal = Proposal {
-                    round: Round::new(0, view),
-                    parent: view.checked_sub(1).unwrap(),
+                    round: Round::new(Epoch::new(0), View::new(view)),
+                    parent: View::new(view.checked_sub(1).unwrap()),
                     payload: block.digest(),
                 };
                 let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
@@ -684,7 +782,9 @@ mod tests {
             assert_eq!(received1.height(), 1);
 
             // Block2: Verified by the actor
-            actor.verified(Round::from((0, 2)), block2.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
+                .await;
 
             // Block2: delivered
             let received2 = sub2_rx.await.unwrap();
@@ -693,13 +793,15 @@ mod tests {
 
             // Block3: Notarized by the actor
             let proposal3 = Proposal {
-                round: Round::new(0, 3),
-                parent: 2,
+                round: Round::new(Epoch::new(0), View::new(3)),
+                parent: View::new(2),
                 payload: block3.digest(),
             };
             let notarization3 = make_notarization(proposal3.clone(), &schemes, QUORUM);
             actor.report(Activity::Notarization(notarization3)).await;
-            actor.verified(Round::from((0, 3)), block3.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(3)), block3.clone())
+                .await;
 
             // Block3: delivered
             let received3 = sub3_rx.await.unwrap();
@@ -709,15 +811,17 @@ mod tests {
             // Block4: Finalized by the actor
             let finalization4 = make_finalization(
                 Proposal {
-                    round: Round::new(0, 4),
-                    parent: 3,
+                    round: Round::new(Epoch::new(0), View::new(4)),
+                    parent: View::new(3),
                     payload: block4.digest(),
                 },
                 &schemes,
                 QUORUM,
             );
             actor.report(Activity::Finalization(finalization4)).await;
-            actor.verified(Round::from((0, 4)), block4.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(4)), block4.clone())
+                .await;
 
             // Block4: delivered
             let received4 = sub4_rx.await.unwrap();
@@ -767,12 +871,12 @@ mod tests {
             let parent = Sha256::hash(b"");
             let block = B::new::<Sha256>(parent, 1, 1);
             let digest = block.digest();
-            let round = Round::new(0, 1);
+            let round = Round::new(Epoch::new(0), View::new(1));
             actor.verified(round, block.clone()).await;
 
             let proposal = Proposal {
                 round,
-                parent: 0,
+                parent: View::new(0),
                 payload: digest,
             };
             let finalization = make_finalization(proposal, &schemes, QUORUM);
@@ -824,11 +928,13 @@ mod tests {
             let parent0 = Sha256::hash(b"");
             let block1 = B::new::<Sha256>(parent0, 1, 1);
             let d1 = block1.digest();
-            actor.verified(Round::new(0, 1), block1.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
+                .await;
             let f1 = make_finalization(
                 Proposal {
-                    round: Round::new(0, 1),
-                    parent: 0,
+                    round: Round::new(Epoch::new(0), View::new(1)),
+                    parent: View::new(0),
                     payload: d1,
                 },
                 &schemes,
@@ -840,11 +946,13 @@ mod tests {
 
             let block2 = B::new::<Sha256>(d1, 2, 2);
             let d2 = block2.digest();
-            actor.verified(Round::new(0, 2), block2.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
+                .await;
             let f2 = make_finalization(
                 Proposal {
-                    round: Round::new(0, 2),
-                    parent: 1,
+                    round: Round::new(Epoch::new(0), View::new(2)),
+                    parent: View::new(1),
                     payload: d2,
                 },
                 &schemes,
@@ -856,11 +964,13 @@ mod tests {
 
             let block3 = B::new::<Sha256>(d2, 3, 3);
             let d3 = block3.digest();
-            actor.verified(Round::new(0, 3), block3.clone()).await;
+            actor
+                .verified(Round::new(Epoch::new(0), View::new(3)), block3.clone())
+                .await;
             let f3 = make_finalization(
                 Proposal {
-                    round: Round::new(0, 3),
-                    parent: 2,
+                    round: Round::new(Epoch::new(0), View::new(3)),
+                    parent: View::new(2),
                     payload: d3,
                 },
                 &schemes,
@@ -901,11 +1011,11 @@ mod tests {
             let parent = Sha256::hash(b"");
             let block = B::new::<Sha256>(parent, 1, 1);
             let commitment = block.digest();
-            let round = Round::new(0, 1);
+            let round = Round::new(Epoch::new(0), View::new(1));
             actor.verified(round, block.clone()).await;
             let proposal = Proposal {
                 round,
-                parent: 0,
+                parent: View::new(0),
                 payload: commitment,
             };
             let finalization = make_finalization(proposal, &schemes, QUORUM);
@@ -955,7 +1065,7 @@ mod tests {
             let parent = Sha256::hash(b"");
             let ver_block = B::new::<Sha256>(parent, 1, 1);
             let ver_commitment = ver_block.digest();
-            let round1 = Round::new(0, 1);
+            let round1 = Round::new(Epoch::new(0), View::new(1));
             actor.verified(round1, ver_block.clone()).await;
             let got = actor
                 .get_block(&ver_commitment)
@@ -966,11 +1076,11 @@ mod tests {
             // 2) From finalized archive
             let fin_block = B::new::<Sha256>(ver_commitment, 2, 2);
             let fin_commitment = fin_block.digest();
-            let round2 = Round::new(0, 2);
+            let round2 = Round::new(Epoch::new(0), View::new(2));
             actor.verified(round2, fin_block.clone()).await;
             let proposal = Proposal {
                 round: round2,
-                parent: 1,
+                parent: View::new(1),
                 payload: fin_commitment,
             };
             let finalization = make_finalization(proposal, &schemes, QUORUM);
@@ -1017,11 +1127,11 @@ mod tests {
             let parent = Sha256::hash(b"");
             let block = B::new::<Sha256>(parent, 1, 1);
             let commitment = block.digest();
-            let round = Round::new(0, 1);
+            let round = Round::new(Epoch::new(0), View::new(1));
             actor.verified(round, block.clone()).await;
             let proposal = Proposal {
                 round,
-                parent: 0,
+                parent: View::new(0),
                 payload: commitment,
             };
             let finalization = make_finalization(proposal, &schemes, QUORUM);
@@ -1032,11 +1142,132 @@ mod tests {
                 .get_finalization(1)
                 .await
                 .expect("missing finalization by height");
-            assert_eq!(finalization.proposal.parent, 0);
-            assert_eq!(finalization.proposal.round, Round::new(0, 1));
+            assert_eq!(finalization.proposal.parent, View::new(0));
+            assert_eq!(
+                finalization.proposal.round,
+                Round::new(Epoch::new(0), View::new(1))
+            );
             assert_eq!(finalization.proposal.payload, commitment);
 
             assert!(actor.get_finalization(2).await.is_none());
+        })
+    }
+
+    #[test_traced("WARN")]
+    fn test_finalize_same_height_different_views() {
+        let runner = deterministic::Runner::timed(Duration::from_secs(60));
+        runner.start(|mut context| async move {
+            let mut oracle = setup_network(context.clone(), None);
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+
+            // Set up two validators
+            let mut actors = Vec::new();
+            for (i, validator) in participants.iter().enumerate().take(2) {
+                let (_app, actor) = setup_validator(
+                    context.with_label(&format!("validator-{i}")),
+                    &mut oracle,
+                    validator.clone(),
+                    schemes[i].clone().into(),
+                )
+                .await;
+                actors.push(actor);
+            }
+
+            // Create block at height 1
+            let parent = Sha256::hash(b"");
+            let block = B::new::<Sha256>(parent, 1, 1);
+            let commitment = block.digest();
+
+            // Both validators verify the block
+            actors[0]
+                .verified(Round::new(Epoch::new(0), View::new(1)), block.clone())
+                .await;
+            actors[1]
+                .verified(Round::new(Epoch::new(0), View::new(1)), block.clone())
+                .await;
+
+            // Validator 0: Finalize with view 1
+            let proposal_v1 = Proposal {
+                round: Round::new(Epoch::new(0), View::new(1)),
+                parent: View::new(0),
+                payload: commitment,
+            };
+            let notarization_v1 = make_notarization(proposal_v1.clone(), &schemes, QUORUM);
+            let finalization_v1 = make_finalization(proposal_v1.clone(), &schemes, QUORUM);
+            actors[0]
+                .report(Activity::Notarization(notarization_v1.clone()))
+                .await;
+            actors[0]
+                .report(Activity::Finalization(finalization_v1.clone()))
+                .await;
+
+            // Validator 1: Finalize with view 2 (simulates receiving finalization from different view)
+            // This could happen during epoch transitions where the same block gets finalized
+            // with different views by different validators.
+            let proposal_v2 = Proposal {
+                round: Round::new(Epoch::new(0), View::new(2)), // Different view
+                parent: View::new(0),
+                payload: commitment, // Same block
+            };
+            let notarization_v2 = make_notarization(proposal_v2.clone(), &schemes, QUORUM);
+            let finalization_v2 = make_finalization(proposal_v2.clone(), &schemes, QUORUM);
+            actors[1]
+                .report(Activity::Notarization(notarization_v2.clone()))
+                .await;
+            actors[1]
+                .report(Activity::Finalization(finalization_v2.clone()))
+                .await;
+
+            // Wait for finalization processing
+            context.sleep(Duration::from_millis(100)).await;
+
+            // Verify both validators stored the block correctly
+            let block0 = actors[0].get_block(1).await.unwrap();
+            let block1 = actors[1].get_block(1).await.unwrap();
+            assert_eq!(block0, block);
+            assert_eq!(block1, block);
+
+            // Verify both validators have finalizations stored
+            let fin0 = actors[0].get_finalization(1).await.unwrap();
+            let fin1 = actors[1].get_finalization(1).await.unwrap();
+
+            // Verify the finalizations have the expected different views
+            assert_eq!(fin0.proposal.payload, block.digest());
+            assert_eq!(fin0.round().view(), View::new(1));
+            assert_eq!(fin1.proposal.payload, block.digest());
+            assert_eq!(fin1.round().view(), View::new(2));
+
+            // Both validators can retrieve block by height
+            assert_eq!(
+                actors[0].get_info(Identifier::Height(1)).await,
+                Some((1, commitment))
+            );
+            assert_eq!(
+                actors[1].get_info(Identifier::Height(1)).await,
+                Some((1, commitment))
+            );
+
+            // Test that a validator receiving BOTH finalizations handles it correctly
+            // (the second one should be ignored since archive ignores duplicates for same height)
+            actors[0]
+                .report(Activity::Finalization(finalization_v2.clone()))
+                .await;
+            actors[1]
+                .report(Activity::Finalization(finalization_v1.clone()))
+                .await;
+            context.sleep(Duration::from_millis(100)).await;
+
+            // Validator 0 should still have the original finalization (v1)
+            let fin0_after = actors[0].get_finalization(1).await.unwrap();
+            assert_eq!(fin0_after.round().view(), View::new(1));
+
+            // Validator 1 should still have the original finalization (v2)
+            let fin1_after = actors[1].get_finalization(1).await.unwrap();
+            assert_eq!(fin1_after.round().view(), View::new(2));
         })
     }
 }

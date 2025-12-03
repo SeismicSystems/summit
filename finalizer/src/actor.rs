@@ -9,10 +9,12 @@ use commonware_codec::{Read as CodecRead, Write as CodecWrite};
 use commonware_consensus::Reporter;
 use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::Finalization;
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::TwoCap;
+use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt as _, select};
@@ -165,7 +167,7 @@ impl<
 
         self.orchestrator_mailbox
             .report(Message::Enter(EpochTransition {
-                epoch: self.state.epoch,
+                epoch: Epoch::new(self.state.epoch),
                 validator_keys: active_validators,
             }))
             .await;
@@ -227,7 +229,7 @@ impl<
     #[allow(clippy::type_complexity)]
     async fn handle_execution_block(
         &mut self,
-        ack_tx: oneshot::Sender<()>,
+        ack_tx: Exact,
         block: Block<S, V>,
         finalization: Option<
             Finalization<
@@ -465,7 +467,7 @@ impl<
             let active_validators = self.state.get_active_validators();
             self.orchestrator_mailbox
                 .report(Message::Enter(EpochTransition {
-                    epoch: self.state.epoch,
+                    epoch: Epoch::new(self.state.epoch),
                     validator_keys: active_validators,
                 }))
                 .await;
@@ -498,13 +500,13 @@ impl<
         }
 
         self.height_notify_up_to(new_height);
-        let _ = ack_tx.send(());
-        info!(new_height, "finalized block");
+        ack_tx.acknowledge();
+        info!(new_height, self.state.epoch, "finalized block");
 
         if epoch_change {
             // Shut down the Simplex engine for the old epoch
             self.orchestrator_mailbox
-                .report(Message::Exit(self.state.epoch - 1))
+                .report(Message::Exit(Epoch::new(self.state.epoch - 1)))
                 .await;
         }
     }
@@ -527,7 +529,7 @@ impl<
                             };
                             if !deposit_request
                                 .node_pubkey
-                                .verify(None, &message, &node_signature)
+                                .verify(&[], &message, &node_signature)
                             {
                                 #[cfg(debug_assertions)]
                                 {
@@ -559,7 +561,7 @@ impl<
                                 continue; // Skip this deposit request
                             };
                             if !deposit_request.consensus_pubkey.verify(
-                                None,
+                                &[],
                                 &message,
                                 &consensus_signature,
                             ) {
@@ -593,6 +595,9 @@ impl<
                             {
                                 // If the validator already submitted an exit request, we skip this withdrawal request
                                 if matches!(account.status, ValidatorStatus::SubmittedExitRequest) {
+                                    info!(
+                                        "Failed to parse withdrawal request because the validator already submitted a request: {withdrawal_request:?}"
+                                    );
                                     continue; // Skip this withdrawal request
                                 }
 
@@ -600,6 +605,9 @@ impl<
                                 if account.balance - account.pending_withdrawal_amount
                                     < withdrawal_request.amount
                                 {
+                                    info!(
+                                        "Failed to parse withdrawal request due to insufficient balance: {withdrawal_request:?}"
+                                    );
                                     continue; // Skip this withdrawal request
                                 }
 
@@ -607,6 +615,9 @@ impl<
                                 if withdrawal_request.source_address
                                     != account.withdrawal_credentials
                                 {
+                                    info!(
+                                        "Failed to parse withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
+                                    );
                                     continue; // Skip this withdrawal request
                                 }
                                 // If after this withdrawal the validator balance would be less than the

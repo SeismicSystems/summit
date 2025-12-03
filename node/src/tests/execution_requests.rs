@@ -1505,6 +1505,7 @@ fn test_deposit_request_invalid_signature() {
         }
         // Poll metrics
         let mut processed_requests = HashSet::new();
+        let mut height_reached = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -1527,6 +1528,13 @@ fn test_deposit_request_invalid_signature() {
                     assert_eq!(value, 0);
                 }
 
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
                 if metric.ends_with("deposit_request_invalid_node_sig") {
                     let value = value.parse::<u64>().unwrap();
                     // Parse the pubkey from the metric name using helper function
@@ -1539,7 +1547,7 @@ fn test_deposit_request_invalid_signature() {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
                 }
-                if processed_requests.len() as u32 >= n {
+                if processed_requests.len() as u32 >= n && height_reached.len() as u32 >= n {
                     success = true;
                     break;
                 }

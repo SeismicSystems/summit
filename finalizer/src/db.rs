@@ -4,7 +4,7 @@ use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Storage};
-use commonware_storage::adb::store::{self, Store};
+use commonware_storage::adb::store::{self, Db, Store};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
 use summit_types::FinalizedHeader;
@@ -300,7 +300,7 @@ mod tests {
     use commonware_consensus::simplex::signing_scheme::bls12381_multisig::Certificate as BlsCertificate;
     use commonware_consensus::simplex::signing_scheme::utils::Signers;
     use commonware_consensus::simplex::types::{Finalization, Proposal};
-    use commonware_consensus::types::Round;
+    use commonware_consensus::types::{Epoch, Round, View};
     use commonware_cryptography::bls12381::primitives::{
         group::{Element, G2},
         variant::MinPk,
@@ -402,8 +402,8 @@ mod tests {
 
             // Create finalization proof
             let proposal = Proposal {
-                round: Round::new(header.epoch, header.view),
-                parent: header.height,
+                round: Round::new(Epoch::new(header.epoch), View::new(header.view)),
+                parent: View::new(header.height),
                 payload: header.digest,
             };
             let finalized = Finalization {
@@ -449,8 +449,8 @@ mod tests {
                 Vec::new(),                          // removed_validators
             );
             let proposal2 = Proposal {
-                round: Round::new(header2.epoch, header2.view),
-                parent: header2.height,
+                round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
+                parent: View::new(header2.height),
                 payload: header2.digest,
             };
             let finalized2 = Finalization {
@@ -511,8 +511,8 @@ mod tests {
                 Vec::new(),                          // removed_validators
             );
             let proposal1 = Proposal {
-                round: Round::new(header1.epoch, header1.view),
-                parent: header1.height,
+                round: Round::new(Epoch::new(header1.epoch), View::new(header1.view)),
+                parent: View::new(header1.height),
                 payload: header1.digest,
             };
 
@@ -541,8 +541,8 @@ mod tests {
                 Vec::new(),                           // removed_validators
             );
             let proposal3 = Proposal {
-                round: Round::new(header3.epoch, header3.view),
-                parent: header3.height,
+                round: Round::new(Epoch::new(header3.epoch), View::new(header3.view)),
+                parent: View::new(header3.height),
                 payload: header3.digest,
             };
 
@@ -571,8 +571,8 @@ mod tests {
                 Vec::new(),                          // removed_validators
             );
             let proposal2 = Proposal {
-                round: Round::new(header2.epoch, header2.view),
-                parent: header2.height,
+                round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
+                parent: View::new(header2.height),
                 payload: header2.digest,
             };
 
