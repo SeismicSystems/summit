@@ -137,6 +137,7 @@ where
                 mailbox_size: cfg.mailbox_size,
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
+                epoch_num_of_blocks: BLOCKS_PER_EPOCH,
                 cancellation_token: cancellation_token.clone(),
             },
         )

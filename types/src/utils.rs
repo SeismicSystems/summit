@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use commonware_consensus::types::Epoch;
 use dirs::home_dir;
 use std::{path::PathBuf, str::FromStr};
 
@@ -16,6 +17,10 @@ pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
     }
 
     Ok(path_buf)
+}
+
+pub fn last_block_in_epoch(epoch_length: u64, epoch: u64) -> u64 {
+    commonware_consensus::utils::last_block_in_epoch(epoch_length, Epoch::new(epoch))
 }
 
 pub fn is_last_block_of_epoch(epoch_num_blocks: u64, height: u64) -> bool {
