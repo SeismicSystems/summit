@@ -15,16 +15,16 @@ summit-finalizer = {path = "finalizer"}
 summit-rpc = {path = "rpc"}
 summit-orchestrator = {path = "orchestrator"}
 
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46" }
+commonware-consensus = { path = "/home/matthias/Documents/workspace/seismic/monorepo/consensus" }
+commonware-cryptography = { path = "/home/matthias/Documents/workspace/seismic/monorepo/cryptography" }
+commonware-storage = { path = "/home/matthias/Documents/workspace/seismic/monorepo/storage" }
+commonware-runtime = { path = "/home/matthias/Documents/workspace/seismic/monorepo/runtime" }
+commonware-codec = { path = "/home/matthias/Documents/workspace/seismic/monorepo/codec" }
+commonware-p2p = { path = "/home/matthias/Documents/workspace/seismic/monorepo/p2p" }
+commonware-broadcast = { path = "/home/matthias/Documents/workspace/seismic/monorepo/broadcast" }
+commonware-utils = { path = "/home/matthias/Documents/workspace/seismic/monorepo/utils" }
+commonware-resolver = { path = "/home/matthias/Documents/workspace/seismic/monorepo/resolver" }
+commonware-macros = { path = "/home/matthias/Documents/workspace/seismic/monorepo/macros" }
 
 alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }
