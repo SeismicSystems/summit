@@ -15,16 +15,16 @@ summit-finalizer = {path = "finalizer"}
 summit-rpc = {path = "rpc"}
 summit-orchestrator = {path = "orchestrator"}
 
-commonware-consensus = { path = "/home/matthias/Documents/workspace/seismic/monorepo/consensus" }
-commonware-cryptography = { path = "/home/matthias/Documents/workspace/seismic/monorepo/cryptography" }
-commonware-storage = { path = "/home/matthias/Documents/workspace/seismic/monorepo/storage" }
-commonware-runtime = { path = "/home/matthias/Documents/workspace/seismic/monorepo/runtime" }
-commonware-codec = { path = "/home/matthias/Documents/workspace/seismic/monorepo/codec" }
-commonware-p2p = { path = "/home/matthias/Documents/workspace/seismic/monorepo/p2p" }
-commonware-broadcast = { path = "/home/matthias/Documents/workspace/seismic/monorepo/broadcast" }
-commonware-utils = { path = "/home/matthias/Documents/workspace/seismic/monorepo/utils" }
-commonware-resolver = { path = "/home/matthias/Documents/workspace/seismic/monorepo/resolver" }
-commonware-macros = { path = "/home/matthias/Documents/workspace/seismic/monorepo/macros" }
+commonware-consensus = { path = "../monorepo/consensus" }
+commonware-cryptography = { path = "../monorepo/cryptography" }
+commonware-storage = { path = "../monorepo/storage" }
+commonware-runtime = { path = "../monorepo/runtime" }
+commonware-codec = { path = "../monorepo/codec" }
+commonware-p2p = { path = "../monorepo/p2p" }
+commonware-broadcast = { path = "../monorepo/broadcast" }
+commonware-utils = { path = "../monorepo/utils" }
+commonware-resolver = { path = "../monorepo/resolver" }
+commonware-macros = { path = "../monorepo/macros" }
 
 alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }
