@@ -383,8 +383,7 @@ impl<
         // by the epoch transition.
         let last_in_epoch = utils::last_block_in_epoch(self.epoch_num_of_blocks, aux_data.epoch);
         if parent.height() == last_in_epoch {
-            //warn!(round = ?round, digest = ?parent.digest(), "re-proposed parent block at epoch boundary");
-            info!(round = ?round, digest = ?parent.digest(), "re-proposed parent block at epoch boundary");
+            debug!(round = ?round, digest = ?parent.digest(), "re-proposed parent block at epoch boundary");
             return Ok(parent);
         }
 
