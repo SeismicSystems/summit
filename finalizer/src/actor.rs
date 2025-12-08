@@ -824,7 +824,9 @@ impl<
             let checkpoint_hash = if let Some(checkpoint) = &self.state.pending_checkpoint {
                 checkpoint.digest
             } else {
-                unreachable!("pending checkpoint was calculated at the previous height")
+                // TODO
+                //unreachable!("pending checkpoint was calculated at the previous height")
+                [0; 32].into()
             };
             // TODO(matthias): should we verify the ckpt height against the `height` variable?
 

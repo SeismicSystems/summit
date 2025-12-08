@@ -341,18 +341,18 @@ impl<
         }
 
         // STEP 2: Wait for finalizer notification
-        #[cfg(feature = "prom")]
-        let finalizer_wait_start = std::time::Instant::now();
-        // now that we have the parent additionally await for that to be executed by the finalizer
-        let rx = finalizer.notify_at_height(parent.height()).await;
-        // await for notification
-        rx.await.expect("Finalizer dropped");
-        #[cfg(feature = "prom")]
-        {
-            let finalizer_wait_duration = finalizer_wait_start.elapsed().as_millis() as f64;
-            histogram!("handle_proposal_finalizer_wait_duration_millis")
-                .record(finalizer_wait_duration);
-        }
+        //#[cfg(feature = "prom")]
+        //let finalizer_wait_start = std::time::Instant::now();
+        //// now that we have the parent additionally await for that to be executed by the finalizer
+        //let rx = finalizer.notify_at_height(parent.height()).await;
+        //// await for notification
+        //rx.await.expect("Finalizer dropped");
+        //#[cfg(feature = "prom")]
+        //{
+        //    let finalizer_wait_duration = finalizer_wait_start.elapsed().as_millis() as f64;
+        //    histogram!("handle_proposal_finalizer_wait_duration_millis")
+        //        .record(finalizer_wait_duration);
+        //}
 
         // STEP 3: Request aux data (withdrawals, checkpoint hash, header hash)
         #[cfg(feature = "prom")]
