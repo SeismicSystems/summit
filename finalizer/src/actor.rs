@@ -43,6 +43,15 @@ use tracing::{info, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
+/// Tracks the consensus state for a notarized (but not yet finalized) block
+#[derive(Clone, Debug)]
+struct ForkState {
+    block_digest: Digest,
+    parent_digest: Digest,
+    consensus_state: ConsensusState,
+    arrived_at: Instant,
+}
+
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
@@ -55,7 +64,14 @@ pub struct Finalizer<
     context: ContextCell<R>,
     engine_client: C,
     db: FinalizerState<R, V>,
-    state: ConsensusState,
+
+    // Canonical state (finalized) - contains latest_height
+    canonical_state: ConsensusState,
+
+    // Fork states (notarized but not yet finalized)
+    // BTreeMap<height, BTreeMap<digest, state>>
+    fork_states: BTreeMap<u64, BTreeMap<Digest, ForkState>>,
+
     genesis_hash: [u8; 32],
     validator_max_withdrawals_per_block: usize,
     epoch_num_of_blocks: u64,
@@ -129,7 +145,8 @@ impl<
                 pending_height_notifys: BTreeMap::new(),
                 epoch_num_of_blocks: cfg.epoch_num_of_blocks,
                 db,
-                state: state.clone(),
+                canonical_state: state.clone(),
+                fork_states: BTreeMap::new(),
                 validator_max_withdrawals_per_block: cfg.validator_max_withdrawals_per_block,
                 genesis_hash: cfg.genesis_hash,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
@@ -158,16 +175,18 @@ impl<
 
         // Initialize the current epoch with the validator set
         // This ensures the orchestrator can start consensus immediately
-        let active_validators = self.state.get_active_validators();
+        let active_validators = self.canonical_state.get_active_validators();
         let network_keys: Vec<_> = active_validators
             .iter()
             .map(|(node_key, _)| node_key.clone())
             .collect();
-        self.oracle.register(self.state.epoch, network_keys).await;
+        self.oracle
+            .register(self.canonical_state.epoch, network_keys)
+            .await;
 
         self.orchestrator_mailbox
             .report(Message::Enter(EpochTransition {
-                epoch: Epoch::new(self.state.epoch),
+                epoch: Epoch::new(self.canonical_state.epoch),
                 validator_keys: active_validators,
             }))
             .await;
@@ -189,12 +208,12 @@ impl<
                                     // I don't think we need this
                                 }
                                 Update::Block((block, finalization), ack_tx) => {
-                                    self.handle_execution_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
+                                    self.execute_finalized_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
                                 }
                             }
                         },
                         FinalizerMessage::NotifyAtHeight { height, response } => {
-                            let last_indexed = self.state.get_latest_height();
+                            let last_indexed = self.canonical_state.get_latest_height();
                             if last_indexed >= height {
                                 let _ = response.send(());
                                 continue;
@@ -206,8 +225,8 @@ impl<
                         },
                         FinalizerMessage::GetEpochGenesisHash { epoch, response } => {
                             // TODO(matthias): verify that this can never happen
-                            assert_eq!(epoch, self.state.epoch);
-                            let _ = response.send(self.state.epoch_genesis_hash);
+                            assert_eq!(epoch, self.canonical_state.epoch);
+                            let _ = response.send(self.canonical_state.epoch_genesis_hash);
                         },
                         FinalizerMessage::QueryState { request, response } => {
                             self.handle_consensus_state_query(request, response).await;
@@ -227,7 +246,7 @@ impl<
     }
 
     #[allow(clippy::type_complexity)]
-    async fn handle_execution_block(
+    async fn execute_finalized_block(
         &mut self,
         ack_tx: Exact,
         block: Block<S, V>,
@@ -239,124 +258,27 @@ impl<
         >,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
-        #[cfg(feature = "prom")]
-        let block_processing_start = Instant::now();
+        execute_block(
+            &self.engine_client,
+            &self.context,
+            &block,
+            &mut self.canonical_state,
+            self.epoch_num_of_blocks,
+            self.validator_max_withdrawals_per_block,
+            self.protocol_version_digest,
+            self.validator_minimum_stake,
+            self.validator_withdrawal_period,
+            self.validator_onboarding_limit_per_block,
+            last_committed_timestamp,
+        )
+        .await;
 
-        // check the payload
-        #[cfg(feature = "prom")]
-        let payload_check_start = Instant::now();
-        let payload_status = self.engine_client.check_payload(&block).await;
         let new_height = block.height();
+        self.height_notify_up_to(new_height);
+        ack_tx.acknowledge();
+        info!(new_height, self.canonical_state.epoch, "executed block");
 
-        #[cfg(feature = "prom")]
-        {
-            let payload_check_duration = payload_check_start.elapsed().as_millis() as f64;
-            histogram!("payload_check_duration_millis").record(payload_check_duration);
-        }
-
-        // Verify withdrawal requests that were included in the block
-        // Make sure that the included withdrawals match the expected withdrawals
-        let expected_withdrawals: Vec<Withdrawal> =
-            if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
-                let pending_withdrawals = self.state.get_next_ready_withdrawals(
-                    new_height,
-                    self.validator_max_withdrawals_per_block,
-                );
-                pending_withdrawals.into_iter().map(|w| w.inner).collect()
-            } else {
-                vec![]
-            };
-
-        if payload_status.is_valid()
-            && block.payload.payload_inner.withdrawals == expected_withdrawals
-            && self.state.forkchoice.head_block_hash == block.eth_parent_hash()
-        {
-            let eth_hash = block.eth_block_hash();
-            info!(
-                "Commiting block 0x{} for height {}",
-                hex(&eth_hash),
-                new_height
-            );
-
-            let forkchoice = ForkchoiceState {
-                head_block_hash: eth_hash.into(),
-                safe_block_hash: eth_hash.into(),
-                finalized_block_hash: eth_hash.into(),
-            };
-
-            #[cfg(feature = "prom")]
-            {
-                let num_tx = block.payload.payload_inner.payload_inner.transactions.len();
-                counter!("tx_committed_total").increment(num_tx as u64);
-                counter!("blocks_committed_total").increment(1);
-                if let Some(last_committed) = last_committed_timestamp {
-                    let block_delta = last_committed.elapsed().as_millis() as f64;
-                    histogram!("block_time_millis").record(block_delta);
-                }
-                *last_committed_timestamp = Some(Instant::now());
-            }
-
-            self.engine_client.commit_hash(forkchoice).await;
-
-            self.state.forkchoice = forkchoice;
-
-            // Parse execution requests
-            #[cfg(feature = "prom")]
-            let parse_requests_start = Instant::now();
-            self.parse_execution_requests(&block, new_height).await;
-            #[cfg(feature = "prom")]
-            {
-                let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
-                histogram!("parse_execution_requests_duration_millis")
-                    .record(parse_requests_duration);
-            }
-
-            // Add validators that deposited to the validator set
-            #[cfg(feature = "prom")]
-            let process_requests_start = Instant::now();
-            self.process_execution_requests(&block, new_height).await;
-            #[cfg(feature = "prom")]
-            {
-                let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
-                histogram!("process_execution_requests_duration_millis")
-                    .record(process_requests_duration);
-            }
-        } else {
-            warn!(
-                "Height: {new_height} contains invalid eth payload. Not executing but keeping part of chain"
-            );
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            let gauge: Gauge = Gauge::default();
-            gauge.set(new_height as i64);
-            self.context.register("height", "chain height", gauge);
-        }
-        self.state.set_latest_height(new_height);
-        self.state.set_view(block.view());
-        assert_eq!(block.epoch(), self.state.epoch);
-
-        // Periodically persist state to database as a blob
-        // We build the checkpoint one height before the epoch end which
-        // allows the validators to sign the checkpoint hash in the last block
-        // of the epoch
-        if is_penultimate_block_of_epoch(self.epoch_num_of_blocks, new_height) {
-            #[cfg(feature = "prom")]
-            let checkpoint_creation_start = Instant::now();
-
-            let checkpoint = Checkpoint::new(&self.state);
-            self.state.pending_checkpoint = Some(checkpoint);
-
-            #[cfg(feature = "prom")]
-            {
-                let checkpoint_creation_duration =
-                    checkpoint_creation_start.elapsed().as_millis() as f64;
-                histogram!("checkpoint_creation_duration_millis")
-                    .record(checkpoint_creation_duration);
-            }
-        }
-
+        let new_height = block.height();
         let mut epoch_change = false; // Store finalizes checkpoint to database
         if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
             if let Some(finalization) = finalization {
@@ -397,22 +319,29 @@ impl<
             }
 
             // Add and remove validators for the next epoch
-            if !self.state.added_validators.is_empty() || !self.state.removed_validators.is_empty()
+            if !self.canonical_state.added_validators.is_empty()
+                || !self.canonical_state.removed_validators.is_empty()
             {
                 // TODO(matthias): we can probably find a way to do this without iterating over the joining validators
                 // Activate validators that staked this epoch.
-                for key in self.state.added_validators.iter() {
+                for key in self.canonical_state.added_validators.iter() {
                     let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                    let account = self.state.validator_accounts.get_mut(&key_bytes).expect(
-                        "only validators with accounts are added to the added_validators queue",
-                    );
+                    let account = self
+                        .canonical_state
+                        .validator_accounts
+                        .get_mut(&key_bytes)
+                        .expect(
+                            "only validators with accounts are added to the added_validators queue",
+                        );
                     account.status = ValidatorStatus::Active;
                 }
 
-                for key in self.state.removed_validators.iter() {
+                for key in self.canonical_state.removed_validators.iter() {
                     // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
                     let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                    if let Some(account) = self.state.validator_accounts.get_mut(&key_bytes) {
+                    if let Some(account) =
+                        self.canonical_state.validator_accounts.get_mut(&key_bytes)
+                    {
                         account.status = ValidatorStatus::Inactive;
                     }
                 }
@@ -420,7 +349,7 @@ impl<
                 // If the node's public key is contained in the removed validator list,
                 // trigger an exit
                 if self
-                    .state
+                    .canonical_state
                     .removed_validators
                     .iter()
                     .any(|pk| pk == &self.node_public_key)
@@ -436,18 +365,20 @@ impl<
             // The checkpoint is created at the penultimate block of the epoch, and finalized at the last
             // block. So if a node checkpoints, it will start at the height of the penultimate block.
             // TODO(matthias): verify this
-            if let Some(checkpoint) = &self.state.pending_checkpoint {
+            if let Some(checkpoint) = &self.canonical_state.pending_checkpoint {
                 self.db
-                    .store_finalized_checkpoint(self.state.epoch, checkpoint)
+                    .store_finalized_checkpoint(self.canonical_state.epoch, checkpoint)
                     .await;
             }
 
             // Increment epoch
-            self.state.epoch += 1;
+            self.canonical_state.epoch += 1;
             // Set the epoch genesis hash for the next epoch
-            self.state.epoch_genesis_hash = block.digest().0;
+            self.canonical_state.epoch_genesis_hash = block.digest().0;
 
-            self.db.store_consensus_state(new_height, &self.state).await;
+            self.db
+                .store_consensus_state(new_height, &self.canonical_state)
+                .await;
             // This will commit all changes to the state db
             self.db.commit().await;
             #[cfg(feature = "prom")]
@@ -457,30 +388,32 @@ impl<
             }
 
             // Create the list of validators for the new epoch
-            let active_validators = self.state.get_active_validators();
+            let active_validators = self.canonical_state.get_active_validators();
             let network_keys = active_validators
                 .iter()
                 .map(|(node_key, _)| node_key.clone())
                 .collect();
-            self.oracle.register(self.state.epoch, network_keys).await;
+            self.oracle
+                .register(self.canonical_state.epoch, network_keys)
+                .await;
 
             // Send the new validator list to the orchestrator amd start the Simplex engine
             // for the new epoch
-            let active_validators = self.state.get_active_validators();
+            let active_validators = self.canonical_state.get_active_validators();
             self.orchestrator_mailbox
                 .report(Message::Enter(EpochTransition {
-                    epoch: Epoch::new(self.state.epoch),
+                    epoch: Epoch::new(self.canonical_state.epoch),
                     validator_keys: active_validators,
                 }))
                 .await;
             epoch_change = true;
 
             // Only clear the added and removed validators after saving the state to disk
-            if !self.state.added_validators.is_empty() {
-                self.state.added_validators.clear();
+            if !self.canonical_state.added_validators.is_empty() {
+                self.canonical_state.added_validators.clear();
             }
-            if !self.state.removed_validators.is_empty() {
-                self.state.removed_validators.clear();
+            if !self.canonical_state.removed_validators.is_empty() {
+                self.canonical_state.removed_validators.clear();
             }
 
             #[cfg(debug_assertions)]
@@ -492,310 +425,13 @@ impl<
             }
         }
 
-        #[cfg(feature = "prom")]
-        {
-            let total_block_processing_duration =
-                block_processing_start.elapsed().as_millis() as f64;
-            histogram!("total_block_processing_duration_millis")
-                .record(total_block_processing_duration);
-            counter!("blocks_processed_total").increment(1);
-        }
-
-        self.height_notify_up_to(new_height);
-        ack_tx.acknowledge();
-        info!(new_height, self.state.epoch, "finalized block");
-
         if epoch_change {
             // Shut down the Simplex engine for the old epoch
             self.orchestrator_mailbox
-                .report(Message::Exit(Epoch::new(self.state.epoch - 1)))
+                .report(Message::Exit(Epoch::new(self.canonical_state.epoch - 1)))
                 .await;
         }
-    }
-
-    async fn parse_execution_requests(&mut self, block: &Block<S, V>, new_height: u64) {
-        for request_bytes in &block.execution_requests {
-            match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
-                Ok(execution_request) => {
-                    match execution_request {
-                        ExecutionRequest::Deposit(deposit_request) => {
-                            let message = deposit_request.as_message(self.protocol_version_digest);
-
-                            let mut node_signature_bytes = &deposit_request.node_signature[..];
-                            let Ok(node_signature) = Signature::read(&mut node_signature_bytes)
-                            else {
-                                info!(
-                                    "Failed to parse node signature from deposit request: {deposit_request:?}"
-                                );
-                                continue; // Skip this deposit request
-                            };
-                            if !deposit_request
-                                .node_pubkey
-                                .verify(&[], &message, &node_signature)
-                            {
-                                #[cfg(debug_assertions)]
-                                {
-                                    let gauge: Gauge = Gauge::default();
-                                    gauge.set(new_height as i64);
-                                    self.context.register(
-                                        format!(
-                                            "<pubkey>{}</pubkey>_deposit_request_invalid_node_sig",
-                                            hex::encode(&deposit_request.node_pubkey)
-                                        ),
-                                        "height",
-                                        gauge,
-                                    );
-                                }
-                                info!(
-                                    "Failed to verify node signature from deposit request: {deposit_request:?}"
-                                );
-                                continue; // Skip this deposit request
-                            }
-
-                            let mut consensus_signature_bytes =
-                                &deposit_request.consensus_signature[..];
-                            let Ok(consensus_signature) =
-                                bls12381::Signature::read(&mut consensus_signature_bytes)
-                            else {
-                                info!(
-                                    "Failed to parse consensus signature from deposit request: {deposit_request:?}"
-                                );
-                                continue; // Skip this deposit request
-                            };
-                            if !deposit_request.consensus_pubkey.verify(
-                                &[],
-                                &message,
-                                &consensus_signature,
-                            ) {
-                                #[cfg(debug_assertions)]
-                                {
-                                    let gauge: Gauge = Gauge::default();
-                                    gauge.set(new_height as i64);
-                                    self.context.register(
-                                        format!(
-                                            "<pubkey>{}</pubkey>_deposit_request_invalid_consensus_sig",
-                                            hex::encode(&deposit_request.consensus_pubkey)
-                                        ),
-                                        "height",
-                                        gauge,
-                                    );
-                                }
-                                info!(
-                                    "Failed to verify consensus signature from deposit request: {deposit_request:?}"
-                                );
-                                continue; // Skip this deposit request
-                            }
-
-                            self.state.push_deposit(deposit_request);
-                        }
-                        ExecutionRequest::Withdrawal(mut withdrawal_request) => {
-                            // Only add the withdrawal request if the validator exists and has sufficient balance
-                            if let Some(mut account) = self
-                                .state
-                                .get_account(&withdrawal_request.validator_pubkey)
-                                .cloned()
-                            {
-                                // If the validator already submitted an exit request, we skip this withdrawal request
-                                if matches!(account.status, ValidatorStatus::SubmittedExitRequest) {
-                                    info!(
-                                        "Failed to parse withdrawal request because the validator already submitted a request: {withdrawal_request:?}"
-                                    );
-                                    continue; // Skip this withdrawal request
-                                }
-
-                                // The balance minus any pending withdrawals have to be larger than the amount of the withdrawal request
-                                if account.balance - account.pending_withdrawal_amount
-                                    < withdrawal_request.amount
-                                {
-                                    info!(
-                                        "Failed to parse withdrawal request due to insufficient balance: {withdrawal_request:?}"
-                                    );
-                                    continue; // Skip this withdrawal request
-                                }
-
-                                // The source address must match the validators withdrawal address
-                                if withdrawal_request.source_address
-                                    != account.withdrawal_credentials
-                                {
-                                    info!(
-                                        "Failed to parse withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
-                                    );
-                                    continue; // Skip this withdrawal request
-                                }
-                                // If after this withdrawal the validator balance would be less than the
-                                // minimum stake, then the full validator balance is withdrawn.
-                                if account.balance
-                                    - account.pending_withdrawal_amount
-                                    - withdrawal_request.amount
-                                    < self.validator_minimum_stake
-                                {
-                                    // Check the remaining balance and set the withdrawal amount accordingly
-                                    let remaining_balance =
-                                        account.balance - account.pending_withdrawal_amount;
-                                    withdrawal_request.amount = remaining_balance;
-                                    account.status = ValidatorStatus::SubmittedExitRequest;
-                                }
-
-                                account.pending_withdrawal_amount += withdrawal_request.amount;
-                                self.state
-                                    .set_account(withdrawal_request.validator_pubkey, account);
-                                self.state.push_withdrawal_request(
-                                    withdrawal_request.clone(),
-                                    new_height + self.validator_withdrawal_period,
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to parse execution request: {}", e);
-                }
-            }
-        }
-    }
-
-    async fn process_execution_requests(&mut self, block: &Block<S, V>, new_height: u64) {
-        if is_penultimate_block_of_epoch(self.epoch_num_of_blocks, new_height) {
-            for _ in 0..self.validator_onboarding_limit_per_block {
-                if let Some(request) = self.state.pop_deposit() {
-                    let mut validator_balance = 0;
-                    let mut account_exists = false;
-                    if let Some(mut account) = self
-                        .state
-                        .get_account(request.node_pubkey.as_ref().try_into().unwrap())
-                        .cloned()
-                    {
-                        if request.index > account.last_deposit_index {
-                            account.balance += request.amount;
-                            account.last_deposit_index = request.index;
-                            #[allow(unused)]
-                            #[cfg(debug_assertions)]
-                            {
-                                validator_balance = account.balance;
-                            }
-                            account.last_deposit_index = request.index;
-                            validator_balance = account.balance;
-                            self.state.set_account(
-                                request.node_pubkey.as_ref().try_into().unwrap(),
-                                account,
-                            );
-                            account_exists = true;
-                        }
-                    } else {
-                        // Validate the withdrawal credentials format
-                        // Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20 bytes Ethereum address
-                        if request.withdrawal_credentials.len() != 32 {
-                            warn!(
-                                "Invalid withdrawal credentials length: {} bytes, expected 32",
-                                request.withdrawal_credentials.len()
-                            );
-                            continue; // Skip this deposit
-                        }
-                        // Check prefix is 0x01 (Eth1 withdrawal)
-                        if request.withdrawal_credentials[0] != 0x01 {
-                            warn!(
-                                "Invalid withdrawal credentials prefix: 0x{:02x}, expected 0x01",
-                                request.withdrawal_credentials[0]
-                            );
-                            continue; // Skip this deposit
-                        }
-                        // Check 11 zero bytes after the prefix
-                        if !request.withdrawal_credentials[1..12]
-                            .iter()
-                            .all(|&b| b == 0)
-                        {
-                            warn!(
-                                "Invalid withdrawal credentials format: non-zero bytes in positions 1-11"
-                            );
-                            continue; // Skip this deposit
-                        }
-
-                        // Create new ValidatorAccount from DepositRequest
-                        let new_account = ValidatorAccount {
-                            consensus_public_key: request.consensus_pubkey.clone(),
-                            withdrawal_credentials: Address::from_slice(
-                                &request.withdrawal_credentials[12..32],
-                            ), // Take last 20 bytes
-                            balance: request.amount,
-                            pending_withdrawal_amount: 0,
-                            status: ValidatorStatus::Inactive,
-                            last_deposit_index: request.index,
-                        };
-                        self.state.set_account(
-                            request.node_pubkey.as_ref().try_into().unwrap(),
-                            new_account,
-                        );
-                        validator_balance = request.amount;
-                    }
-                    if !account_exists && validator_balance >= self.validator_minimum_stake {
-                        // If the node shuts down, before the account changes are committed,
-                        // then everything should work normally, because the registry is not persisted to disk
-                        self.state
-                            .added_validators
-                            .push(request.node_pubkey.clone());
-                    }
-                    #[cfg(debug_assertions)]
-                    {
-                        use commonware_codec::Encode;
-                        let gauge: Gauge = Gauge::default();
-                        gauge.set(validator_balance as i64);
-                        self.context.register(
-                            format!("<registry>{}</registry><creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
-                                    !account_exists && validator_balance >= self.validator_minimum_stake,
-                                    hex::encode(request.withdrawal_credentials), hex::encode(request.node_pubkey.encode())),
-                            "Validator balance",
-                            gauge
-                        );
-                    }
-                }
-            }
-        }
-
-        // Remove pending withdrawals that are included in the committed block
-        for withdrawal in &block.payload.payload_inner.withdrawals {
-            let pending_withdrawal = self.state.pop_withdrawal();
-            // TODO(matthias): these checks should never fail. we have to make sure that these withdrawals are
-            // verified when the block is verified. it is too late when the block is committed.
-            let pending_withdrawal =
-                pending_withdrawal.expect("pending withdrawal must be in state");
-            assert_eq!(pending_withdrawal.inner, *withdrawal);
-
-            if let Some(mut account) = self.state.get_account(&pending_withdrawal.pubkey).cloned()
-                && account.balance >= withdrawal.amount
-            {
-                // This check should never fail, because we checked the balance when
-                // adding the pending withdrawal to the queue
-                account.balance = account.balance.saturating_sub(withdrawal.amount);
-                account.pending_withdrawal_amount = account
-                    .pending_withdrawal_amount
-                    .saturating_sub(withdrawal.amount);
-
-                #[cfg(debug_assertions)]
-                {
-                    let gauge: Gauge = Gauge::default();
-                    gauge.set(account.balance as i64);
-                    self.context.register(
-                        format!(
-                            "<creds>{}</creds><pubkey>{}</pubkey>_withdrawal_validator_balance",
-                            hex::encode(account.withdrawal_credentials),
-                            hex::encode(pending_withdrawal.pubkey)
-                        ),
-                        "Validator balance",
-                        gauge,
-                    );
-                }
-
-                // If the remaining balance is 0, remove the validator account from the state.
-                if account.balance == 0 {
-                    self.state.remove_account(&pending_withdrawal.pubkey);
-                    self.state
-                        .removed_validators
-                        .push(PublicKey::decode(&pending_withdrawal.pubkey[..]).unwrap()); // todo(dalton) remove unwrap
-                } else {
-                    self.state.set_account(pending_withdrawal.pubkey, account);
-                }
-            }
-        }
+        info!(new_height, self.canonical_state.epoch, "finalized block");
     }
 
     fn height_notify_up_to(&mut self, current_height: u64) {
@@ -823,7 +459,8 @@ impl<
         // The proposed block will contain the checkpoint that was saved at the previous height.
         let aux_data = if is_last_block_of_epoch(self.epoch_num_of_blocks, height) {
             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
-            let checkpoint_hash = if let Some(checkpoint) = &self.state.pending_checkpoint {
+            let checkpoint_hash = if let Some(checkpoint) = &self.canonical_state.pending_checkpoint
+            {
                 checkpoint.digest
             } else {
                 unreachable!("pending checkpoint was calculated at the previous height")
@@ -844,23 +481,23 @@ impl<
                 .state
                 .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
             BlockAuxData {
-                epoch: self.state.epoch,
+                epoch: self.canonical_state.epoch,
                 withdrawals: ready_withdrawals,
                 checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
-                added_validators: self.state.added_validators.clone(),
-                removed_validators: self.state.removed_validators.clone(),
-                forkchoice: self.state.forkchoice,
+                added_validators: self.canonical_state.added_validators.clone(),
+                removed_validators: self.canonical_state.removed_validators.clone(),
+                forkchoice: self.canonical_state.forkchoice,
             }
         } else {
             BlockAuxData {
-                epoch: self.state.epoch,
+                epoch: self.canonical_state.epoch,
                 withdrawals: vec![],
                 checkpoint_hash: None,
                 header_hash: [0; 32].into(),
                 added_validators: vec![],
                 removed_validators: vec![],
-                forkchoice: self.state.forkchoice,
+                forkchoice: self.canonical_state.forkchoice,
             }
         };
         let _ = sender.send(aux_data);
@@ -881,7 +518,7 @@ impl<
                 let _ = sender.send(ConsensusStateResponse::Checkpoint(checkpoint));
             }
             ConsensusStateRequest::GetLatestHeight => {
-                let height = self.state.get_latest_height();
+                let height = self.canonical_state.get_latest_height();
                 let _ = sender.send(ConsensusStateResponse::LatestHeight(height));
             }
             ConsensusStateRequest::GetValidatorBalance(public_key) => {
@@ -894,6 +531,475 @@ impl<
                     .get(&key_bytes)
                     .map(|account| account.balance);
                 let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
+            }
+        }
+    }
+}
+
+/// Core execution logic that applies a block's state transitions to any ConsensusState.
+///
+/// This method:
+/// - Calls check_payload on the engine client (validates and speculatively executes EVM)
+/// - Applies consensus-layer state transitions (deposits, withdrawals, validators)
+/// - Updates the forkchoice state
+/// - Creates checkpoints at epoch boundaries
+///
+/// This does NOT handle epoch transitions (activate validators, increment epoch).
+/// Epoch transitions only happen at finalization since the last block of an epoch
+/// is always finalized (never notarized+nullified).
+#[allow(clippy::type_complexity)]
+async fn execute_block<
+    C: EngineClient,
+    S: Signer<PublicKey = PublicKey>,
+    V: Variant,
+    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+>(
+    engine_client: &C,
+    context: &ContextCell<R>,
+    block: &Block<S, V>,
+    state: &mut ConsensusState,
+    epoch_num_of_blocks: u64,
+    validator_max_withdrawals_per_block: usize,
+    protocol_version_digest: Digest,
+    validator_minimum_stake: u64,
+    validator_withdrawal_period: u64,
+    validator_onboarding_limit_per_block: usize,
+    #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
+) {
+    #[cfg(feature = "prom")]
+    let block_processing_start = Instant::now();
+
+    // check the payload
+    #[cfg(feature = "prom")]
+    let payload_check_start = Instant::now();
+    let payload_status = engine_client.check_payload(&block).await;
+    let new_height = block.height();
+
+    #[cfg(feature = "prom")]
+    {
+        let payload_check_duration = payload_check_start.elapsed().as_millis() as f64;
+        histogram!("payload_check_duration_millis").record(payload_check_duration);
+    }
+
+    // Verify withdrawal requests that were included in the block
+    // Make sure that the included withdrawals match the expected withdrawals
+    let expected_withdrawals: Vec<Withdrawal> =
+        if is_last_block_of_epoch(epoch_num_of_blocks, new_height) {
+            let pending_withdrawals =
+                state.get_next_ready_withdrawals(new_height, validator_max_withdrawals_per_block);
+            pending_withdrawals.into_iter().map(|w| w.inner).collect()
+        } else {
+            vec![]
+        };
+
+    // Validate block against state
+    if payload_status.is_valid()
+        && block.payload.payload_inner.withdrawals == expected_withdrawals
+        && state.forkchoice.head_block_hash == block.eth_parent_hash()
+    {
+        let eth_hash = block.eth_block_hash();
+        info!(
+            "Commiting block 0x{} for height {}",
+            hex(&eth_hash),
+            new_height
+        );
+
+        let forkchoice = ForkchoiceState {
+            head_block_hash: eth_hash.into(),
+            safe_block_hash: eth_hash.into(),
+            finalized_block_hash: eth_hash.into(),
+        };
+
+        #[cfg(feature = "prom")]
+        {
+            let num_tx = block.payload.payload_inner.payload_inner.transactions.len();
+            counter!("tx_committed_total").increment(num_tx as u64);
+            counter!("blocks_committed_total").increment(1);
+            if let Some(last_committed) = last_committed_timestamp {
+                let block_delta = last_committed.elapsed().as_millis() as f64;
+                histogram!("block_time_millis").record(block_delta);
+            }
+            *last_committed_timestamp = Some(Instant::now());
+        }
+
+        //self.engine_client.commit_hash(forkchoice).await;
+        state.forkchoice = forkchoice;
+
+        // Parse execution requests
+        #[cfg(feature = "prom")]
+        let parse_requests_start = Instant::now();
+        parse_execution_requests(
+            context,
+            &block,
+            new_height,
+            state,
+            protocol_version_digest,
+            validator_minimum_stake,
+            validator_withdrawal_period,
+        )
+        .await;
+
+        #[cfg(feature = "prom")]
+        {
+            let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
+            histogram!("parse_execution_requests_duration_millis").record(parse_requests_duration);
+        }
+
+        // Add validators that deposited to the validator set
+        #[cfg(feature = "prom")]
+        let process_requests_start = Instant::now();
+        process_execution_requests(
+            context,
+            &block,
+            new_height,
+            state,
+            epoch_num_of_blocks,
+            validator_onboarding_limit_per_block,
+            validator_minimum_stake,
+        )
+        .await;
+        #[cfg(feature = "prom")]
+        {
+            let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
+            histogram!("process_execution_requests_duration_millis")
+                .record(process_requests_duration);
+        }
+    } else {
+        warn!(
+            "Height: {new_height} contains invalid eth payload. Not executing but keeping part of chain"
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let gauge: Gauge = Gauge::default();
+        gauge.set(new_height as i64);
+        context.register("height", "chain height", gauge);
+    }
+    state.set_latest_height(new_height);
+    state.set_view(block.view());
+    assert_eq!(block.epoch(), state.epoch);
+
+    // Periodically persist state to database as a blob
+    // We build the checkpoint one height before the epoch end which
+    // allows the validators to sign the checkpoint hash in the last block
+    // of the epoch
+    if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
+        #[cfg(feature = "prom")]
+        let checkpoint_creation_start = Instant::now();
+
+        let checkpoint = Checkpoint::new(&state);
+        state.pending_checkpoint = Some(checkpoint);
+
+        #[cfg(feature = "prom")]
+        {
+            let checkpoint_creation_duration =
+                checkpoint_creation_start.elapsed().as_millis() as f64;
+            histogram!("checkpoint_creation_duration_millis").record(checkpoint_creation_duration);
+        }
+    }
+
+    #[cfg(feature = "prom")]
+    {
+        let total_block_processing_duration = block_processing_start.elapsed().as_millis() as f64;
+        histogram!("total_block_processing_duration_millis")
+            .record(total_block_processing_duration);
+        counter!("blocks_processed_total").increment(1);
+    }
+}
+
+async fn parse_execution_requests<
+    S: Signer<PublicKey = PublicKey>,
+    V: Variant,
+    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+>(
+    context: &ContextCell<R>,
+    block: &Block<S, V>,
+    new_height: u64,
+    state: &mut ConsensusState,
+    protocol_version_digest: Digest,
+    validator_minimum_stake: u64,
+    validator_withdrawal_period: u64,
+) {
+    for request_bytes in &block.execution_requests {
+        match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
+            Ok(execution_request) => {
+                match execution_request {
+                    ExecutionRequest::Deposit(deposit_request) => {
+                        let message = deposit_request.as_message(protocol_version_digest);
+
+                        let mut node_signature_bytes = &deposit_request.node_signature[..];
+                        let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
+                            info!(
+                                "Failed to parse node signature from deposit request: {deposit_request:?}"
+                            );
+                            continue; // Skip this deposit request
+                        };
+                        if !deposit_request
+                            .node_pubkey
+                            .verify(&[], &message, &node_signature)
+                        {
+                            #[cfg(debug_assertions)]
+                            {
+                                let gauge: Gauge = Gauge::default();
+                                gauge.set(new_height as i64);
+                                context.register(
+                                    format!(
+                                        "<pubkey>{}</pubkey>_deposit_request_invalid_node_sig",
+                                        hex::encode(&deposit_request.node_pubkey)
+                                    ),
+                                    "height",
+                                    gauge,
+                                );
+                            }
+                            info!(
+                                "Failed to verify node signature from deposit request: {deposit_request:?}"
+                            );
+                            continue; // Skip this deposit request
+                        }
+
+                        let mut consensus_signature_bytes =
+                            &deposit_request.consensus_signature[..];
+                        let Ok(consensus_signature) =
+                            bls12381::Signature::read(&mut consensus_signature_bytes)
+                        else {
+                            info!(
+                                "Failed to parse consensus signature from deposit request: {deposit_request:?}"
+                            );
+                            continue; // Skip this deposit request
+                        };
+                        if !deposit_request.consensus_pubkey.verify(
+                            &[],
+                            &message,
+                            &consensus_signature,
+                        ) {
+                            #[cfg(debug_assertions)]
+                            {
+                                let gauge: Gauge = Gauge::default();
+                                gauge.set(new_height as i64);
+                                context.register(
+                                    format!(
+                                        "<pubkey>{}</pubkey>_deposit_request_invalid_consensus_sig",
+                                        hex::encode(&deposit_request.consensus_pubkey)
+                                    ),
+                                    "height",
+                                    gauge,
+                                );
+                            }
+                            info!(
+                                "Failed to verify consensus signature from deposit request: {deposit_request:?}"
+                            );
+                            continue; // Skip this deposit request
+                        }
+                        state.push_deposit(deposit_request);
+                    }
+                    ExecutionRequest::Withdrawal(mut withdrawal_request) => {
+                        // Only add the withdrawal request if the validator exists and has sufficient balance
+                        if let Some(mut account) = state
+                            .get_account(&withdrawal_request.validator_pubkey)
+                            .cloned()
+                        {
+                            // If the validator already submitted an exit request, we skip this withdrawal request
+                            if matches!(account.status, ValidatorStatus::SubmittedExitRequest) {
+                                info!(
+                                    "Failed to parse withdrawal request because the validator already submitted a request: {withdrawal_request:?}"
+                                );
+                                continue; // Skip this withdrawal request
+                            }
+
+                            // The balance minus any pending withdrawals have to be larger than the amount of the withdrawal request
+                            if account.balance - account.pending_withdrawal_amount
+                                < withdrawal_request.amount
+                            {
+                                info!(
+                                    "Failed to parse withdrawal request due to insufficient balance: {withdrawal_request:?}"
+                                );
+                                continue; // Skip this withdrawal request
+                            }
+
+                            // The source address must match the validators withdrawal address
+                            if withdrawal_request.source_address != account.withdrawal_credentials {
+                                info!(
+                                    "Failed to parse withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
+                                );
+                                continue; // Skip this withdrawal request
+                            }
+                            // If after this withdrawal the validator balance would be less than the
+                            // minimum stake, then the full validator balance is withdrawn.
+                            if account.balance
+                                - account.pending_withdrawal_amount
+                                - withdrawal_request.amount
+                                < validator_minimum_stake
+                            {
+                                // Check the remaining balance and set the withdrawal amount accordingly
+                                let remaining_balance =
+                                    account.balance - account.pending_withdrawal_amount;
+                                withdrawal_request.amount = remaining_balance;
+                                account.status = ValidatorStatus::SubmittedExitRequest;
+                            }
+
+                            account.pending_withdrawal_amount += withdrawal_request.amount;
+                            state.set_account(withdrawal_request.validator_pubkey, account);
+                            state.push_withdrawal_request(
+                                withdrawal_request.clone(),
+                                new_height + validator_withdrawal_period,
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to parse execution request: {}", e);
+            }
+        }
+    }
+}
+
+async fn process_execution_requests<
+    S: Signer<PublicKey = PublicKey>,
+    V: Variant,
+    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+>(
+    context: &ContextCell<R>,
+    block: &Block<S, V>,
+    new_height: u64,
+    state: &mut ConsensusState,
+    epoch_num_of_blocks: u64,
+    validator_onboarding_limit_per_block: usize,
+    validator_minimum_stake: u64,
+) {
+    if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
+        for _ in 0..validator_onboarding_limit_per_block {
+            if let Some(request) = state.pop_deposit() {
+                let mut validator_balance = 0;
+                let mut account_exists = false;
+                if let Some(mut account) = state
+                    .get_account(request.node_pubkey.as_ref().try_into().unwrap())
+                    .cloned()
+                {
+                    if request.index > account.last_deposit_index {
+                        account.balance += request.amount;
+                        account.last_deposit_index = request.index;
+                        #[allow(unused)]
+                        #[cfg(debug_assertions)]
+                        {
+                            validator_balance = account.balance;
+                        }
+                        account.last_deposit_index = request.index;
+                        validator_balance = account.balance;
+                        state
+                            .set_account(request.node_pubkey.as_ref().try_into().unwrap(), account);
+                        account_exists = true;
+                    }
+                } else {
+                    // Validate the withdrawal credentials format
+                    // Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20 bytes Ethereum address
+                    if request.withdrawal_credentials.len() != 32 {
+                        warn!(
+                            "Invalid withdrawal credentials length: {} bytes, expected 32",
+                            request.withdrawal_credentials.len()
+                        );
+                        continue; // Skip this deposit
+                    }
+                    // Check prefix is 0x01 (Eth1 withdrawal)
+                    if request.withdrawal_credentials[0] != 0x01 {
+                        warn!(
+                            "Invalid withdrawal credentials prefix: 0x{:02x}, expected 0x01",
+                            request.withdrawal_credentials[0]
+                        );
+                        continue; // Skip this deposit
+                    }
+                    // Check 11 zero bytes after the prefix
+                    if !request.withdrawal_credentials[1..12]
+                        .iter()
+                        .all(|&b| b == 0)
+                    {
+                        warn!(
+                            "Invalid withdrawal credentials format: non-zero bytes in positions 1-11"
+                        );
+                        continue; // Skip this deposit
+                    }
+
+                    // Create new ValidatorAccount from DepositRequest
+                    let new_account = ValidatorAccount {
+                        consensus_public_key: request.consensus_pubkey.clone(),
+                        withdrawal_credentials: Address::from_slice(
+                            &request.withdrawal_credentials[12..32],
+                        ), // Take last 20 bytes
+                        balance: request.amount,
+                        pending_withdrawal_amount: 0,
+                        status: ValidatorStatus::Inactive,
+                        last_deposit_index: request.index,
+                    };
+                    state.set_account(
+                        request.node_pubkey.as_ref().try_into().unwrap(),
+                        new_account,
+                    );
+                    validator_balance = request.amount;
+                }
+                if !account_exists && validator_balance >= validator_minimum_stake {
+                    // If the node shuts down, before the account changes are committed,
+                    // then everything should work normally, because the registry is not persisted to disk
+                    state.added_validators.push(request.node_pubkey.clone());
+                }
+                #[cfg(debug_assertions)]
+                {
+                    use commonware_codec::Encode;
+                    let gauge: Gauge = Gauge::default();
+                    gauge.set(validator_balance as i64);
+                    context.register(
+                        format!("<registry>{}</registry><creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
+                                !account_exists && validator_balance >= validator_minimum_stake,
+                                hex::encode(request.withdrawal_credentials), hex::encode(request.node_pubkey.encode())),
+                        "Validator balance",
+                        gauge
+                    );
+                }
+            }
+        }
+    }
+
+    // Remove pending withdrawals that are included in the committed block
+    for withdrawal in &block.payload.payload_inner.withdrawals {
+        let pending_withdrawal = state.pop_withdrawal();
+        // TODO(matthias): these checks should never fail. we have to make sure that these withdrawals are
+        // verified when the block is verified. it is too late when the block is committed.
+        let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
+        assert_eq!(pending_withdrawal.inner, *withdrawal);
+
+        if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned()
+            && account.balance >= withdrawal.amount
+        {
+            // This check should never fail, because we checked the balance when
+            // adding the pending withdrawal to the queue
+            account.balance = account.balance.saturating_sub(withdrawal.amount);
+            account.pending_withdrawal_amount = account
+                .pending_withdrawal_amount
+                .saturating_sub(withdrawal.amount);
+
+            #[cfg(debug_assertions)]
+            {
+                let gauge: Gauge = Gauge::default();
+                gauge.set(account.balance as i64);
+                context.register(
+                    format!(
+                        "<creds>{}</creds><pubkey>{}</pubkey>_withdrawal_validator_balance",
+                        hex::encode(account.withdrawal_credentials),
+                        hex::encode(pending_withdrawal.pubkey)
+                    ),
+                    "Validator balance",
+                    gauge,
+                );
+            }
+
+            // If the remaining balance is 0, remove the validator account from the state.
+            if account.balance == 0 {
+                state.remove_account(&pending_withdrawal.pubkey);
+                state
+                    .removed_validators
+                    .push(PublicKey::decode(&pending_withdrawal.pubkey[..]).unwrap()); // todo(dalton) remove unwrap
+            } else {
+                state.set_account(pending_withdrawal.pubkey, account);
             }
         }
     }
