@@ -5,7 +5,7 @@ use futures::channel::{mpsc, oneshot};
 
 #[allow(clippy::large_enum_variant)]
 pub enum ConsensusStateRequest {
-    GetCheckpoint,
+    GetCheckpoint(Option<u64>),
     GetLatestHeight,
     GetValidatorBalance(PublicKey),
 }
@@ -41,7 +41,7 @@ impl ConsensusStateQuery {
 
     pub async fn get_latest_checkpoint_mut(&mut self) -> Option<Checkpoint> {
         let (tx, rx) = oneshot::channel();
-        let req = ConsensusStateRequest::GetCheckpoint;
+        let req = ConsensusStateRequest::GetCheckpoint(None);
         let _ = self.sender.send((req, tx)).await;
 
         let res = rx
@@ -55,7 +55,21 @@ impl ConsensusStateQuery {
 
     pub async fn get_latest_checkpoint(&self) -> Option<Checkpoint> {
         let (tx, rx) = oneshot::channel();
-        let req = ConsensusStateRequest::GetCheckpoint;
+        let req = ConsensusStateRequest::GetCheckpoint(None);
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::Checkpoint(maybe_checkpoint) = res else {
+            unreachable!("request and response variants must match");
+        };
+        maybe_checkpoint
+    }
+
+    pub async fn get_checkpoint(&self, epoch: u64) -> Option<Checkpoint> {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetCheckpoint(Some(epoch));
         let _ = self.sender.clone().send((req, tx)).await;
 
         let res = rx
