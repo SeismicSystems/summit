@@ -13,5 +13,7 @@ pub struct ApplicationConfig<C: EngineClient> {
 
     pub genesis_hash: [u8; 32],
 
+    pub epoch_num_of_blocks: u64,
+
     pub cancellation_token: CancellationToken,
 }

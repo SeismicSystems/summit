@@ -31,7 +31,7 @@ use tracing::{debug, error, info, warn};
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
 use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
-use summit_types::{Block, Digest, EngineClient};
+use summit_types::{Block, Digest, EngineClient, utils};
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
 struct ChannelClosedFuture<'a, T> {
@@ -68,6 +68,7 @@ pub struct Actor<
     engine_client: C,
     built_block: Arc<Mutex<Option<Block<K, V>>>>,
     genesis_hash: [u8; 32],
+    epoch_num_of_blocks: u64,
     cancellation_token: CancellationToken,
     _scheme_marker: PhantomData<S>,
     _key_marker: PhantomData<P>,
@@ -96,6 +97,7 @@ impl<
                 engine_client: cfg.engine_client,
                 built_block: Arc::new(Mutex::new(None)),
                 genesis_hash,
+                epoch_num_of_blocks: cfg.epoch_num_of_blocks,
                 cancellation_token: cfg.cancellation_token,
                 _scheme_marker: PhantomData,
                 _key_marker: PhantomData,
@@ -239,22 +241,35 @@ impl<
                                         .subscribe(parent_round, parent.1)
                                         .await,
                                 )
-                                //Either::Right(syncer.subscribe(None, parent.1).await)
                             };
                             let block_request = syncer.subscribe(Some(round), payload).await;
 
                             // Wait for the blocks to be available or the request to be cancelled in a separate task (to
                             // continue processing other messages)
-
                             self.context.with_label("verify").spawn({
                                 let mut syncer = syncer.clone();
+                                let mut finalizer_clone = finalizer.clone();
                                 move |_| async move {
                                     let requester = try_join(parent_request, block_request);
                                     select! {
                                         result = requester => {
                                             let (parent, block) = result.unwrap();
 
-                                            if handle_verify(&block, parent) {
+                                            // Request the current epoch
+                                            #[cfg(feature = "prom")]
+                                            let aux_data_start = std::time::Instant::now();
+                                            let aux_data = finalizer_clone
+                                                .get_aux_data(parent.height() + 1)
+                                                .await
+                                                .await
+                                                .expect("Finalizer dropped");
+                                            #[cfg(feature = "prom")]
+                                            {
+                                                let aux_data_duration = aux_data_start.elapsed().as_millis() as f64;
+                                                histogram!("handle_verify_aux_data_duration_millis").record(aux_data_duration);
+                                            }
+
+                                            if handle_verify(&block, parent, self.epoch_num_of_blocks, aux_data.epoch) {
                                                 // persist valid block
                                                 syncer.verified(round, block).await;
 
@@ -358,9 +373,18 @@ impl<
             // epoch to shut down Simplex. While Simplex is being shutdown, it will still continue to produce blocks.
             return Err(anyhow!(
                 "Aborting block proposal for epoch {}. Current epoch is {}",
+                round.epoch().get(),
                 aux_data.epoch,
-                aux_data.epoch
             ));
+        }
+
+        // Special case: If the parent block is the last block in the epoch,
+        // re-propose it as to not produce any blocks that will be cut out
+        // by the epoch transition.
+        let last_in_epoch = utils::last_block_in_epoch(self.epoch_num_of_blocks, aux_data.epoch);
+        if parent.height() == last_in_epoch {
+            debug!(round = ?round, digest = ?parent.digest(), "re-proposed parent block at epoch boundary");
+            return Ok(parent);
         }
 
         let pending_withdrawals = aux_data.withdrawals;
@@ -466,7 +490,18 @@ impl<
     }
 }
 
-fn handle_verify<K: Signer, V: Variant>(block: &Block<K, V>, parent: Block<K, V>) -> bool {
+fn handle_verify<K: Signer, V: Variant>(
+    block: &Block<K, V>,
+    parent: Block<K, V>,
+    epoch_length: u64,
+    epoch: u64,
+) -> bool {
+    //// You can only re-propose the same block if it's the last height in the epoch.
+    if parent.digest() == block.digest() {
+        let last_in_epoch = utils::last_block_in_epoch(epoch_length, epoch);
+        return block.height() == last_in_epoch;
+    }
+
     if block.parent() != parent.digest() {
         return false;
     }

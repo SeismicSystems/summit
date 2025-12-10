@@ -75,9 +75,28 @@ impl<S: Scheme, B: ConsensusBlock + Committable> FinalizerMailbox<S, B> {
         receiver
     }
 
-    pub async fn get_latest_checkpoint(&mut self) -> Option<Checkpoint> {
+    pub async fn get_latest_checkpoint(&mut self) -> (Option<Checkpoint>, u64) {
         let (response, rx) = oneshot::channel();
-        let request = ConsensusStateRequest::GetCheckpoint;
+        let request = ConsensusStateRequest::GetLatestCheckpoint;
+        let _ = self
+            .sender
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+
+        let ConsensusStateResponse::LatestCheckpoint(maybe_checkpoint) = res else {
+            unreachable!("request and response variants must match");
+        };
+
+        maybe_checkpoint
+    }
+
+    pub async fn get_checkpoint(&mut self, epoch: u64) -> Option<Checkpoint> {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetCheckpoint(epoch);
         let _ = self
             .sender
             .send(FinalizerMessage::QueryState { request, response })

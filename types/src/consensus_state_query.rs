@@ -5,12 +5,14 @@ use futures::channel::{mpsc, oneshot};
 
 #[allow(clippy::large_enum_variant)]
 pub enum ConsensusStateRequest {
-    GetCheckpoint,
+    GetLatestCheckpoint,
+    GetCheckpoint(u64),
     GetLatestHeight,
     GetValidatorBalance(PublicKey),
 }
 
 pub enum ConsensusStateResponse {
+    LatestCheckpoint((Option<Checkpoint>, u64)), // (Checkpoint, Epoch#)
     Checkpoint(Option<Checkpoint>),
     LatestHeight(u64),
     ValidatorBalance(Option<u64>),
@@ -39,23 +41,37 @@ impl ConsensusStateQuery {
         (ConsensusStateQuery { sender }, receiver)
     }
 
-    pub async fn get_latest_checkpoint_mut(&mut self) -> Option<Checkpoint> {
+    pub async fn get_latest_checkpoint_mut(&mut self) -> (Option<Checkpoint>, u64) {
         let (tx, rx) = oneshot::channel();
-        let req = ConsensusStateRequest::GetCheckpoint;
+        let req = ConsensusStateRequest::GetLatestCheckpoint;
         let _ = self.sender.send((req, tx)).await;
 
         let res = rx
             .await
             .expect("consensus state query response sender dropped");
-        let ConsensusStateResponse::Checkpoint(maybe_checkpoint) = res else {
+        let ConsensusStateResponse::LatestCheckpoint(maybe_checkpoint) = res else {
             unreachable!("request and response variants must match");
         };
         maybe_checkpoint
     }
 
-    pub async fn get_latest_checkpoint(&self) -> Option<Checkpoint> {
+    pub async fn get_latest_checkpoint(&self) -> (Option<Checkpoint>, u64) {
         let (tx, rx) = oneshot::channel();
-        let req = ConsensusStateRequest::GetCheckpoint;
+        let req = ConsensusStateRequest::GetLatestCheckpoint;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::LatestCheckpoint(maybe_checkpoint) = res else {
+            unreachable!("request and response variants must match");
+        };
+        maybe_checkpoint
+    }
+
+    pub async fn get_checkpoint(&self, epoch: u64) -> Option<Checkpoint> {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetCheckpoint(epoch);
         let _ = self.sender.clone().send((req, tx)).await;
 
         let res = rx

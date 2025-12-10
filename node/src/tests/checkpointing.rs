@@ -188,6 +188,7 @@ fn test_checkpoint_created() {
             .clone()
             .get_latest_checkpoint()
             .await
+            .0
             .expect("failed to query checkpoint");
         let _consensus_state =
             ConsensusState::try_from(&checkpoint).expect("failed to parse consensus state");
@@ -390,6 +391,7 @@ fn test_previous_header_hash_matches() {
             .clone()
             .get_latest_checkpoint()
             .await
+            .0
             .expect("failed to query checkpoint");
         let _consensus_state =
             ConsensusState::try_from(&checkpoint).expect("failed to parse consensus state");
@@ -646,7 +648,12 @@ fn test_node_joins_later_with_checkpoint() {
         // Wait for the validators to checkpoint
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
         let checkpoint = loop {
-            if let Some(checkpoint) = consensus_state_query.clone().get_latest_checkpoint().await {
+            if let Some(checkpoint) = consensus_state_query
+                .clone()
+                .get_latest_checkpoint()
+                .await
+                .0
+            {
                 break checkpoint;
             }
             context.sleep(Duration::from_secs(1)).await;
@@ -893,7 +900,12 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         // Wait for the validators to checkpoint
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
         let checkpoint = loop {
-            if let Some(checkpoint) = consensus_state_query.clone().get_latest_checkpoint().await {
+            if let Some(checkpoint) = consensus_state_query
+                .clone()
+                .get_latest_checkpoint()
+                .await
+                .0
+            {
                 break checkpoint;
             }
             context.sleep(Duration::from_secs(1)).await;

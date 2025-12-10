@@ -194,7 +194,7 @@ impl RpcRoutes {
             .clone()
             .get_latest_checkpoint()
             .await;
-        let Some(checkpoint) = maybe_checkpoint else {
+        let (Some(checkpoint), _) = maybe_checkpoint else {
             return Err("checkpoint not found".into());
         };
 

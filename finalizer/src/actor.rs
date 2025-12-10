@@ -437,7 +437,9 @@ impl<
             // block. So if a node checkpoints, it will start at the height of the penultimate block.
             // TODO(matthias): verify this
             if let Some(checkpoint) = &self.state.pending_checkpoint {
-                self.db.store_finalized_checkpoint(checkpoint).await;
+                self.db
+                    .store_finalized_checkpoint(self.state.epoch, checkpoint)
+                    .await;
             }
 
             // Increment epoch
@@ -870,8 +872,12 @@ impl<
         sender: oneshot::Sender<ConsensusStateResponse>,
     ) {
         match consensus_state_request {
-            ConsensusStateRequest::GetCheckpoint => {
-                let checkpoint = self.db.get_finalized_checkpoint().await;
+            ConsensusStateRequest::GetLatestCheckpoint => {
+                let checkpoint = self.db.get_latest_finalized_checkpoint().await;
+                let _ = sender.send(ConsensusStateResponse::LatestCheckpoint(checkpoint));
+            }
+            ConsensusStateRequest::GetCheckpoint(epoch) => {
+                let checkpoint = self.db.get_finalized_checkpoint(epoch).await;
                 let _ = sender.send(ConsensusStateResponse::Checkpoint(checkpoint));
             }
             ConsensusStateRequest::GetLatestHeight => {
