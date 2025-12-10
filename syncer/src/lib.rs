@@ -76,10 +76,11 @@ use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_consensus::simplex::types::Finalization;
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 
-/// An update reported to the application, either a new finalized tip or a finalized block.
+/// An update reported to the application: finalized tips, finalized blocks, or notarized blocks.
 ///
 /// Finalized tips are reported as soon as known, whether or not we hold all blocks up to that height.
 /// Finalized blocks are reported to the application in monotonically increasing order (no gaps permitted).
+/// Notarized blocks are sent without ordering guarantees to enable execution before finalization.
 #[derive(Clone, Debug)]
 pub enum Update<B: Block, S: Scheme, A: Acknowledgement = Exact> {
     /// A new finalized tip.
@@ -92,7 +93,12 @@ pub enum Update<B: Block, S: Scheme, A: Acknowledgement = Exact> {
     ///
     /// Because the [Acknowledgement] is clonable, the application can pass [Update] to multiple consumers
     /// (and marshal will only consider the block delivered once all consumers have acknowledged it).
-    Block((B, Option<Finalization<S, B::Commitment>>), A),
+    FinalizedBlock((B, Option<Finalization<S, B::Commitment>>), A),
+    /// A notarized (but not yet finalized) block.
+    ///
+    /// These blocks do not require acknowledgement and may arrive out of order. They enable proposers
+    /// to build on notarized blocks without waiting for finalization.
+    NotarizedBlock(B),
 }
 
 #[cfg(test)]

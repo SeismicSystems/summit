@@ -207,8 +207,11 @@ impl<
                                 Update::Tip(_height, _digest) => {
                                     // I don't think we need this
                                 }
-                                Update::Block((block, finalization), ack_tx) => {
+                                Update::FinalizedBlock((block, finalization), ack_tx) => {
                                     self.execute_finalized_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
+                                }
+                                Update::NotarizedBlock(block) => {
+                                    // TODO: implement handle_notarized_block
                                 }
                             }
                         },
@@ -272,6 +275,10 @@ impl<
             last_committed_timestamp,
         )
         .await;
+
+        self.engine_client
+            .commit_hash(self.canonical_state.forkchoice)
+            .await;
 
         let new_height = block.height();
         self.height_notify_up_to(new_height);
@@ -454,6 +461,22 @@ impl<
         height: u64,
         sender: oneshot::Sender<BlockAuxData>,
     ) {
+        // We're building a block at `height`, so we need state from parent at `height - 1`
+        let parent_height = height - 1;
+
+        // Check if there are any fork states at the parent height
+        // If so, choose the most recently arrived one; otherwise use canonical state
+        let state = if let Some(forks_at_parent) = self.fork_states.get(&parent_height) {
+            // Find the fork with the most recent arrival time
+            let most_recent_fork = forks_at_parent
+                .values()
+                .max_by_key(|fork| fork.arrived_at)
+                .expect("forks map should not be empty");
+            &most_recent_fork.consensus_state
+        } else {
+            &self.canonical_state
+        };
+
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
@@ -477,9 +500,8 @@ impl<
                 };
 
             // Only submit withdrawals at the end of an epoch
-            let ready_withdrawals = self
-                .state
-                .get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
+            let ready_withdrawals =
+                state.get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
             BlockAuxData {
                 epoch: self.canonical_state.epoch,
                 withdrawals: ready_withdrawals,
@@ -526,7 +548,7 @@ impl<
                 key_bytes.copy_from_slice(&public_key);
 
                 let balance = self
-                    .state
+                    .canonical_state
                     .validator_accounts
                     .get(&key_bytes)
                     .map(|account| account.balance);
@@ -572,7 +594,7 @@ async fn execute_block<
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
-    let payload_status = engine_client.check_payload(&block).await;
+    let payload_status = engine_client.check_payload(block).await;
     let new_height = block.height();
 
     #[cfg(feature = "prom")]
@@ -630,7 +652,7 @@ async fn execute_block<
         let parse_requests_start = Instant::now();
         parse_execution_requests(
             context,
-            &block,
+            block,
             new_height,
             state,
             protocol_version_digest,
@@ -650,7 +672,7 @@ async fn execute_block<
         let process_requests_start = Instant::now();
         process_execution_requests(
             context,
-            &block,
+            block,
             new_height,
             state,
             epoch_num_of_blocks,
@@ -688,7 +710,7 @@ async fn execute_block<
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
 
-        let checkpoint = Checkpoint::new(&state);
+        let checkpoint = Checkpoint::new(state);
         state.pending_checkpoint = Some(checkpoint);
 
         #[cfg(feature = "prom")]
