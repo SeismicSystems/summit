@@ -209,17 +209,13 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         }
     }
 
-    pub async fn get_latest_finalized_checkpoint(&self) -> Option<Checkpoint> {
-        // Check if we have any checkpoints stored by checking if the tracker key exists
-        let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
-        self.store
-            .get(&key)
-            .await
-            .expect("failed to get latest checkpoint epoch")?;
-
+    pub async fn get_latest_finalized_checkpoint(&self) -> (Option<Checkpoint>, u64) {
         // Get the latest checkpoint epoch (could be 0, which is valid)
         let latest_epoch = self.get_latest_checkpoint_epoch().await;
-        self.get_finalized_checkpoint(latest_epoch).await
+
+        let checkpoint = self.get_finalized_checkpoint(latest_epoch).await;
+
+        (checkpoint, latest_epoch)
     }
 
     // FinalizedHeader operations
@@ -694,7 +690,7 @@ mod tests {
 
             // Test that no finalized checkpoint exists initially
             assert!(db.get_finalized_checkpoint(0).await.is_none());
-            assert!(db.get_latest_finalized_checkpoint().await.is_none());
+            assert!(db.get_latest_finalized_checkpoint().await.0.is_none());
 
             // Store finalized checkpoint for epoch 0
             db.store_finalized_checkpoint(0, &finalized_checkpoint1)
@@ -709,7 +705,7 @@ mod tests {
             assert_eq!(retrieved_finalized.digest, finalized_checkpoint1.digest);
 
             // Test that latest checkpoint returns epoch 0 checkpoint
-            let latest = db.get_latest_finalized_checkpoint().await.unwrap();
+            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, finalized_checkpoint1.digest);
 
             // Store checkpoint for epoch 1
@@ -725,7 +721,7 @@ mod tests {
             assert_ne!(checkpoint0.digest, checkpoint1.digest);
 
             // Latest should now return epoch 1 checkpoint
-            let latest = db.get_latest_finalized_checkpoint().await.unwrap();
+            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, finalized_checkpoint2.digest);
         });
     }
@@ -757,7 +753,7 @@ mod tests {
             db.commit().await;
 
             // Latest should be epoch 5
-            let latest = db.get_latest_finalized_checkpoint().await.unwrap();
+            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, checkpoint5.digest);
 
             // Store epoch 3 (older than current latest)
@@ -765,7 +761,7 @@ mod tests {
             db.commit().await;
 
             // Latest should still be epoch 5, not 3
-            let latest = db.get_latest_finalized_checkpoint().await.unwrap();
+            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, checkpoint5.digest);
 
             // Store epoch 7 (newer than current latest)
@@ -773,7 +769,7 @@ mod tests {
             db.commit().await;
 
             // Latest should now be epoch 7
-            let latest = db.get_latest_finalized_checkpoint().await.unwrap();
+            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, checkpoint7.digest);
 
             // All checkpoints should still be individually accessible
@@ -820,7 +816,7 @@ mod tests {
             assert_ne!(retrieved.digest, checkpoint1.digest);
 
             // Latest should still point to epoch 2
-            let latest = db.get_latest_finalized_checkpoint().await.unwrap();
+            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, checkpoint2.digest);
         });
     }
@@ -870,8 +866,9 @@ mod tests {
             assert!(db.get_finalized_checkpoint(4).await.is_none());
 
             // Latest should return epoch 5 (highest stored epoch)
-            let latest = db.get_latest_finalized_checkpoint().await.unwrap();
-            assert_eq!(latest.digest, checkpoint5.digest);
+            let (latest, epoch) = db.get_latest_finalized_checkpoint().await;
+            assert_eq!(latest.unwrap().digest, checkpoint5.digest);
+            assert_eq!(epoch, 5u64);
         });
     }
 }

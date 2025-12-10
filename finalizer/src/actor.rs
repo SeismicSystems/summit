@@ -872,11 +872,12 @@ impl<
         sender: oneshot::Sender<ConsensusStateResponse>,
     ) {
         match consensus_state_request {
+            ConsensusStateRequest::GetLatestCheckpoint => {
+                let checkpoint = self.db.get_latest_finalized_checkpoint().await;
+                let _ = sender.send(ConsensusStateResponse::LatestCheckpoint(checkpoint));
+            }
             ConsensusStateRequest::GetCheckpoint(epoch) => {
-                let checkpoint = match epoch {
-                    Some(epoch) => self.db.get_finalized_checkpoint(epoch).await,
-                    None => self.db.get_latest_finalized_checkpoint().await,
-                };
+                let checkpoint = self.db.get_finalized_checkpoint(epoch).await;
                 let _ = sender.send(ConsensusStateResponse::Checkpoint(checkpoint));
             }
             ConsensusStateRequest::GetLatestHeight => {

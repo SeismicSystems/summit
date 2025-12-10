@@ -133,7 +133,12 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
         // Wait for the validators to checkpoint
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
         let _checkpoint = loop {
-            if let Some(checkpoint) = consensus_state_query.clone().get_latest_checkpoint().await {
+            if let Some(checkpoint) = consensus_state_query
+                .clone()
+                .get_latest_checkpoint()
+                .await
+                .0
+            {
                 break checkpoint;
             }
             context.sleep(Duration::from_secs(1)).await;
@@ -367,7 +372,12 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         // Wait for the validators to checkpoint
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
         let _checkpoint = loop {
-            if let Some(checkpoint) = consensus_state_query.clone().get_latest_checkpoint().await {
+            if let Some(checkpoint) = consensus_state_query
+                .clone()
+                .get_latest_checkpoint()
+                .await
+                .0
+            {
                 break checkpoint;
             }
             context.sleep(Duration::from_secs(1)).await;
