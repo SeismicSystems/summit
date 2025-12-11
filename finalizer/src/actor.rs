@@ -310,25 +310,23 @@ impl<
         }
 
         // Prune fork states at or below finalized height
-        let pruned_forks = self.fork_states.len();
+        let total_forks = self.fork_states.len();
         self.fork_states.retain(|&h, _| h > height);
         let remaining_forks = self.fork_states.len();
-        if pruned_forks > remaining_forks {
-            debug!(
-                height,
-                pruned = pruned_forks - remaining_forks,
-                "pruned fork states"
-            );
+        let num_pruned_forks = total_forks - remaining_forks;
+        if num_pruned_forks > 0 {
+            debug!(height, pruned = num_pruned_forks, "pruned fork states");
         }
 
         // Prune orphaned blocks at or below finalized height
-        let pruned_orphans = self.orphaned_blocks.len();
+        let total_orphans = self.orphaned_blocks.len();
         self.orphaned_blocks.retain(|&h, _| h > height);
         let remaining_orphans = self.orphaned_blocks.len();
-        if pruned_orphans > remaining_orphans {
+        let num_pruned_orphans = total_orphans - remaining_orphans;
+        if num_pruned_orphans > 0 {
             debug!(
                 height,
-                pruned = pruned_orphans - remaining_orphans,
+                pruned = num_pruned_orphans,
                 "pruned orphaned blocks"
             );
         }
@@ -530,8 +528,10 @@ impl<
             // Find and clone parent state: either canonical (if parent was finalized) or a fork state
             let parent_state = if height == self.canonical_state.latest_height + 1 {
                 // Parent should be the canonical block (was finalized)
-                // Verify parent digest matches canonical head
-                if parent_digest != self.canonical_state.head_digest {
+                // Verify parent digest matches canonical head (skip check at genesis)
+                if self.canonical_state.latest_height > 0
+                    && parent_digest != self.canonical_state.head_digest
+                {
                     // Block is on a dead fork, discard it
                     debug!(
                         height,
@@ -902,8 +902,7 @@ async fn parse_execution_requests<
     V: Variant,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
-    #[allow(unused)]
-    context: &ContextCell<R>,
+    #[allow(unused)] context: &ContextCell<R>,
     block: &Block<S, V>,
     new_height: u64,
     state: &mut ConsensusState,
@@ -1050,8 +1049,7 @@ async fn process_execution_requests<
     V: Variant,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
-    #[allow(unused)]
-    context: &ContextCell<R>,
+    #[allow(unused)] context: &ContextCell<R>,
     block: &Block<S, V>,
     new_height: u64,
     state: &mut ConsensusState,
