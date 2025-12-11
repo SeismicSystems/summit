@@ -902,6 +902,7 @@ async fn parse_execution_requests<
     V: Variant,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
+    #[allow(unused)]
     context: &ContextCell<R>,
     block: &Block<S, V>,
     new_height: u64,
@@ -1049,6 +1050,7 @@ async fn process_execution_requests<
     V: Variant,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
+    #[allow(unused)]
     context: &ContextCell<R>,
     block: &Block<S, V>,
     new_height: u64,
