@@ -48,7 +48,6 @@ const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 struct ForkState {
     block_digest: Digest,
     consensus_state: ConsensusState,
-    arrived_at: Instant,
 }
 
 pub struct Finalizer<
@@ -59,7 +58,7 @@ pub struct Finalizer<
     V: Variant,
 > {
     mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>>,
-    pending_height_notifys: BTreeMap<u64, Vec<oneshot::Sender<()>>>,
+    pending_height_notifys: BTreeMap<(u64, Digest), Vec<oneshot::Sender<()>>>,
     context: ContextCell<R>,
     engine_client: C,
     db: FinalizerState<R, V>,
@@ -219,16 +218,27 @@ impl<
                                 }
                             }
                         },
-                        FinalizerMessage::NotifyAtHeight { height, response } => {
-                            let last_indexed = self.canonical_state.get_latest_height();
-                            if last_indexed >= height {
+                        FinalizerMessage::NotifyAtHeight { height, block_digest, response } => {
+                            // Check if this specific block has been executed (either canonical or fork)
+                            let executed = if self.canonical_state.get_latest_height() >= height {
+                                // Block could be canonical - we don't track canonical block digests per height,
+                                // so we assume if canonical height >= height, the block is executed
+                                true
+                            } else {
+                                // Check if it exists in fork states
+                                self.fork_states.get(&height)
+                                    .map(|forks| forks.contains_key(&block_digest))
+                                    .unwrap_or(false)
+                            };
+
+                            if executed {
                                 let _ = response.send(());
                                 continue;
                             }
-                            self.pending_height_notifys.entry(height).or_default().push(response);
+                            self.pending_height_notifys.entry((height, block_digest)).or_default().push(response);
                         },
-                        FinalizerMessage::GetAuxData { height, response } => {
-                            self.handle_aux_data_mailbox(height, response).await;
+                        FinalizerMessage::GetAuxData { height, parent_digest, response } => {
+                            self.handle_aux_data_mailbox(height, parent_digest, response).await;
                         },
                         FinalizerMessage::GetEpochGenesisHash { epoch, response } => {
                             // TODO(matthias): verify that this can never happen
@@ -348,7 +358,7 @@ impl<
         }
 
         let new_height = block.height();
-        self.height_notify_up_to(new_height);
+        self.height_notify_up_to(new_height, block_digest);
         ack_tx.acknowledge();
         info!(new_height, self.canonical_state.epoch, "executed block");
 
@@ -596,13 +606,21 @@ impl<
                 block_digest,
                 ForkState {
                     block_digest,
-                    consensus_state: fork_state,
-                    arrived_at: Instant::now(),
+                    consensus_state: fork_state.clone(),
                 },
             );
 
+            // Commit this fork to reth so validators can build/verify blocks on top of it
+            // Keep the canonical finalized chain unchanged by using canonical finalized hash
+            let fork_forkchoice = ForkchoiceState {
+                head_block_hash: fork_state.forkchoice.head_block_hash,
+                safe_block_hash: self.canonical_state.forkchoice.finalized_block_hash,
+                finalized_block_hash: self.canonical_state.forkchoice.finalized_block_hash,
+            };
+            self.engine_client.commit_hash(fork_forkchoice).await;
+
             info!(height, ?block_digest, "executed notarized block into fork");
-            self.height_notify_up_to(height);
+            self.height_notify_up_to(height, block_digest);
 
             // Add orphaned children to the processing queue
             if let Some(children) = self
@@ -620,15 +638,9 @@ impl<
         }
     }
 
-    fn height_notify_up_to(&mut self, current_height: u64) {
-        // Split off all entries <= current_height
-        let to_notify = self.pending_height_notifys.split_off(&(current_height + 1));
-        // The original map now contains only entries > current_height
-        // Swap them back
-        let remaining = std::mem::replace(&mut self.pending_height_notifys, to_notify);
-
-        // Notify all the split-off entries
-        for (_, senders) in remaining {
+    fn height_notify_up_to(&mut self, height: u64, block_digest: Digest) {
+        // Notify only waiters for this specific (height, digest) pair
+        if let Some(senders) = self.pending_height_notifys.remove(&(height, block_digest)) {
             for sender in senders {
                 let _ = sender.send(()); // Ignore if receiver dropped
             }
@@ -638,21 +650,21 @@ impl<
     async fn handle_aux_data_mailbox(
         &mut self,
         height: u64,
+        parent_digest: Digest,
         sender: oneshot::Sender<BlockAuxData>,
     ) {
         // We're building a block at `height`, so we need state from parent at `height - 1`
         let parent_height = height - 1;
 
-        // Check if there are any fork states at the parent height
-        // If so, choose the most recently arrived one; otherwise use canonical state
-        let state = if let Some(forks_at_parent) = self.fork_states.get(&parent_height) {
-            // Find the fork with the most recent arrival time
-            let most_recent_fork = forks_at_parent
-                .values()
-                .max_by_key(|fork| fork.arrived_at)
-                .expect("forks map should not be empty");
-            &most_recent_fork.consensus_state
+        // Look up the specific parent block's state
+        let state = if let Some(fork_state) = self
+            .fork_states
+            .get(&parent_height)
+            .and_then(|forks| forks.get(&parent_digest))
+        {
+            &fork_state.consensus_state
         } else {
+            // If not in forks, it must be canonical (or parent height = 0)
             &self.canonical_state
         };
 
@@ -661,8 +673,7 @@ impl<
         // The proposed block will contain the checkpoint that was saved at the previous height.
         let aux_data = if is_last_block_of_epoch(self.epoch_num_of_blocks, height) {
             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
-            let checkpoint_hash = if let Some(checkpoint) = &self.canonical_state.pending_checkpoint
-            {
+            let checkpoint_hash = if let Some(checkpoint) = &state.pending_checkpoint {
                 checkpoint.digest
             } else {
                 unreachable!("pending checkpoint was calculated at the previous height")
@@ -682,23 +693,23 @@ impl<
             let ready_withdrawals =
                 state.get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
             BlockAuxData {
-                epoch: self.canonical_state.epoch,
+                epoch: state.epoch,
                 withdrawals: ready_withdrawals,
                 checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
-                added_validators: self.canonical_state.added_validators.clone(),
-                removed_validators: self.canonical_state.removed_validators.clone(),
-                forkchoice: self.canonical_state.forkchoice,
+                added_validators: state.added_validators.clone(),
+                removed_validators: state.removed_validators.clone(),
+                forkchoice: state.forkchoice,
             }
         } else {
             BlockAuxData {
-                epoch: self.canonical_state.epoch,
+                epoch: state.epoch,
                 withdrawals: vec![],
                 checkpoint_hash: None,
                 header_hash: [0; 32].into(),
                 added_validators: vec![],
                 removed_validators: vec![],
-                forkchoice: self.canonical_state.forkchoice,
+                forkchoice: state.forkchoice,
             }
         };
         let _ = sender.send(aux_data);
