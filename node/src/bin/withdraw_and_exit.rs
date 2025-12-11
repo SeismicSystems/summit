@@ -382,6 +382,7 @@ fn get_node_flags(node: usize) -> RunFlags {
     let path = format!("testnet/node{node}/");
 
     RunFlags {
+        archive_mode: false,
         key_store_path: path.clone(),
         store_path: format!("{path}db"),
         port: (26600 + (node * 10)) as u16,
@@ -396,6 +397,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         #[cfg(any(feature = "base-bench", feature = "bench"))]
         bench_block_dir: None,
         checkpoint_path: None,
+        checkpoint_or_default: None,
         ip: None,
     }
 }
