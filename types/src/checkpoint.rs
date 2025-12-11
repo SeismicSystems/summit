@@ -130,7 +130,7 @@ mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use commonware_codec::DecodeExt;
-    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
+    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381, sha256};
     use ssz::{Decode, Encode};
     use std::collections::{HashMap, VecDeque};
 
@@ -149,6 +149,7 @@ mod tests {
             epoch: 0,
             view: 0,
             latest_height: 10,
+            head_digest: commonware_cryptography::sha256::Digest([0u8; 32]),
             next_withdrawal_index: 100,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
@@ -254,6 +255,7 @@ mod tests {
             epoch: 0,
             view: 0,
             latest_height: 1000,
+            head_digest: sha256::Digest([0u8; 32]),
             next_withdrawal_index: 200,
             deposit_queue,
             withdrawal_queue,
@@ -289,6 +291,7 @@ mod tests {
             epoch: 0,
             view: 0,
             latest_height: 42,
+            head_digest: sha256::Digest([0u8; 32]),
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
@@ -401,6 +404,7 @@ mod tests {
             epoch: 0,
             view: 0,
             latest_height: 2000,
+            head_digest: sha256::Digest([0u8; 32]),
             next_withdrawal_index: 300,
             deposit_queue,
             withdrawal_queue,
@@ -441,6 +445,7 @@ mod tests {
             epoch: 0,
             view: 0,
             latest_height: 42,
+            head_digest: sha256::Digest([0u8; 32]),
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
@@ -487,6 +492,7 @@ mod tests {
             epoch: 0,
             view: 0,
             latest_height: 42,
+            head_digest: sha256::Digest([0u8; 32]),
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
@@ -529,6 +535,7 @@ mod tests {
             epoch: 0,
             view: 0,
             latest_height: 42,
+            head_digest: sha256::Digest([0u8; 32]),
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
@@ -612,6 +619,7 @@ mod tests {
             epoch: 0,
             view: 0,
             latest_height: 1000,
+            head_digest: sha256::Digest([0u8; 32]),
             next_withdrawal_index: 200,
             deposit_queue,
             withdrawal_queue,
