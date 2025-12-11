@@ -448,6 +448,18 @@ impl<
                 }
             }
 
+            if self.archive_mode {
+                // Should always be there
+                if let Some(checkpoint) = &self.canonical_state.pending_checkpoint {
+                    if let Err(e) =
+                        backup_with_enclave(self.canonical_state.epoch, checkpoint.clone())
+                    {
+                        // This shouldnt be critical but it should be logged
+                        error!("Unable to backup with enclave: {}", e);
+                    }
+                }
+            }
+
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
             // This pending checkpoint should always exist, because it was created at the previous height.
@@ -459,15 +471,6 @@ impl<
                 self.db
                     .store_finalized_checkpoint(self.canonical_state.epoch, checkpoint)
                     .await;
-
-                if self.archive_mode {
-                    if let Err(e) =
-                        backup_with_enclave(self.canonical_state.epoch, checkpoint.clone())
-                    {
-                        // This shouldnt be critical but it should be logged
-                        error!("Unable to backup with enclave: {}", e);
-                    }
-                }
             }
 
             // Increment epoch
