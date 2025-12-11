@@ -426,7 +426,8 @@ where
                             if let Some(block) = self.find_block(&mut buffer, commitment).await {
                                 // If found, persist the block and send to application
                                 self.cache_block(round, commitment, block.clone()).await;
-                                application.report(Update::NotarizedBlock(block)).await;
+                                application.report(Update::NotarizedBlock(block.clone())).await;
+                                self.notify_subscribers(commitment, &block).await;
                             } else {
                                 debug!(?round, "notarized block missing");
                                 resolver.fetch(Request::<B>::Notarized { round }).await;
@@ -753,8 +754,9 @@ where
                                     }
 
                                     // Cache the notarization and block
-                                    self.cache_block(round, commitment, block).await;
+                                    self.cache_block(round, commitment, block.clone()).await;
                                     self.cache.put_notarization(round, commitment, notarization).await;
+                                    self.notify_subscribers(commitment, &block).await;
                                 },
                             }
                         },

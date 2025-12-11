@@ -7,7 +7,7 @@ use futures::{
 };
 use summit_syncer::Update;
 use summit_types::{
-    Block, BlockAuxData, PublicKey,
+    Block, BlockAuxData, Digest, PublicKey,
     checkpoint::Checkpoint,
     consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse},
 };
@@ -16,10 +16,12 @@ use summit_types::{
 pub enum FinalizerMessage<S: Scheme, B: ConsensusBlock + Committable = Block> {
     NotifyAtHeight {
         height: u64,
+        block_digest: Digest,
         response: oneshot::Sender<()>,
     },
     GetAuxData {
         height: u64,
+        parent_digest: Digest,
         response: oneshot::Sender<BlockAuxData>,
     },
     GetEpochGenesisHash {
@@ -45,20 +47,36 @@ impl<S: Scheme, B: ConsensusBlock + Committable> FinalizerMailbox<S, B> {
         Self { sender }
     }
 
-    pub async fn notify_at_height(&mut self, height: u64) -> oneshot::Receiver<()> {
+    pub async fn notify_at_height(
+        &mut self,
+        height: u64,
+        block_digest: Digest,
+    ) -> oneshot::Receiver<()> {
         let (response, receiver) = oneshot::channel();
         self.sender
-            .send(FinalizerMessage::NotifyAtHeight { height, response })
+            .send(FinalizerMessage::NotifyAtHeight {
+                height,
+                block_digest,
+                response,
+            })
             .await
             .expect("Unable to send to main Finalizer loop");
 
         receiver
     }
 
-    pub async fn get_aux_data(&mut self, height: u64) -> oneshot::Receiver<BlockAuxData> {
+    pub async fn get_aux_data(
+        &mut self,
+        height: u64,
+        parent_digest: Digest,
+    ) -> oneshot::Receiver<BlockAuxData> {
         let (response, receiver) = oneshot::channel();
         self.sender
-            .send(FinalizerMessage::GetAuxData { height, response })
+            .send(FinalizerMessage::GetAuxData {
+                height,
+                parent_digest,
+                response,
+            })
             .await
             .expect("Unable to send to main Finalizer loop");
 
