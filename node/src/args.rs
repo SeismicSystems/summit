@@ -124,9 +124,18 @@ pub struct RunFlags {
     /// Path to a checkpoint file
     #[arg(long)]
     pub checkpoint_path: Option<String>,
+
+    /// Path to a checkpoint file. If not there summit will start normally
+    #[arg(long)]
+    pub checkpoint_or_default: Option<String>,
+
     /// IP address for this node (optional, will use genesis if not provided)
     #[arg(long)]
     pub ip: Option<String>,
+
+    /// Start this mode on archive mode and store a checkpoint for every epoch
+    #[arg(long)]
+    pub archive_mode: bool,
 }
 
 impl Command {
@@ -165,15 +174,31 @@ impl Command {
             console_subscriber::init();
         }
 
-        let maybe_checkpoint = flags.checkpoint_path.as_ref().map(|path| {
-            // TODO(matthias): verify the checkpoint
-            let checkpoint_bytes: Vec<u8> =
-                std::fs::read(path).expect("failed to read checkpoint from disk");
-            let checkpoint =
-                Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
-            ConsensusState::try_from(checkpoint)
-                .expect("failed to create consensus state from checkpoint")
-        });
+        let maybe_checkpoint = if let Some(checkpoint) = &flags.checkpoint_or_default {
+            if std::fs::exists(checkpoint).unwrap_or_default() {
+                // TODO(matthias): verify the checkpoint
+                let checkpoint_bytes: Vec<u8> =
+                    std::fs::read(checkpoint).expect("failed to read checkpoint from disk");
+                let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_bytes)
+                    .expect("failed to parse checkpoint");
+                let state = ConsensusState::try_from(checkpoint)
+                    .expect("failed to create consensus state from checkpoint");
+
+                Some(state)
+            } else {
+                None
+            }
+        } else {
+            flags.checkpoint_path.as_ref().map(|path| {
+                // TODO(matthias): verify the checkpoint
+                let checkpoint_bytes: Vec<u8> =
+                    std::fs::read(path).expect("failed to read checkpoint from disk");
+                let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_bytes)
+                    .expect("failed to parse checkpoint");
+                ConsensusState::try_from(checkpoint)
+                    .expect("failed to create consensus state from checkpoint")
+            })
+        };
 
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
         let key_store = expect_key_store(&flags.key_store_path);
