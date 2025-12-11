@@ -271,6 +271,7 @@ where
         let (finalizer, initial_state, finalizer_mailbox) = Finalizer::new(
             context.with_label("finalizer"),
             FinalizerConfig {
+                archive_mode: cfg.archive_mode,
                 mailbox_size: cfg.mailbox_size,
                 db_prefix: cfg.partition_prefix.clone(),
                 engine_client: cfg.engine_client,
