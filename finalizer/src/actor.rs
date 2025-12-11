@@ -23,7 +23,7 @@ use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::Instant;
@@ -39,7 +39,7 @@ use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch}
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
@@ -47,7 +47,6 @@ const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 #[derive(Clone, Debug)]
 struct ForkState {
     block_digest: Digest,
-    parent_digest: Digest,
     consensus_state: ConsensusState,
     arrived_at: Instant,
 }
@@ -71,6 +70,10 @@ pub struct Finalizer<
     // Fork states (notarized but not yet finalized)
     // BTreeMap<height, BTreeMap<digest, state>>
     fork_states: BTreeMap<u64, BTreeMap<Digest, ForkState>>,
+
+    // Orphaned notarized blocks that arrived before their parent
+    // BTreeMap<height, HashMap<parent_digest, Vec<blocks_with_that_parent>>>
+    orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block<S, V>>>>,
 
     genesis_hash: [u8; 32],
     validator_max_withdrawals_per_block: usize,
@@ -147,6 +150,7 @@ impl<
                 db,
                 canonical_state: state.clone(),
                 fork_states: BTreeMap::new(),
+                orphaned_blocks: BTreeMap::new(),
                 validator_max_withdrawals_per_block: cfg.validator_max_withdrawals_per_block,
                 genesis_hash: cfg.genesis_hash,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
@@ -211,7 +215,7 @@ impl<
                                     self.execute_finalized_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
                                 }
                                 Update::NotarizedBlock(block) => {
-                                    // TODO: implement handle_notarized_block
+                                    self.handle_notarized_block(block).await;
                                 }
                             }
                         },
@@ -261,24 +265,89 @@ impl<
         >,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
-        execute_block(
-            &self.engine_client,
-            &self.context,
-            &block,
-            &mut self.canonical_state,
-            self.epoch_num_of_blocks,
-            self.validator_max_withdrawals_per_block,
-            self.protocol_version_digest,
-            self.validator_minimum_stake,
-            self.validator_withdrawal_period,
-            self.validator_onboarding_limit_per_block,
-            last_committed_timestamp,
-        )
-        .await;
+        let height = block.height();
+        let block_digest = block.digest();
+
+        // Try to find the fork state for this block (if it was notarized before finalization)
+        if let Some(fork_state) = self
+            .fork_states
+            .get(&height)
+            .and_then(|forks_at_height| forks_at_height.get(&block_digest))
+        {
+            // Block was already executed when notarized, reuse the fork state
+            debug_assert_eq!(
+                fork_state.block_digest, block_digest,
+                "Fork state digest mismatch: expected {:?}, stored {:?}",
+                block_digest, fork_state.block_digest
+            );
+            debug!(
+                height,
+                ?block_digest,
+                "reusing fork state for finalized block"
+            );
+            self.canonical_state = fork_state.consensus_state.clone();
+        } else {
+            // Block was not notarized before finalization (catch-up or missed notarization)
+            // Execute it now on canonical state
+            debug!(
+                height,
+                ?block_digest,
+                "executing finalized block directly (no prior fork state)"
+            );
+            execute_block(
+                &self.engine_client,
+                &self.context,
+                &block,
+                &mut self.canonical_state,
+                self.epoch_num_of_blocks,
+                self.validator_max_withdrawals_per_block,
+                self.protocol_version_digest,
+                self.validator_minimum_stake,
+                self.validator_withdrawal_period,
+                self.validator_onboarding_limit_per_block,
+            )
+            .await;
+        }
+
+        // Prune fork states at or below finalized height
+        let pruned_forks = self.fork_states.len();
+        self.fork_states.retain(|&h, _| h > height);
+        let remaining_forks = self.fork_states.len();
+        if pruned_forks > remaining_forks {
+            debug!(
+                height,
+                pruned = pruned_forks - remaining_forks,
+                "pruned fork states"
+            );
+        }
+
+        // Prune orphaned blocks at or below finalized height
+        let pruned_orphans = self.orphaned_blocks.len();
+        self.orphaned_blocks.retain(|&h, _| h > height);
+        let remaining_orphans = self.orphaned_blocks.len();
+        if pruned_orphans > remaining_orphans {
+            debug!(
+                height,
+                pruned = pruned_orphans - remaining_orphans,
+                "pruned orphaned blocks"
+            );
+        }
 
         self.engine_client
             .commit_hash(self.canonical_state.forkchoice)
             .await;
+
+        #[cfg(feature = "prom")]
+        {
+            let num_tx = block.payload.payload_inner.payload_inner.transactions.len();
+            counter!("tx_committed_total").increment(num_tx as u64);
+            counter!("blocks_committed_total").increment(1);
+            if let Some(last_committed) = last_committed_timestamp {
+                let block_delta = last_committed.elapsed().as_millis() as f64;
+                histogram!("block_time_millis").record(block_delta);
+            }
+            *last_committed_timestamp = Some(Instant::now());
+        }
 
         let new_height = block.height();
         self.height_notify_up_to(new_height);
@@ -441,6 +510,116 @@ impl<
         info!(new_height, self.canonical_state.epoch, "finalized block");
     }
 
+    async fn handle_notarized_block(&mut self, block: Block<S, V>) {
+        let mut to_process = vec![block];
+
+        while let Some(block) = to_process.pop() {
+            let height = block.height();
+            let parent_digest = block.parent();
+            let block_digest = block.digest();
+
+            // Ignore blocks at or below canonical height
+            if height <= self.canonical_state.latest_height {
+                debug!(
+                    height,
+                    "ignoring notarized block at or below canonical height"
+                );
+                continue;
+            }
+
+            // Find and clone parent state: either canonical (if parent was finalized) or a fork state
+            let parent_state = if height == self.canonical_state.latest_height + 1 {
+                // Parent should be the canonical block (was finalized)
+                // Verify parent digest matches canonical head
+                if parent_digest != self.canonical_state.head_digest {
+                    // Block is on a dead fork, discard it
+                    debug!(
+                        height,
+                        ?parent_digest,
+                        canonical_head = ?self.canonical_state.head_digest,
+                        "discarding notarized block on dead fork (parent mismatch with canonical)"
+                    );
+                    continue;
+                }
+                Some(self.canonical_state.clone())
+            } else {
+                // Parent should be in fork_states
+                self.fork_states
+                    .get(&(height - 1))
+                    .and_then(|forks_at_parent| {
+                        let parent_fork = forks_at_parent.get(&parent_digest)?;
+                        debug_assert_eq!(
+                            parent_fork.block_digest,
+                            parent_digest,
+                            "Parent fork state digest mismatch at height {}: expected {:?}, stored {:?}",
+                            height - 1,
+                            parent_digest,
+                            parent_fork.block_digest
+                        );
+                        Some(parent_fork.consensus_state.clone())
+                    })
+            };
+
+            // If we can't find the parent, buffer as orphaned
+            let Some(mut fork_state) = parent_state else {
+                debug!(
+                    height,
+                    ?parent_digest,
+                    "buffering orphaned notarized block - parent not found"
+                );
+                self.orphaned_blocks
+                    .entry(height)
+                    .or_default()
+                    .entry(parent_digest)
+                    .or_default()
+                    .push(block);
+                continue;
+            };
+
+            // Execute the block into the cloned parent state
+            execute_block(
+                &self.engine_client,
+                &self.context,
+                &block,
+                &mut fork_state,
+                self.epoch_num_of_blocks,
+                self.validator_max_withdrawals_per_block,
+                self.protocol_version_digest,
+                self.validator_minimum_stake,
+                self.validator_withdrawal_period,
+                self.validator_onboarding_limit_per_block,
+            )
+            .await;
+
+            // Store the new fork state
+            self.fork_states.entry(height).or_default().insert(
+                block_digest,
+                ForkState {
+                    block_digest,
+                    consensus_state: fork_state,
+                    arrived_at: Instant::now(),
+                },
+            );
+
+            info!(height, ?block_digest, "executed notarized block into fork");
+            self.height_notify_up_to(height);
+
+            // Add orphaned children to the processing queue
+            if let Some(children) = self
+                .orphaned_blocks
+                .get(&(height + 1))
+                .and_then(|children_map| children_map.get(&block_digest))
+            {
+                debug!(
+                    height,
+                    num_children = children.len(),
+                    "queueing orphaned children"
+                );
+                to_process.extend(children.clone());
+            }
+        }
+    }
+
     fn height_notify_up_to(&mut self, current_height: u64) {
         // Split off all entries <= current_height
         let to_notify = self.pending_height_notifys.split_off(&(current_height + 1));
@@ -569,7 +748,7 @@ impl<
 /// This does NOT handle epoch transitions (activate validators, increment epoch).
 /// Epoch transitions only happen at finalization since the last block of an epoch
 /// is always finalized (never notarized+nullified).
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 async fn execute_block<
     C: EngineClient,
     S: Signer<PublicKey = PublicKey>,
@@ -586,7 +765,6 @@ async fn execute_block<
     validator_minimum_stake: u64,
     validator_withdrawal_period: u64,
     validator_onboarding_limit_per_block: usize,
-    #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
 ) {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
@@ -631,18 +809,6 @@ async fn execute_block<
             safe_block_hash: eth_hash.into(),
             finalized_block_hash: eth_hash.into(),
         };
-
-        #[cfg(feature = "prom")]
-        {
-            let num_tx = block.payload.payload_inner.payload_inner.transactions.len();
-            counter!("tx_committed_total").increment(num_tx as u64);
-            counter!("blocks_committed_total").increment(1);
-            if let Some(last_committed) = last_committed_timestamp {
-                let block_delta = last_committed.elapsed().as_millis() as f64;
-                histogram!("block_time_millis").record(block_delta);
-            }
-            *last_committed_timestamp = Some(Instant::now());
-        }
 
         //self.engine_client.commit_hash(forkchoice).await;
         state.forkchoice = forkchoice;
@@ -700,6 +866,7 @@ async fn execute_block<
     }
     state.set_latest_height(new_height);
     state.set_view(block.view());
+    state.head_digest = block.digest();
     assert_eq!(block.epoch(), state.epoch);
 
     // Periodically persist state to database as a blob
