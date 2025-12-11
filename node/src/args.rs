@@ -367,6 +367,7 @@ impl Command {
                 flags.db_prefix.clone(),
                 &genesis,
                 initial_state,
+                flags.archive_mode,
             )
             .unwrap();
 
@@ -558,6 +559,7 @@ pub fn run_node_local(
             flags.db_prefix.clone(),
             &genesis,
             initial_state,
+            flags.archive_mode,
         )
         .unwrap();
 

@@ -55,6 +55,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOr
     pub genesis_hash: [u8; 32],
 
     pub initial_state: ConsensusState,
+    pub archive_mode: bool,
 }
 
 impl<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
@@ -68,6 +69,7 @@ impl<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
         db_prefix: String,
         genesis: &Genesis,
         initial_state: ConsensusState,
+        archive_mode: bool,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,
@@ -94,6 +96,7 @@ impl<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
                 .expect("bad eth_genesis_hash")
                 .expect("bad eth_genesis_hash"),
             initial_state,
+            archive_mode,
         })
     }
 }

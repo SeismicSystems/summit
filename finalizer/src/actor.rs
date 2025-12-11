@@ -1,3 +1,4 @@
+use crate::archive::backup_with_enclave;
 use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_eips::eip4895::Withdrawal;
@@ -39,7 +40,7 @@ use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch}
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
@@ -50,6 +51,7 @@ pub struct Finalizer<
     S: Signer<PublicKey = PublicKey>,
     V: Variant,
 > {
+    archive_mode: bool,
     mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>>,
     pending_height_notifys: BTreeMap<u64, Vec<oneshot::Sender<()>>>,
     context: ContextCell<R>,
@@ -121,6 +123,7 @@ impl<
 
         (
             Self {
+                archive_mode: cfg.archive_mode,
                 context: ContextCell::new(context),
                 mailbox: rx,
                 engine_client: cfg.engine_client,
@@ -440,6 +443,13 @@ impl<
                 self.db
                     .store_finalized_checkpoint(self.state.epoch, checkpoint)
                     .await;
+
+                if self.archive_mode {
+                    if let Err(e) = backup_with_enclave(self.state.epoch, checkpoint.clone()) {
+                        // This shouldnt be critical but it should be logged
+                        error!("Unable to backup with enclave: {}", e);
+                    }
+                }
             }
 
             // Increment epoch

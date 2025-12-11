@@ -7,6 +7,7 @@ use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 
 pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Variant> {
+    pub archive_mode: bool,
     pub mailbox_size: usize,
     pub db_prefix: String,
     pub engine_client: C,

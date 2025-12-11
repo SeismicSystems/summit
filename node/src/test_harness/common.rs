@@ -536,6 +536,7 @@ pub fn get_default_engine_config<
         fetch_concurrent: 10,
         fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(10).unwrap()),
         initial_state,
+        archive_mode: false,
     }
 }
 
