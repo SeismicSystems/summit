@@ -211,7 +211,7 @@ impl<
                                     // I don't think we need this
                                 }
                                 Update::FinalizedBlock((block, finalization), ack_tx) => {
-                                    self.execute_finalized_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
+                                    self.handle_finalized_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
                                 }
                                 Update::NotarizedBlock(block) => {
                                     self.handle_notarized_block(block).await;
@@ -263,7 +263,7 @@ impl<
     }
 
     #[allow(clippy::type_complexity)]
-    async fn execute_finalized_block(
+    async fn handle_finalized_block(
         &mut self,
         ack_tx: Exact,
         block: Block<S, V>,
@@ -318,6 +318,11 @@ impl<
             )
             .await;
         }
+
+        self.canonical_state.forkchoice.safe_block_hash =
+            self.canonical_state.forkchoice.head_block_hash;
+        self.canonical_state.forkchoice.finalized_block_hash =
+            self.canonical_state.forkchoice.head_block_hash;
 
         // Prune fork states at or below finalized height
         let total_forks = self.fork_states.len();
@@ -815,14 +820,7 @@ async fn execute_block<
             new_height
         );
 
-        let forkchoice = ForkchoiceState {
-            head_block_hash: eth_hash.into(),
-            safe_block_hash: eth_hash.into(),
-            finalized_block_hash: eth_hash.into(),
-        };
-
-        //self.engine_client.commit_hash(forkchoice).await;
-        state.forkchoice = forkchoice;
+        state.forkchoice.head_block_hash = eth_hash.into();
 
         // Parse execution requests
         #[cfg(feature = "prom")]

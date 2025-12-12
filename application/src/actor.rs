@@ -362,7 +362,7 @@ impl<
         // STEP 3: Request aux data (withdrawals, checkpoint hash, header hash)
         #[cfg(feature = "prom")]
         let aux_data_start = std::time::Instant::now();
-        let aux_data = finalizer
+        let mut aux_data = finalizer
             .get_aux_data(parent_height + 1, parent_digest)
             .await
             .await
@@ -403,6 +403,8 @@ impl<
         // STEP 4: Start building block (Engine Client)
         #[cfg(feature = "prom")]
         let start_building_start = std::time::Instant::now();
+
+        aux_data.forkchoice.head_block_hash = parent_block.eth_block_hash().into();
 
         // Add pending withdrawals to the block
         let withdrawals = pending_withdrawals.into_iter().map(|w| w.inner).collect();
