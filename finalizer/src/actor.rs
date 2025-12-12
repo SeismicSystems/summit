@@ -785,6 +785,16 @@ async fn execute_block<
         .expect("failed to execute block");
     let new_height = block.height();
 
+    // Debug logging to track execute_block_optimistically results
+    warn!(
+        new_height,
+        block_hash = ?block.eth_block_hash(),
+        parent_hash = ?block.eth_parent_hash(),
+        status = ?payload_status.status,
+        latest_valid_hash = ?payload_status.latest_valid_hash,
+        "execute_block_optimistically result"
+    );
+
     #[cfg(feature = "prom")]
     {
         let payload_check_duration = payload_check_start.elapsed().as_millis() as f64;
