@@ -695,7 +695,7 @@ impl<
                 header_hash: prev_header_hash,
                 added_validators: state.added_validators.clone(),
                 removed_validators: state.removed_validators.clone(),
-                forkchoice: state.forkchoice,
+                forkchoice: self.canonical_state.forkchoice,
             }
         } else {
             BlockAuxData {
