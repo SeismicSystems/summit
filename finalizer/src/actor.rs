@@ -2,7 +2,6 @@ use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
-use alloy_rpc_types_engine::ForkchoiceState;
 #[allow(unused)]
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_codec::{Read as CodecRead, Write as CodecWrite};
@@ -319,8 +318,10 @@ impl<
             .await;
         }
 
-        self.canonical_state.forkchoice.safe_block_hash = self.canonical_state.forkchoice.head_block_hash;
-        self.canonical_state.forkchoice.finalized_block_hash = self.canonical_state.forkchoice.head_block_hash;
+        self.canonical_state.forkchoice.safe_block_hash =
+            self.canonical_state.forkchoice.head_block_hash;
+        self.canonical_state.forkchoice.finalized_block_hash =
+            self.canonical_state.forkchoice.head_block_hash;
 
         // Prune fork states at or below finalized height
         let total_forks = self.fork_states.len();
