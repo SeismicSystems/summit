@@ -319,6 +319,9 @@ impl<
             .await;
         }
 
+        self.canonical_state.forkchoice.safe_block_hash = self.canonical_state.forkchoice.head_block_hash;
+        self.canonical_state.forkchoice.finalized_block_hash = self.canonical_state.forkchoice.head_block_hash;
+
         // Prune fork states at or below finalized height
         let total_forks = self.fork_states.len();
         self.fork_states.retain(|&h, _| h > height);
@@ -695,7 +698,7 @@ impl<
                 header_hash: prev_header_hash,
                 added_validators: state.added_validators.clone(),
                 removed_validators: state.removed_validators.clone(),
-                forkchoice: self.canonical_state.forkchoice,
+                forkchoice: state.forkchoice,
             }
         } else {
             BlockAuxData {
@@ -824,13 +827,7 @@ async fn execute_block<
             new_height
         );
 
-        let forkchoice = ForkchoiceState {
-            head_block_hash: eth_hash.into(),
-            safe_block_hash: eth_hash.into(),
-            finalized_block_hash: eth_hash.into(),
-        };
-
-        state.forkchoice = forkchoice;
+        state.forkchoice.head_block_hash = eth_hash.into();
 
         // Parse execution requests
         #[cfg(feature = "prom")]
