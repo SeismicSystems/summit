@@ -290,19 +290,19 @@ impl<
                 "Fork state digest mismatch: expected {:?}, stored {:?}",
                 block_digest, fork_state.block_digest
             );
-            debug!(
+            info!(
                 height,
                 ?block_digest,
-                "reusing fork state for finalized block"
+                "FINALIZATION PATH: reusing fork state for finalized block"
             );
             self.canonical_state = fork_state.consensus_state.clone();
         } else {
             // Block was not notarized before finalization (catch-up or missed notarization)
             // Execute it now on canonical state
-            debug!(
+            info!(
                 height,
                 ?block_digest,
-                "executing finalized block directly (no prior fork state)"
+                "FINALIZATION PATH: executing finalized block directly (no prior fork state)"
             );
             execute_block(
                 &self.engine_client,
@@ -864,8 +864,19 @@ async fn execute_block<
                 .record(process_requests_duration);
         }
     } else {
+        let payload_valid = payload_status.is_valid();
+        let withdrawals_match = block.payload.payload_inner.withdrawals == expected_withdrawals;
+        let parent_hash_match = state.forkchoice.head_block_hash == block.eth_parent_hash();
+
         warn!(
-            "Height: {new_height} contains invalid eth payload. Not executing but keeping part of chain"
+            new_height,
+            payload_valid,
+            withdrawals_match,
+            parent_hash_match,
+            state_head = ?state.forkchoice.head_block_hash,
+            block_parent = ?block.eth_parent_hash(),
+            "Height: {} contains invalid eth payload. Not executing but keeping part of chain",
+            new_height
         );
     }
 
