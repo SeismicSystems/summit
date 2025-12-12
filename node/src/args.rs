@@ -25,15 +25,13 @@ use std::{
     num::NonZeroU32,
     str::FromStr as _,
 };
-#[cfg(feature = "base-bench")]
-use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 
 #[cfg(feature = "bench")]
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
 use crate::config::MAILBOX_SIZE;
 use crate::engine::VALIDATOR_MINIMUM_STAKE;
-#[cfg(not(any(feature = "bench", feature = "base-bench")))]
+#[cfg(not(feature = "bench"))]
 use summit_types::RethEngineClient;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
@@ -83,7 +81,7 @@ pub struct RunFlags {
     #[arg(long, default_value_t = DEFAULT_ENGINE_IPC_PATH.into())]
     pub engine_ipc_path: String,
     /// Path to the directory containing historical blocks for benchmarking
-    #[cfg(any(feature = "base-bench", feature = "bench"))]
+    #[cfg(feature = "bench")]
     #[arg(long)]
     pub bench_block_dir: Option<String>,
     /// Port Consensus runs on
@@ -236,21 +234,6 @@ impl Command {
                 .expect("failed to expand engine ipc path");
 
             #[allow(unused)]
-            #[cfg(feature = "base-bench")]
-            let engine_client = {
-                let block_dir = flags
-                    .bench_block_dir
-                    .as_ref()
-                    .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
-                    .expect("bench_block_dir is required when using bench feature");
-                HistoricalEngineClient::new(
-                    engine_ipc_path.to_string_lossy().to_string(),
-                    block_dir,
-                )
-                .await
-            };
-
-            #[allow(unused)]
             #[cfg(feature = "bench")]
             let engine_client = {
                 let block_dir = flags
@@ -265,7 +248,7 @@ impl Command {
                 .await
             };
 
-            #[cfg(not(any(feature = "bench", feature = "base-bench")))]
+            #[cfg(not(feature = "bench"))]
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
@@ -463,18 +446,6 @@ pub fn run_node_local(
             get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
 
         #[allow(unused)]
-        #[cfg(feature = "base-bench")]
-        let engine_client = {
-            let block_dir = flags
-                .bench_block_dir
-                .as_ref()
-                .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
-                .expect("bench_block_dir is required when using bench feature");
-            HistoricalEngineClient::new(engine_ipc_path.to_string_lossy().to_string(), block_dir)
-                .await
-        };
-
-        #[allow(unused)]
         #[cfg(feature = "bench")]
         let engine_client = {
             let block_dir = flags
@@ -489,7 +460,7 @@ pub fn run_node_local(
             .await
         };
 
-        #[cfg(not(any(feature = "bench", feature = "base-bench")))]
+        #[cfg(not(feature = "bench"))]
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 

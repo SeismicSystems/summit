@@ -341,8 +341,13 @@ impl<
             );
         }
 
-        self.engine_client
-            .commit_hash(self.canonical_state.forkchoice)
+        let _ = self
+            .engine_client
+            .set_canonical_head(
+                self.canonical_state.forkchoice.head_block_hash,
+                self.canonical_state.forkchoice.safe_block_hash,
+                self.canonical_state.forkchoice.finalized_block_hash,
+            )
             .await;
 
         #[cfg(feature = "prom")]
@@ -610,15 +615,6 @@ impl<
                 },
             );
 
-            // Commit this fork to reth so validators can build/verify blocks on top of it
-            // Keep the canonical finalized chain unchanged by using canonical finalized hash
-            let fork_forkchoice = ForkchoiceState {
-                head_block_hash: fork_state.forkchoice.head_block_hash,
-                safe_block_hash: self.canonical_state.forkchoice.finalized_block_hash,
-                finalized_block_hash: self.canonical_state.forkchoice.finalized_block_hash,
-            };
-            self.engine_client.commit_hash(fork_forkchoice).await;
-
             info!(height, ?block_digest, "executed notarized block into fork");
             self.height_notify_up_to(height, block_digest);
 
@@ -783,7 +779,10 @@ async fn execute_block<
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
-    let payload_status = engine_client.check_payload(block).await;
+    let payload_status = engine_client
+        .execute_block_optimistically(block)
+        .await
+        .expect("failed to execute block");
     let new_height = block.height();
 
     #[cfg(feature = "prom")]
@@ -821,7 +820,6 @@ async fn execute_block<
             finalized_block_hash: eth_hash.into(),
         };
 
-        //self.engine_client.commit_hash(forkchoice).await;
         state.forkchoice = forkchoice;
 
         // Parse execution requests

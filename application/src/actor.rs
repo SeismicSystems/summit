@@ -407,25 +407,38 @@ impl<
         // Add pending withdrawals to the block
         let withdrawals = pending_withdrawals.into_iter().map(|w| w.inner).collect();
         let payload_id = {
-            #[cfg(any(feature = "bench", feature = "base-bench"))]
+            #[cfg(feature = "bench")]
             {
+                let parent_block_hash = parent_block.eth_block_hash();
+                let safe_block_hash = aux_data.forkchoice.safe_block_hash;
+                let finalized_block_hash = aux_data.forkchoice.finalized_block_hash;
                 self.engine_client
                     .start_building_block(
-                        aux_data.forkchoice,
+                        parent_block_hash.into(),
+                        safe_block_hash,
+                        finalized_block_hash,
                         current,
                         withdrawals,
                         parent_block.height(),
                     )
                     .await
             }
-            #[cfg(not(any(feature = "bench", feature = "base-bench")))]
+            #[cfg(not(feature = "bench"))]
             {
+                let parent_block_hash = parent_block.eth_block_hash();
+                let safe_block_hash = aux_data.forkchoice.safe_block_hash;
+                let finalized_block_hash = aux_data.forkchoice.finalized_block_hash;
                 self.engine_client
-                    .start_building_block(aux_data.forkchoice, current, withdrawals)
+                    .start_building_block(
+                        parent_block_hash.into(),
+                        safe_block_hash,
+                        finalized_block_hash,
+                        current,
+                        withdrawals,
+                    )
                     .await
             }
-        }
-        .ok_or(anyhow!("Unable to build payload"))?;
+        }?;
 
         #[cfg(feature = "prom")]
         {
@@ -439,7 +452,11 @@ impl<
         // STEP 5: Get payload (Engine Client)
         #[cfg(feature = "prom")]
         let get_payload_start = std::time::Instant::now();
-        let payload_envelope = self.engine_client.get_payload(payload_id).await;
+        let payload_envelope = self
+            .engine_client
+            .get_payload(payload_id)
+            .await
+            .expect("failed to get payload");
         #[cfg(feature = "prom")]
         {
             let get_payload_duration = get_payload_start.elapsed().as_millis() as f64;

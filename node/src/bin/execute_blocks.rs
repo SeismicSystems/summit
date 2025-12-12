@@ -4,13 +4,11 @@ use clap::{Arg, Command};
 use commonware_utils::from_hex_formatted;
 use std::path::PathBuf;
 use summit_types::engine_client::EngineClient;
-#[cfg(feature = "base-bench")]
-use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 #[cfg(feature = "bench")]
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 use summit_types::{Block, Digest};
 
-#[cfg(all(feature = "base-bench", not(feature = "bench")))]
+#[cfg(not(feature = "bench"))]
 const GENESIS_HASH: &str = "0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd";
 #[cfg(feature = "bench")]
 const GENESIS_HASH: &str = "0x655cc1ecc77fe1eab4b1e62a1f461b7fddc9b06109b5ab3e9dc68c144b30c773";
@@ -68,11 +66,6 @@ async fn main() -> Result<()> {
     let start_block: u64 = matches.get_one::<String>("start-block").unwrap().parse()?;
     let num_blocks: u64 = matches.get_one::<String>("num-blocks").unwrap().parse()?;
 
-    #[allow(unused)]
-    #[cfg(feature = "base-bench")]
-    let client = HistoricalEngineClient::new(engine_ipc_path.clone(), block_dir.clone()).await;
-    #[allow(unused)]
-    #[cfg(feature = "bench")]
     let client = EthereumHistoricalEngineClient::new(engine_ipc_path, block_dir).await;
 
     // Load and commit blocks to Reth
@@ -89,15 +82,26 @@ async fn main() -> Result<()> {
     let mut block_number = start_block;
     for _ in 0..num_blocks {
         println!("Block number: {}", block_number);
-        #[cfg(any(feature = "bench", feature = "base-bench"))]
+        let parent_block_hash = forkchoice.head_block_hash;
+        let safe_block_hash = forkchoice.safe_block_hash;
+        let finalized_block_hash = forkchoice.finalized_block_hash;
         let result = client
-            .start_building_block(forkchoice, 0, vec![], block_number)
+            .start_building_block(
+                parent_block_hash,
+                safe_block_hash,
+                finalized_block_hash,
+                0,
+                vec![],
+                block_number,
+            )
             .await;
-        #[cfg(not(any(feature = "bench", feature = "base-bench")))]
-        let result = client.start_building_block(forkchoice, 0, vec![]).await;
+
         match result {
-            Some(payload_id) => {
-                let payload = client.get_payload(payload_id).await;
+            Ok(payload_id) => {
+                let payload = client
+                    .get_payload(payload_id)
+                    .await
+                    .expect("failed to get payload");
                 block_number = u64::from_le_bytes(payload_id.0.into());
 
                 let block_hash = payload
@@ -125,22 +129,27 @@ async fn main() -> Result<()> {
                     execution_payload_envelope_to_block(payload, parent_digest, block_number);
 
                 // Check payload with Reth
-                let payload_status = client.check_payload(&summit_block).await;
+                let payload_status = client.execute_block_optimistically(&summit_block).await;
                 println!("  Payload status: {:?}", payload_status);
 
                 println!("forkchoice: {:?}", block_hash);
-                forkchoice = ForkchoiceState {
-                    head_block_hash: block_hash,
-                    safe_block_hash: block_hash,
-                    finalized_block_hash: block_hash,
-                };
 
-                client.commit_hash(forkchoice).await;
+                forkchoice.head_block_hash = block_hash;
+                forkchoice.safe_block_hash = block_hash;
+                forkchoice.finalized_block_hash = block_hash;
+
+                let parent_block_hash = block_hash;
+                let safe_block_hash = block_hash;
+                let finalized_block_hash = block_hash;
+                client
+                    .set_canonical_head(parent_block_hash, safe_block_hash, finalized_block_hash)
+                    .await
+                    .expect("failed to set canonical_head");
                 println!("  Committed block {} to Reth", block_number);
             }
-            None => {
+            Err(e) => {
                 // this also happens when there are no more blocks
-                eprintln!("failed to load block");
+                eprintln!("failed to load block: {e}");
                 break;
             }
         }

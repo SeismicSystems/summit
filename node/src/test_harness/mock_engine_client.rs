@@ -12,7 +12,7 @@ use commonware_cryptography::{Signer, ed25519};
 use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use summit_types::{Block, EngineClient};
+use summit_types::{Block, EngineClient, EngineClientError};
 
 #[derive(Clone)]
 pub struct MockEngineClient {
@@ -313,23 +313,22 @@ impl EngineClient for MockEngineClient {
     #[allow(unused)]
     async fn start_building_block(
         &self,
-        fork_choice_state: ForkchoiceState,
+        parent_block_hash: B256,
+        safe_block_hash: B256,
+        finalized_block_hash: B256,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
-        #[cfg(any(feature = "bench", feature = "base-bench"))] height: u64,
-    ) -> Option<PayloadId> {
+        #[cfg(feature = "bench")] _height: u64,
+    ) -> Result<PayloadId, EngineClientError> {
         let mut state = self.state.lock().unwrap();
 
         if state.should_fail {
-            return None;
+            return Err(EngineClientError::RpcError("Mock: Should fail".to_string()));
         }
 
         // Verify we know about the head block
-        if !state
-            .canonical_blocks
-            .contains_key(&fork_choice_state.head_block_hash)
-        {
-            return None;
+        if !state.canonical_blocks.contains_key(&parent_block_hash) {
+            return Err(EngineClientError::Syncing);
         }
 
         // Generate unique payload ID
@@ -341,12 +340,8 @@ impl EngineClient for MockEngineClient {
         };
 
         // Create the new block
-        let new_block = state.create_block_payload(
-            fork_choice_state.head_block_hash,
-            timestamp,
-            &self.client_id,
-            withdrawals,
-        );
+        let new_block =
+            state.create_block_payload(parent_block_hash, timestamp, &self.client_id, withdrawals);
 
         // Wrap in envelope
         let block_num = state.next_block_number;
@@ -369,29 +364,35 @@ impl EngineClient for MockEngineClient {
         // Store for later retrieval
         state.building_payloads.insert(payload_id, envelope);
 
-        Some(payload_id)
+        Ok(payload_id)
     }
 
-    async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+    async fn get_payload(
+        &self,
+        payload_id: PayloadId,
+    ) -> Result<ExecutionPayloadEnvelopeV4, EngineClientError> {
         let state = self.state.lock().unwrap();
 
         state
             .building_payloads
             .get(&payload_id)
             .cloned()
-            .expect("Payload ID not found")
+            .ok_or(EngineClientError::PayloadNotReady)
     }
 
-    async fn check_payload<C: Signer, V: Variant>(&self, block: &Block<C, V>) -> PayloadStatus {
+    async fn execute_block_optimistically<C: Signer, V: Variant>(
+        &self,
+        block: &Block<C, V>,
+    ) -> Result<PayloadStatus, EngineClientError> {
         let mut state = self.state.lock().unwrap();
 
         if state.force_invalid {
-            return PayloadStatus::new(
+            return Ok(PayloadStatus::new(
                 PayloadStatusEnum::Invalid {
                     validation_error: "Mock: Forced invalid".to_string(),
                 },
                 None,
-            );
+            ));
         }
 
         let block_hash = block.payload.payload_inner.payload_inner.block_hash;
@@ -406,7 +407,7 @@ impl EngineClient for MockEngineClient {
                 None,
             );
             state.known_blocks.insert(block_hash, status.clone());
-            return status;
+            return Ok(status);
         }
 
         // Block is valid - store both status and block data
@@ -415,14 +416,19 @@ impl EngineClient for MockEngineClient {
         state
             .validated_blocks
             .insert(block_hash, block.payload.clone());
-        status
+        Ok(status)
     }
 
-    async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+    async fn set_canonical_head(
+        &self,
+        head_block_hash: B256,
+        safe_block_hash: B256,
+        finalized_block_hash: B256,
+    ) -> Result<(), EngineClientError> {
         let mut state = self.state.lock().unwrap();
 
         // Update current head
-        state.current_head = fork_choice_state.head_block_hash;
+        state.current_head = head_block_hash;
 
         // First, try to find the block in our building payloads (blocks we built)
         let matching_block = state
@@ -435,7 +441,7 @@ impl EngineClient for MockEngineClient {
                     .payload_inner
                     .payload_inner
                     .block_hash
-                    == fork_choice_state.head_block_hash
+                    == head_block_hash
             })
             .map(|envelope| envelope.envelope_inner.execution_payload.clone());
 
@@ -450,11 +456,8 @@ impl EngineClient for MockEngineClient {
                 state.next_block_number += 1;
             }
         } else {
-            // Block not in building_payloads - check if we validated it via check_payload
-            let validated_block = state
-                .validated_blocks
-                .get(&fork_choice_state.head_block_hash)
-                .cloned();
+            // Block not in building_payloads - check if we validated it via execute_block_optimistically
+            let validated_block = state.validated_blocks.get(&head_block_hash).cloned();
 
             if let Some(block) = validated_block {
                 let block_number = block.payload_inner.payload_inner.block_number;
@@ -468,6 +471,8 @@ impl EngineClient for MockEngineClient {
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -655,7 +660,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await
@@ -723,7 +728,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await
@@ -805,7 +810,7 @@ mod tests {
                     fork_choice,
                     (round * 1000) as u64,
                     vec![],
-                    #[cfg(any(feature = "bench", feature = "base-bench"))]
+                    #[cfg(feature = "bench")]
                     round,
                 )
                 .await
@@ -893,7 +898,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![withdrawal.clone()],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await
@@ -978,7 +983,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await
@@ -992,7 +997,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await

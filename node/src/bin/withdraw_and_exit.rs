@@ -47,7 +47,7 @@ struct NodeRuntime {
 #[derive(Parser, Debug)]
 struct Args {
     /// Path to the directory containing historical blocks for benchmarking
-    #[cfg(any(feature = "base-bench", feature = "bench"))]
+    #[cfg(feature = "bench")]
     #[arg(long)]
     pub bench_block_dir: Option<String>,
     /// Path to the log directory
@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 #[allow(unused_mut)]
                 let mut flags = get_node_flags(x.into());
 
-                #[cfg(any(feature = "base-bench", feature = "bench"))]
+                #[cfg(feature = "bench")]
                 {
                     flags.bench_block_dir = args.bench_block_dir.clone();
                 }
@@ -393,7 +393,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         db_prefix: format!("{node}-quarts"),
         genesis_path: "./example_genesis.toml".into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
-        #[cfg(any(feature = "base-bench", feature = "bench"))]
+        #[cfg(feature = "bench")]
         bench_block_dir: None,
         checkpoint_path: None,
         ip: None,
