@@ -67,11 +67,9 @@ pub struct Finalizer<
     canonical_state: ConsensusState,
 
     // Fork states (notarized but not yet finalized)
-    // BTreeMap<height, BTreeMap<digest, state>>
     fork_states: BTreeMap<u64, BTreeMap<Digest, ForkState>>,
 
     // Orphaned notarized blocks that arrived before their parent
-    // BTreeMap<height, HashMap<parent_digest, Vec<blocks_with_that_parent>>>
     orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block<S, V>>>>,
 
     genesis_hash: [u8; 32],
@@ -756,9 +754,9 @@ impl<
 /// Core execution logic that applies a block's state transitions to any ConsensusState.
 ///
 /// This method:
-/// - Calls check_payload on the engine client (validates and speculatively executes EVM)
+/// - Calls check_payload on the engine client (validates and optimistically executes the block on the EVM)
 /// - Applies consensus-layer state transitions (deposits, withdrawals, validators)
-/// - Updates the forkchoice state
+/// - Updates the forkchoice head
 /// - Creates checkpoints at epoch boundaries
 ///
 /// This does NOT handle epoch transitions (activate validators, increment epoch).
