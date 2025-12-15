@@ -30,6 +30,16 @@ Summit's architecture follows the actor model with these key principles:
 
 ### 1. Application Actor (`application/src/actor.rs`)
 
+**Purpose**: Handles block production, validation, and finalization
+
+**Key Responsibilities:**
+- Propose blocks when selected as leader
+- Validate blocks received from network
+- Coordinate with execution client via Engine API
+- Maintain block cache for pending/finalized blocks
+
+### 2. Finalizer Actor (`finalizer/src/actor.rs`)
+
 **Purpose**: Manages consensus state, validator set, and staking logic
 
 **Key Responsibilities:**
@@ -38,17 +48,6 @@ Summit's architecture follows the actor model with these key principles:
 - Manage consensus state transitions
 - Handle withdrawal processing
 - Create and verify checkpoints
-
-### 2. Finalizer Actor (`finalizer/src/actor.rs`)
-
-**Purpose**: Handles block production, validation, and finalization
-
-**Key Responsibilities:**
-- Propose blocks when selected as leader
-- Validate blocks received from network
-- Coordinate with execution client via Engine API
-- Process consensus finalization messages
-- Maintain block cache for pending/finalized blocks
 
 ### 3. Syncer Actor (`syncer/src/actor.rs`)
 
@@ -60,17 +59,17 @@ Summit's architecture follows the actor model with these key principles:
 - Broadcast verified blocks to peers
 - Maintain local block cache
 - Coordinate synchronization with peers
+- Push notarized and finalized blocks to the Finalizer Actor
 
 ### 4. Orchestrator Actor (`orchestrator/src/actor.rs`)
 
 **Purpose**: Coordinates consensus protocol execution and activity management
 
 **Key Responsibilities:**
-- Execute Simplex consensus protocol
-- Coordinate consensus rounds and view changes
-- Broadcast and receive consensus activities
-- Manage consensus timeouts
-- Interface with Commonware consensus primitives
+- Epoch transition management
+- Simplex engine lifecycle management
+- Network channel multiplexing
+- Epoch boundary block synchronization
 
 ## Actor Supervision and Error Handling
 

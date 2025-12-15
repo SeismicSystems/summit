@@ -5,33 +5,146 @@
 Summit is a modular consensus client implementing the Simplex protocol for EVM-based blockchains. It follows an actor-based architecture with clear separation of concerns between consensus, execution, networking, and storage.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Summit Consensus Client                  │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
-│  │ RPC Server  │  │ Orchestrator │  │    Application      │ │
-│  │ (External   │  │ (Consensus   │  │ (State Management)  │ │
-│  │  API)       │  │ Coordination)│  │                     │ │
-│  └─────────────┘  └──────────────┘  └─────────────────────┘ │
-│         │                │                      │           │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
-│  │   Syncer    │  │  Finalizer   │  │  Buffer/Broadcast   │ │
-│  │ (Block Sync │  │ (Block Prod. │  │ (Network Buffering) │ │
-│  │  & Valid'n) │  │  & Finality) │  │                     │ │
-│  └─────────────┘  └──────────────┘  └─────────────────────┘ │
-│         │                │                      │           │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
-│  │  Storage    │  │ Engine Client│  │      P2P Network    │ │
-│  │ (Consensus  │  │ (Execution   │  │  (Validator Comm.)  │ │
-│  │  State)     │  │  Interface)  │  │                     │ │
-│  └─────────────┘  └──────────────┘  └─────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-                           │
-                    ┌──────────────┐
-                    │   Reth/Geth  │
-                    │  (Execution  │
-                    │   Client)    │
-                    └──────────────┘
+ ┌─────────────────────────────────────────────────────────────────────────────────┐                                  
+ │                                  ORCHESTRATOR                                   │                                  
+ │                                                                                 │                                  
+ │  • Epoch transition management                                                  │                                  
+ │  • Simplex engine lifecycle management                                          │                                  
+ │  • Network channel multiplexing                                                 │                                  
+ │  • Epoch boundary block synchronization                                         │                                  
+ │                                                                                 │                                  
+ │   orchestrator/src/actor.rs                                                     │                                  
+ └────────────┬────────────────────────────────────────────────────────────────────┘                                  
+              │                                                                                                       
+              │ spawn/abort engines per epoch                                                                         
+              │                                                                                                       
+              ▼                                                                                                       
+ ┌──────────────────────────┐                                                                                         
+ │   SIMPLEX CONSENSUS      │                                                                                         
+ │   (commonware_consensus) │                             ┌──────────────────────┐                                    
+ │                          │                             │     FINALIZER        │                                    
+ │  • Leader election       │                             │  (State Execution)   │                                    
+ │  • View management       │                             │                      │                                    
+ │  • Notarization (2/3+1)  │                             │  • Canonical state   │                                    
+ │  • Finalization (3/3)    │                             │  • Fork states       │                                    
+ │  • Reports consensus     │                             │  • Execute blocks    │                                    
+ │    messages              │                             │  • Commit to engine  │                                    
+ │                          │                             │  • Create checkpoints│                                    
+ │  External crate          │                             │  • Store headers     │                                    
+ └────────┬─────────────────┘                             │                      │                                    
+          │                                               │  finalizer/src/      │                                    
+          │ Automaton trait                               │  actor.rs            │                                    
+          │ Relay trait                                   └──────────┬───────────┘                                    
+          │                                                          │                                                
+          ▼                                                          │                                                
+ ┌──────────────────────────┐                                        │                                                
+ │      APPLICATION         │                                        │                                                
+ │   (Consensus Interface)  │                                        │                                                
+ │                          │                                        │                                                
+ │  • Propose(round, parent)│────────subscribe parent────────────────┤                                                
+ │  • Verify(round, payload)│────────notify_at_height────────────────┤                                                
+ │  • Broadcast(payload)    │────────get_aux_data────────────────────┤                                                
+ │                          │                                        │                                                
+ │  Implements:             │                                        │                                                
+ │  - Automaton trait       │                                        │                                                
+ │  - Relay trait           │                                        │                                                
+ │                          │                                        │                                                
+ │  application/src/actor.rs│                                        │                                                
+ └────────┬─────────────────┘                                        │                                                
+          │                                                          │                                                
+          │ broadcast()                                              │                                                
+          │ verified()                                               │                                                
+          │ subscribe()                                              │                                                
+          ▼                                                          │                                                
+ ┌──────────────────────────┐                                        │                                                
+ │        SYNCER            │                                        │                                                
+ │  (Coordination Hub)      │                                        │                                                
+ │                          │                                        │                                                
+ │  • Block cache           │────────Update::NotarizedBlock──────────┤                                                
+ │  • Finalization archive  │────────Update::FinalizedBlock──────────┤                                                
+ │  • Finalized blocks      │────────Update::Tip─────────────────────┤                                                
+ │  • Resolver (backfill)   │                                        │                                                
+ │  • Broadcast engine      │                                        │                                                
+ │  • Subscription mgmt     │                                        │                                                
+ │                          │                                        │                                                
+ │  Messages:               │                                        │                                                
+ │  - Broadcast             │◄───────acknowledgement─────────────────┘                                                
+ │  - Verified              │                                                                                         
+ │  - Notarization          │◄───────Simplex reports via                                                              
+ │  - Finalization          │        Reporter trait                                                                   
+ │  - Subscribe             │                                                                                         
+ │  - GetBlock              │                                                                                         
+ │  - GetFinalization       │                                                                                         
+ │                          │                                                                                         
+ │  syncer/src/actor.rs     │                                                                                         
+ └────────┬─────────────────┘                                                                                         
+          │                                                                                                           
+          │ buffered broadcast                                                                                        
+          │ resolver requests                                                                                         
+          ▼                                                                                                           
+ ┌──────────────────────────┐                                                                                         
+ │       NETWORK            │                                                                                         
+ │                          │                                                                                         
+ │  • Broadcast network     │                                                                                         
+ │  • P2P resolver          │                                                                                         
+ │  • Block propagation     │                                                                                         
+ │                          │                                                                                         
+ │  commonware_p2p          │                                                                                         
+ │  commonware_broadcast    │                                                                                         
+ └──────────────────────────┘                                                                                         
+                                                                                                                      
+                                                                                                                      
+ ┌─────────────────────────────────────────────────────────────────────────────────┐                                  
+ │                            EXTERNAL INTERFACES                                  │                                 
+ └─────────────────────────────────────────────────────────────────────────────────┘                                  
+                                                                                                                      
+     APPLICATION & FINALIZER                                                                                          
+             │                                                                                                        
+             │ start_building_block(forkchoice, timestamp, withdrawals)                                               
+             │ get_payload(payload_id)                                                                                
+             │ commit_hash(forkchoice)                                                                                
+             ▼                                                                                                        
+     ┌──────────────────┐                                                                                             
+     │  ENGINE CLIENT   │                                                                                             
+     │                  │────────────────────────────────┐                                                            
+     │  Interface to    │                                │                                                            
+     │  Execution Layer │                                ▼                                                            
+     │                  │                    ┌─────────────────────────┐                                              
+     │  types/src/      │                    │  ETHEREUM EXECUTION     │                                              
+     │  engine_client.rs│                    │  CLIENT (Reth, Geth)    │                                              
+     └──────────────────┘                    │                         │                                              
+                                             │  • Block building       │                                              
+                                             │  • State execution      │                                              
+                                             │  • Forkchoice updates   │                                              
+                                             └─────────────────────────┘                                              
+                                                                                                                      
+     FINALIZER & SYNCER                                                                                               
+             │                                                                                                        
+             │ store_consensus_state()                                                                                
+             │ get_consensus_state()                                                                                  
+             │ store_finalized_checkpoint()                                                                           
+             │ store_finalized_header()                                                                               
+             ▼                                                                                                        
+     ┌──────────────────┐                                                                                             
+     │    STORAGE       │                                                                                             
+     │                  │                                                                                             
+     │  commonware_     │                                                                                             
+     │  storage         │                                                                                             
+     │                  │                                                                                             
+     │  • ADB Store     │                                                                                             
+     │    (append-only) │                                                                                             
+     │  • Consensus     │                                                                                             
+     │    state by      │                                                                                             
+     │    height        │                                                                                             
+     │  • Checkpoints   │                                                                                             
+     │    by epoch      │                                                                                             
+     │  • Finalized     │                                                                                             
+     │    headers       │                                                                                             
+     │    by height     │                                                                                             
+     │                  │                                                                                             
+     │  finalizer/src/  │                                                                                             
+     │  db.rs           │                                                                                             
+     └──────────────────┘  
 ```
 
 ## Core Components
@@ -51,67 +164,64 @@ The central coordinator that orchestrates all components
 Handles block production, validation, and finalization with Reth
 
 **Key Responsibilities:**
-- Block proposal when selected as leader
-- Block validation from other validators
-- Consensus finalization via Simplex protocol
-- Execution client coordination (Engine API)
+- Maintain current validator set and staking information
+- Process validator additions/removals based on execution layer events
+- Manage consensus state transitions
+- Handle withdrawal processing
+- Create and verify checkpoints
 
 ### 3. Syncer (`syncer/`)
 
 Manages block synchronization and network state
 
 **Key Responsibilities:**
-- Block reception and validation
-- Missing block resolution
-- Network state synchronization
-- Block propagation to peers
+- Receive and cache blocks from network
+- Resolve missing blocks through backfill
+- Broadcast verified blocks to peers
+- Maintain local block cache
+- Coordinate synchronization with peers
+- Push notarized and finalized blocks to the Finalizer Actor
 
 ### 4. Application (`application/`)
 
 Manages consensus state and validator set
 
 **Key Responsibilities:**
-- Validator set management
-- Consensus state transitions
-- Checkpoint creation and verification
-- Staking/unstaking logic
+- Propose blocks when selected as leader
+- Validate blocks received from network
+- Coordinate with execution client via Engine API
+- Maintain block cache for pending/finalized blocks
 
 ### 5. Orchestrator (`orchestrator/`)
 
 Coordinates consensus activities
 
 **Key Responsibilities:**
-- Handles Simplex instances for each epoch
-- Activity broadcast and reception
-- Timeout management
-- View change coordination
+- Epoch transition management
+- Simplex engine lifecycle management
+- Network channel multiplexing
+- Epoch boundary block synchronization
 
 ## Data Flow
 
 ### Block Production Flow
 
 1. **Leader Selection**: Leader election is handled by the current Simplex instance
-2. **Block Building**: Finalizer requests block from execution client via Engine API
-3. **Block Proposal**: Finalizer broadcasts proposed block to network
-4. **Block Validation**: Peer validators validate block via execution client
-5. **Consensus**: Orchestrator coordinates consensus on proposed block
-6. **Finalization**: Finalizer commits finalized block to execution client
+2. **Block Building**: Application requests block from execution client via Engine API
+3. **Block Proposal**: Application broadcasts proposed block to network
+4. **Block Validation**: Application of peer validators validate block
+5. **Optimistic Execution**: Syncer sends notarized blocks to the finalizer for optimistic execution
+6. **Finalization**: Syncer sends finalized blocks to the finalizer for finalization
 
-```
-Orchestrator → Finalizer → EngineClient → Reth → EngineClient → Finalizer → Network
-```
 
 ### Block Reception Flow
 
 1. **Block Reception**: Syncer receives block from network
 2. **Block Caching**: Block stored in cache for validation
 3. **Block Validation**: Execution client validates block via Engine API
-4. **Consensus Participation**: Orchestrator participates in consensus
+5. **Optimistic Execution**: Finalizer optimistically executes notarized block
 5. **Block Finalization**: Finalizer applies finalized block
 
-```
-Network → Syncer → Cache → EngineClient → Reth → EngineClient → Orchestrator → Finalizer
-```
 
 ### Synchronization Flow
 
@@ -120,9 +230,6 @@ Network → Syncer → Cache → EngineClient → Reth → EngineClient → Orch
 3. **Validation**: Each block validated via execution client
 4. **State Application**: Validated blocks applied to consensus state
 
-```
-Syncer → Resolver → Peers → EngineClient → Reth → Application → ConsensusState
-```
 
 ## Actor Communication
 
