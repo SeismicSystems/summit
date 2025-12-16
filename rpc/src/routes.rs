@@ -13,6 +13,7 @@ use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_cryptography::{Committable, Hasher as _, Sha256, Signer as _};
 use commonware_utils::from_hex_formatted;
 use serde::Deserialize;
+use ssz::Encode;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},
@@ -22,7 +23,6 @@ use summit_types::{
     },
     utils::get_expanded_path,
 };
-
 
 #[derive(Deserialize)]
 struct ValidatorBalanceQuery {
