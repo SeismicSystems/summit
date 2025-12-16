@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::{GenesisRpcState, PathSender, RpcState};
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use axum::{
     Json, Router,
@@ -227,7 +228,7 @@ impl RpcRoutes {
         };
 
         Ok(Json(CheckpointRes {
-            checkpoint: checkpoint.data.into(),
+            checkpoint: checkpoint.as_ssz_bytes(),
             digest: checkpoint.digest.0,
             epoch,
         }))

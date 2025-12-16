@@ -19,7 +19,6 @@ use clap::Parser;
 use commonware_cryptography::Sha256;
 use commonware_cryptography::{Hasher, PrivateKeyExt, Signer, bls12381, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
-use commonware_utils::from_hex_formatted;
 use futures::{FutureExt, pin_mut};
 use ssz::Decode;
 use std::collections::VecDeque;
@@ -329,7 +328,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Retrieve checkpoint from first node
             println!("Retrieving checkpoint from node 0");
             let checkpoint_state = loop {
-                match get_checkpoint(node0_rpc_port).await {
+                match get_latest_checkpoint(node0_rpc_port).await {
                     Ok(Some(checkpoint)) => {
                         let state = ConsensusState::try_from(&checkpoint)
                             .expect("Failed to parse checkpoint");
