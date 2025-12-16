@@ -40,6 +40,7 @@ use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::DepositRequest;
 use summit_types::execution_request::compute_deposit_data_root;
 use summit_types::reth::Reth;
+use summit_types::rpc::CheckpointRes;
 use tokio::sync::mpsc;
 use tracing::Level;
 
@@ -629,15 +630,17 @@ async fn get_latest_height(rpc_port: u16) -> Result<u64, Box<dyn std::error::Err
     Ok(response.parse()?)
 }
 
-async fn get_checkpoint(rpc_port: u16) -> Result<Option<Checkpoint>, Box<dyn std::error::Error>> {
-    let url = format!("http://localhost:{}/get_checkpoint", rpc_port);
+async fn get_latest_checkpoint(
+    rpc_port: u16,
+) -> Result<Option<Checkpoint>, Box<dyn std::error::Error>> {
+    let url = format!("http://localhost:{}/get_latest_checkpoint", rpc_port);
     let response = reqwest::get(&url).await;
 
     match response {
         Ok(resp) if resp.status().is_success() => {
-            let hex_str = resp.text().await?;
-            let bytes = from_hex_formatted(&hex_str).ok_or("Failed to decode hex")?;
-            let checkpoint = Checkpoint::from_ssz_bytes(&bytes)
+            let checkpoint_resp: CheckpointRes = resp.json().await?;
+            //  let bytes = from_hex_formatted(&hex_str).ok_or("Failed to decode hex")?;
+            let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_resp.checkpoint)
                 .map_err(|e| format!("Failed to decode checkpoint: {:?}", e))?;
             Ok(Some(checkpoint))
         }

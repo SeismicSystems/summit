@@ -1,4 +1,3 @@
-mod req_res;
 pub mod routes;
 use crate::routes::RpcRoutes;
 use commonware_consensus::Block as ConsensusBlock;
