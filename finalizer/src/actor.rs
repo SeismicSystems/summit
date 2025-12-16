@@ -306,7 +306,7 @@ impl<
                 "executing finalized block directly (no prior fork state)"
             );
             execute_block(
-                &self.engine_client,
+                &mut self.engine_client,
                 &self.context,
                 &block,
                 &mut self.canonical_state,
@@ -606,7 +606,7 @@ impl<
 
             // Execute the block into the cloned parent state
             execute_block(
-                &self.engine_client,
+                &mut self.engine_client,
                 &self.context,
                 &block,
                 &mut fork_state,
@@ -784,7 +784,7 @@ async fn execute_block<
     V: Variant,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
-    engine_client: &C,
+    engine_client: &mut C,
     context: &ContextCell<R>,
     block: &Block<S, V>,
     state: &mut ConsensusState,
