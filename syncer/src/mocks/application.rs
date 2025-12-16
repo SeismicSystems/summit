@@ -46,9 +46,12 @@ impl<B: Block, S: Scheme> Reporter for Application<B, S> {
             Update::Tip(height, commitment) => {
                 *self.tip.lock().unwrap() = Some((height, commitment));
             }
-            Update::Block((block, _), ack_tx) => {
+            Update::FinalizedBlock((block, _), ack_tx) => {
                 self.blocks.lock().unwrap().insert(block.height(), block);
                 ack_tx.acknowledge();
+            }
+            Update::NotarizedBlock(_block) => {
+                // Mock application ignores notarized blocks
             }
         }
     }

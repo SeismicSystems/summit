@@ -312,7 +312,7 @@ impl MockEngineState {
 impl EngineClient for MockEngineClient {
     #[allow(unused)]
     async fn start_building_block(
-        &self,
+        &mut self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
@@ -372,7 +372,7 @@ impl EngineClient for MockEngineClient {
         Some(payload_id)
     }
 
-    async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+    async fn get_payload(&mut self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
         let state = self.state.lock().unwrap();
 
         state
@@ -382,7 +382,7 @@ impl EngineClient for MockEngineClient {
             .expect("Payload ID not found")
     }
 
-    async fn check_payload<C: Signer, V: Variant>(&self, block: &Block<C, V>) -> PayloadStatus {
+    async fn check_payload<C: Signer, V: Variant>(&mut self, block: &Block<C, V>) -> PayloadStatus {
         let mut state = self.state.lock().unwrap();
 
         if state.force_invalid {
@@ -418,7 +418,7 @@ impl EngineClient for MockEngineClient {
         status
     }
 
-    async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
         let mut state = self.state.lock().unwrap();
 
         // Update current head
@@ -634,7 +634,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic_engine_client() {
         let genesis_hash = [0; 32];
-        let client = MockEngineClient::new(
+        let mut client = MockEngineClient::new(
             "test".to_string(),
             genesis_hash,
             Arc::new(Mutex::new(HashMap::new())),
@@ -705,8 +705,8 @@ mod tests {
         let genesis_hash = [0; 32];
         let network = MockEngineNetwork::new(genesis_hash);
 
-        let client1 = network.create_client("client1".to_string());
-        let client2 = network.create_client("client2".to_string());
+        let mut client1 = network.create_client("client1".to_string());
+        let mut client2 = network.create_client("client2".to_string());
 
         // Start in consensus
         assert!(network.verify_consensus(None, None).is_ok());
@@ -787,10 +787,10 @@ mod tests {
 
         // Simulate 3 rounds of block production
         for round in 1..=3 {
-            let producer = match round % 3 {
-                1 => &client1,
-                2 => &client2,
-                _ => &client3,
+            let mut producer = match round % 3 {
+                1 => client1.clone(),
+                2 => client2.clone(),
+                _ => client3.clone(),
             };
 
             // Producer builds a block
@@ -810,7 +810,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let envelope = producer.get_payload(payload_id).await;
+            let envelope = producer.get_payload(payload_id.clone()).await;
             let new_block = envelope.envelope_inner.execution_payload.clone();
 
             let new_fork_choice = ForkchoiceState {
@@ -823,7 +823,7 @@ mod tests {
             producer.commit_hash(new_fork_choice).await;
 
             // Simulate network propagation - all other clients get the block via Engine API
-            for client in [&client1, &client2, &client3] {
+            for mut client in [client1.clone(), client2.clone(), client3.clone()] {
                 if client.client_id() != producer.client_id() {
                     // Each client validates the block (like receiving it from network)
                     let block_for_validation = Block::<ed25519::PrivateKey, MinPk>::compute_digest(
@@ -870,8 +870,8 @@ mod tests {
         let genesis_hash = [0; 32];
         let network = MockEngineNetwork::new(genesis_hash);
 
-        let client1 = network.create_client("client1".to_string());
-        let client2 = network.create_client("client2".to_string());
+        let mut client1 = network.create_client("client1".to_string());
+        let mut client2 = network.create_client("client2".to_string());
 
         // Create a withdrawal for testing
         let withdrawal = Withdrawal {
@@ -958,8 +958,8 @@ mod tests {
         let genesis_hash = [0; 32];
         let network = MockEngineNetwork::new(genesis_hash);
 
-        let client1 = network.create_client("client1".to_string());
-        let client2 = network.create_client("client2".to_string());
+        let mut client1 = network.create_client("client1".to_string());
+        let mut client2 = network.create_client("client2".to_string());
         let client3 = network.create_client("client3".to_string());
 
         // Start in consensus

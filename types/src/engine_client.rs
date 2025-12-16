@@ -32,7 +32,7 @@ use std::future::Future;
 
 pub trait EngineClient: Clone + Send + Sync + 'static {
     fn start_building_block(
-        &self,
+        &mut self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
@@ -40,34 +40,58 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Option<PayloadId>> + Send;
 
     fn get_payload(
-        &self,
+        &mut self,
         payload_id: PayloadId,
     ) -> impl Future<Output = ExecutionPayloadEnvelopeV4> + Send;
 
     fn check_payload<C: Signer, V: Variant>(
-        &self,
+        &mut self,
         block: &Block<C, V>,
     ) -> impl Future<Output = PayloadStatus> + Send;
 
-    fn commit_hash(&self, fork_choice_state: ForkchoiceState) -> impl Future<Output = ()> + Send;
+    fn commit_hash(
+        &mut self,
+        fork_choice_state: ForkchoiceState,
+    ) -> impl Future<Output = ()> + Send;
 }
 
 #[derive(Clone)]
 pub struct RethEngineClient {
+    engine_ipc_path: String,
     provider: RootProvider,
 }
 
 impl RethEngineClient {
     pub async fn new(engine_ipc_path: String) -> Self {
-        let ipc = IpcConnect::new(engine_ipc_path);
+        let ipc = IpcConnect::new(engine_ipc_path.clone());
         let provider = ProviderBuilder::default().connect_ipc(ipc).await.unwrap();
-        Self { provider }
+        Self {
+            provider,
+            engine_ipc_path,
+        }
+    }
+
+    pub async fn wait_until_reconnect_available(&mut self) {
+        loop {
+            let ipc = IpcConnect::new(self.engine_ipc_path.clone());
+
+            match ProviderBuilder::default().connect_ipc(ipc).await {
+                Ok(provider) => {
+                    self.provider = provider;
+                    break;
+                }
+                Err(e) => {
+                    error!("Failed to connect to IPC, retrying: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
     }
 }
 
 impl EngineClient for RethEngineClient {
     async fn start_building_block(
-        &self,
+        &mut self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
@@ -82,11 +106,22 @@ impl EngineClient for RethEngineClient {
             // todo(dalton): we should make this something that we can associate with the simplex height
             parent_beacon_block_root: Some([1; 32].into()),
         };
-        let res = self
+
+        let res = match self
             .provider
-            .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
+            .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes.clone()))
             .await
-            .unwrap();
+        {
+            Ok(res) => res,
+            Err(e) if e.is_transport_error() => {
+                self.wait_until_reconnect_available().await;
+                self.provider
+                    .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
+                    .await
+                    .expect("Failed to update fork choice after reconnect")
+            }
+            Err(_) => panic!("Unable to get a response"),
+        };
 
         if res.is_invalid() {
             error!("invalid returned for forkchoice state {fork_choice_state:?}: {res:?}");
@@ -98,12 +133,23 @@ impl EngineClient for RethEngineClient {
         res.payload_id
     }
 
-    async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
-        self.provider.get_payload_v4(payload_id).await.unwrap()
+    async fn get_payload(&mut self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+        match self.provider.get_payload_v4(payload_id).await {
+            Ok(res) => res,
+            Err(e) if e.is_transport_error() => {
+                self.wait_until_reconnect_available().await;
+                self.provider
+                    .get_payload_v4(payload_id)
+                    .await
+                    .expect("Failed to get payload after reconnect")
+            }
+            Err(_) => panic!("Unable to get a response"),
+        }
     }
 
-    async fn check_payload<C: Signer, V: Variant>(&self, block: &Block<C, V>) -> PayloadStatus {
-        self.provider
+    async fn check_payload<C: Signer, V: Variant>(&mut self, block: &Block<C, V>) -> PayloadStatus {
+        match self
+            .provider
             .new_payload_v4(
                 block.payload.clone(),
                 Vec::new(),
@@ -111,14 +157,40 @@ impl EngineClient for RethEngineClient {
                 block.execution_requests.clone(),
             )
             .await
-            .unwrap()
+        {
+            Ok(res) => res,
+            Err(e) if e.is_transport_error() => {
+                self.wait_until_reconnect_available().await;
+                self.provider
+                    .new_payload_v4(
+                        block.payload.clone(),
+                        Vec::new(),
+                        [1; 32].into(),
+                        block.execution_requests.clone(),
+                    )
+                    .await
+                    .expect("Failed to check payload after reconnect")
+            }
+            Err(_) => panic!("Unable to get a response"),
+        }
     }
 
-    async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
-        self.provider
+    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
+        let _ = match self
+            .provider
             .fork_choice_updated_v3(fork_choice_state, None)
             .await
-            .unwrap();
+        {
+            Ok(res) => res,
+            Err(e) if e.is_transport_error() => {
+                self.wait_until_reconnect_available().await;
+                self.provider
+                    .fork_choice_updated_v3(fork_choice_state, None)
+                    .await
+                    .expect("Failed to get payload after reconnect")
+            }
+            Err(_) => panic!("Unable to get a response"),
+        };
     }
 }
 
@@ -170,7 +242,7 @@ pub mod base_benchmarking {
 
     impl EngineClient for HistoricalEngineClient {
         async fn start_building_block(
-            &self,
+            &mut self,
             fork_choice_state: ForkchoiceState,
             _timestamp: u64,
             _withdrawals: Vec<Withdrawal>,
@@ -188,7 +260,7 @@ pub mod base_benchmarking {
             }
         }
 
-        async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+        async fn get_payload(&mut self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
             let block_num = u64::from_le_bytes(payload_id.0.into());
             let filename = self
                 .block_index
@@ -221,7 +293,10 @@ pub mod base_benchmarking {
             }
         }
 
-        async fn check_payload<C: Signer, V: Variant>(&self, block: &Block<C, V>) -> PayloadStatus {
+        async fn check_payload<C: Signer, V: Variant>(
+            &mut self,
+            block: &Block<C, V>,
+        ) -> PayloadStatus {
             let timestamp = block.payload.payload_inner.payload_inner.timestamp;
             let canyon_activation = 1704992401u64; // January 11, 2024 - Canyon activation on Base
 
@@ -282,7 +357,7 @@ pub mod base_benchmarking {
             }
         }
 
-        async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+        async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
             self.provider
                 .fork_choice_updated_v3(fork_choice_state, None)
                 .await
@@ -362,7 +437,7 @@ pub mod benchmarking {
 
     impl EngineClient for EthereumHistoricalEngineClient {
         async fn start_building_block(
-            &self,
+            &mut self,
             _fork_choice_state: ForkchoiceState,
             _timestamp: u64,
             _withdrawals: Vec<Withdrawal>,
@@ -372,7 +447,7 @@ pub mod benchmarking {
             Some(PayloadId::new(next_block_num.to_le_bytes()))
         }
 
-        async fn get_payload(&self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+        async fn get_payload(&mut self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
             let block_num = u64::from_le_bytes(payload_id.0.into());
             let filename = format!("block-{block_num}");
             let file_path = self.block_dir.join(filename);
@@ -398,7 +473,10 @@ pub mod benchmarking {
             }
         }
 
-        async fn check_payload<C: Signer, V: Variant>(&self, block: &Block<C, V>) -> PayloadStatus {
+        async fn check_payload<C: Signer, V: Variant>(
+            &mut self,
+            block: &Block<C, V>,
+        ) -> PayloadStatus {
             // For Ethereum, use standard engine_newPayloadV4 without Optimism-specific logic
             self.provider
                 .new_payload_v4(
@@ -411,7 +489,7 @@ pub mod benchmarking {
                 .unwrap()
         }
 
-        async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+        async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
             self.provider
                 .fork_choice_updated_v3(fork_choice_state, None)
                 .await

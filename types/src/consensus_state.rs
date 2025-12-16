@@ -1,20 +1,21 @@
-use crate::PublicKey;
 use crate::account::{ValidatorAccount, ValidatorStatus};
 use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::PendingWithdrawal;
+use crate::{Digest, PublicKey};
 use alloy_eips::eip4895::Withdrawal;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
-use commonware_cryptography::bls12381;
+use commonware_cryptography::{bls12381, sha256};
 use std::collections::{HashMap, VecDeque};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ConsensusState {
     pub epoch: u64,
     pub view: u64,
     pub latest_height: u64,
+    pub head_digest: Digest,
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
     pub withdrawal_queue: VecDeque<PendingWithdrawal>,
@@ -24,6 +25,26 @@ pub struct ConsensusState {
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
     pub epoch_genesis_hash: [u8; 32],
+}
+
+impl Default for ConsensusState {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            view: 0,
+            latest_height: 0,
+            head_digest: sha256::Digest([0u8; 32]),
+            next_withdrawal_index: 0,
+            deposit_queue: Default::default(),
+            withdrawal_queue: Default::default(),
+            validator_accounts: Default::default(),
+            pending_checkpoint: None,
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
+            forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
+        }
+    }
 }
 
 impl ConsensusState {
@@ -251,6 +272,7 @@ impl EncodeSize for ConsensusState {
         + 32 // forkchoice.safe_block_hash
         + 32 // forkchoice.finalized_block_hash
         + 32 // epoch_genesis_hash
+        + 32 // head_digest
     }
 }
 
@@ -323,10 +345,15 @@ impl Read for ConsensusState {
         let mut epoch_genesis_hash = [0u8; 32];
         buf.copy_to_slice(&mut epoch_genesis_hash);
 
+        let mut head_digest_bytes = [0u8; 32];
+        buf.copy_to_slice(&mut head_digest_bytes);
+        let head_digest = sha256::Digest(head_digest_bytes);
+
         Ok(Self {
             epoch,
             view,
             latest_height,
+            head_digest,
             next_withdrawal_index,
             deposit_queue,
             withdrawal_queue,
@@ -390,6 +417,9 @@ impl Write for ConsensusState {
 
         // Write epoch_genesis_hash
         buf.put_slice(&self.epoch_genesis_hash);
+
+        // Write head_digest
+        buf.put_slice(&self.head_digest.0);
     }
 }
 

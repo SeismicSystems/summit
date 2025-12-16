@@ -424,8 +424,10 @@ where
 
                             // Search for block locally, otherwise fetch it remotely
                             if let Some(block) = self.find_block(&mut buffer, commitment).await {
-                                // If found, persist the block
-                                self.cache_block(round, commitment, block).await;
+                                // If found, persist the block and send to application
+                                self.cache_block(round, commitment, block.clone()).await;
+                                application.report(Update::NotarizedBlock(block.clone())).await;
+                                self.notify_subscribers(commitment, &block).await;
                             } else {
                                 debug!(?round, "notarized block missing");
                                 resolver.fetch(Request::<B>::Notarized { round }).await;
@@ -752,8 +754,9 @@ where
                                     }
 
                                     // Cache the notarization and block
-                                    self.cache_block(round, commitment, block).await;
+                                    self.cache_block(round, commitment, block.clone()).await;
                                     self.cache.put_notarization(round, commitment, notarization).await;
+                                    self.notify_subscribers(commitment, &block).await;
                                 },
                             }
                         },
@@ -811,10 +814,12 @@ where
         if utils::is_last_block_in_epoch(self.epoch_length, next_height).is_some() {
             let finalize = self.get_finalization_by_height(next_height).await;
             application
-                .report(Update::Block((block, finalize), ack))
+                .report(Update::FinalizedBlock((block, finalize), ack))
                 .await;
         } else {
-            application.report(Update::Block((block, None), ack)).await;
+            application
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
         }
 
         self.pending_ack.replace(PendingAck {

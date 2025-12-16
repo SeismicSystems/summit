@@ -10,8 +10,9 @@ Summit is a high-performance consensus client designed to drive EVM-based blockc
 - **Responsive Consensus**: Powered by the [Simplex consensus protocol](https://eprint.iacr.org/2023/463), enabling sub-second block times
 - **High Throughput**: Significantly higher TPS than Ethereum
 - **EVM Compatible**: Works with any execution client supporting the Engine API
-- **BLS12-381 Cryptography**: Secure validator key management
+- **BLS12-381 & Ed25519 Cryptography**: Secure validator key management
 - **Built with Commonware**: Leverages primitives from the [Commonware library](https://commonware.xyz)
+- **Dynamic Validator Set**: Supports validator deposits (EIP-6110) and withdrawals (EIP-7002)
 
 Summit uses the Simplex protocol, a responsive consensus mechanism that adapts to network conditions rather than waiting for predetermined timeouts. This allows the network to move as fast as conditions permit, achieving sub-second block times in most cases.
 
@@ -85,9 +86,6 @@ Summit acts as the consensus layer, communicating with EVM execution clients thr
 - Network communication
 
 ## Next steps / Future Roadmap
-- Dynamic Validator sets and staking through the Ethereum staking contract
-  - Currently Summit just uses a static validator set at Genesis
-  - We will leverage EVMs staking contract and add and remove validators in a similar fashion as Ethereum
 - Deeper benchmarks
 - More optimizations (potentially DKG threshold signatures to improve throughput)
 - Full Audit and completeness Q4 2025
