@@ -28,3 +28,9 @@ mod types;
 pub use client::*;
 pub use traits::*;
 pub use types::*;
+
+// Re-export API response types from summit_types for convenience
+pub use summit_types::rpc::{
+    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, PublicKeysResponse, ServerMode,
+    ServerModeResponse,
+};

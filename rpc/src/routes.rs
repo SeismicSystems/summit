@@ -15,17 +15,14 @@ use serde::Deserialize;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},
-    rpc::{CheckpointInfoRes, CheckpointRes},
+    rpc::{
+        CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, PublicKeysResponse,
+        ServerMode, ServerModeResponse,
+    },
     utils::get_expanded_path,
 };
 
-use crate::{
-    GenesisRpcState, PathSender, RpcState,
-    client::{
-        DepositTransactionResponse, PublicKeysResponse,
-        ServerMode, ServerModeResponse,
-    },
-};
+use crate::{GenesisRpcState, PathSender, RpcState};
 
 #[derive(Deserialize)]
 struct ValidatorBalanceQuery {

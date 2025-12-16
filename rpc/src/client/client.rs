@@ -1,4 +1,9 @@
-use crate::client::{traits::*, types::*};
+use summit_types::rpc::{
+    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, PublicKeysResponse,
+    ServerModeResponse,
+};
+
+use crate::client::{traits::*, types::ClientError};
 
 /// HTTP client for Summit RPC
 pub struct Client {

@@ -1,4 +1,9 @@
-use crate::client::types::*;
+use summit_types::rpc::{
+    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, PublicKeysResponse,
+    ServerModeResponse,
+};
+
+use crate::client::types::ClientError;
 
 /// Shared client methods available in both genesis and node modes
 #[async_trait::async_trait]
