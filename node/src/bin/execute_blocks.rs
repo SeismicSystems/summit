@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     let client = HistoricalEngineClient::new(engine_ipc_path.clone(), block_dir.clone()).await;
     #[allow(unused)]
     #[cfg(feature = "bench")]
-    let client = EthereumHistoricalEngineClient::new(engine_ipc_path, block_dir).await;
+    let mut client = EthereumHistoricalEngineClient::new(engine_ipc_path, block_dir).await;
 
     // Load and commit blocks to Reth
     let genesis_hash: [u8; 32] = from_hex_formatted(genesis_hash_str)

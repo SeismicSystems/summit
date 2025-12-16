@@ -357,7 +357,7 @@ pub mod base_benchmarking {
             }
         }
 
-        async fn commit_hash(&self, fork_choice_state: ForkchoiceState) {
+        async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
             self.provider
                 .fork_choice_updated_v3(fork_choice_state, None)
                 .await
