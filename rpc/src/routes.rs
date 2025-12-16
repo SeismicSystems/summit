@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::{GenesisRpcState, PathSender, RpcState};
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use axum::{
     Json, Router,
@@ -12,14 +13,13 @@ use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_cryptography::{Committable, Hasher as _, Sha256, Signer as _};
 use commonware_utils::from_hex_formatted;
 use serde::{Deserialize, Serialize};
+use ssz::Encode;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},
     rpc::{CheckpointInfoRes, CheckpointRes},
     utils::get_expanded_path,
 };
-
-use crate::{GenesisRpcState, PathSender, RpcState};
 
 #[derive(Serialize)]
 struct PublicKeysResponse {
@@ -226,7 +226,7 @@ impl RpcRoutes {
         };
 
         Ok(Json(CheckpointRes {
-            checkpoint: checkpoint.data.into(),
+            checkpoint: checkpoint.as_ssz_bytes(),
             digest: checkpoint.digest.0,
             epoch,
         }))
