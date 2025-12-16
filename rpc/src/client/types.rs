@@ -66,7 +66,7 @@ pub struct DepositTransactionResponse {
     pub node_pubkey: [u8; 32],
     pub consensus_pubkey: Vec<u8>, // 48 bytes
     pub withdrawal_credentials: [u8; 32],
-    pub node_signature: Vec<u8>, // 48 bytes
+    pub node_signature: Vec<u8>,      // 48 bytes
     pub consensus_signature: Vec<u8>, // 96 bytes
     pub deposit_data_root: [u8; 32],
 }

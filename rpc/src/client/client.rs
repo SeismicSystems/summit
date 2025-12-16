@@ -16,22 +16,41 @@ impl Client {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
     }
 }
 
 #[async_trait::async_trait]
 impl SummitClient for Client {
     async fn health(&self) -> Result<String, reqwest::Error> {
-        self.client.get(self.url("health")).send().await?.text().await
+        self.client
+            .get(self.url("health"))
+            .send()
+            .await?
+            .text()
+            .await
     }
 
     async fn server_mode(&self) -> Result<ServerModeResponse, reqwest::Error> {
-        self.client.get(self.url("server_mode")).send().await?.json().await
+        self.client
+            .get(self.url("server_mode"))
+            .send()
+            .await?
+            .json()
+            .await
     }
 
     async fn get_public_keys(&self) -> Result<PublicKeysResponse, reqwest::Error> {
-        self.client.get(self.url("get_public_keys")).send().await?.json().await
+        self.client
+            .get(self.url("get_public_keys"))
+            .send()
+            .await?
+            .json()
+            .await
     }
 }
 
@@ -60,15 +79,31 @@ impl NodeClient for Client {
     }
 
     async fn get_latest_checkpoint(&self) -> Result<CheckpointRes, reqwest::Error> {
-        self.client.get(self.url("get_latest_checkpoint")).send().await?.json().await
+        self.client
+            .get(self.url("get_latest_checkpoint"))
+            .send()
+            .await?
+            .json()
+            .await
     }
 
     async fn get_latest_checkpoint_info(&self) -> Result<CheckpointInfoRes, reqwest::Error> {
-        self.client.get(self.url("get_latest_checkpoint_info")).send().await?.json().await
+        self.client
+            .get(self.url("get_latest_checkpoint_info"))
+            .send()
+            .await?
+            .json()
+            .await
     }
 
     async fn get_latest_height(&self) -> Result<u64, ClientError> {
-        let text = self.client.get(self.url("get_latest_height")).send().await?.text().await?;
+        let text = self
+            .client
+            .get(self.url("get_latest_height"))
+            .send()
+            .await?
+            .text()
+            .await?;
         Ok(text.parse()?)
     }
 

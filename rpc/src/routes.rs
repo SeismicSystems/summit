@@ -21,8 +21,8 @@ use summit_types::{
 use crate::{
     GenesisRpcState, PathSender, RpcState,
     client::{
-        CheckpointInfoRes, CheckpointRes, DepositTransactionResponse,
-        PublicKeysResponse, ServerMode, ServerModeResponse,
+        CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, PublicKeysResponse,
+        ServerMode, ServerModeResponse,
     },
 };
 
@@ -88,11 +88,15 @@ impl RpcRoutes {
     }
 
     async fn handle_server_mode() -> Json<ServerModeResponse> {
-        Json(ServerModeResponse { mode: ServerMode::Node })
+        Json(ServerModeResponse {
+            mode: ServerMode::Node,
+        })
     }
 
     async fn handle_server_mode_genesis() -> Json<ServerModeResponse> {
-        Json(ServerModeResponse { mode: ServerMode::Genesis })
+        Json(ServerModeResponse {
+            mode: ServerMode::Genesis,
+        })
     }
 
     async fn handle_get_pub_keys<S: Scheme, B: ConsensusBlock + Committable>(

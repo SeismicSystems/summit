@@ -1,5 +1,5 @@
-pub mod routes;
 pub mod client;
+pub mod routes;
 use crate::routes::RpcRoutes;
 use commonware_consensus::Block as ConsensusBlock;
 use commonware_consensus::simplex::signing_scheme::Scheme;
