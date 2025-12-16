@@ -29,6 +29,18 @@ struct PublicKeysResponse {
     consensus: String,
 }
 
+#[derive(Serialize)]
+struct ServerModeResponse {
+    mode: ServerMode,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ServerMode {
+    Genesis,
+    Node,
+}
+
 #[derive(Deserialize)]
 struct ValidatorBalanceQuery {
     public_key: String,
@@ -55,6 +67,7 @@ impl RpcRoutes {
 
         Router::new()
             .route("/health", get(Self::handle_health_check))
+            .route("/server_mode", get(Self::handle_server_mode))
             .route("/get_public_keys", get(Self::handle_get_pub_keys::<S, B>))
             .route(
                 "/get_checkpoint/{epoch}",
@@ -89,6 +102,7 @@ impl RpcRoutes {
 
         Router::new()
             .route("/health", get(Self::handle_health_check))
+            .route("/server_mode", get(Self::handle_server_mode_genesis))
             .route("/get_public_keys", get(Self::handle_get_pub_keys_genesis))
             .route("/send_genesis", post(Self::handle_send_genesis))
             .with_state(state)
@@ -96,6 +110,14 @@ impl RpcRoutes {
 
     async fn handle_health_check() -> &'static str {
         "Ok"
+    }
+
+    async fn handle_server_mode() -> Json<ServerModeResponse> {
+        Json(ServerModeResponse { mode: ServerMode::Node })
+    }
+
+    async fn handle_server_mode_genesis() -> Json<ServerModeResponse> {
+        Json(ServerModeResponse { mode: ServerMode::Genesis })
     }
 
     async fn handle_get_pub_keys<S: Scheme, B: ConsensusBlock + Committable>(
