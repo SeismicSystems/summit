@@ -21,7 +21,7 @@ pub struct ConsensusState {
     pub withdrawal_queue: VecDeque<PendingWithdrawal>,
     pub validator_accounts: HashMap<[u8; 32], ValidatorAccount>,
     pub pending_checkpoint: Option<Checkpoint>,
-    pub added_validators: Vec<PublicKey>,
+    pub added_validators: HashMap<u64, Vec<PublicKey>>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
     pub epoch_genesis_hash: [u8; 32],
@@ -39,7 +39,7 @@ impl Default for ConsensusState {
             withdrawal_queue: Default::default(),
             validator_accounts: Default::default(),
             pending_checkpoint: None,
-            added_validators: Vec::new(),
+            added_validators: Default::default(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
@@ -103,12 +103,15 @@ impl ConsensusState {
         self.pending_checkpoint = checkpoint;
     }
 
-    pub fn get_added_validators(&self) -> &Vec<PublicKey> {
-        &self.added_validators
+    pub fn get_added_validators(&self, epoch: u64) -> Option<&Vec<PublicKey>> {
+        self.added_validators.get(&epoch)
     }
 
-    pub fn set_added_validators(&mut self, validators: Vec<PublicKey>) {
-        self.added_validators = validators;
+    pub fn set_added_validators(&mut self, epoch: u64, validators: Vec<PublicKey>) {
+        self.added_validators
+            .entry(epoch)
+            .or_default()
+            .extend_from_slice(&validators);
     }
 
     pub fn get_removed_validators(&self) -> &Vec<PublicKey> {
@@ -265,7 +268,7 @@ impl EncodeSize for ConsensusState {
         + 1 // pending_checkpoint presence flag
         + self.pending_checkpoint.as_ref().map_or(0, |cp| cp.encode_size())
         + 4 // added_validators length
-        + self.added_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
+        + self.added_validators.values().map(|validators| 8 + 4 + validators.iter().map(|pk| pk.encode_size()).sum::<usize>()).sum::<usize>()
         + 4 // removed_validators length
         + self.removed_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
         + 32 // forkchoice.head_block_hash
@@ -316,9 +319,15 @@ impl Read for ConsensusState {
 
         // Read added_validators
         let added_validators_len = buf.get_u32() as usize;
-        let mut added_validators = Vec::with_capacity(added_validators_len);
+        let mut added_validators = HashMap::new();
         for _ in 0..added_validators_len {
-            added_validators.push(PublicKey::read_cfg(buf, &())?);
+            let key = buf.get_u64();
+            let validator_count = buf.get_u32() as usize;
+            let mut validators = Vec::with_capacity(validator_count);
+            for _ in 0..validator_count {
+                validators.push(PublicKey::read_cfg(buf, &())?);
+            }
+            added_validators.insert(key, validators);
         }
 
         // Read removed_validators
@@ -400,8 +409,12 @@ impl Write for ConsensusState {
 
         // Write added_validators
         buf.put_u32(self.added_validators.len() as u32);
-        for validator in &self.added_validators {
-            validator.write(buf);
+        for (key, validators) in &self.added_validators {
+            buf.put_u64(*key);
+            buf.put_u32(validators.len() as u32);
+            for validator in validators {
+                validator.write(buf);
+            }
         }
 
         // Write removed_validators
@@ -442,7 +455,7 @@ mod tests {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
-    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
+    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381, ed25519};
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
         let mut withdrawal_credentials = [0u8; 32];
@@ -551,6 +564,21 @@ mod tests {
         original_state.set_account(pubkey1, account1);
         original_state.set_account(pubkey2, account2);
 
+        // Add validators scheduled for future epochs
+        let validator1 = ed25519::PrivateKey::from_seed(10).public_key();
+        let validator2 = ed25519::PrivateKey::from_seed(20).public_key();
+        let validator3 = ed25519::PrivateKey::from_seed(30).public_key();
+        let validator4 = ed25519::PrivateKey::from_seed(40).public_key();
+
+        // Schedule validators for epoch 9 (current epoch + 2)
+        original_state.set_added_validators(9, vec![validator1.clone(), validator2.clone()]);
+
+        // Schedule validators for epoch 10
+        original_state.set_added_validators(10, vec![validator3.clone()]);
+
+        // Schedule validators for epoch 11
+        original_state.set_added_validators(11, vec![validator4.clone()]);
+
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
 
@@ -585,6 +613,24 @@ mod tests {
         let decoded_account2 = decoded_state.validator_accounts.get(&pubkey2).unwrap();
         assert_eq!(decoded_account2.balance, 64000000000);
         assert_eq!(decoded_account2.last_deposit_index, 2);
+
+        // Verify added_validators
+        assert_eq!(decoded_state.added_validators.len(), 3);
+
+        // Check epoch 9 has 2 validators
+        let epoch9_validators = decoded_state.get_added_validators(9).unwrap();
+        assert_eq!(epoch9_validators.len(), 2);
+
+        // Check epoch 10 has 1 validator
+        let epoch10_validators = decoded_state.get_added_validators(10).unwrap();
+        assert_eq!(epoch10_validators.len(), 1);
+
+        // Check epoch 11 has 1 validator
+        let epoch11_validators = decoded_state.get_added_validators(11).unwrap();
+        assert_eq!(epoch11_validators.len(), 1);
+
+        // Check that epoch 8 returns None (no validators scheduled)
+        assert!(decoded_state.get_added_validators(8).is_none());
     }
 
     #[test]
@@ -605,6 +651,14 @@ mod tests {
         let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
         state.set_account(pubkey, account);
+
+        // Add validators scheduled for future epochs
+        let validator1 = ed25519::PrivateKey::from_seed(10).public_key();
+        let validator2 = ed25519::PrivateKey::from_seed(20).public_key();
+        let validator3 = ed25519::PrivateKey::from_seed(30).public_key();
+
+        state.set_added_validators(5, vec![validator1.clone()]);
+        state.set_added_validators(6, vec![validator2.clone(), validator3.clone()]);
 
         let predicted_size = state.encode_size();
         let actual_encoded = state.encode();
