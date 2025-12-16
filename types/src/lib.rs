@@ -12,6 +12,7 @@ pub mod keystore;
 pub mod network_oracle;
 #[cfg(feature = "e2e")]
 pub mod reth;
+pub mod rpc;
 pub mod scheme;
 pub mod utils;
 pub mod withdrawal;

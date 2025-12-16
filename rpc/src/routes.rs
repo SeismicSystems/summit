@@ -15,13 +15,14 @@ use serde::Deserialize;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},
+    rpc::{CheckpointInfoRes, CheckpointRes},
     utils::get_expanded_path,
 };
 
 use crate::{
     GenesisRpcState, PathSender, RpcState,
     client::{
-        CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, PublicKeysResponse,
+        DepositTransactionResponse, PublicKeysResponse,
         ServerMode, ServerModeResponse,
     },
 };
