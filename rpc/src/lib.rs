@@ -1,4 +1,3 @@
-mod req_res;
 pub mod routes;
 pub mod client;
 use crate::routes::RpcRoutes;

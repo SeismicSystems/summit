@@ -11,7 +11,7 @@ use commonware_consensus::Block as ConsensusBlock;
 use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_cryptography::{Committable, Hasher as _, Sha256, Signer as _};
 use commonware_utils::from_hex_formatted;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},
@@ -20,40 +20,15 @@ use summit_types::{
 
 use crate::{
     GenesisRpcState, PathSender, RpcState,
-    req_res::{CheckpointInfoRes, CheckpointRes},
+    client::{
+        CheckpointInfoRes, CheckpointRes, DepositTransactionResponse,
+        PublicKeysResponse, ServerMode, ServerModeResponse,
+    },
 };
-
-#[derive(Serialize)]
-struct PublicKeysResponse {
-    node: String,
-    consensus: String,
-}
-
-#[derive(Serialize)]
-struct ServerModeResponse {
-    mode: ServerMode,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "lowercase")]
-enum ServerMode {
-    Genesis,
-    Node,
-}
 
 #[derive(Deserialize)]
 struct ValidatorBalanceQuery {
     public_key: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct DepositTransactionResponse {
-    node_pubkey: [u8; 32],
-    consensus_pubkey: Vec<u8>, // 48 bytes
-    withdrawal_credentials: [u8; 32],
-    node_signature: Vec<u8>,      // 48 bytes
-    consensus_signature: Vec<u8>, // 96 bytes
-    deposit_data_root: [u8; 32],
 }
 
 pub(crate) struct RpcRoutes;
