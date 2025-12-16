@@ -23,7 +23,6 @@ use summit_types::{
     utils::get_expanded_path,
 };
 
-use crate::{GenesisRpcState, PathSender, RpcState};
 
 #[derive(Deserialize)]
 struct ValidatorBalanceQuery {
