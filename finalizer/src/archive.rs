@@ -3,7 +3,7 @@ use std::{
     os::unix::net::UnixStream,
 };
 
-use commonware_codec::Encode as _;
+use ssz::Encode;
 use summit_types::checkpoint::Checkpoint;
 use tracing::info;
 
@@ -21,7 +21,7 @@ pub(crate) fn backup_with_enclave(epoch: u64, checkpoint: Checkpoint) -> std::io
     // wait for ack
     wait_for_ack(&mut stream)?;
     // send checkpoint length
-    let checkpoint_bytes = checkpoint.encode();
+    let checkpoint_bytes = checkpoint.as_ssz_bytes();
 
     let len = checkpoint_bytes.len() as u32;
     stream.write_all(&len.to_le_bytes())?;
