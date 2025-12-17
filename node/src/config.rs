@@ -61,6 +61,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOr
 impl<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
     EngineConfig<C, S, O>
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn get_engine_config(
         engine_client: C,
         oracle: O,

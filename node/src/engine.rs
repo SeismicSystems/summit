@@ -52,6 +52,7 @@ const MAX_REPAIR: NonZero<usize> = NZUsize!(10);
 
 const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 3;
 pub const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000; // in gwei
+pub const VALIDATOR_NUM_WARM_UP_EPOCHS: u64 = 2;
 
 #[cfg(feature = "e2e")]
 pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 10;
@@ -282,6 +283,7 @@ where
                 validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
                 validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
                 validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
+                validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
                 buffer_pool: buffer_pool.clone(),
                 genesis_hash: cfg.genesis_hash,
                 initial_state: cfg.initial_state,

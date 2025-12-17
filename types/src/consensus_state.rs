@@ -107,11 +107,11 @@ impl ConsensusState {
         self.added_validators.get(&epoch)
     }
 
-    pub fn set_added_validators(&mut self, epoch: u64, validators: Vec<PublicKey>) {
+    pub fn add_validator(&mut self, epoch: u64, validator: PublicKey) {
         self.added_validators
             .entry(epoch)
             .or_default()
-            .extend_from_slice(&validators);
+            .push(validator);
     }
 
     pub fn get_removed_validators(&self) -> &Vec<PublicKey> {
@@ -571,13 +571,14 @@ mod tests {
         let validator4 = ed25519::PrivateKey::from_seed(40).public_key();
 
         // Schedule validators for epoch 9 (current epoch + 2)
-        original_state.set_added_validators(9, vec![validator1.clone(), validator2.clone()]);
+        original_state.add_validator(9, validator1.clone());
+        original_state.add_validator(9, validator2.clone());
 
         // Schedule validators for epoch 10
-        original_state.set_added_validators(10, vec![validator3.clone()]);
+        original_state.add_validator(10, validator3.clone());
 
         // Schedule validators for epoch 11
-        original_state.set_added_validators(11, vec![validator4.clone()]);
+        original_state.add_validator(11, validator4.clone());
 
         let mut encoded = original_state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
@@ -657,8 +658,9 @@ mod tests {
         let validator2 = ed25519::PrivateKey::from_seed(20).public_key();
         let validator3 = ed25519::PrivateKey::from_seed(30).public_key();
 
-        state.set_added_validators(5, vec![validator1.clone()]);
-        state.set_added_validators(6, vec![validator2.clone(), validator3.clone()]);
+        state.add_validator(5, validator1.clone());
+        state.add_validator(6, validator2.clone());
+        state.add_validator(6, validator3.clone());
 
         let predicted_size = state.encode_size();
         let actual_encoded = state.encode();

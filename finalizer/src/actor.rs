@@ -81,6 +81,7 @@ pub struct Finalizer<
     validator_minimum_stake: u64,     // in gwei
     validator_withdrawal_period: u64, // in blocks
     validator_onboarding_limit_per_block: usize,
+    validator_num_warm_up_epochs: u64,
     oracle: O,
     orchestrator_mailbox: summit_orchestrator::Mailbox,
     node_public_key: PublicKey,
@@ -157,6 +158,7 @@ impl<
                 validator_minimum_stake: cfg.validator_minimum_stake,
                 validator_withdrawal_period: cfg.validator_withdrawal_period,
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
+                validator_num_warm_up_epochs: cfg.validator_num_warm_up_epochs,
                 node_public_key: cfg.node_public_key,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,
@@ -316,6 +318,7 @@ impl<
                 self.validator_minimum_stake,
                 self.validator_withdrawal_period,
                 self.validator_onboarding_limit_per_block,
+                self.validator_num_warm_up_epochs,
             )
             .await;
         }
@@ -409,21 +412,28 @@ impl<
             }
 
             // Add and remove validators for the next epoch
-            if !self.canonical_state.added_validators.is_empty()
+            let next_epoch = self.canonical_state.epoch + 1;
+            if self
+                .canonical_state
+                .added_validators
+                .contains_key(&next_epoch)
                 || !self.canonical_state.removed_validators.is_empty()
             {
-                // TODO(matthias): we can probably find a way to do this without iterating over the joining validators
-                // Activate validators that staked this epoch.
-                for key in self.canonical_state.added_validators.iter() {
-                    let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                    let account = self
-                        .canonical_state
-                        .validator_accounts
-                        .get_mut(&key_bytes)
-                        .expect(
-                            "only validators with accounts are added to the added_validators queue",
-                        );
-                    account.status = ValidatorStatus::Active;
+                // Activate validators that for the coming epoch.
+                if let Some(added_validators) =
+                    self.canonical_state.added_validators.get(&next_epoch)
+                {
+                    for key in added_validators {
+                        let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+                        let account = self
+                            .canonical_state
+                            .validator_accounts
+                            .get_mut(&key_bytes)
+                            .expect(
+                                "only validators with accounts are added to the added_validators queue",
+                            );
+                        account.status = ValidatorStatus::Active;
+                    }
                 }
 
                 for key in self.canonical_state.removed_validators.iter() {
@@ -450,13 +460,12 @@ impl<
 
             if self.archive_mode {
                 // Should always be there
-                if let Some(checkpoint) = &self.canonical_state.pending_checkpoint {
-                    if let Err(e) =
+                if let Some(checkpoint) = &self.canonical_state.pending_checkpoint
+                    && let Err(e) =
                         backup_with_enclave(self.canonical_state.epoch, checkpoint.clone())
-                    {
-                        // This shouldnt be critical but it should be logged
-                        error!("Unable to backup with enclave: {}", e);
-                    }
+                {
+                    // This shouldn't be critical but it should be logged
+                    error!("Unable to backup with enclave: {}", e);
                 }
             }
 
@@ -511,9 +520,7 @@ impl<
             epoch_change = true;
 
             // Only clear the added and removed validators after saving the state to disk
-            if !self.canonical_state.added_validators.is_empty() {
-                self.canonical_state.added_validators.clear();
-            }
+            self.canonical_state.added_validators.remove(&next_epoch);
             if !self.canonical_state.removed_validators.is_empty() {
                 self.canonical_state.removed_validators.clear();
             }
@@ -616,6 +623,7 @@ impl<
                 self.validator_minimum_stake,
                 self.validator_withdrawal_period,
                 self.validator_onboarding_limit_per_block,
+                self.validator_num_warm_up_epochs,
             )
             .await;
 
@@ -710,12 +718,18 @@ impl<
             // Only submit withdrawals at the end of an epoch
             let ready_withdrawals =
                 state.get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
+            let next_epoch = state.epoch;
             BlockAuxData {
                 epoch: state.epoch,
                 withdrawals: ready_withdrawals,
                 checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
-                added_validators: state.added_validators.clone(),
+                // The block proposer needs the validators that will be added in the next epoch
+                added_validators: state
+                    .added_validators
+                    .get(&next_epoch)
+                    .cloned()
+                    .unwrap_or_default(),
                 removed_validators: state.removed_validators.clone(),
                 forkchoice: state.forkchoice,
             }
@@ -794,6 +808,7 @@ async fn execute_block<
     validator_minimum_stake: u64,
     validator_withdrawal_period: u64,
     validator_onboarding_limit_per_block: usize,
+    validator_num_warm_up_epochs: u64,
 ) {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
@@ -866,6 +881,7 @@ async fn execute_block<
             epoch_num_of_blocks,
             validator_onboarding_limit_per_block,
             validator_minimum_stake,
+            validator_num_warm_up_epochs,
         )
         .await;
         #[cfg(feature = "prom")]
@@ -1066,6 +1082,7 @@ async fn parse_execution_requests<
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_execution_requests<
     S: Signer<PublicKey = PublicKey>,
     V: Variant,
@@ -1078,6 +1095,7 @@ async fn process_execution_requests<
     epoch_num_of_blocks: u64,
     validator_onboarding_limit_per_block: usize,
     validator_minimum_stake: u64,
+    validator_num_warm_up_epochs: u64,
 ) {
     if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
         for _ in 0..validator_onboarding_limit_per_block {
@@ -1151,7 +1169,8 @@ async fn process_execution_requests<
                 if !account_exists && validator_balance >= validator_minimum_stake {
                     // If the node shuts down, before the account changes are committed,
                     // then everything should work normally, because the registry is not persisted to disk
-                    state.added_validators.push(request.node_pubkey.clone());
+                    let activation_epoch = state.epoch + validator_num_warm_up_epochs;
+                    state.add_validator(activation_epoch, request.node_pubkey.clone());
                 }
                 #[cfg(debug_assertions)]
                 {
