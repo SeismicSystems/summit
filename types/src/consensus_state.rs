@@ -501,6 +501,7 @@ mod tests {
             balance,
             pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
+            has_pending_withdrawal: false,
             last_deposit_index: index,
         }
     }
