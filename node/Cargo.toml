@@ -17,11 +17,6 @@ path = "src/bin/stake_and_checkpoint.rs"
 required-features = ["e2e"]
 
 [[bin]]
-name = "stake-and-checkpoint-early"
-path = "src/bin/stake_and_checkpoint_early.rs"
-required-features = ["e2e"]
-
-[[bin]]
 name = "withdraw-and-exit"
 path = "src/bin/withdraw_and_exit.rs"
 required-features = ["e2e"]

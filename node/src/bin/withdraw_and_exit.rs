@@ -30,7 +30,7 @@ use std::{
     thread::JoinHandle,
 };
 use summit::args::{RunFlags, run_node_local};
-use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_MINIMUM_STAKE};
+use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_MINIMUM_STAKE, VALIDATOR_WITHDRAWAL_NUM_EPOCHS};
 use summit_types::PublicKey;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
@@ -238,10 +238,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("failed to send deposit transaction");
 
             // Wait for all nodes to continue making progress
-            let epoch_end = BLOCKS_PER_EPOCH;
+            let end_height = BLOCKS_PER_EPOCH * (VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 1);
             println!(
                 "Waiting for all {} nodes to reach height {}",
-                NUM_NODES, epoch_end
+                NUM_NODES, end_height
             );
             loop {
                 let mut all_ready = true;
@@ -249,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let rpc_port = get_node_flags(idx as usize).rpc_port;
                     match get_latest_height(rpc_port).await {
                         Ok(height) => {
-                            if height < epoch_end {
+                            if height < end_height {
                                 all_ready = false;
                                 println!("Node {} at height {}", idx, height);
                             }
@@ -261,7 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 if all_ready {
-                    println!("All nodes have reached height {}", epoch_end);
+                    println!("All nodes have reached height {}", end_height);
                     break;
                 }
                 context.sleep(Duration::from_secs(2)).await;
@@ -275,7 +275,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let node0_provider = ProviderBuilder::new().connect_http(node0_url.parse().expect("Invalid URL"));
 
             // Check
-
             let balance_after = node0_provider.get_balance(withdrawal_credentials).await.expect("Failed to get balance after withdrawal");
             println!("Withdrawal credentials balance after: {} wei", balance_after);
 
