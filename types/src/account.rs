@@ -411,9 +411,13 @@ mod tests {
             ValidatorStatus::from_u8(2).unwrap(),
             ValidatorStatus::SubmittedExitRequest
         );
+        assert_eq!(
+            ValidatorStatus::from_u8(3).unwrap(),
+            ValidatorStatus::Joining
+        );
 
         // Test invalid status
-        assert!(ValidatorStatus::from_u8(3).is_err());
+        assert!(ValidatorStatus::from_u8(4).is_err());
         assert!(ValidatorStatus::from_u8(255).is_err());
     }
 
