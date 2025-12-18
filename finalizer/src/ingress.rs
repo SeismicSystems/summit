@@ -6,6 +6,7 @@ use futures::{
     channel::{mpsc, oneshot},
 };
 use summit_syncer::Update;
+use summit_types::account::ValidatorAccount;
 use summit_types::{
     Block, BlockAuxData, Digest, PublicKey,
     checkpoint::Checkpoint,
@@ -165,6 +166,25 @@ impl<S: Scheme, B: ConsensusBlock + Committable> FinalizerMailbox<S, B> {
             unreachable!("request and response variants must match");
         };
         balance
+    }
+
+    // Added for testing
+    pub async fn get_validator_account(&self, public_key: PublicKey) -> Option<ValidatorAccount> {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetValidatorAccount(public_key);
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::ValidatorAccount(account) = res else {
+            unreachable!("request and response variants must match");
+        };
+        account
     }
 }
 

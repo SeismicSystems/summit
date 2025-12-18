@@ -2,7 +2,6 @@ use crate::archive::backup_with_enclave;
 use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_eips::eip4895::Withdrawal;
-use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 #[allow(unused)]
 use commonware_codec::{DecodeExt as _, ReadExt as _};
@@ -33,10 +32,12 @@ use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
-use summit_types::execution_request::ExecutionRequest;
+use summit_types::execution_request::{ExecutionRequest, WithdrawalRequest};
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::EpochTransition;
-use summit_types::utils::{is_last_block_of_epoch, is_penultimate_block_of_epoch};
+use summit_types::utils::{
+    is_last_block_of_epoch, is_penultimate_block_of_epoch, parse_withdrawal_credentials,
+};
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
@@ -78,8 +79,8 @@ pub struct Finalizer<
     validator_max_withdrawals_per_block: usize,
     epoch_num_of_blocks: u64,
     protocol_version_digest: Digest,
-    validator_minimum_stake: u64,     // in gwei
-    validator_withdrawal_period: u64, // in blocks
+    validator_minimum_stake: u64,         // in gwei
+    validator_withdrawal_num_epochs: u64, // in epochs
     validator_onboarding_limit_per_block: usize,
     validator_num_warm_up_epochs: u64,
     oracle: O,
@@ -156,7 +157,7 @@ impl<
                 genesis_hash: cfg.genesis_hash,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
                 validator_minimum_stake: cfg.validator_minimum_stake,
-                validator_withdrawal_period: cfg.validator_withdrawal_period,
+                validator_withdrawal_num_epochs: cfg.validator_withdrawal_num_epochs,
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
                 validator_num_warm_up_epochs: cfg.validator_num_warm_up_epochs,
                 node_public_key: cfg.node_public_key,
@@ -316,9 +317,9 @@ impl<
                 self.validator_max_withdrawals_per_block,
                 self.protocol_version_digest,
                 self.validator_minimum_stake,
-                self.validator_withdrawal_period,
                 self.validator_onboarding_limit_per_block,
                 self.validator_num_warm_up_epochs,
+                self.validator_withdrawal_num_epochs,
             )
             .await;
         }
@@ -419,7 +420,7 @@ impl<
                 .contains_key(&next_epoch)
                 || !self.canonical_state.removed_validators.is_empty()
             {
-                // Activate validators that for the coming epoch.
+                // Activate validators for the coming epoch.
                 if let Some(added_validators) =
                     self.canonical_state.added_validators.get(&next_epoch)
                 {
@@ -621,9 +622,9 @@ impl<
                 self.validator_max_withdrawals_per_block,
                 self.protocol_version_digest,
                 self.validator_minimum_stake,
-                self.validator_withdrawal_period,
                 self.validator_onboarding_limit_per_block,
                 self.validator_num_warm_up_epochs,
+                self.validator_withdrawal_num_epochs,
             )
             .await;
 
@@ -776,6 +777,17 @@ impl<
                     .map(|account| account.balance);
                 let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
             }
+            ConsensusStateRequest::GetValidatorAccount(public_key) => {
+                let mut key_bytes = [0u8; 32];
+                key_bytes.copy_from_slice(&public_key);
+
+                let account = self
+                    .canonical_state
+                    .validator_accounts
+                    .get(&key_bytes)
+                    .cloned();
+                let _ = sender.send(ConsensusStateResponse::ValidatorAccount(account));
+            }
         }
     }
 }
@@ -806,9 +818,9 @@ async fn execute_block<
     validator_max_withdrawals_per_block: usize,
     protocol_version_digest: Digest,
     validator_minimum_stake: u64,
-    validator_withdrawal_period: u64,
     validator_onboarding_limit_per_block: usize,
     validator_num_warm_up_epochs: u64,
+    validator_withdrawal_num_epochs: u64,
 ) {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
@@ -858,9 +870,9 @@ async fn execute_block<
             block,
             new_height,
             state,
+            epoch_num_of_blocks,
             protocol_version_digest,
-            validator_minimum_stake,
-            validator_withdrawal_period,
+            validator_withdrawal_num_epochs,
         )
         .await;
 
@@ -882,6 +894,7 @@ async fn execute_block<
             validator_onboarding_limit_per_block,
             validator_minimum_stake,
             validator_num_warm_up_epochs,
+            validator_withdrawal_num_epochs,
         )
         .await;
         #[cfg(feature = "prom")]
@@ -935,6 +948,7 @@ async fn execute_block<
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn parse_execution_requests<
     S: Signer<PublicKey = PublicKey>,
     V: Variant,
@@ -944,9 +958,9 @@ async fn parse_execution_requests<
     block: &Block<S, V>,
     new_height: u64,
     state: &mut ConsensusState,
+    epoch_num_of_blocks: u64,
     protocol_version_digest: Digest,
-    validator_minimum_stake: u64,
-    validator_withdrawal_period: u64,
+    validator_withdrawal_num_epochs: u64,
 ) {
     for request_bytes in &block.execution_requests {
         match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
@@ -1018,6 +1032,7 @@ async fn parse_execution_requests<
                             );
                             continue; // Skip this deposit request
                         }
+
                         state.push_deposit(deposit_request);
                     }
                     ExecutionRequest::Withdrawal(mut withdrawal_request) => {
@@ -1026,20 +1041,18 @@ async fn parse_execution_requests<
                             .get_account(&withdrawal_request.validator_pubkey)
                             .cloned()
                         {
-                            // If the validator already submitted an exit request, we skip this withdrawal request
-                            if matches!(account.status, ValidatorStatus::SubmittedExitRequest) {
+                            // If the validator already has a pending withdrawal request, we skip this withdrawal request
+                            if account.has_pending_withdrawal {
                                 info!(
-                                    "Failed to parse withdrawal request because the validator already submitted a request: {withdrawal_request:?}"
+                                    "Skipping withdrawal request because the validator already has a pending withdrawal request: {withdrawal_request:?}"
                                 );
                                 continue; // Skip this withdrawal request
                             }
 
                             // The balance minus any pending withdrawals have to be larger than the amount of the withdrawal request
-                            if account.balance - account.pending_withdrawal_amount
-                                < withdrawal_request.amount
-                            {
+                            if account.balance < withdrawal_request.amount {
                                 info!(
-                                    "Failed to parse withdrawal request due to insufficient balance: {withdrawal_request:?}"
+                                    "Skipping withdrawal request due to insufficient balance: {withdrawal_request:?}"
                                 );
                                 continue; // Skip this withdrawal request
                             }
@@ -1047,29 +1060,59 @@ async fn parse_execution_requests<
                             // The source address must match the validators withdrawal address
                             if withdrawal_request.source_address != account.withdrawal_credentials {
                                 info!(
-                                    "Failed to parse withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
+                                    "Skipping withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
                                 );
                                 continue; // Skip this withdrawal request
                             }
-                            // If after this withdrawal the validator balance would be less than the
-                            // minimum stake, then the full validator balance is withdrawn.
-                            if account.balance
-                                - account.pending_withdrawal_amount
-                                - withdrawal_request.amount
-                                < validator_minimum_stake
-                            {
-                                // Check the remaining balance and set the withdrawal amount accordingly
-                                let remaining_balance =
-                                    account.balance - account.pending_withdrawal_amount;
-                                withdrawal_request.amount = remaining_balance;
+
+                            // Skip the request if the public key is malformatted
+                            let Ok(public_key) =
+                                PublicKey::decode(&withdrawal_request.validator_pubkey[..])
+                            else {
+                                info!(
+                                    "Skipping withdrawal request because the public key is malformatted: {withdrawal_request:?}"
+                                );
+                                continue; // Skip this withdrawal request
+                            };
+
+                            // We don't support partial withdrawals, so the withdrawal amount will be
+                            // set to the entire balance
+                            let remaining_balance = account.balance;
+                            withdrawal_request.amount = remaining_balance;
+
+                            // If the validator is in the warm-up phase after depositing the stake
+                            // and before joining the committee, then the onboarding is aborted
+                            if account.joining_epoch > state.epoch {
+                                // Cancel validator's pending activation
+                                if let Some(validators) =
+                                    state.added_validators.get_mut(&account.joining_epoch)
+                                    && let Some(pos) =
+                                        validators.iter().position(|v| v == &public_key)
+                                {
+                                    validators.remove(pos);
+                                    info!(
+                                        validator = ?public_key,
+                                        activation_epoch = account.joining_epoch,
+                                        current_epoch = state.epoch,
+                                        "cancelled pending validator activation due to withdrawal request"
+                                    );
+                                }
+                            } else {
+                                // Validator is already active - add to removed_validators
+                                state.removed_validators.push(public_key);
                                 account.status = ValidatorStatus::SubmittedExitRequest;
                             }
 
-                            account.pending_withdrawal_amount += withdrawal_request.amount;
+                            account.has_pending_withdrawal = true;
                             state.set_account(withdrawal_request.validator_pubkey, account);
+
+                            // The withdrawal will be completed in `validator_withdrawal_num_epochs` epochs
+                            let withdrawal_height = new_height
+                                + validator_withdrawal_num_epochs * epoch_num_of_blocks
+                                - 1;
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
-                                new_height + validator_withdrawal_period,
+                                withdrawal_height,
                             );
                         }
                     }
@@ -1096,93 +1139,98 @@ async fn process_execution_requests<
     validator_onboarding_limit_per_block: usize,
     validator_minimum_stake: u64,
     validator_num_warm_up_epochs: u64,
+    validator_withdrawal_num_epochs: u64,
 ) {
     if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
         for _ in 0..validator_onboarding_limit_per_block {
             if let Some(request) = state.pop_deposit() {
-                let mut validator_balance = 0;
-                let mut account_exists = false;
-                if let Some(mut account) = state
-                    .get_account(request.node_pubkey.as_ref().try_into().unwrap())
-                    .cloned()
-                {
-                    if request.index > account.last_deposit_index {
-                        account.balance += request.amount;
-                        account.last_deposit_index = request.index;
-                        #[allow(unused)]
-                        #[cfg(debug_assertions)]
-                        {
-                            validator_balance = account.balance;
-                        }
-                        account.last_deposit_index = request.index;
-                        validator_balance = account.balance;
-                        state
-                            .set_account(request.node_pubkey.as_ref().try_into().unwrap(), account);
-                        account_exists = true;
-                    }
-                } else {
-                    // Validate the withdrawal credentials format
-                    // Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20 bytes Ethereum address
-                    if request.withdrawal_credentials.len() != 32 {
-                        warn!(
-                            "Invalid withdrawal credentials length: {} bytes, expected 32",
-                            request.withdrawal_credentials.len()
+                // If the amount is less or more than the minimum stake, or the validator already has a balance
+                // then the deposit will not be processed and a withdrawal is initiated immediately
+                let node_pubkey_bytes = request.node_pubkey.as_ref().try_into().unwrap();
+
+                let maybe_account = state.validator_accounts.get_mut(&node_pubkey_bytes);
+                if maybe_account.is_some() || request.amount != validator_minimum_stake {
+                    if request.amount != validator_minimum_stake {
+                        info!(
+                            "Received deposit request with amount != minimum stake, initiating immediate withdrawal: {request:?}"
                         );
-                        continue; // Skip this deposit
-                    }
-                    // Check prefix is 0x01 (Eth1 withdrawal)
-                    if request.withdrawal_credentials[0] != 0x01 {
-                        warn!(
-                            "Invalid withdrawal credentials prefix: 0x{:02x}, expected 0x01",
-                            request.withdrawal_credentials[0]
+                    } else {
+                        info!(
+                            "Received deposit request for an existing account, initiating immediate withdrawal: {request:?}"
                         );
-                        continue; // Skip this deposit
                     }
-                    // Check 11 zero bytes after the prefix
-                    if !request.withdrawal_credentials[1..12]
-                        .iter()
-                        .all(|&b| b == 0)
-                    {
-                        warn!(
-                            "Invalid withdrawal credentials format: non-zero bytes in positions 1-11"
-                        );
-                        continue; // Skip this deposit
+                    let withdrawal_credentials =
+                        match parse_withdrawal_credentials(request.withdrawal_credentials) {
+                            Ok(withdrawal_credentials) => withdrawal_credentials,
+                            Err(e) => {
+                                warn!("Failed to parse withdrawal credentials: {e}");
+                                continue;
+                            }
+                        };
+
+                    let validator_pubkey: [u8; 32] =
+                        request.node_pubkey.as_ref().try_into().unwrap();
+                    let withdrawal_request = WithdrawalRequest {
+                        source_address: withdrawal_credentials,
+                        validator_pubkey,
+                        amount: request.amount,
+                    };
+                    let withdrawal_height =
+                        new_height + validator_withdrawal_num_epochs * epoch_num_of_blocks - 1;
+
+                    // If an account exists, we have to temporary increase the `pending_withdrawal_amount`,
+                    // otherwise this withdrawal request will decrement the actual account balance.
+                    if let Some(account) = maybe_account {
+                        account.pending_withdrawal_amount += request.amount;
                     }
 
-                    // Create new ValidatorAccount from DepositRequest
-                    let new_account = ValidatorAccount {
-                        consensus_public_key: request.consensus_pubkey.clone(),
-                        withdrawal_credentials: Address::from_slice(
-                            &request.withdrawal_credentials[12..32],
-                        ), // Take last 20 bytes
-                        balance: request.amount,
-                        pending_withdrawal_amount: 0,
-                        status: ValidatorStatus::Inactive,
-                        last_deposit_index: request.index,
+                    state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_height);
+                    continue;
+                }
+
+                // Create new validator account
+                let withdrawal_credentials =
+                    match parse_withdrawal_credentials(request.withdrawal_credentials) {
+                        Ok(withdrawal_credentials) => withdrawal_credentials,
+                        Err(e) => {
+                            warn!("Failed to parse withdrawal credentials: {e}");
+                            continue;
+                        }
                     };
-                    state.set_account(
-                        request.node_pubkey.as_ref().try_into().unwrap(),
-                        new_account,
-                    );
-                    validator_balance = request.amount;
-                }
-                if !account_exists && validator_balance >= validator_minimum_stake {
-                    // If the node shuts down, before the account changes are committed,
-                    // then everything should work normally, because the registry is not persisted to disk
-                    let activation_epoch = state.epoch + validator_num_warm_up_epochs;
-                    state.add_validator(activation_epoch, request.node_pubkey.clone());
-                }
+
+                // Create new ValidatorAccount from DepositRequest
+                let activation_epoch = state.epoch + validator_num_warm_up_epochs;
+                let new_account = ValidatorAccount {
+                    consensus_public_key: request.consensus_pubkey.clone(),
+                    withdrawal_credentials,
+                    balance: request.amount,
+                    pending_withdrawal_amount: 0,
+                    status: ValidatorStatus::Inactive,
+                    has_pending_withdrawal: false,
+                    joining_epoch: activation_epoch,
+                    last_deposit_index: request.index,
+                };
+
+                state.set_account(node_pubkey_bytes, new_account);
+
+                // If the node shuts down, before the account changes are committed,
+                // then everything should work normally, because the registry is not persisted to disk
+                let activation_epoch = state.epoch + validator_num_warm_up_epochs;
+                state.add_validator(activation_epoch, request.node_pubkey.clone());
+
                 #[cfg(debug_assertions)]
                 {
                     use commonware_codec::Encode;
                     let gauge: Gauge = Gauge::default();
-                    gauge.set(validator_balance as i64);
+                    gauge.set(request.amount as i64);
                     context.register(
-                        format!("<registry>{}</registry><creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
-                                !account_exists && validator_balance >= validator_minimum_stake,
-                                hex::encode(request.withdrawal_credentials), hex::encode(request.node_pubkey.encode())),
+                        format!(
+                            "<creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
+                            hex::encode(request.withdrawal_credentials),
+                            hex::encode(request.node_pubkey.encode())
+                        ),
                         "Validator balance",
-                        gauge
+                        gauge,
                     );
                 }
             }
@@ -1198,14 +1246,22 @@ async fn process_execution_requests<
         assert_eq!(pending_withdrawal.inner, *withdrawal);
 
         if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned()
-            && account.balance >= withdrawal.amount
+            && account.balance + account.pending_withdrawal_amount >= withdrawal.amount
         {
-            // This check should never fail, because we checked the balance when
+            // The above balance check should never fail, because we checked the balance when
             // adding the pending withdrawal to the queue
-            account.balance = account.balance.saturating_sub(withdrawal.amount);
-            account.pending_withdrawal_amount = account
-                .pending_withdrawal_amount
-                .saturating_sub(withdrawal.amount);
+
+            // If `pending_withdrawal_amount` is >= withdrawal.amount, then this is an immediate withdrawal
+            // request that was triggered by a invalid deposit request.
+            if account.pending_withdrawal_amount >= withdrawal.amount {
+                account.pending_withdrawal_amount = account
+                    .pending_withdrawal_amount
+                    .saturating_sub(withdrawal.amount);
+            } else {
+                // For a normal withdrawal request, we decrement the balance directly.
+                account.balance = account.balance.saturating_sub(withdrawal.amount);
+                account.has_pending_withdrawal = false;
+            }
 
             #[cfg(debug_assertions)]
             {
@@ -1225,13 +1281,14 @@ async fn process_execution_requests<
             // If the remaining balance is 0, remove the validator account from the state.
             if account.balance == 0 {
                 state.remove_account(&pending_withdrawal.pubkey);
-                state
-                    .removed_validators
-                    .push(PublicKey::decode(&pending_withdrawal.pubkey[..]).unwrap()); // todo(dalton) remove unwrap
             } else {
                 state.set_account(pending_withdrawal.pubkey, account);
             }
         }
+        // Note: if a deposit request with amount less than the minimum stake was submitted,
+        // a withdrawal request will be initiated immediately, without creating a validator account.
+        // This is the only case where we process a withdrawal request, without having a validator account
+        // stored in the consensus state.
     }
 }
 

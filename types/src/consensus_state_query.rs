@@ -1,4 +1,5 @@
 use crate::PublicKey;
+use crate::account::ValidatorAccount;
 use crate::checkpoint::Checkpoint;
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
@@ -9,6 +10,7 @@ pub enum ConsensusStateRequest {
     GetCheckpoint(u64),
     GetLatestHeight,
     GetValidatorBalance(PublicKey),
+    GetValidatorAccount(PublicKey),
 }
 
 pub enum ConsensusStateResponse {
@@ -16,6 +18,7 @@ pub enum ConsensusStateResponse {
     Checkpoint(Option<Checkpoint>),
     LatestHeight(u64),
     ValidatorBalance(Option<u64>),
+    ValidatorAccount(Option<ValidatorAccount>),
 }
 
 /// Used to send queries to the application finalizer to query the consensus state.

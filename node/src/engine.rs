@@ -52,14 +52,10 @@ const MAX_REPAIR: NonZero<usize> = NZUsize!(10);
 
 const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 3;
 pub const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000; // in gwei
+// Number of epochs after a deposit until a validator joins the committee
 pub const VALIDATOR_NUM_WARM_UP_EPOCHS: u64 = 2;
-
-#[cfg(feature = "e2e")]
-pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 10;
-#[cfg(all(debug_assertions, not(feature = "e2e")))]
-pub const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 5;
-#[cfg(all(not(debug_assertions), not(feature = "e2e")))]
-const VALIDATOR_WITHDRAWAL_PERIOD: u64 = 100;
+// Number of epochs after a withdrawal request until the payout
+pub const VALIDATOR_WITHDRAWAL_NUM_EPOCHS: u64 = 2;
 #[cfg(all(feature = "e2e", not(debug_assertions)))]
 pub const BLOCKS_PER_EPOCH: u64 = 50;
 #[cfg(debug_assertions)]
@@ -281,7 +277,7 @@ where
                 epoch_num_of_blocks: BLOCKS_PER_EPOCH,
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
                 validator_minimum_stake: VALIDATOR_MINIMUM_STAKE,
-                validator_withdrawal_period: VALIDATOR_WITHDRAWAL_PERIOD,
+                validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
                 validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                 validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
                 buffer_pool: buffer_pool.clone(),

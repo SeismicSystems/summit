@@ -13,11 +13,11 @@ use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
 use commonware_utils::from_hex_formatted;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use summit_types::PrivateKey;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::keystore::KeyStore;
+use summit_types::{PrivateKey, utils};
 
-use crate::engine::VALIDATOR_WITHDRAWAL_PERIOD;
+use crate::engine::VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
 
 #[test_traced("INFO")]
 fn test_deposit_request_single() {
@@ -77,7 +77,7 @@ fn test_deposit_request_single() {
 
         // Create a single deposit request using the helper
         let (test_deposit, _, _) = common::create_deposit_request(
-            1,
+            10,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
@@ -90,7 +90,7 @@ fn test_deposit_request_single() {
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
-        let stop_height = deposit_block_height + 7;
+        let stop_height = BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests);
 
@@ -168,8 +168,6 @@ fn test_deposit_request_single() {
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height == stop_height {
-                        println!("############################");
-                        println!("{metric}: {}", height_reached.len());
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -214,8 +212,8 @@ fn test_deposit_request_single() {
 
 #[test_traced("INFO")]
 fn test_deposit_request_top_up() {
-    // Adds two deposit requests to blocks at different heights, and makes sure that the
-    // validator balance is the sum of the amounts of both deposit requests.
+    // Adds two deposit requests to blocks at different heights, and makes sure that only
+    // the first request is processed.
     let n = 10;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -272,34 +270,58 @@ fn test_deposit_request_top_up() {
 
         // Create a single deposit request using the helper
         let (test_deposit1, private_key, _) = common::create_deposit_request(
-            1,
+            10,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
             None,
         );
         let (test_deposit2, _, _) = common::create_deposit_request(
-            2,
-            10_000_000_000,
+            10,
+            VALIDATOR_MINIMUM_STAKE,
+            common::get_domain(),
+            Some(private_key.clone()),
+            Some(test_deposit1.withdrawal_credentials),
+        );
+        let (test_deposit3, _, _) = common::create_deposit_request(
+            10,
+            VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             Some(private_key),
             Some(test_deposit1.withdrawal_credentials),
         );
 
+        let validator_node_key = test_deposit1.node_pubkey.clone();
+
         // Convert to ExecutionRequest and then to Requests
-        let execution_requests1 = vec![ExecutionRequest::Deposit(test_deposit1.clone())];
+        let execution_requests1 = vec![
+            ExecutionRequest::Deposit(test_deposit1.clone()),
+            ExecutionRequest::Deposit(test_deposit2.clone()),
+        ];
         let requests1 = common::execution_requests_to_requests(execution_requests1);
 
-        let execution_requests2 = vec![ExecutionRequest::Deposit(test_deposit2.clone())];
-        let requests2 = common::execution_requests_to_requests(execution_requests2);
+        let execution_requests3 = vec![ExecutionRequest::Deposit(test_deposit3.clone())];
+        let requests3 = common::execution_requests_to_requests(execution_requests3);
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height1 = 5;
-        let deposit_block_height2 = 10;
-        let stop_height = deposit_block_height2 + VALIDATOR_WITHDRAWAL_PERIOD + 5;
+        let deposit_block_height2 = 5;
+        let deposit_block_height3 = 10;
+
+        let deposit_process_height2 =
+            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height2 / BLOCKS_PER_EPOCH);
+        let withdrawal_height2 =
+            deposit_process_height2 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+
+        let deposit_process_height3 =
+            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height3 / BLOCKS_PER_EPOCH);
+        let withdrawal_height3 =
+            deposit_process_height3 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+
+        let stop_height = withdrawal_height3 + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height1, requests1);
-        execution_requests_map.insert(deposit_block_height2, requests2);
+        execution_requests_map.insert(deposit_block_height3, requests3);
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
@@ -351,7 +373,6 @@ fn test_deposit_request_top_up() {
 
         // Poll metrics
         let mut height_reached = HashSet::new();
-        let mut processed_requests = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -381,23 +402,7 @@ fn test_deposit_request_top_up() {
                     }
                 }
 
-                if metric.ends_with("validator_balance") {
-                    let balance = value.parse::<u64>().unwrap();
-                    if balance == test_deposit1.amount {
-                        continue;
-                    }
-                    // Parse the pubkey from the metric name using helper function
-                    let ed_pubkey_hex =
-                        common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
-                    let creds =
-                        common::parse_metric_substring(metric, "creds").expect("creds missing");
-                    assert_eq!(creds, hex::encode(test_deposit1.withdrawal_credentials));
-                    assert_eq!(ed_pubkey_hex, test_deposit1.node_pubkey.to_string());
-                    // The amount from both deposits should be added to the validator balance
-                    assert_eq!(balance, test_deposit1.amount + test_deposit2.amount);
-                    processed_requests.insert(metric.to_string());
-                }
-                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
+                if height_reached.len() as u32 == n {
                     success = true;
                     break;
                 }
@@ -409,6 +414,38 @@ fn test_deposit_request_top_up() {
             // Still waiting for all validators to complete
             context.sleep(Duration::from_secs(1)).await;
         }
+
+        // Assert that the validator account data is consistent with the request
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        let account = state_query
+            .get_validator_account(validator_node_key)
+            .await
+            .unwrap();
+        assert_eq!(
+            account.withdrawal_credentials,
+            utils::parse_withdrawal_credentials(test_deposit1.withdrawal_credentials).unwrap()
+        );
+        assert_eq!(account.consensus_public_key, test_deposit1.consensus_pubkey);
+        assert_eq!(account.balance, test_deposit1.amount);
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(withdrawals.len(), 2);
+
+        // check test_deposit2
+        let epoch_withdrawals = withdrawals.get(&withdrawal_height2).unwrap();
+        assert_eq!(epoch_withdrawals[0].amount, test_deposit2.amount);
+
+        let address =
+            utils::parse_withdrawal_credentials(test_deposit2.withdrawal_credentials).unwrap();
+        assert_eq!(epoch_withdrawals[0].address, address);
+
+        // check test_deposit3
+        let epoch_withdrawals = withdrawals.get(&withdrawal_height3).unwrap();
+        assert_eq!(epoch_withdrawals[0].amount, test_deposit2.amount);
+
+        let address =
+            utils::parse_withdrawal_credentials(test_deposit2.withdrawal_credentials).unwrap();
+        assert_eq!(epoch_withdrawals[0].address, address);
 
         // Check that all nodes have the same canonical chain
         assert!(
@@ -625,7 +662,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
+            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
         let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&(withdrawal_height))
@@ -864,7 +901,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // to the execution layer.
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
+            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
         let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
@@ -886,12 +923,10 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 }
 
 #[test_traced("INFO")]
-fn test_deposit_less_than_min_stake_and_withdrawal() {
-    // Adds a deposit request to the block at height 5, and then adds a withdrawal request
-    // to the block at height 7.
-    // The deposit request is less than the minimum stake, so the validator should not be added
-    // to the registry.
-    // The balance should still increase and the withdrawal should work as well.
+fn test_deposit_less_than_min_stake_rejected() {
+    // Adds a deposit request to the block at height 5.
+    // The deposit request should be skipped and a withdrawal request for the same amount
+    // should be initiated.
     let n = 10;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -955,31 +990,23 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             None,
         );
 
-        let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
-        let test_withdrawal = common::create_withdrawal_request(
-            withdrawal_address,
-            test_deposit.node_pubkey.as_ref().try_into().unwrap(),
-            test_deposit.amount,
-        );
+        let validator_node_key = test_deposit.node_pubkey.clone();
 
         // Convert to ExecutionRequest and then to Requests
         let execution_requests1 = vec![ExecutionRequest::Deposit(test_deposit.clone())];
         let requests1 = common::execution_requests_to_requests(execution_requests1);
 
-        let execution_requests2 = vec![ExecutionRequest::Withdrawal(test_withdrawal.clone())];
-        let requests2 = common::execution_requests_to_requests(execution_requests2);
-
         // Create execution requests map (add deposit to block 5)
-        // The deposit request will be processed after 10 blocks because `BLOCKS_PER_EPOCH`
-        // is set to 10 in debug mode.
-        // The withdrawal request should be added after block 10, otherwise it will be ignored, because
-        // the account doesn't exist yet.
         let deposit_block_height = 5;
-        let withdrawal_block_height = 11;
-        let stop_height = withdrawal_block_height + BLOCKS_PER_EPOCH + 1;
+
+        let deposit_process_height =
+            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height / BLOCKS_PER_EPOCH);
+        let withdrawal_height =
+            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+
+        let stop_height = withdrawal_height + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
-        execution_requests_map.insert(withdrawal_block_height, requests2);
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
@@ -1031,7 +1058,6 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
 
         // Poll metrics
         let mut height_reached = HashSet::new();
-        let mut processed_requests = HashSet::new();
         loop {
             let metrics = context.encode();
 
@@ -1070,19 +1096,7 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
                     assert_eq!(registry_flag, "false");
                 }
 
-                if metric.ends_with("withdrawal_validator_balance") {
-                    let balance = value.parse::<u64>().unwrap();
-                    // Parse the pubkey from the metric name using helper function
-                    let ed_pubkey_hex = common::parse_metric_substring(metric, "pubkey")
-                        .expect(&format!("{}: {} (failed to parse pubkey)", metric, value));
-                    let creds =
-                        common::parse_metric_substring(metric, "creds").expect("creds missing");
-                    assert_eq!(creds, hex::encode(test_withdrawal.source_address));
-                    assert_eq!(ed_pubkey_hex, test_deposit.node_pubkey.to_string());
-                    assert_eq!(balance, test_deposit.amount - test_withdrawal.amount);
-                    processed_requests.insert(metric.to_string());
-                }
-                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
+                if height_reached.len() as u32 == n {
                     success = true;
                     break;
                 }
@@ -1095,16 +1109,20 @@ fn test_deposit_less_than_min_stake_and_withdrawal() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        let balance = state_query.get_validator_balance(validator_node_key).await;
+        // Assert that no validator account was created
+        assert!(balance.is_none());
+
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
-        let withdrawal_epoch =
-            (withdrawal_block_height + VALIDATOR_WITHDRAWAL_PERIOD) / BLOCKS_PER_EPOCH;
-        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
-        let withdrawals = withdrawals
-            .get(&withdrawal_height)
-            .expect("missing withdrawal");
-        assert_eq!(withdrawals[0].amount, test_withdrawal.amount);
-        assert_eq!(withdrawals[0].address, test_withdrawal.source_address);
+
+        let epoch_withdrawals = withdrawals.get(&withdrawal_height).unwrap();
+        assert_eq!(epoch_withdrawals[0].amount, test_deposit.amount);
+
+        let address =
+            utils::parse_withdrawal_credentials(test_deposit.withdrawal_credentials).unwrap();
+        assert_eq!(epoch_withdrawals[0].address, address);
 
         // Check that all nodes have the same canonical chain
         assert!(

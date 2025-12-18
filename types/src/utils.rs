@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use alloy_primitives::Address;
+use anyhow::{Context, Result, anyhow};
 use commonware_consensus::types::Epoch;
 use dirs::home_dir;
 use std::{path::PathBuf, str::FromStr};
@@ -29,6 +30,32 @@ pub fn is_last_block_of_epoch(epoch_num_blocks: u64, height: u64) -> bool {
 
 pub fn is_penultimate_block_of_epoch(epoch_num_blocks: u64, height: u64) -> bool {
     is_last_block_of_epoch(epoch_num_blocks, height + 1)
+}
+
+pub fn parse_withdrawal_credentials(withdrawal_credentials: [u8; 32]) -> Result<Address> {
+    // Validate the withdrawal credentials format
+    // Eth1 withdrawal credentials: 0x01 + 11 zero bytes + 20 bytes Ethereum address
+    if withdrawal_credentials.len() != 32 {
+        return Err(anyhow!(
+            "Invalid withdrawal credentials length: {} bytes, expected 32",
+            withdrawal_credentials.len()
+        ));
+    }
+    // Check prefix is 0x01 (Eth1 withdrawal)
+    if withdrawal_credentials[0] != 0x01 {
+        return Err(anyhow!(
+            "Invalid withdrawal credentials prefix: 0x{:02x}, expected 0x01",
+            withdrawal_credentials[0]
+        ));
+    }
+    // Check 11 zero bytes after the prefix
+    if !withdrawal_credentials[1..12].iter().all(|&b| b == 0) {
+        return Err(anyhow!(
+            "Invalid withdrawal credentials format: non-zero bytes in positions 1-11"
+        ));
+    }
+    // Take last 20 bytes
+    Ok(Address::from_slice(&withdrawal_credentials[12..32]))
 }
 
 #[cfg(any(feature = "base-bench", feature = "bench"))]
