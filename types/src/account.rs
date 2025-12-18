@@ -8,6 +8,7 @@ pub enum ValidatorStatus {
     Active,
     Inactive,
     SubmittedExitRequest,
+    Joining,
 }
 
 impl ValidatorStatus {
@@ -16,6 +17,7 @@ impl ValidatorStatus {
             ValidatorStatus::Active => 0,
             ValidatorStatus::Inactive => 1,
             ValidatorStatus::SubmittedExitRequest => 2,
+            ValidatorStatus::Joining => 3,
         }
     }
 
@@ -24,6 +26,7 @@ impl ValidatorStatus {
             0 => Ok(ValidatorStatus::Active),
             1 => Ok(ValidatorStatus::Inactive),
             2 => Ok(ValidatorStatus::SubmittedExitRequest),
+            3 => Ok(ValidatorStatus::Joining),
             _ => Err("Invalid ValidatorStatus value"),
         }
     }

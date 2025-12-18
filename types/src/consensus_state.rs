@@ -242,6 +242,25 @@ impl ConsensusState {
         peers
     }
 
+    pub fn get_active_or_joining_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
+            .validator_accounts
+            .iter()
+            .filter(|(_, acc)| {
+                acc.status == ValidatorStatus::Active || acc.status == ValidatorStatus::Joining
+            })
+            .map(|(v, acc)| {
+                let mut key_bytes = &v[..];
+                let node_public_key =
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let consensus_public_key = acc.consensus_public_key.clone();
+                (node_public_key, consensus_public_key)
+            })
+            .collect();
+        peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        peers
+    }
+
     pub fn get_active_validators_as<BLS: Clone>(&self) -> Vec<(PublicKey, BLS)>
     where
         bls12381::PublicKey: Into<BLS>,

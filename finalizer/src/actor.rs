@@ -499,8 +499,9 @@ impl<
                 histogram!("database_operations_duration_millis").record(db_operations_duration);
             }
 
-            // Create the list of validators for the new epoch
-            let active_validators = self.canonical_state.get_active_validators();
+            // Create the list of validators for the p2p network for the next epoch.
+            // We also include the validators that already staked and are waiting to join the committee.
+            let active_validators = self.canonical_state.get_active_or_joining_validators();
             let network_keys = active_validators
                 .iter()
                 .map(|(node_key, _)| node_key.clone())
@@ -1205,7 +1206,8 @@ async fn process_execution_requests<
                     withdrawal_credentials,
                     balance: request.amount,
                     pending_withdrawal_amount: 0,
-                    status: ValidatorStatus::Inactive,
+                    // This will add them to the p2p network for the next epoch
+                    status: ValidatorStatus::Joining,
                     has_pending_withdrawal: false,
                     joining_epoch: activation_epoch,
                     last_deposit_index: request.index,
