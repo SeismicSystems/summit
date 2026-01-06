@@ -150,6 +150,24 @@ impl<S: Scheme, B: ConsensusBlock + Committable> FinalizerMailbox<S, B> {
         height
     }
 
+    pub async fn get_latest_epoch(&self) -> u64 {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetLatestEpoch;
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::LatestEpoch(epoch) = res else {
+            unreachable!("request and response variants must match");
+        };
+        epoch
+    }
+
     pub async fn get_validator_balance(&self, public_key: PublicKey) -> Option<u64> {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetValidatorBalance(public_key);

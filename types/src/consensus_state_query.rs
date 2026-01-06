@@ -9,6 +9,7 @@ pub enum ConsensusStateRequest {
     GetLatestCheckpoint,
     GetCheckpoint(u64),
     GetLatestHeight,
+    GetLatestEpoch,
     GetValidatorBalance(PublicKey),
     GetValidatorAccount(PublicKey),
 }
@@ -17,6 +18,7 @@ pub enum ConsensusStateResponse {
     LatestCheckpoint((Option<Checkpoint>, u64)), // (Checkpoint, Epoch#)
     Checkpoint(Option<Checkpoint>),
     LatestHeight(u64),
+    LatestEpoch(u64),
     ValidatorBalance(Option<u64>),
     ValidatorAccount(Option<ValidatorAccount>),
 }
@@ -98,6 +100,20 @@ impl ConsensusStateQuery {
             unreachable!("request and response variants must match");
         };
         height
+    }
+
+    pub async fn get_latest_epoch(&self) -> u64 {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetLatestEpoch;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::LatestEpoch(epoch) = res else {
+            unreachable!("request and response variants must match");
+        };
+        epoch
     }
 
     pub async fn get_validator_balance(&self, public_key: PublicKey) -> Option<u64> {

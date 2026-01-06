@@ -70,6 +70,7 @@ impl RpcRoutes {
                 "/get_latest_height",
                 get(Self::handle_latest_height::<S, B>),
             )
+            .route("/get_latest_epoch", get(Self::handle_latest_epoch::<S, B>))
             .route(
                 "/get_validator_balance",
                 get(Self::handle_get_validator_balance::<S, B>),
@@ -258,6 +259,12 @@ impl RpcRoutes {
             .get_latest_height()
             .await
             .to_string())
+    }
+
+    async fn handle_latest_epoch<S: Scheme, B: ConsensusBlock + Committable>(
+        State(state): State<Arc<RpcState<S, B>>>,
+    ) -> Result<String, String> {
+        Ok(state.finalizer_mailbox.get_latest_epoch().await.to_string())
     }
 
     async fn handle_get_validator_balance<S: Scheme, B: ConsensusBlock + Committable>(

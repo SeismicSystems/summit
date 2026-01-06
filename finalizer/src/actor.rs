@@ -767,6 +767,10 @@ impl<
                 let height = self.canonical_state.get_latest_height();
                 let _ = sender.send(ConsensusStateResponse::LatestHeight(height));
             }
+            ConsensusStateRequest::GetLatestEpoch => {
+                let epoch = self.canonical_state.get_epoch();
+                let _ = sender.send(ConsensusStateResponse::LatestEpoch(epoch));
+            }
             ConsensusStateRequest::GetValidatorBalance(public_key) => {
                 let mut key_bytes = [0u8; 32];
                 key_bytes.copy_from_slice(&public_key);
