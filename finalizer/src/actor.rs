@@ -32,7 +32,7 @@ use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
-use summit_types::execution_request::{ExecutionRequest, WithdrawalRequest};
+use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::EpochTransition;
 use summit_types::utils::{
@@ -972,73 +972,52 @@ async fn parse_execution_requests<
             Ok(execution_request) => {
                 match execution_request {
                     ExecutionRequest::Deposit(deposit_request) => {
-                        let message = deposit_request.as_message(protocol_version_digest);
-
-                        let mut node_signature_bytes = &deposit_request.node_signature[..];
-                        let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
-                            info!(
-                                "Failed to parse node signature from deposit request: {deposit_request:?}"
-                            );
-                            continue; // Skip this deposit request
-                        };
-                        if !deposit_request
-                            .node_pubkey
-                            .verify(&[], &message, &node_signature)
-                        {
-                            #[cfg(debug_assertions)]
-                            {
-                                let gauge: Gauge = Gauge::default();
-                                gauge.set(new_height as i64);
-                                context.register(
-                                    format!(
-                                        "<pubkey>{}</pubkey>_deposit_request_invalid_node_sig",
-                                        hex::encode(&deposit_request.node_pubkey)
-                                    ),
-                                    "height",
-                                    gauge,
-                                );
-                            }
-                            info!(
-                                "Failed to verify node signature from deposit request: {deposit_request:?}"
-                            );
-                            continue; // Skip this deposit request
-                        }
-
-                        let mut consensus_signature_bytes =
-                            &deposit_request.consensus_signature[..];
-                        let Ok(consensus_signature) =
-                            bls12381::Signature::read(&mut consensus_signature_bytes)
-                        else {
-                            info!(
-                                "Failed to parse consensus signature from deposit request: {deposit_request:?}"
-                            );
-                            continue; // Skip this deposit request
-                        };
-                        if !deposit_request.consensus_pubkey.verify(
-                            &[],
-                            &message,
-                            &consensus_signature,
+                        if verify_deposit_request(
+                            context,
+                            &deposit_request,
+                            protocol_version_digest,
+                            new_height,
                         ) {
-                            #[cfg(debug_assertions)]
-                            {
-                                let gauge: Gauge = Gauge::default();
-                                gauge.set(new_height as i64);
-                                context.register(
-                                    format!(
-                                        "<pubkey>{}</pubkey>_deposit_request_invalid_consensus_sig",
-                                        hex::encode(&deposit_request.consensus_pubkey)
-                                    ),
-                                    "height",
-                                    gauge,
-                                );
-                            }
-                            info!(
-                                "Failed to verify consensus signature from deposit request: {deposit_request:?}"
-                            );
-                            continue; // Skip this deposit request
-                        }
+                            state.push_deposit(deposit_request);
+                        } else {
+                            // If the signatures fail, we create an immediate withdrawal request for the deposited amount.
+                            // Since the signatures are invalid, the validator cannot be added to the committee, however,
+                            // the deposited funds are still burned in the deposit contract, so we have to withdraw them.
+                            let withdrawal_credentials = match parse_withdrawal_credentials(
+                                deposit_request.withdrawal_credentials,
+                            ) {
+                                Ok(withdrawal_credentials) => withdrawal_credentials,
+                                Err(e) => {
+                                    warn!("Failed to parse withdrawal credentials: {e}");
+                                    continue;
+                                }
+                            };
 
-                        state.push_deposit(deposit_request);
+                            let validator_pubkey: [u8; 32] =
+                                deposit_request.node_pubkey.as_ref().try_into().unwrap();
+                            let withdrawal_request = WithdrawalRequest {
+                                source_address: withdrawal_credentials,
+                                validator_pubkey,
+                                amount: deposit_request.amount,
+                            };
+                            let withdrawal_height = new_height
+                                + validator_withdrawal_num_epochs * epoch_num_of_blocks
+                                - 1;
+
+                            // If an account exists, we have to temporary increase the `pending_withdrawal_amount`,
+                            // otherwise this withdrawal request will decrement the actual account balance.
+
+                            if let Some(account) =
+                                state.validator_accounts.get_mut(&validator_pubkey)
+                            {
+                                account.pending_withdrawal_amount += deposit_request.amount;
+                            }
+
+                            state.push_withdrawal_request(
+                                withdrawal_request.clone(),
+                                withdrawal_height,
+                            );
+                        }
                     }
                     ExecutionRequest::Withdrawal(mut withdrawal_request) => {
                         // Only add the withdrawal request if the validator exists and has sufficient balance
@@ -1296,6 +1275,68 @@ async fn process_execution_requests<
         // This is the only case where we process a withdrawal request, without having a validator account
         // stored in the consensus state.
     }
+}
+
+fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng>(
+    context: &ContextCell<R>,
+    deposit_request: &DepositRequest,
+    protocol_version_digest: Digest,
+    new_height: u64,
+) -> bool {
+    let message = deposit_request.as_message(protocol_version_digest);
+
+    let mut node_signature_bytes = &deposit_request.node_signature[..];
+    let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
+        info!("Failed to parse node signature from deposit request: {deposit_request:?}");
+        return false;
+    };
+    if !deposit_request
+        .node_pubkey
+        .verify(&[], &message, &node_signature)
+    {
+        #[cfg(debug_assertions)]
+        {
+            let gauge: Gauge = Gauge::default();
+            gauge.set(new_height as i64);
+            context.register(
+                format!(
+                    "<pubkey>{}</pubkey>_deposit_request_invalid_node_sig",
+                    hex::encode(&deposit_request.node_pubkey)
+                ),
+                "height",
+                gauge,
+            );
+        }
+        info!("Failed to verify node signature from deposit request: {deposit_request:?}");
+        return false;
+    }
+
+    let mut consensus_signature_bytes = &deposit_request.consensus_signature[..];
+    let Ok(consensus_signature) = bls12381::Signature::read(&mut consensus_signature_bytes) else {
+        info!("Failed to parse consensus signature from deposit request: {deposit_request:?}");
+        return false;
+    };
+    if !deposit_request
+        .consensus_pubkey
+        .verify(&[], &message, &consensus_signature)
+    {
+        #[cfg(debug_assertions)]
+        {
+            let gauge: Gauge = Gauge::default();
+            gauge.set(new_height as i64);
+            context.register(
+                format!(
+                    "<pubkey>{}</pubkey>_deposit_request_invalid_consensus_sig",
+                    hex::encode(&deposit_request.consensus_pubkey)
+                ),
+                "height",
+                gauge,
+            );
+        }
+        info!("Failed to verify consensus signature from deposit request: {deposit_request:?}");
+        return false;
+    }
+    true
 }
 
 impl<
