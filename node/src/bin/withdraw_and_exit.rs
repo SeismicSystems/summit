@@ -35,6 +35,9 @@ use summit_types::PublicKey;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
 use tracing::Level;
+use jsonrpsee::http_client::HttpClientBuilder;
+use jsonrpsee::core::ClientError;
+use summit_rpc::SummitApiClient;
 
 const NUM_NODES: u16 = 4;
 
@@ -296,9 +299,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Check that the validator was removed from the consensus state
             let rpc_port = get_node_flags(0).rpc_port;
             let validator_balance = get_validator_balance(rpc_port, "f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226".to_string()).await;
-            if let Err(msg) = validator_balance {
-                assert_eq!(msg.to_string(), "Validator not found");
-                println!("Validator that withdrew is not on the consensus state anymore");
+            if let Err(e) = validator_balance {
+                // Parse the JSON-RPC error
+                if let Some(ClientError::Call(err)) = e.downcast_ref::<ClientError>() {
+                    assert_eq!(err.message(), "Validator not found");
+                    println!("Success: validator that withdrew is not on the consensus state anymore");
+                } else {
+                    panic!("Expected JSON-RPC Call error with 'Validator not found', got: {}", e);
+                }
             } else {
                 panic!("Validator should not be on the consensus state anymore");
             }
@@ -357,23 +365,19 @@ where
 }
 
 async fn get_latest_height(rpc_port: u16) -> Result<u64, Box<dyn std::error::Error>> {
-    let url = format!("http://localhost:{}/get_latest_height", rpc_port);
-    let response = reqwest::get(&url).await?.text().await?;
-    Ok(response.parse()?)
+    let url = format!("http://localhost:{}", rpc_port);
+    let client = HttpClientBuilder::default().build(&url)?;
+    let height = client.get_latest_height().await?;
+    Ok(height)
 }
 
 async fn get_validator_balance(
     rpc_port: u16,
     public_key: String,
 ) -> Result<u64, Box<dyn std::error::Error>> {
-    let url = format!(
-        "http://localhost:{}/get_validator_balance?public_key={}",
-        rpc_port, public_key
-    );
-    let response = reqwest::get(&url).await?.text().await?;
-    let Ok(balance) = response.parse() else {
-        return Err(response.into());
-    };
+    let url = format!("http://localhost:{}", rpc_port);
+    let client = HttpClientBuilder::default().build(&url)?;
+    let balance = client.get_validator_balance(public_key).await?;
     Ok(balance)
 }
 

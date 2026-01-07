@@ -1271,10 +1271,10 @@ async fn process_execution_requests<
 }
 
 fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng>(
-    context: &ContextCell<R>,
+    #[allow(unused)] context: &ContextCell<R>,
     deposit_request: &DepositRequest,
     protocol_version_digest: Digest,
-    new_height: u64,
+    #[allow(unused)] new_height: u64,
     validator_minimum_stake: u64,
 ) -> bool {
     if deposit_request.amount != validator_minimum_stake {

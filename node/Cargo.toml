@@ -61,7 +61,7 @@ tokio-util.workspace = true
 # stake and checkpoint bin deps
 alloy = "1.0.23"
 ethereum_ssz.workspace = true
-reqwest.workspace = true
+jsonrpsee.workspace = true
 
 # testnet bin deps
 alloy-node-bindings.workspace = true

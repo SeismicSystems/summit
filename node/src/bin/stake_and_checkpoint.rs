@@ -39,9 +39,10 @@ use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::DepositRequest;
 use summit_types::execution_request::compute_deposit_data_root;
 use summit_types::reth::Reth;
-use summit_types::rpc::CheckpointRes;
 use tokio::sync::mpsc;
 use tracing::Level;
+use jsonrpsee::http_client::HttpClientBuilder;
+use summit_rpc::SummitApiClient;
 
 const NUM_NODES: u16 = 4;
 
@@ -624,26 +625,25 @@ fn copy_dir_all(src: &str, dst: &str) -> std::io::Result<()> {
 }
 
 async fn get_latest_height(rpc_port: u16) -> Result<u64, Box<dyn std::error::Error>> {
-    let url = format!("http://localhost:{}/get_latest_height", rpc_port);
-    let response = reqwest::get(&url).await?.text().await?;
-    Ok(response.parse()?)
+    let url = format!("http://localhost:{}", rpc_port);
+    let client = HttpClientBuilder::default().build(&url)?;
+    let height = client.get_latest_height().await?;
+    Ok(height)
 }
 
 async fn get_latest_checkpoint(
     rpc_port: u16,
 ) -> Result<Option<Checkpoint>, Box<dyn std::error::Error>> {
-    let url = format!("http://localhost:{}/get_latest_checkpoint", rpc_port);
-    let response = reqwest::get(&url).await;
+    let url = format!("http://localhost:{}", rpc_port);
+    let client = HttpClientBuilder::default().build(&url)?;
 
-    match response {
-        Ok(resp) if resp.status().is_success() => {
-            let checkpoint_resp: CheckpointRes = resp.json().await?;
-            //  let bytes = from_hex_formatted(&hex_str).ok_or("Failed to decode hex")?;
+    match client.get_latest_checkpoint().await {
+        Ok(checkpoint_resp) => {
             let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_resp.checkpoint)
                 .map_err(|e| format!("Failed to decode checkpoint: {:?}", e))?;
             Ok(Some(checkpoint))
         }
-        _ => Ok(None),
+        Err(_) => Ok(None),
     }
 }
 
