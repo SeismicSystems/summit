@@ -878,6 +878,7 @@ async fn execute_block<
             epoch_num_of_blocks,
             protocol_version_digest,
             validator_withdrawal_num_epochs,
+            validator_minimum_stake,
         )
         .await;
 
@@ -897,7 +898,6 @@ async fn execute_block<
             state,
             epoch_num_of_blocks,
             validator_onboarding_limit_per_block,
-            validator_minimum_stake,
             validator_num_warm_up_epochs,
             validator_withdrawal_num_epochs,
         )
@@ -966,6 +966,7 @@ async fn parse_execution_requests<
     epoch_num_of_blocks: u64,
     protocol_version_digest: Digest,
     validator_withdrawal_num_epochs: u64,
+    validator_minimum_stake: u64,
 ) {
     for request_bytes in &block.execution_requests {
         match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
@@ -977,12 +978,13 @@ async fn parse_execution_requests<
                             &deposit_request,
                             protocol_version_digest,
                             new_height,
+                            validator_minimum_stake,
                         ) {
                             state.push_deposit(deposit_request);
                         } else {
                             // If the signatures fail, we create an immediate withdrawal request for the deposited amount.
-                            // Since the signatures are invalid, the validator cannot be added to the committee, however,
-                            // the deposited funds are still burned in the deposit contract, so we have to withdraw them.
+                            // Since the signatures are invalid, the validator cannot be added to the committee.
+                            // However, the deposited funds are still burned in the deposit contract, so we have to withdraw them.
                             let withdrawal_credentials = match parse_withdrawal_credentials(
                                 deposit_request.withdrawal_credentials,
                             ) {
@@ -1121,7 +1123,6 @@ async fn process_execution_requests<
     state: &mut ConsensusState,
     epoch_num_of_blocks: u64,
     validator_onboarding_limit_per_block: usize,
-    validator_minimum_stake: u64,
     validator_num_warm_up_epochs: u64,
     validator_withdrawal_num_epochs: u64,
 ) {
@@ -1132,17 +1133,11 @@ async fn process_execution_requests<
                 // then the deposit will not be processed and a withdrawal is initiated immediately
                 let node_pubkey_bytes = request.node_pubkey.as_ref().try_into().unwrap();
 
-                let maybe_account = state.validator_accounts.get_mut(&node_pubkey_bytes);
-                if maybe_account.is_some() || request.amount != validator_minimum_stake {
-                    if request.amount != validator_minimum_stake {
-                        info!(
-                            "Received deposit request with amount != minimum stake, initiating immediate withdrawal: {request:?}"
-                        );
-                    } else {
-                        info!(
-                            "Received deposit request for an existing account, initiating immediate withdrawal: {request:?}"
-                        );
-                    }
+                if let Some(account) = state.validator_accounts.get_mut(&node_pubkey_bytes) {
+                    // We already check that the amount equals the minimum stake when the request is parsed
+                    info!(
+                        "Received deposit request for an existing account, initiating immediate withdrawal: {request:?}"
+                    );
                     let withdrawal_credentials =
                         match parse_withdrawal_credentials(request.withdrawal_credentials) {
                             Ok(withdrawal_credentials) => withdrawal_credentials,
@@ -1164,9 +1159,7 @@ async fn process_execution_requests<
 
                     // If an account exists, we have to temporary increase the `pending_withdrawal_amount`,
                     // otherwise this withdrawal request will decrement the actual account balance.
-                    if let Some(account) = maybe_account {
-                        account.pending_withdrawal_amount += request.amount;
-                    }
+                    account.pending_withdrawal_amount += request.amount;
 
                     state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_height);
                     continue;
@@ -1282,7 +1275,15 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
     deposit_request: &DepositRequest,
     protocol_version_digest: Digest,
     new_height: u64,
+    validator_minimum_stake: u64,
 ) -> bool {
+    if deposit_request.amount != validator_minimum_stake {
+        info!(
+            "Received deposit request with amount != minimum stake, initiating immediate withdrawal: {deposit_request:?}"
+        );
+        return false;
+    }
+
     let message = deposit_request.as_message(protocol_version_digest);
 
     let mut node_signature_bytes = &deposit_request.node_signature[..];

@@ -1392,7 +1392,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 #[test_traced("INFO")]
 fn test_deposit_request_invalid_signature() {
     // Adds a deposit request with an invalid signature to the block at height 5, and then
-    // verifies that the request is rejected.
+    // verifies that the request is rejected and a withdrawal request is submitted for the same amount.
     let n = 10;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -1446,7 +1446,7 @@ fn test_deposit_request_invalid_signature() {
 
         // Create a single deposit request using the helper
         let (mut test_deposit, _, _) = common::create_deposit_request(
-            1,
+            n,
             VALIDATOR_MINIMUM_STAKE,
             common::get_domain(),
             None,
@@ -1464,13 +1464,19 @@ fn test_deposit_request_invalid_signature() {
         test_deposit.node_signature = test_deposit2.node_signature;
         test_deposit.consensus_signature = test_deposit2.consensus_signature;
 
+        let validator_node_key = test_deposit.node_pubkey.clone();
+
         // Convert to ExecutionRequest and then to Requests
         let execution_requests = vec![ExecutionRequest::Deposit(test_deposit.clone())];
         let requests = common::execution_requests_to_requests(execution_requests);
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
-        let stop_height = deposit_block_height + BLOCKS_PER_EPOCH + 1;
+        let deposit_process_height =
+            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height / BLOCKS_PER_EPOCH);
+        let withdrawal_height =
+            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+        let stop_height = withdrawal_height + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests);
 
@@ -1565,7 +1571,7 @@ fn test_deposit_request_invalid_signature() {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
                 }
-                if processed_requests.len() as u32 >= n && height_reached.len() as u32 >= n {
+                if processed_requests.len() as u64 >= n && height_reached.len() as u64 >= n {
                     success = true;
                     break;
                 }
@@ -1577,6 +1583,21 @@ fn test_deposit_request_invalid_signature() {
             // Still waiting for all validators to complete
             context.sleep(Duration::from_secs(1)).await;
         }
+
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        let balance = state_query.get_validator_balance(validator_node_key).await;
+        // Assert that no validator account was created
+        assert!(balance.is_none());
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(withdrawals.len(), 1);
+
+        let epoch_withdrawals = withdrawals.get(&withdrawal_height).unwrap();
+        assert_eq!(epoch_withdrawals[0].amount, test_deposit.amount);
+
+        let address =
+            utils::parse_withdrawal_credentials(test_deposit.withdrawal_credentials).unwrap();
+        assert_eq!(epoch_withdrawals[0].address, address);
 
         // Check that all nodes have the same canonical chain
         assert!(
