@@ -1,78 +1,82 @@
-pub mod routes;
-use crate::routes::RpcRoutes;
+mod api;
+mod builder;
+mod error;
+mod genesis;
+mod server;
+mod types;
+
+pub use genesis::{PathSender, SummitGenesisRpcServer};
+pub use server::SummitRpcServer;
+pub use types::*;
+
+pub use api::{SummitApiClient, SummitApiServer, SummitGenesisApiClient, SummitGenesisApiServer};
+
 use commonware_consensus::Block as ConsensusBlock;
 use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_cryptography::Committable;
 use commonware_runtime::signal::Signal;
-use futures::channel::oneshot;
-use std::sync::Mutex;
+use jsonrpsee::server::ServerHandle;
+use std::net::SocketAddr;
 use summit_finalizer::FinalizerMailbox;
-use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-pub struct RpcState<S: Scheme, B: ConsensusBlock + Committable> {
-    key_store_path: String,
-    finalizer_mailbox: FinalizerMailbox<S, B>,
-}
-
-impl<S: Scheme, B: ConsensusBlock + Committable> RpcState<S, B> {
-    pub fn new(key_store_path: String, finalizer_mailbox: FinalizerMailbox<S, B>) -> Self {
-        Self {
-            key_store_path,
-            finalizer_mailbox,
-        }
-    }
-}
-
-pub async fn start_rpc_server<S: Scheme, B: ConsensusBlock + Committable>(
+pub async fn start_rpc_server<
+    S: Scheme + Send + Sync + 'static,
+    B: ConsensusBlock + Committable + Send + Sync + 'static,
+>(
     finalizer_mailbox: FinalizerMailbox<S, B>,
     key_store_path: String,
     port: u16,
     stop_signal: Signal,
 ) -> anyhow::Result<()> {
-    let state = RpcState::new(key_store_path, finalizer_mailbox);
+    let rpc_impl = SummitRpcServer::new(key_store_path, finalizer_mailbox);
 
-    let server = RpcRoutes::mount(state);
+    let methods = rpc_impl.into_rpc();
 
-    let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
-
-    println!("RPC Server listening on http://0.0.0.0:{port}");
-    axum::serve(listener, server)
-        .with_graceful_shutdown(async move {
-            let sig = stop_signal.await.unwrap();
-            println!("RPC server stopped: {sig}");
-        })
+    let server = builder::RpcServerBuilder::new(port)
+        .with_max_connections(1000)
+        .with_max_request_body_size(10 * 1024 * 1024)
+        .with_max_response_body_size(10 * 1024 * 1024)
+        .build()
         .await?;
+
+    let handle = server.start(methods);
+
+    tracing::info!("RPC Server listening on http://0.0.0.0:{port}");
+
+    let sig = stop_signal.await?;
+    tracing::info!("RPC server stopped: {sig}");
+    handle.stop()?;
 
     Ok(())
 }
 
-pub struct PathSender {
-    path: String,
-    sender: Mutex<Option<oneshot::Sender<()>>>,
-}
-
-impl PathSender {
-    pub fn new(path: String, sender: Option<oneshot::Sender<()>>) -> PathSender {
-        PathSender {
-            path,
-            sender: Mutex::new(sender),
-        }
-    }
-}
-
-pub struct GenesisRpcState {
-    genesis: PathSender,
+/// Starts the RPC server and returns the handle and bound address (useful for testing)
+pub async fn start_rpc_server_with_handle<
+    S: Scheme + Send + Sync + 'static,
+    B: ConsensusBlock + Committable + Send + Sync + 'static,
+>(
+    finalizer_mailbox: FinalizerMailbox<S, B>,
     key_store_path: String,
-}
+    port: u16,
+) -> anyhow::Result<(ServerHandle, SocketAddr)> {
+    let rpc_impl = SummitRpcServer::new(key_store_path, finalizer_mailbox);
 
-impl GenesisRpcState {
-    pub fn new(genesis: PathSender, key_store_path: String) -> Self {
-        Self {
-            genesis,
-            key_store_path,
-        }
-    }
+    let methods = rpc_impl.into_rpc();
+
+    let server = builder::RpcServerBuilder::new(port)
+        .with_max_connections(1000)
+        .with_max_request_body_size(10 * 1024 * 1024)
+        .with_max_response_body_size(10 * 1024 * 1024)
+        .build()
+        .await?;
+
+    let addr = server.local_addr()?;
+    let handle = server.start(methods);
+
+    tracing::info!("RPC Server listening on http://{}", addr);
+
+    Ok((handle, addr))
 }
 
 pub async fn start_rpc_server_for_genesis(
@@ -81,19 +85,37 @@ pub async fn start_rpc_server_for_genesis(
     port: u16,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let state = GenesisRpcState::new(genesis, key_store_path);
+    let rpc_impl = SummitGenesisRpcServer::new(key_store_path, genesis);
 
-    let server = RpcRoutes::mount_for_genesis(state);
+    let methods = rpc_impl.into_rpc();
 
-    let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
+    let server = builder::RpcServerBuilder::new(port).build().await?;
+    let handle = server.start(methods);
 
-    println!("Genesis RPC Server listening on http://0.0.0.0:{port}");
+    tracing::info!("Genesis RPC Server listening on http://0.0.0.0:{port}");
 
-    axum::serve(listener, server)
-        .with_graceful_shutdown(async move {
-            cancel_token.cancelled().await;
-            println!("Genesis RPC server stopped");
-        })
-        .await?;
+    cancel_token.cancelled().await;
+    tracing::info!("Genesis RPC server stopped");
+    handle.stop()?;
+
     Ok(())
+}
+
+/// Starts the genesis RPC server and returns the handle and bound address (useful for testing)
+pub async fn start_rpc_server_for_genesis_with_handle(
+    genesis: PathSender,
+    key_store_path: String,
+    port: u16,
+) -> anyhow::Result<(ServerHandle, SocketAddr)> {
+    let rpc_impl = SummitGenesisRpcServer::new(key_store_path, genesis);
+
+    let methods = rpc_impl.into_rpc();
+
+    let server = builder::RpcServerBuilder::new(port).build().await?;
+    let addr = server.local_addr()?;
+    let handle = server.start(methods);
+
+    tracing::info!("Genesis RPC Server listening on http://{}", addr);
+
+    Ok((handle, addr))
 }
