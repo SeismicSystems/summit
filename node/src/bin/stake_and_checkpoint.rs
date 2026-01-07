@@ -20,6 +20,7 @@ use commonware_cryptography::Sha256;
 use commonware_cryptography::{Hasher, PrivateKeyExt, Signer, bls12381, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
+use jsonrpsee::http_client::HttpClientBuilder;
 use ssz::Decode;
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -33,6 +34,7 @@ use std::{
 };
 use summit::args::{RunFlags, run_node_local};
 use summit::engine::VALIDATOR_MINIMUM_STAKE;
+use summit_rpc::SummitApiClient;
 use summit_types::PROTOCOL_VERSION;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
@@ -41,8 +43,6 @@ use summit_types::execution_request::compute_deposit_data_root;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
 use tracing::Level;
-use jsonrpsee::http_client::HttpClientBuilder;
-use summit_rpc::SummitApiClient;
 
 const NUM_NODES: u16 = 4;
 

@@ -1,10 +1,10 @@
-use std::fs;
 use crate::api::SummitGenesisApiServer;
 use crate::error::RpcError;
 use crate::types::PublicKeysResponse;
 use async_trait::async_trait;
 use futures::channel::oneshot;
 use jsonrpsee::core::RpcResult;
+use std::fs;
 use std::sync::Mutex;
 use summit_types::KeyPaths;
 use summit_types::utils::get_expanded_path;

@@ -37,6 +37,7 @@ pub async fn start_rpc_server<
         .with_max_connections(1000)
         .with_max_request_body_size(10 * 1024 * 1024)
         .with_max_response_body_size(10 * 1024 * 1024)
+        .with_cors(Some("*".to_string()))
         .build()
         .await?;
 
@@ -68,6 +69,7 @@ pub async fn start_rpc_server_with_handle<
         .with_max_connections(1000)
         .with_max_request_body_size(10 * 1024 * 1024)
         .with_max_response_body_size(10 * 1024 * 1024)
+        .with_cors(Some("*".to_string()))
         .build()
         .await?;
 
@@ -89,7 +91,10 @@ pub async fn start_rpc_server_for_genesis(
 
     let methods = rpc_impl.into_rpc();
 
-    let server = builder::RpcServerBuilder::new(port).build().await?;
+    let server = builder::RpcServerBuilder::new(port)
+        .with_cors(Some("*".to_string()))
+        .build()
+        .await?;
     let handle = server.start(methods);
 
     tracing::info!("Genesis RPC Server listening on http://0.0.0.0:{port}");
@@ -111,7 +116,10 @@ pub async fn start_rpc_server_for_genesis_with_handle(
 
     let methods = rpc_impl.into_rpc();
 
-    let server = builder::RpcServerBuilder::new(port).build().await?;
+    let server = builder::RpcServerBuilder::new(port)
+        .with_cors(Some("*".to_string()))
+        .build()
+        .await?;
     let addr = server.local_addr()?;
     let handle = server.start(methods);
 

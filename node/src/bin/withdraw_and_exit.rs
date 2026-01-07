@@ -19,6 +19,8 @@ use commonware_codec::DecodeExt;
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
 use commonware_utils::from_hex_formatted;
 use futures::{FutureExt, pin_mut};
+use jsonrpsee::core::ClientError;
+use jsonrpsee::http_client::HttpClientBuilder;
 use std::collections::VecDeque;
 use std::time::Duration;
 use std::{
@@ -31,13 +33,11 @@ use std::{
 };
 use summit::args::{RunFlags, run_node_local};
 use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_MINIMUM_STAKE, VALIDATOR_WITHDRAWAL_NUM_EPOCHS};
+use summit_rpc::SummitApiClient;
 use summit_types::PublicKey;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
 use tracing::Level;
-use jsonrpsee::http_client::HttpClientBuilder;
-use jsonrpsee::core::ClientError;
-use summit_rpc::SummitApiClient;
 
 const NUM_NODES: u16 = 4;
 

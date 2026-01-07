@@ -6044,6 +6044,7 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "async-trait",
+ "bytes",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
@@ -6052,6 +6053,9 @@ dependencies = [
  "dirs 5.0.1",
  "ethereum_ssz",
  "futures",
+ "http",
+ "http-body-util",
+ "hyper",
  "jsonrpsee",
  "jsonrpsee-core 0.26.0",
  "jsonrpsee-types 0.26.0",
@@ -6062,6 +6066,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower 0.5.2",
+ "tower-http",
  "tracing",
 ]
 
