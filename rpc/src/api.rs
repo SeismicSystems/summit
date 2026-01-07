@@ -4,7 +4,7 @@ use crate::types::{
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 
-#[rpc(server, client, namespace = "")]
+#[rpc(server, client)]
 pub trait SummitApi {
     #[method(name = "health")]
     async fn health(&self) -> RpcResult<String>;
@@ -38,7 +38,7 @@ pub trait SummitApi {
     ) -> RpcResult<DepositTransactionResponse>;
 }
 
-#[rpc(server, client, namespace = "")]
+#[rpc(server, client)]
 pub trait SummitGenesisApi {
     #[method(name = "health")]
     async fn health(&self) -> RpcResult<String>;
