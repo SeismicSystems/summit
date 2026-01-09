@@ -64,7 +64,7 @@ where
         };
 
         Ok(CheckpointRes {
-            checkpoint: checkpoint.data.into(),
+            checkpoint: checkpoint.as_ssz_bytes(),
             digest: checkpoint.digest.0,
             epoch,
         })
