@@ -115,6 +115,7 @@ mod tests {
     use crate::ingress::mailbox::Identifier;
     use crate::mocks::fixtures::{Fixture, bls12381_threshold};
     use commonware_broadcast::buffered;
+    use commonware_consensus::Reporter;
     use commonware_consensus::simplex::scheme::bls12381_threshold;
     use commonware_consensus::simplex::types::{
         Activity, Finalization, Finalize, Notarization, Notarize, Proposal,
@@ -122,7 +123,6 @@ mod tests {
     use commonware_consensus::types::{
         Epoch, Epocher, FixedEpocher, Height, Round, View, ViewDelta,
     };
-    use commonware_consensus::Reporter;
     use commonware_cryptography::{
         Digestible, Hasher as _,
         bls12381::primitives::variant::MinPk,
