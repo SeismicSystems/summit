@@ -4,8 +4,8 @@ use std::fs;
 use std::io::{self, Write};
 
 use commonware_codec::Encode;
-use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;
+use commonware_cryptography::Signer;
 use commonware_math::algebra::Random;
 use summit_types::{KeyPaths, PrivateKey};
 
