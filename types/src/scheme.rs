@@ -1,20 +1,22 @@
 use commonware_codec::{DecodeExt, Encode};
-use commonware_consensus::simplex::signing_scheme::{self, Scheme};
+use commonware_consensus::simplex::scheme::{self, Scheme};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
-use commonware_cryptography::{PublicKey, Signer};
-use commonware_utils::set::OrderedAssociated;
+use commonware_cryptography::certificate::Provider;
+use commonware_cryptography::{Digest, PublicKey, Signer};
+use commonware_utils::TryCollect;
+use commonware_utils::ordered::BiMap;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-pub type MultisigScheme<C, V> =
-    signing_scheme::bls12381_multisig::Scheme<<C as Signer>::PublicKey, V>;
+// BLS multisig from simplex module for use with Simplex consensus
+pub type MultisigScheme<C, V> = scheme::bls12381_multisig::Scheme<<C as Signer>::PublicKey, V>;
 
 /// Supplies the signing scheme the marshal should use for a given epoch.
-pub trait SchemeProvider: Clone + Send + Sync + 'static {
+pub trait SchemeProvider<D: Digest>: Clone + Send + Sync + 'static {
     /// The signing scheme to provide.
-    type Scheme: Scheme;
+    type Scheme: Scheme<D>;
 
     /// Return the signing scheme that corresponds to `epoch`.
     fn scheme(&self, epoch: Epoch) -> Option<Arc<Self::Scheme>>;
@@ -39,13 +41,15 @@ pub struct SummitSchemeProvider<C: Signer, V: Variant> {
     #[allow(clippy::type_complexity)]
     schemes: Arc<Mutex<HashMap<Epoch, Arc<MultisigScheme<C, V>>>>>,
     bls_private_key: group::Private,
+    namespace: Vec<u8>,
 }
 
 impl<C: Signer, V: Variant> SummitSchemeProvider<C, V> {
-    pub fn new(bls_private_key: group::Private) -> Self {
+    pub fn new(bls_private_key: group::Private, namespace: Vec<u8>) -> Self {
         Self {
             schemes: Arc::new(Mutex::new(HashMap::new())),
             bls_private_key,
+            namespace,
         }
     }
 
@@ -66,16 +70,16 @@ impl<C: Signer, V: Variant> SummitSchemeProvider<C, V> {
     }
 }
 
-pub trait EpochSchemeProvider {
+pub trait EpochSchemeProvider<D: Digest> {
     type Variant: Variant;
     type PublicKey: PublicKey;
-    type Scheme: Scheme;
+    type Scheme: Scheme<D>;
 
     /// Returns a [Scheme] for the given [EpochTransition].
     fn scheme_for_epoch(&self, transition: &EpochTransition) -> Self::Scheme;
 }
 
-impl<C: Signer, V: Variant> SchemeProvider for SummitSchemeProvider<C, V> {
+impl<C: Signer, V: Variant, D: Digest> SchemeProvider<D> for SummitSchemeProvider<C, V> {
     type Scheme = MultisigScheme<C, V>;
 
     fn scheme(&self, epoch: Epoch) -> Option<Arc<MultisigScheme<C, V>>> {
@@ -84,7 +88,18 @@ impl<C: Signer, V: Variant> SchemeProvider for SummitSchemeProvider<C, V> {
     }
 }
 
-impl<C: Signer<PublicKey = crate::PublicKey>, V: Variant> EpochSchemeProvider
+// Implement the commonware Provider trait
+impl<C: Signer, V: Variant> Provider for SummitSchemeProvider<C, V> {
+    type Scope = Epoch;
+    type Scheme = MultisigScheme<C, V>;
+
+    fn scoped(&self, scope: Self::Scope) -> Option<Arc<Self::Scheme>> {
+        let schemes = self.schemes.lock().unwrap();
+        schemes.get(&scope).cloned()
+    }
+}
+
+impl<C: Signer<PublicKey = crate::PublicKey>, V: Variant, D: Digest> EpochSchemeProvider<D>
     for SummitSchemeProvider<C, V>
 {
     type Variant = V;
@@ -92,7 +107,7 @@ impl<C: Signer<PublicKey = crate::PublicKey>, V: Variant> EpochSchemeProvider
     type Scheme = MultisigScheme<C, V>;
 
     fn scheme_for_epoch(&self, transition: &EpochTransition) -> Self::Scheme {
-        let participants: OrderedAssociated<Self::PublicKey, V::Public> = transition
+        let participants: BiMap<Self::PublicKey, V::Public> = transition
             .validator_keys
             .iter()
             .map(|(pk, bls_pk)| {
@@ -102,9 +117,31 @@ impl<C: Signer<PublicKey = crate::PublicKey>, V: Variant> EpochSchemeProvider
                     .expect("failed to decode BLS public key");
                 (pk.clone(), variant_pk)
             })
-            .collect();
+            .try_collect()
+            .expect("failed to build BiMap");
 
-        MultisigScheme::<C, V>::new(participants, self.bls_private_key.clone())
+        // Try to create a signer if our private key is in the participant set.
+        // If not, fall back to verifier mode (observer/non-validator).
+        match MultisigScheme::<C, V>::signer(
+            &self.namespace,
+            participants.clone(),
+            self.bls_private_key.clone(),
+        ) {
+            Some(scheme) => {
+                tracing::debug!(
+                    epoch = transition.epoch.get(),
+                    "created signing scheme for epoch (active validator)"
+                );
+                scheme
+            }
+            None => {
+                tracing::info!(
+                    epoch = transition.epoch.get(),
+                    "private key not in validator set, entering verifier mode (observer only)"
+                );
+                MultisigScheme::<C, V>::verifier(&self.namespace, participants)
+            }
+        }
     }
 }
 

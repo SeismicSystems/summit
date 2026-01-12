@@ -1,5 +1,7 @@
 use commonware_consensus::types::{Epoch, Round};
-use commonware_consensus::{Automaton, Relay, simplex::types::Context, types::View};
+use commonware_consensus::{
+    Automaton, CertifiableAutomaton, Relay, simplex::types::Context, types::View,
+};
 use commonware_cryptography::PublicKey;
 use commonware_cryptography::sha256::Digest;
 use futures::{
@@ -94,6 +96,10 @@ impl<P: PublicKey> Automaton for Mailbox<P> {
             .expect("Failed to send verify");
         receiver
     }
+}
+
+impl<P: PublicKey> CertifiableAutomaton for Mailbox<P> {
+    // Uses default certify() implementation which always returns true
 }
 
 impl<P: PublicKey> Relay for Mailbox<P> {

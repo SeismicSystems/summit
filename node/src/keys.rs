@@ -2,8 +2,9 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use std::io::{self, Write};
 
+use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;
-use commonware_cryptography::{PrivateKeyExt as _, Signer};
+use commonware_math::algebra::Random;
 use summit_types::{KeyPaths, PrivateKey};
 
 #[derive(Subcommand, PartialEq, Eq, Debug, Clone)]
@@ -96,13 +97,13 @@ impl KeySubCmd {
         std::fs::create_dir_all(&keystore_dir).expect("Unable to create keystore directory");
 
         // Generate ed25519 node key
-        let node_private_key = PrivateKey::from_rng(&mut rand::thread_rng());
+        let node_private_key = PrivateKey::random(&mut rand::thread_rng());
         let node_pub_key = node_private_key.public_key();
         let encoded_node_key = node_private_key.to_string();
         std::fs::write(node_key_path, encoded_node_key).expect("Unable to write node key to disk");
 
         // Generate BLS consensus key
-        let consensus_private_key = BlsPrivateKey::from_rng(&mut rand::thread_rng());
+        let consensus_private_key = BlsPrivateKey::random(&mut rand::thread_rng());
         let consensus_pub_key = consensus_private_key.public_key();
         let encoded_consensus_key = consensus_private_key.to_string();
         std::fs::write(consensus_key_path, encoded_consensus_key)

@@ -1,5 +1,9 @@
-use commonware_cryptography::{PrivateKeyExt, bls12381, ed25519};
+use commonware_codec::Encode as _;
+use commonware_cryptography::{bls12381, ed25519};
+use commonware_math::algebra::Random;
 use futures::{StreamExt, channel::mpsc};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::collections::HashMap;
 use std::fs;
 use summit_finalizer::{FinalizerMailbox, FinalizerMessage};
@@ -88,14 +92,15 @@ pub fn create_test_keystore() -> anyhow::Result<tempfile::TempDir> {
     let temp_dir = tempfile::tempdir()?;
 
     // Generate ed25519 node key (deterministic for testing)
-    let node_private_key = ed25519::PrivateKey::from_seed(0);
-    let encoded_node_key = node_private_key.to_string();
+    let mut rng = StdRng::seed_from_u64(0);
+    let node_private_key = ed25519::PrivateKey::random(&mut rng);
+    let encoded_node_key = commonware_utils::hex(&node_private_key.encode());
     let node_key_path = temp_dir.path().join("node_key.pem");
     fs::write(node_key_path, encoded_node_key)?;
 
     // Generate BLS consensus key (deterministic for testing)
-    let consensus_private_key = bls12381::PrivateKey::from_seed(0);
-    let encoded_consensus_key = consensus_private_key.to_string();
+    let consensus_private_key = bls12381::PrivateKey::random(&mut rng);
+    let encoded_consensus_key = commonware_utils::hex(&consensus_private_key.encode());
     let consensus_key_path = temp_dir.path().join("consensus_key.pem");
     fs::write(consensus_key_path, encoded_consensus_key)?;
 

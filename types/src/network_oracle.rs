@@ -1,6 +1,6 @@
 use commonware_cryptography::PublicKey;
 use commonware_p2p::{Blocker, Manager, authenticated::discovery::Oracle};
-use commonware_utils::set::Ordered;
+use commonware_utils::ordered::Set as OrderedSet;
 use std::future::Future;
 
 pub trait NetworkOracle<C: PublicKey>: Send + Sync + 'static {
@@ -20,7 +20,9 @@ impl<C: PublicKey> DiscoveryOracle<C> {
 
 impl<C: PublicKey> NetworkOracle<C> for DiscoveryOracle<C> {
     async fn register(&mut self, index: u64, peers: Vec<C>) {
-        self.oracle.update(index, Ordered::from(peers)).await;
+        self.oracle
+            .update(index, OrderedSet::from_iter_dedup(peers))
+            .await;
     }
 }
 
@@ -34,13 +36,13 @@ impl<C: PublicKey> Blocker for DiscoveryOracle<C> {
 
 impl<C: PublicKey> Manager for DiscoveryOracle<C> {
     type PublicKey = C;
-    type Peers = Ordered<C>;
+    type Peers = OrderedSet<C>;
 
     fn update(&mut self, id: u64, peers: Self::Peers) -> impl Future<Output = ()> + Send {
         self.oracle.update(id, peers)
     }
 
-    async fn peer_set(&mut self, id: u64) -> Option<Ordered<Self::PublicKey>> {
+    async fn peer_set(&mut self, id: u64) -> Option<OrderedSet<Self::PublicKey>> {
         self.oracle.peer_set(id).await
     }
 
@@ -48,8 +50,8 @@ impl<C: PublicKey> Manager for DiscoveryOracle<C> {
         &mut self,
     ) -> futures::channel::mpsc::UnboundedReceiver<(
         u64,
-        Ordered<Self::PublicKey>,
-        Ordered<Self::PublicKey>,
+        OrderedSet<Self::PublicKey>,
+        OrderedSet<Self::PublicKey>,
     )> {
         self.oracle.subscribe().await
     }

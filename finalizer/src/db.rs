@@ -1,17 +1,18 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
-use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
+use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Storage};
-use commonware_storage::adb::store::{self, Db, Store};
+use commonware_storage::qmdb::store::NonDurable;
+use commonware_storage::qmdb::store::db::{self, Db};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
 use summit_types::FinalizedHeader;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 
-pub use store::Config;
+pub use db::Config;
 
 // Key prefixes for different data types
 const STATE_PREFIX: u8 = 0x01;
@@ -25,16 +26,25 @@ const LATEST_FINALIZED_HEADER_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const LATEST_CHECKPOINT_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 2];
 
 pub struct FinalizerState<E: Clock + Storage + Metrics, V: Variant> {
-    store: Store<E, FixedBytes<64>, Value<V>, TwoCap>,
+    store: Option<Db<E, FixedBytes<64>, Value<V>, TwoCap, NonDurable>>,
 }
 
 impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn new(context: E, cfg: Config<TwoCap, ()>) -> Self {
-        let store = Store::<_, FixedBytes<64>, Value<V>, TwoCap>::init(context, cfg)
+        let store = Db::<_, FixedBytes<64>, Value<V>, TwoCap>::init(context, cfg)
             .await
-            .expect("failed to initialize unified store");
+            .expect("failed to initialize unified store")
+            .into_dirty();
 
-        Self { store }
+        Self { store: Some(store) }
+    }
+
+    fn store(&self) -> &Db<E, FixedBytes<64>, Value<V>, TwoCap, NonDurable> {
+        self.store.as_ref().expect("store should always be present")
+    }
+
+    fn store_mut(&mut self) -> &mut Db<E, FixedBytes<64>, Value<V>, TwoCap, NonDurable> {
+        self.store.as_mut().expect("store should always be present")
     }
 
     fn pad_key(key: &[u8]) -> FixedBytes<64> {
@@ -69,7 +79,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn get_latest_consensus_state_height(&self) -> u64 {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
         if let Some(Value::U64(height)) = self
-            .store
+            .store()
             .get(&key)
             .await
             .expect("failed to get latest consensus state height")
@@ -82,7 +92,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     async fn set_latest_consensus_state_height(&mut self, height: u64) {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
-        self.store
+        self.store_mut()
             .update(key, Value::U64(height))
             .await
             .expect("failed to set latest consensus state height");
@@ -92,7 +102,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn get_latest_finalized_header_height(&self) -> u64 {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_HEIGHT_KEY);
         if let Some(Value::U64(height)) = self
-            .store
+            .store()
             .get(&key)
             .await
             .expect("failed to get latest finalized header height")
@@ -105,7 +115,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     async fn set_latest_finalized_header_height(&mut self, height: u64) {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_HEIGHT_KEY);
-        self.store
+        self.store_mut()
             .update(key, Value::U64(height))
             .await
             .expect("failed to set latest finalized header height");
@@ -115,7 +125,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn get_latest_checkpoint_epoch(&self) -> u64 {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
         if let Some(Value::U64(epoch)) = self
-            .store
+            .store()
             .get(&key)
             .await
             .expect("failed to get latest checkpoint epoch")
@@ -128,7 +138,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     async fn set_latest_checkpoint_epoch(&mut self, epoch: u64) {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
-        self.store
+        self.store_mut()
             .update(key, Value::U64(epoch))
             .await
             .expect("failed to set latest checkpoint epoch");
@@ -137,7 +147,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     // ConsensusState blob operations
     pub async fn store_consensus_state(&mut self, height: u64, state: &ConsensusState) {
         let key = Self::make_consensus_state_key(height);
-        self.store
+        self.store_mut()
             .update(key, Value::ConsensusState(Box::new(state.clone())))
             .await
             .expect("failed to store consensus state");
@@ -152,7 +162,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn get_consensus_state(&self, height: u64) -> Option<ConsensusState> {
         let key = Self::make_consensus_state_key(height);
         if let Some(Value::ConsensusState(state)) = self
-            .store
+            .store()
             .get(&key)
             .await
             .expect("failed to get consensus state")
@@ -167,7 +177,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         // Check if we have a latest height tracker
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
         if let Some(Value::U64(latest_height)) = self
-            .store
+            .store()
             .get(&key)
             .await
             .expect("failed to get latest consensus state height")
@@ -182,7 +192,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     pub async fn store_finalized_checkpoint(&mut self, epoch: u64, checkpoint: &Checkpoint) {
         let key = Self::make_checkpoint_key(epoch);
-        self.store
+        self.store_mut()
             .update(key, Value::Checkpoint(checkpoint.clone()))
             .await
             .expect("failed to store finalized checkpoint");
@@ -198,7 +208,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn get_finalized_checkpoint(&self, epoch: u64) -> Option<Checkpoint> {
         let key = Self::make_checkpoint_key(epoch);
         if let Some(Value::Checkpoint(checkpoint)) = self
-            .store
+            .store()
             .get(&key)
             .await
             .expect("failed to get finalized checkpoint")
@@ -225,7 +235,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         header: &FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>,
     ) {
         let key = Self::make_finalized_header_key(height);
-        self.store
+        self.store_mut()
             .update(key, Value::FinalizedHeader(Box::new(header.clone())))
             .await
             .expect("failed to store finalized header");
@@ -244,7 +254,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     ) -> Option<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>> {
         let key = Self::make_finalized_header_key(height);
         if let Some(Value::FinalizedHeader(header)) = self
-            .store
+            .store()
             .get(&key)
             .await
             .expect("failed to get finalized header")
@@ -268,10 +278,17 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     // Commit all pending changes to the database
     pub async fn commit(&mut self) {
-        self.store
+        // Take ownership of the store temporarily
+        let store = self.store.take().expect("store should be present");
+
+        // Commit returns (Durable store, range)
+        let (durable_store, _range) = store
             .commit(None)
             .await
             .expect("failed to commit to database");
+
+        // Convert back to NonDurable and restore
+        self.store = Some(durable_store.into_dirty());
     }
 }
 
@@ -342,17 +359,21 @@ impl<V: Variant> Write for Value<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonware_consensus::simplex::signing_scheme::bls12381_multisig::Certificate as BlsCertificate;
-    use commonware_consensus::simplex::signing_scheme::utils::Signers;
     use commonware_consensus::simplex::types::{Finalization, Proposal};
     use commonware_consensus::types::{Epoch, Round, View};
     use commonware_cryptography::bls12381::primitives::{
-        group::{Element, G2},
+        group::{Private, Scalar},
+        ops::{aggregate::Signature, sign_message},
         variant::MinPk,
     };
+    use commonware_cryptography::certificate::Signers;
+    use commonware_cryptography::certificate::bls12381_multisig::Certificate as BlsCertificate;
+    use commonware_math::algebra::Random;
     use commonware_runtime::buffer::PoolRef;
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{NZU64, NZUsize};
+    use rand::SeedableRng as _;
+    use rand::rngs::StdRng;
 
     async fn create_test_db_with_context<E: Clock + Storage + Metrics, V: Variant>(
         partition: &str,
@@ -368,6 +389,18 @@ mod tests {
             buffer_pool: PoolRef::new(NZUsize!(77), NZUsize!(9)),
         };
         FinalizerState::<E, V>::new(context, config).await
+    }
+
+    fn create_dummy_signature() -> Signature<MinPk> {
+        // Create a deterministic private key and sign a dummy message to get a valid G2 point
+        let mut rng = StdRng::seed_from_u64(42);
+        let private = Private::from(Scalar::random(&mut rng));
+        let g2_signature = sign_message::<MinPk>(&private, b"", b"test message");
+
+        // Encode the G2 signature and decode it as Signature<MinPk>
+        use commonware_codec::{DecodeExt as _, Encode as _};
+        let encoded = g2_signature.encode();
+        Signature::<MinPk>::decode(encoded).expect("valid signature")
     }
 
     #[test]
@@ -453,9 +486,9 @@ mod tests {
             };
             let finalized = Finalization {
                 proposal,
-                certificate: BlsCertificate {
+                certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(), // Use one/generator instead of zero/infinity
+                    signature: create_dummy_signature(), // Valid dummy signature for test
                 },
             };
             let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized, 3);
@@ -500,9 +533,9 @@ mod tests {
             };
             let finalized2 = Finalization {
                 proposal: proposal2,
-                certificate: BlsCertificate {
+                certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(),
+                    signature: create_dummy_signature(),
                 },
             };
             let finalized_header2 =
@@ -563,9 +596,9 @@ mod tests {
 
             let finalized1 = Finalization {
                 proposal: proposal1,
-                certificate: BlsCertificate {
+                certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(),
+                    signature: create_dummy_signature(),
                 },
             };
             let finalized_header1 =
@@ -593,9 +626,9 @@ mod tests {
 
             let finalized3 = Finalization {
                 proposal: proposal3,
-                certificate: BlsCertificate {
+                certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(),
+                    signature: create_dummy_signature(),
                 },
             };
             let finalized_header3 =
@@ -623,9 +656,9 @@ mod tests {
 
             let finalized2 = Finalization {
                 proposal: proposal2,
-                certificate: BlsCertificate {
+                certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(),
+                    signature: create_dummy_signature(),
                 },
             };
             let finalized_header2 =

@@ -11,20 +11,17 @@ pub use types::*;
 
 pub use api::{SummitApiClient, SummitApiServer, SummitGenesisApiClient, SummitGenesisApiServer};
 
-use commonware_consensus::Block as ConsensusBlock;
-use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_cryptography::Committable;
+use commonware_cryptography::{Signer, bls12381::primitives::variant::Variant};
 use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
 use std::net::SocketAddr;
 use summit_finalizer::FinalizerMailbox;
+use summit_types::Block;
+use summit_types::scheme::MultisigScheme;
 use tokio_util::sync::CancellationToken;
 
-pub async fn start_rpc_server<
-    S: Scheme + Send + Sync + 'static,
-    B: ConsensusBlock + Committable + Send + Sync + 'static,
->(
-    finalizer_mailbox: FinalizerMailbox<S, B>,
+pub async fn start_rpc_server<C: Signer, V: Variant>(
+    finalizer_mailbox: FinalizerMailbox<MultisigScheme<C, V>, Block<C, V>>,
     key_store_path: String,
     port: u16,
     stop_signal: Signal,
@@ -53,11 +50,8 @@ pub async fn start_rpc_server<
 }
 
 /// Starts the RPC server and returns the handle and bound address (useful for testing)
-pub async fn start_rpc_server_with_handle<
-    S: Scheme + Send + Sync + 'static,
-    B: ConsensusBlock + Committable + Send + Sync + 'static,
->(
-    finalizer_mailbox: FinalizerMailbox<S, B>,
+pub async fn start_rpc_server_with_handle<C: Signer, V: Variant>(
+    finalizer_mailbox: FinalizerMailbox<MultisigScheme<C, V>, Block<C, V>>,
     key_store_path: String,
     port: u16,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {

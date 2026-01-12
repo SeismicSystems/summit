@@ -522,4 +522,5 @@ mod tests {
         assert_eq!(min_finalized.cmp(&min_finalized), std::cmp::Ordering::Equal);
         assert_eq!(max_notarized.cmp(&max_notarized), std::cmp::Ordering::Equal);
     }
+
 }

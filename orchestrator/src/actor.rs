@@ -1,41 +1,39 @@
 //! Consensus engine orchestrator for epoch transitions.
 use crate::{Mailbox, Message};
-use summit_types::{Block, Digest, scheme::SummitSchemeProvider};
+use summit_types::{Block, Digest, scheme::SummitSchemeProvider, utils::last_block_in_epoch};
 
-use commonware_codec::{DecodeExt, Encode, varint::UInt};
 use commonware_consensus::{
-    Automaton, Relay,
-    simplex::{
-        self,
-        types::{Context, Voter},
-    },
-    types::{Epoch, ViewDelta},
-    utils::last_block_in_epoch,
+    CertifiableAutomaton, Relay,
+    simplex::{self, types::Context},
+    types::{Epoch, Height, ViewDelta},
 };
-use commonware_cryptography::{Signer, bls12381::primitives::variant::Variant};
-use commonware_macros::select;
+use commonware_cryptography::{Sha256, Signer, bls12381::primitives::variant::Variant};
+use commonware_macros::select_loop;
 use commonware_p2p::{
-    Blocker, Receiver, Recipients, Sender,
+    Blocker, Receiver, Sender,
     utils::mux::{Builder, MuxHandle, Muxer},
 };
+use commonware_parallel::Strategy;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::PoolRef, spawn_cell,
 };
-use commonware_utils::{NZU32, NZUsize};
+use commonware_utils::{NZUsize, vec::NonEmptyVec};
 use futures::{StreamExt, channel::mpsc};
-use governor::{Quota, RateLimiter, clock::Clock as GClock};
-use rand::{CryptoRng, Rng};
+use governor::clock::Clock as GClock;
+use rand_core::CryptoRngCore;
 use std::{collections::BTreeMap, time::Duration};
 use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Configuration for the orchestrator.
-pub struct Config<B, V, C, A>
+pub struct Config<B, V, C, A, St>
 where
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
+    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+        + Relay<Digest = Digest>,
+    St: Strategy,
 {
     pub oracle: B,
     pub application: A,
@@ -45,7 +43,6 @@ where
     pub namespace: Vec<u8>,
     pub muxer_size: usize,
     pub mailbox_size: usize,
-    pub rate_limit: Quota,
 
     pub blocks_per_epoch: u64,
 
@@ -59,15 +56,19 @@ where
     pub fetch_timeout: Duration,
     pub activity_timeout: ViewDelta,
     pub skip_timeout: ViewDelta,
+
+    pub _strategy: std::marker::PhantomData<St>,
 }
 
-pub struct Actor<E, B, V, C, A>
+pub struct Actor<E, B, V, C, A, St>
 where
-    E: Spawner + Metrics + Rng + CryptoRng + Clock + GClock + Storage + Network,
+    E: Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer<PublicKey = summit_types::PublicKey>,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
+    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+        + Relay<Digest = Digest>,
+    St: Strategy,
 {
     context: ContextCell<E>,
     mailbox: mpsc::Receiver<Message>,
@@ -77,10 +78,8 @@ where
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<C, V>, Block<C, V>>,
     scheme_provider: SummitSchemeProvider<C, V>,
 
-    namespace: Vec<u8>,
     muxer_size: usize,
     partition_prefix: String,
-    rate_limit: governor::Quota,
     pool_ref: PoolRef,
     blocks_per_epoch: u64,
 
@@ -91,17 +90,21 @@ where
     fetch_timeout: Duration,
     activity_timeout: ViewDelta,
     skip_timeout: ViewDelta,
+
+    _strategy: std::marker::PhantomData<St>,
 }
 
-impl<E, B, V, C, A> Actor<E, B, V, C, A>
+impl<E, B, V, C, A, St> Actor<E, B, V, C, A, St>
 where
-    E: Spawner + Metrics + Rng + CryptoRng + Clock + GClock + Storage + Network,
+    E: Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer<PublicKey = summit_types::PublicKey>,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
+    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+        + Relay<Digest = Digest>,
+    St: Strategy,
 {
-    pub fn new(context: E, config: Config<B, V, C, A>) -> (Self, Mailbox) {
+    pub fn new(context: E, config: Config<B, V, C, A, St>) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
         let pool_ref = PoolRef::new(NZUsize!(16_384), NZUsize!(10_000));
 
@@ -113,10 +116,8 @@ where
                 oracle: config.oracle,
                 syncer_mailbox: config.syncer_mailbox,
                 scheme_provider: config.scheme_provider,
-                namespace: config.namespace,
                 muxer_size: config.muxer_size,
                 partition_prefix: config.partition_prefix,
-                rate_limit: config.rate_limit,
                 pool_ref,
                 blocks_per_epoch: config.blocks_per_epoch,
                 leader_timeout: config.leader_timeout,
@@ -125,6 +126,7 @@ where
                 fetch_timeout: config.fetch_timeout,
                 activity_timeout: config.activity_timeout,
                 skip_timeout: config.skip_timeout,
+                _strategy: std::marker::PhantomData,
             },
             Mailbox::new(sender),
         )
@@ -144,15 +146,8 @@ where
             impl Sender<PublicKey = C::PublicKey>,
             impl Receiver<PublicKey = C::PublicKey>,
         ),
-        orchestrator: (
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
-        ),
     ) -> Handle<()> {
-        spawn_cell!(
-            self.context,
-            self.run(pending, recovered, resolver, orchestrator).await
-        )
+        spawn_cell!(self.context, self.run(pending, recovered, resolver).await)
     }
 
     async fn run(
@@ -169,10 +164,6 @@ where
             impl Sender<PublicKey = C::PublicKey>,
             impl Receiver<PublicKey = C::PublicKey>,
         ),
-        (mut orchestrator_sender, mut orchestrator_receiver): (
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
-        ),
     ) {
         // Start muxers for each physical channel used by consensus
         let (mux, mut pending_mux, mut pending_backup) = Muxer::builder(
@@ -184,14 +175,12 @@ where
         .with_backup()
         .build();
         mux.start();
-        let (mux, mut recovered_mux, mut recovered_global_sender) = Muxer::builder(
+        let (mux, mut recovered_mux) = Muxer::new(
             self.context.with_label("recovered_mux"),
             recovered_sender,
             recovered_receiver,
             self.muxer_size,
-        )
-        .with_global_sender()
-        .build();
+        );
         mux.start();
         let (mux, mut resolver_mux) = Muxer::new(
             self.context.with_label("resolver_mux"),
@@ -201,152 +190,83 @@ where
         );
         mux.start();
 
-        // Create rate limiter for orchestrators
-        let rate_limiter = RateLimiter::hashmap_with_clock(
-            self.rate_limit,
-            self.context.with_label("rate_limiter"),
-        );
-
         // Wait for instructions to transition epochs.
         let mut engines: BTreeMap<Epoch, Handle<()>> = BTreeMap::new();
-        loop {
-            select! {
-                message = pending_backup.next() => {
-                    // If a message is received in an unregistered sub-channel in the pending network,
-                    // attempt to forward the orchestrator for the epoch.
-                    let Some((their_epoch, (from, _))) = message else {
-                        warn!("pending mux backup channel closed, shutting down orchestrator");
-                        break;
-                    };
-                    let Some(our_epoch) = engines.keys().last().copied() else {
-                        debug!(their_epoch, ?from, "received message from unregistered epoch with no known epochs");
-                        continue;
-                    };
-                    if their_epoch <= our_epoch.get() {
-                        debug!(their_epoch, our_epoch = our_epoch.get(), ?from, "received message from past epoch");
-                        continue;
-                    }
+        select_loop! {
+            self.context,
+            on_stopped => {
+                info!("context shutdown, stopping orchestrator");
+            },
+            message = pending_backup.next() => {
+                // If a message is received in an unregistered sub-channel in the pending network,
+                // ensure we have the boundary finalization.
+                let Some((their_epoch, (from, _))) = message else {
+                    info!("pending mux backup channel closed, shutting down orchestrator");
+                    break;
+                };
+                let their_epoch = Epoch::new(their_epoch);
+                let Some(our_epoch) = engines.keys().last().copied() else {
+                    continue;
+                };
+                if their_epoch <= our_epoch {
+                    continue;
+                }
 
-                    // If we're not in the committee of the latest epoch we know about and we observe another
-                    // participant that is ahead of us, send a message on the orchestrator channel to prompt
-                    // them to send us the finalization of the epoch boundary block for our latest known epoch.
-                    if rate_limiter.check_key(&from).is_err() {
-                        continue;
-                    }
-                    let boundary_height = last_block_in_epoch(self.blocks_per_epoch, our_epoch);
-                    if self.syncer_mailbox.get_finalization(boundary_height).await.is_some() {
-                        // Only request the orchestrator if we don't already have it.
-                        continue;
-                    };
-                    debug!(
-                        their_epoch,
-                        ?from,
-                        "received backup message from future epoch, requesting orchestrator"
-                    );
+                // If we're not in the committee of the latest epoch we know about and we observe
+                // another participant that is ahead of us, ensure we have the boundary finalization.
+                // We target only the peer who claims to be ahead. If we receive messages from
+                // multiple peers claiming to be ahead, each call adds them to the target set,
+                // giving us more peers to try fetching from.
+                let boundary_height = Height::new(last_block_in_epoch(self.blocks_per_epoch, our_epoch.get()));
+                self.syncer_mailbox.hint_finalized(boundary_height, NonEmptyVec::new(from)).await;
+            },
+            transition = self.mailbox.next() => {
+                let Some(transition) = transition else {
+                    info!("mailbox closed, shutting down orchestrator");
+                    break;
+                };
 
-                    // Send the request to the orchestrator. This operation is best-effort.
-                    if orchestrator_sender.send(
-                        Recipients::One(from),
-                        UInt(our_epoch.get()).encode().freeze(),
-                        true
-                    ).await.is_err() {
-                        warn!("failed to send orchestrator request, shutting down orchestrator");
-                        break;
-                    }
-                },
-                message = orchestrator_receiver.recv() => {
-                    let Ok((from, bytes)) = message else {
-                        warn!("orchestrator channel closed, shutting down orchestrator");
-                        break;
-                    };
-                    let epoch = match UInt::<u64>::decode(bytes.as_ref()) {
-                        Ok(epoch_u64) => Epoch::new(epoch_u64.0),
-                        Err(err) => {
-                            debug!(?err, ?from, "failed to decode epoch from orchestrator request");
-                            self.oracle.block(from).await;
+                match transition {
+                    Message::Enter(transition) => {
+                        // If the epoch is already in the map, ignore.
+                        if engines.contains_key(&transition.epoch) {
+                            info!(epoch = transition.epoch.get(), "entered existing epoch");
                             continue;
                         }
-                    };
 
-                    // Fetch the finalization certificate for the last block within the subchannel's epoch.
-                    // If the node is state synced, marshal may not have the finalization locally, and the
-                    // peer will need to fetch it from another node on the network.
-                    let boundary_height = last_block_in_epoch(self.blocks_per_epoch, epoch);
-                    let Some(finalization) = self.syncer_mailbox.get_finalization(boundary_height).await else {
-                        debug!(epoch = epoch.get(), ?from, "missing finalization for old epoch");
-                        continue;
-                    };
-                    debug!(
-                        epoch = epoch.get(),
-                        boundary_height,
-                        ?from,
-                        "received message on pending network from old epoch. forwarding orchestrator"
-                    );
+                        // Register the new signing scheme with the scheme provider.
+                        let scheme = <SummitSchemeProvider<C, V> as EpochSchemeProvider<Digest>>::scheme_for_epoch(&self.scheme_provider, &transition);
+                        assert!(self.scheme_provider.register(transition.epoch, scheme.clone()));
 
-                    // Forward the finalization to the sender. This operation is best-effort.
-                    //
-                    // TODO (#2032): Send back to orchestrator for direct insertion into marshal.
-                    let message = Voter::<MultisigScheme<C, V>, Digest>::Finalization(finalization);
-                    if recovered_global_sender
-                        .send(
-                            epoch.get(),
-                            Recipients::One(from),
-                            message.encode().freeze(),
-                            false,
-                        )
-                        .await.is_err() {
-                            warn!("failed to forward finalization, shutting down orchestrator");
-                            break;
-                        }
-                },
-                transition = self.mailbox.next() => {
-                    let Some(transition) = transition else {
-                        warn!("mailbox closed, shutting down orchestrator");
-                        break;
-                    };
+                        // Enter the new epoch.
+                        let engine = self
+                            .enter_epoch(
+                                transition.epoch,
+                                scheme,
+                                &mut pending_mux,
+                                &mut recovered_mux,
+                                &mut resolver_mux,
+                            )
+                            .await;
+                        engines.insert(transition.epoch, engine);
 
-                    match transition {
-                        Message::Enter(transition) => {
-                            // If the epoch is already in the map, ignore.
-                            if engines.contains_key(&transition.epoch) {
-                                warn!(epoch = transition.epoch.get(), "entered existing epoch");
-                                continue;
-                            }
-
-                            // Register the new signing scheme with the scheme provider.
-                            let scheme = self.scheme_provider.scheme_for_epoch(&transition);
-                            assert!(self.scheme_provider.register(transition.epoch, scheme.clone()));
-
-                            // Enter the new epoch.
-                            let engine = self
-                                .enter_epoch(
-                                    transition.epoch,
-                                    scheme,
-                                    &mut pending_mux,
-                                    &mut recovered_mux,
-                                    &mut resolver_mux,
-                                )
-                                .await;
-                            engines.insert(transition.epoch, engine);
-
-                            info!(epoch = transition.epoch.get(), "entered epoch");
-                        }
-                        Message::Exit(epoch) => {
-                            // Remove the engine and abort it.
-                            let Some(engine) = engines.remove(&epoch) else {
-                                warn!(epoch = epoch.get(), "exited non-existent epoch");
-                                continue;
-                            };
-                            engine.abort();
-
-                            // Unregister the signing scheme for the epoch.
-                            assert!(self.scheme_provider.unregister(&epoch));
-
-                            info!(epoch = epoch.get(), "exited epoch");
-                        }
+                        info!(epoch = transition.epoch.get(), "entered epoch");
                     }
-                },
-            }
+                    Message::Exit(epoch) => {
+                        // Remove the engine and abort it.
+                        let Some(engine) = engines.remove(&epoch) else {
+                            info!(epoch = epoch.get(), "exited non-existent epoch");
+                            continue;
+                        };
+                        engine.abort();
+
+                        // Unregister the signing scheme for the epoch.
+                        assert!(self.scheme_provider.unregister(&epoch));
+
+                        info!(epoch = epoch.get(), "exited epoch");
+                    }
+                }
+            },
         }
     }
 
@@ -368,10 +288,12 @@ where
         >,
     ) -> Handle<()> {
         // Start the new engine
+        let elector = simplex::elector::RoundRobin::<Sha256>::default();
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
             simplex::Config {
                 scheme,
+                elector,
                 blocker: self.oracle.clone(),
                 automaton: self.application.clone(),
                 relay: self.application.clone(),
@@ -379,7 +301,6 @@ where
                 partition: format!("{}_consensus_{}", self.partition_prefix, epoch),
                 mailbox_size: 1024,
                 epoch,
-                namespace: self.namespace.clone(),
                 replay_buffer: NZUsize!(1024 * 1024),
                 write_buffer: NZUsize!(1024 * 1024),
                 leader_timeout: self.leader_timeout,
@@ -389,7 +310,6 @@ where
                 activity_timeout: self.activity_timeout,
                 skip_timeout: self.skip_timeout,
                 fetch_concurrent: 2,
-                fetch_rate_per_peer: Quota::per_second(NZU32!(1)),
                 buffer_pool: self.pool_ref.clone(),
             },
         );

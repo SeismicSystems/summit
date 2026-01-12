@@ -11,6 +11,7 @@ commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-macros.workspace = true
+commonware-math.workspace = true
 commonware-resolver.workspace = true
 commonware-runtime.workspace = true
 commonware-storage.workspace = true
@@ -21,6 +22,7 @@ bytes.workspace = true
 futures.workspace = true
 governor.workspace = true
 rand.workspace = true
+rand_core.workspace = true
 tracing.workspace = true
 pin-project.workspace = true
 
@@ -29,6 +31,7 @@ metrics = { version = "0.24.0", optional = true }
 prometheus-client = { version = "0.24.0", optional = true }
 
 [dev-dependencies]
+commonware-parallel.workspace = true
 tracing-subscriber = "0.3.19"
 
 [features]

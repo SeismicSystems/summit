@@ -4,8 +4,8 @@ use crate::PublicKey;
 use alloy_primitives::U256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
-use commonware_consensus::simplex::signing_scheme::Scheme;
 use commonware_consensus::simplex::types::Finalization;
+use commonware_cryptography::certificate::Scheme;
 use commonware_cryptography::{Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 
@@ -397,19 +397,26 @@ mod test {
     use super::*;
     use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
-    use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
+    use commonware_consensus::simplex::scheme::bls12381_multisig;
     use commonware_consensus::types::{Epoch, View};
     use commonware_consensus::{
-        simplex::{
-            signing_scheme::utils::Signers,
-            types::{Finalization, Proposal},
-        },
+        simplex::types::{Finalization, Proposal},
         types::Round,
     };
-    use commonware_cryptography::bls12381::primitives::{
-        group::{Element, G2},
-        variant::MinPk,
+    use commonware_cryptography::{
+        bls12381::{
+            certificate::multisig::Certificate,
+            primitives::{
+                group::{Private, Scalar},
+                ops::{aggregate::Signature, sign_message},
+                variant::MinPk,
+            },
+        },
+        certificate::Signers,
     };
+    use commonware_math::algebra::Random;
+    use rand::SeedableRng as _;
+    use rand::rngs::StdRng;
     use ssz::Decode;
 
     fn create_test_public_key(seed: u8) -> PublicKey {
@@ -433,6 +440,18 @@ mod test {
         ];
         let removed = vec![create_test_public_key(10), create_test_public_key(11)];
         (added, removed)
+    }
+
+    fn create_dummy_signature() -> Signature<MinPk> {
+        // Create a deterministic private key and sign a dummy message to get a valid G2 point
+        let mut rng = StdRng::seed_from_u64(42);
+        let private = Private::from(Scalar::random(&mut rng));
+        let g2_signature = sign_message::<MinPk>(&private, b"", b"test message");
+
+        // Encode the G2 signature and decode it as Signature<MinPk>
+        use commonware_codec::{DecodeExt as _, Encode as _};
+        let encoded = g2_signature.encode();
+        Signature::<MinPk>::decode(encoded).expect("valid signature")
     }
 
     #[test]
@@ -484,12 +503,11 @@ mod test {
         };
 
         // Use BLS certificate
-        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let finalized = Finalization {
             proposal,
-            certificate: BlsCertificate {
+            certificate: Certificate::<MinPk> {
                 signers: Signers::from(3, [0, 1, 2]),
-                signature: G2::one(),
+                signature: create_dummy_signature(),
             },
         };
 
@@ -541,12 +559,11 @@ mod test {
         };
 
         // Use BLS certificate with wrong payload
-        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let wrong_finalized = Finalization {
             proposal: wrong_proposal,
-            certificate: BlsCertificate {
+            certificate: Certificate::<MinPk> {
                 signers: Signers::from(5, [0, 2, 4]),
-                signature: G2::one(),
+                signature: create_dummy_signature(),
             },
         };
 
@@ -594,12 +611,11 @@ mod test {
         };
 
         // Use BLS certificate
-        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let finalized = Finalization {
             proposal,
-            certificate: BlsCertificate {
+            certificate: Certificate::<MinPk> {
                 signers: Signers::from(4, [0, 1, 2, 3]),
-                signature: G2::one(),
+                signature: create_dummy_signature(),
             },
         };
 

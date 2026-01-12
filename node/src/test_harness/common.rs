@@ -1,4 +1,5 @@
-use commonware_cryptography::{Hasher, PrivateKeyExt, Sha256, Signer, bls12381};
+use commonware_cryptography::{Hasher, Sha256, Signer, bls12381};
+use commonware_math::algebra::Random;
 
 use crate::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
@@ -15,6 +16,9 @@ use commonware_runtime::{
 };
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use std::fmt::Debug;
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
@@ -29,8 +33,8 @@ use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
-pub async fn link_validators(
-    oracle: &mut Oracle<PublicKey>,
+pub async fn link_validators<E: Clock>(
+    oracle: &mut Oracle<PublicKey, E>,
     validators: &[PublicKey],
     link: Link,
     restrict_to: Option<fn(usize, usize, usize) -> bool>,
@@ -58,8 +62,8 @@ pub async fn link_validators(
     }
 }
 
-pub async fn join_validator(
-    oracle: &mut Oracle<PublicKey>,
+pub async fn join_validator<E: Clock>(
+    oracle: &mut Oracle<PublicKey, E>,
     validator: &PublicKey,
     existing_validators: &[PublicKey],
     link: Link,
@@ -82,36 +86,34 @@ pub async fn join_validator(
     }
 }
 
-pub async fn register_validators(
-    oracle: &Oracle<PublicKey>,
+pub async fn register_validators<E: Clock>(
+    oracle: &Oracle<PublicKey, E>,
     validators: &[PublicKey],
 ) -> HashMap<
     PublicKey,
     (
-        (Sender<PublicKey>, Receiver<PublicKey>),
-        (Sender<PublicKey>, Receiver<PublicKey>),
-        (Sender<PublicKey>, Receiver<PublicKey>),
-        (Sender<PublicKey>, Receiver<PublicKey>),
-        (Sender<PublicKey>, Receiver<PublicKey>),
-        (Sender<PublicKey>, Receiver<PublicKey>),
+        (Sender<PublicKey, E>, Receiver<PublicKey>),
+        (Sender<PublicKey, E>, Receiver<PublicKey>),
+        (Sender<PublicKey, E>, Receiver<PublicKey>),
+        (Sender<PublicKey, E>, Receiver<PublicKey>),
+        (Sender<PublicKey, E>, Receiver<PublicKey>),
     ),
 > {
     let mut registrations = HashMap::new();
+    let quota = Quota::per_second(NonZeroU32::MAX);
     for validator in validators.iter() {
-        let mut control = oracle.control(validator.clone());
-        let (pending_sender, pending_receiver) = control.register(0).await.unwrap();
-        let (recovered_sender, recovered_receiver) = control.register(1).await.unwrap();
-        let (resolver_sender, resolver_receiver) = control.register(2).await.unwrap();
-        let (orchestrator_sender, orchestrator_receiver) = control.register(3).await.unwrap();
-        let (broadcast_sender, broadcast_receiver) = control.register(4).await.unwrap();
-        let (backfill_sender, backfill_receiver) = control.register(5).await.unwrap();
+        let control = oracle.control(validator.clone());
+        let (pending_sender, pending_receiver) = control.register(0, quota).await.unwrap();
+        let (recovered_sender, recovered_receiver) = control.register(1, quota).await.unwrap();
+        let (resolver_sender, resolver_receiver) = control.register(2, quota).await.unwrap();
+        let (broadcast_sender, broadcast_receiver) = control.register(3, quota).await.unwrap();
+        let (backfill_sender, backfill_receiver) = control.register(4, quota).await.unwrap();
         registrations.insert(
             validator.clone(),
             (
                 (pending_sender, pending_receiver),
                 (recovered_sender, recovered_receiver),
                 (resolver_sender, resolver_receiver),
-                (orchestrator_sender, orchestrator_receiver),
                 (broadcast_sender, broadcast_receiver),
                 (backfill_sender, backfill_receiver),
             ),
@@ -148,9 +150,10 @@ pub fn run_until_height(
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -192,7 +195,7 @@ pub fn run_until_height(
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -212,18 +215,11 @@ pub fn run_until_height(
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, broadcast, backfill) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, broadcast, backfill);
         }
 
         // Poll metrics
@@ -235,7 +231,7 @@ pub fn run_until_height(
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -368,8 +364,23 @@ pub fn parse_metric_substring(metric: &str, tag: &str) -> Option<String> {
 /// * `None` if the validator if doesn't exist
 /// ```
 pub fn extract_validator_id(metric: &str) -> Option<String> {
-    let end = metric.find("_")?;
-    Some(metric[..end].to_string())
+    // Metric format is: validator_{pubkey}_{component}_{metric_name}
+    // We need to extract validator_{pubkey}
+    let prefix = "validator_";
+
+    if !metric.starts_with(prefix) {
+        return None;
+    }
+
+    // Find the position after "validator_"
+    let start = prefix.len();
+
+    // Find the next underscore after "validator_"
+    let remaining = &metric[start..];
+    let end_offset = remaining.find('_')?;
+
+    // Extract from beginning to the second underscore (start + end_offset)
+    Some(metric[..start + end_offset].to_string())
 }
 
 /// Create a single DepositRequest for testing with valid ED25519 and BLS signatures
@@ -410,15 +421,16 @@ pub fn create_deposit_request(
     };
 
     // Generate node (ED25519) key
+    let mut rng = StdRng::seed_from_u64(index);
     let ed25519_private_key = if let Some(private_key) = private_key {
         private_key
     } else {
-        PrivateKey::from_seed(index)
+        PrivateKey::random(&mut rng)
     };
     let node_pubkey = ed25519_private_key.public_key();
 
     // Generate consensus (BLS) key
-    let bls_private_key = bls12381::PrivateKey::from_seed(index);
+    let bls_private_key = bls12381::PrivateKey::random(&mut rng);
     let consensus_pubkey = bls_private_key.public_key();
 
     let mut deposit = DepositRequest {
@@ -501,10 +513,7 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 ///
 /// # Returns
 /// * `EngineConfig<C>` - A fully configured engine config with sensible defaults for testing
-pub fn get_default_engine_config<
-    C: EngineClient,
-    O: NetworkOracle<PublicKey> + Blocker<PublicKey = PublicKey> + Manager<PublicKey = PublicKey>,
->(
+pub fn get_default_engine_config<C, O>(
     engine_client: C,
     oracle: O,
     partition_prefix: String,
@@ -513,7 +522,11 @@ pub fn get_default_engine_config<
     key_store: KeyStore<PrivateKey>,
     participants: Vec<(PublicKey, bls12381::PublicKey)>,
     initial_state: ConsensusState,
-) -> EngineConfig<C, PrivateKey, O> {
+) -> EngineConfig<C, PrivateKey, O>
+where
+    C: EngineClient,
+    O: NetworkOracle<PublicKey> + Blocker<PublicKey = PublicKey>,
+{
     // For tests, generate a dummy BLS key
 
     EngineConfig {
@@ -542,28 +555,35 @@ pub fn get_default_engine_config<
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct SimulatedOracle {
-    inner: simulated::Manager<PublicKey>,
+#[derive(Clone)]
+pub struct SimulatedOracle<E: Clock> {
+    inner: simulated::Manager<PublicKey, E>,
 }
 
-impl SimulatedOracle {
-    pub fn new(oracle: Oracle<PublicKey>) -> Self {
+impl<E: Clock> Debug for SimulatedOracle<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimulatedOracle").finish()
+    }
+}
+
+impl<E: Clock> SimulatedOracle<E> {
+    pub fn new(oracle: Oracle<PublicKey, E>) -> Self {
         Self {
             inner: oracle.manager(),
         }
     }
 }
 
-impl NetworkOracle<PublicKey> for SimulatedOracle {
+impl<E: Clock> NetworkOracle<PublicKey> for SimulatedOracle<E> {
     async fn register(&mut self, index: u64, peers: Vec<PublicKey>) {
+        use commonware_utils::ordered::Set;
         self.inner
-            .update(index, commonware_utils::set::Ordered::from(peers))
+            .update(index, Set::try_from(peers).expect("peers should be unique"))
             .await
     }
 }
 
-impl Blocker for SimulatedOracle {
+impl<E: Clock> Blocker for SimulatedOracle<E> {
     type PublicKey = PublicKey;
 
     async fn block(&mut self, _public_key: Self::PublicKey) {
@@ -572,9 +592,9 @@ impl Blocker for SimulatedOracle {
     }
 }
 
-impl Manager for SimulatedOracle {
+impl<E: Clock> Manager for SimulatedOracle<E> {
     type PublicKey = PublicKey;
-    type Peers = commonware_utils::set::Ordered<PublicKey>;
+    type Peers = commonware_utils::ordered::Set<PublicKey>;
 
     async fn update(&mut self, id: u64, peers: Self::Peers) {
         self.inner.update(id, peers).await

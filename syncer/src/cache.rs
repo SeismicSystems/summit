@@ -1,10 +1,8 @@
 use commonware_codec::Codec;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::{
     Block,
-    simplex::{
-        signing_scheme::Scheme,
-        types::{Finalization, Notarization},
-    },
+    simplex::types::{Finalization, Notarization},
     types::{Epoch, Round, View},
 };
 use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::PoolRef};
@@ -13,7 +11,7 @@ use commonware_storage::{
     metadata::{self, Metadata},
     translator::TwoCap,
 };
-use commonware_utils::{fixed_bytes, sequence::FixedBytes};
+// Unused imports removed
 use governor::clock::Clock as GClock;
 use rand::Rng;
 use std::{
@@ -25,7 +23,7 @@ use std::{
 use tracing::{debug, info};
 
 // The key used to store the current epoch in the metadata store.
-const CACHED_EPOCHS_KEY: FixedBytes<1> = fixed_bytes!("0x00");
+const CACHED_EPOCHS_KEY: u8 = 0;
 
 /// Configuration parameters for prunable archives.
 pub(crate) struct Config {
@@ -37,7 +35,11 @@ pub(crate) struct Config {
 }
 
 /// Prunable archives for a single epoch.
-struct Cache<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme> {
+struct Cache<
+    R: Rng + Spawner + Metrics + Clock + GClock + Storage,
+    B: Block,
+    S: Scheme<B::Commitment>,
+> {
     /// Verified blocks stored by view
     verified_blocks: prunable::Archive<TwoCap, R, B::Commitment, B>,
     /// Notarized blocks stored by view
@@ -48,7 +50,9 @@ struct Cache<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S:
     finalizations: prunable::Archive<TwoCap, R, B::Commitment, Finalization<S, B::Commitment>>,
 }
 
-impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme> Cache<R, B, S> {
+impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<B::Commitment>>
+    Cache<R, B, S>
+{
     /// Prune the archives to the given view.
     async fn prune(&mut self, min_view: View) {
         match futures::try_join!(
@@ -67,7 +71,7 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme>
 pub(crate) struct Manager<
     R: Rng + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
-    S: Scheme,
+    S: Scheme<B::Commitment>,
 > {
     /// Context
     context: R,
@@ -80,13 +84,15 @@ pub(crate) struct Manager<
 
     /// Metadata store for recording which epochs may have data. The value is a tuple of the floor
     /// and ceiling, the minimum and maximum epochs (inclusive) that may have data.
-    metadata: Metadata<R, FixedBytes<1>, (Epoch, Epoch)>,
+    metadata: Metadata<R, u8, (Epoch, Epoch)>,
 
     /// A map from epoch to its cache
     caches: BTreeMap<Epoch, Cache<R, B, S>>,
 }
 
-impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme> Manager<R, B, S> {
+impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<B::Commitment>>
+    Manager<R, B, S>
+{
     /// Initialize the cache manager and its metadata store.
     pub(crate) async fn init(context: R, cfg: Config, block_codec_config: B::Cfg) -> Self {
         // Initialize metadata
@@ -197,14 +203,16 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme>
     ) -> prunable::Archive<TwoCap, R, B::Commitment, T> {
         let start = Instant::now();
         let cfg = prunable::Config {
-            partition: format!("{}-cache-{epoch}-{name}", self.cfg.partition_prefix),
+            key_partition: format!("{}-{epoch}-{name}-key", self.cfg.partition_prefix),
+            value_partition: format!("{}-{epoch}-{name}-value", self.cfg.partition_prefix),
             translator: TwoCap,
             items_per_section: self.cfg.prunable_items_per_section,
             compression: None,
             codec_config,
-            buffer_pool: self.cfg.freezer_journal_buffer_pool.clone(),
+            key_buffer_pool: self.cfg.freezer_journal_buffer_pool.clone(),
             replay_buffer: self.cfg.replay_buffer,
-            write_buffer: self.cfg.write_buffer,
+            key_write_buffer: self.cfg.write_buffer,
+            value_write_buffer: self.cfg.write_buffer,
         };
         let archive = prunable::Archive::init(self.context.with_label(name), cfg)
             .await

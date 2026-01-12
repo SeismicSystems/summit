@@ -9,14 +9,12 @@ use summit_types::consensus_state::ConsensusState;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, Genesis, PrivateKey, PublicKey};
-use zeroize::ZeroizeOnDrop;
 /* DEFAULTS */
 pub const PENDING_CHANNEL: u64 = 0;
 pub const RECOVERED_CHANNEL: u64 = 1;
 pub const RESOLVER_CHANNEL: u64 = 2;
-pub const ORCHESTRATOR_CHANNEL: u64 = 3;
-pub const BROADCASTER_CHANNEL: u64 = 4;
-pub const BACKFILLER_CHANNEL: u64 = 5;
+pub const BROADCASTER_CHANNEL: u64 = 3;
+pub const BACKFILLER_CHANNEL: u64 = 4;
 pub const MAILBOX_SIZE: usize = 16384;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -28,8 +26,7 @@ pub const MESSAGE_BACKLOG: usize = 16384;
 const BACKFILL_QUOTA: u32 = 10; // in seconds
 const FETCH_RATE_P2P: u32 = 128; // in seconds
 
-pub struct EngineConfig<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
-{
+pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> {
     pub engine_client: C,
     pub partition_prefix: String,
     pub key_store: KeyStore<S>,
@@ -58,9 +55,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOr
     pub archive_mode: bool,
 }
 
-impl<C: EngineClient, S: Signer + ZeroizeOnDrop, O: NetworkOracle<S::PublicKey>>
-    EngineConfig<C, S, O>
-{
+impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C, S, O> {
     #[allow(clippy::too_many_arguments)]
     pub fn get_engine_config(
         engine_client: C,

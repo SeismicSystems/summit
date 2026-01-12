@@ -6,25 +6,30 @@ use crate::types::{
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
 use commonware_codec::{DecodeExt as _, Encode as _};
-use commonware_consensus::Block as ConsensusBlock;
-use commonware_consensus::simplex::signing_scheme::Scheme;
-use commonware_cryptography::{Committable, Hasher as _, Sha256, Signer as _};
+use commonware_cryptography::{
+    Hasher as _, Sha256, Signer, bls12381::primitives::variant::Variant,
+};
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
 use ssz::Encode as _;
 use summit_finalizer::FinalizerMailbox;
+use summit_types::Block;
+use summit_types::scheme::MultisigScheme;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},
 };
 
-pub struct SummitRpcServer<S: Scheme, B: ConsensusBlock + Committable> {
+pub struct SummitRpcServer<C: Signer, V: Variant> {
     key_store_path: String,
-    finalizer_mailbox: FinalizerMailbox<S, B>,
+    finalizer_mailbox: FinalizerMailbox<MultisigScheme<C, V>, Block<C, V>>,
 }
 
-impl<S: Scheme, B: ConsensusBlock + Committable> SummitRpcServer<S, B> {
-    pub fn new(key_store_path: String, finalizer_mailbox: FinalizerMailbox<S, B>) -> Self {
+impl<C: Signer, V: Variant> SummitRpcServer<C, V> {
+    pub fn new(
+        key_store_path: String,
+        finalizer_mailbox: FinalizerMailbox<MultisigScheme<C, V>, Block<C, V>>,
+    ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
@@ -33,10 +38,10 @@ impl<S: Scheme, B: ConsensusBlock + Committable> SummitRpcServer<S, B> {
 }
 
 #[async_trait]
-impl<S, B> SummitApiServer for SummitRpcServer<S, B>
+impl<C, V> SummitApiServer for SummitRpcServer<C, V>
 where
-    S: Scheme + Send + Sync + 'static,
-    B: ConsensusBlock + Committable + Send + Sync + 'static,
+    C: Signer + Send + Sync + 'static,
+    V: Variant + Send + Sync + 'static,
 {
     async fn health(&self) -> RpcResult<String> {
         Ok("Ok".to_string())
