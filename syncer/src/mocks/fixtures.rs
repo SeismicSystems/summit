@@ -3,18 +3,20 @@
 //! Copied from commonware_consensus::simplex::mocks::fixtures since that module
 //! is gated behind #[cfg(test)] and not available to external crates.
 
-use commonware_consensus::simplex::signing_scheme::{
+use commonware_consensus::simplex::scheme::{
     bls12381_multisig, bls12381_threshold, ed25519 as ed_scheme,
 };
 use commonware_cryptography::{
-    PrivateKeyExt, Signer,
+    Signer,
     bls12381::{
-        dkg::ops,
-        primitives::{group, variant::Variant},
+        dkg,
+        primitives::{group, sharing::Mode, variant::Variant},
     },
     ed25519,
 };
-use commonware_utils::{quorum, set::OrderedAssociated};
+use commonware_math::algebra::Random;
+use commonware_parallel::Sequential;
+use commonware_utils::ordered::{BiMap, Map};
 use rand::{CryptoRng, RngCore};
 
 /// A test fixture consisting of ed25519 keys and signing schemes for each validator, and a single
@@ -29,20 +31,17 @@ pub struct Fixture<S> {
 }
 
 /// Generates ed25519 participants.
-pub fn ed25519_participants<R>(
-    rng: &mut R,
-    n: u32,
-) -> OrderedAssociated<ed25519::PublicKey, ed25519::PrivateKey>
+pub fn ed25519_participants<R>(rng: &mut R, n: u32) -> Map<ed25519::PublicKey, ed25519::PrivateKey>
 where
     R: RngCore + CryptoRng,
 {
-    (0..n)
-        .map(|_| {
-            let private_key = ed25519::PrivateKey::from_rng(rng);
-            let public_key = private_key.public_key();
-            (public_key, private_key)
-        })
-        .collect()
+    let mut pairs = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let private_key = ed25519::PrivateKey::random(&mut *rng);
+        let public_key = private_key.public_key();
+        pairs.push((public_key, private_key));
+    }
+    Map::from_iter_dedup(pairs)
 }
 
 /// Builds ed25519 identities alongside the ed25519 signing scheme.
@@ -54,14 +53,15 @@ where
 {
     assert!(n > 0);
 
+    const NAMESPACE: &[u8] = b"test";
     let ed25519_associated = ed25519_participants(rng, n);
     let participants = ed25519_associated.keys().clone();
 
     let schemes = ed25519_associated
         .into_iter()
-        .map(|(_, sk)| ed_scheme::Scheme::new(participants.clone(), sk))
+        .filter_map(|(_, sk)| ed_scheme::Scheme::signer(NAMESPACE, participants.clone(), sk))
         .collect();
-    let verifier = ed_scheme::Scheme::verifier(participants.clone());
+    let verifier = ed_scheme::Scheme::verifier(NAMESPACE, participants.clone());
 
     Fixture {
         participants: participants.into(),
@@ -83,23 +83,24 @@ where
 {
     assert!(n > 0);
 
+    const NAMESPACE: &[u8] = b"test";
     let participants = ed25519_participants(rng, n).into_keys();
-    let bls_privates: Vec<_> = (0..n).map(|_| group::Private::from_rand(rng)).collect();
+    let mut bls_privates = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        bls_privates.push(group::Private::random(&mut *rng));
+    }
     let bls_public: Vec<_> = bls_privates
         .iter()
         .map(|sk| commonware_cryptography::bls12381::primitives::ops::compute_public::<V>(sk))
         .collect();
 
-    let signers = participants
-        .clone()
-        .into_iter()
-        .zip(bls_public)
-        .collect::<OrderedAssociated<_, _>>();
+    let signers_map = Map::from_iter_dedup(participants.clone().into_iter().zip(bls_public));
+    let signers = BiMap::try_from(signers_map).expect("BLS public keys should be unique");
     let schemes: Vec<_> = bls_privates
         .into_iter()
-        .map(|sk| bls12381_multisig::Scheme::new(signers.clone(), sk))
+        .filter_map(|sk| bls12381_multisig::Scheme::signer(NAMESPACE, signers.clone(), sk))
         .collect();
-    let verifier = bls12381_multisig::Scheme::verifier(signers.clone());
+    let verifier = bls12381_multisig::Scheme::verifier(NAMESPACE, signers.clone());
 
     Fixture {
         participants: participants.into(),
@@ -114,22 +115,38 @@ where
 pub fn bls12381_threshold<V, R>(
     rng: &mut R,
     n: u32,
-) -> Fixture<bls12381_threshold::Scheme<ed25519::PublicKey, V>>
+) -> Fixture<bls12381_threshold::Scheme<ed25519::PublicKey, V, Sequential>>
 where
     V: Variant,
     R: RngCore + CryptoRng,
 {
     assert!(n > 0);
 
+    const NAMESPACE: &[u8] = b"test";
     let participants = ed25519_participants(rng, n).into_keys();
-    let t = quorum(n);
-    let (polynomial, shares) = ops::generate_shares::<_, V>(rng, None, n, t);
 
-    let schemes = shares
+    let (output, shares_map) = dkg::deal::<V, _>(rng, Mode::NonZeroCounter, participants.clone())
+        .expect("deal should succeed");
+    let polynomial = output.public().clone();
+
+    let schemes = shares_map
         .into_iter()
-        .map(|share| bls12381_threshold::Scheme::new(participants.clone(), &polynomial, share))
+        .filter_map(|(_, share)| {
+            bls12381_threshold::Scheme::signer(
+                NAMESPACE,
+                participants.clone(),
+                polynomial.clone(),
+                share,
+                Sequential,
+            )
+        })
         .collect();
-    let verifier = bls12381_threshold::Scheme::verifier(participants.clone(), &polynomial.clone());
+    let verifier = bls12381_threshold::Scheme::verifier(
+        NAMESPACE,
+        participants.clone(),
+        polynomial.clone(),
+        Sequential,
+    );
 
     Fixture {
         participants: participants.into(),

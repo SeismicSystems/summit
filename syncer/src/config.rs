@@ -1,18 +1,15 @@
-use commonware_consensus::types::ViewDelta;
-use commonware_consensus::{Block, simplex::signing_scheme::Scheme};
+use commonware_consensus::Block;
+use commonware_consensus::simplex::scheme::Scheme;
+use commonware_consensus::types::{Epoch, ViewDelta};
+use commonware_cryptography::certificate::Provider;
 use commonware_runtime::buffer::PoolRef;
-use std::{
-    marker::PhantomData,
-    num::{NonZeroU64, NonZeroUsize},
-};
-use summit_types::scheme::SchemeProvider;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 /// Marshal configuration.
-pub struct Config<B, P, S>
+pub struct Config<B, P>
 where
     B: Block,
-    P: SchemeProvider<Scheme = S>,
-    S: Scheme,
+    P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
 {
     /// Provider for epoch-specific signing schemes.
     pub scheme_provider: P,
@@ -51,6 +48,4 @@ where
 
     /// Maximum number of blocks to repair at once
     pub max_repair: NonZeroUsize,
-
-    pub _marker: PhantomData<S>,
 }

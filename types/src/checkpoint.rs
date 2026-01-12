@@ -13,7 +13,7 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     pub fn new(state: &ConsensusState) -> Self {
-        let data = state.encode().freeze();
+        let data = state.encode();
         let mut hasher = Sha256::new();
         hasher.update(&data);
         let digest = hasher.finalize();
@@ -130,7 +130,7 @@ mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use commonware_codec::DecodeExt;
-    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381, sha256};
+    use commonware_cryptography::{Signer, bls12381, sha256};
     use ssz::{Decode, Encode};
     use std::collections::{HashMap, VecDeque};
 

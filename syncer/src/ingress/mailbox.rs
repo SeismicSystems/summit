@@ -1,13 +1,12 @@
 use commonware_consensus::{
     Block, Reporter,
-    simplex::{
-        signing_scheme::Scheme,
-        types::{Activity, Finalization, Notarization},
-    },
-    types::Round,
+    simplex::scheme::Scheme,
+    simplex::types::{Activity, Finalization, Notarization},
+    types::{Height, Round},
 };
 use commonware_cryptography::Digest;
 use commonware_storage::archive;
+use commonware_utils::vec::NonEmptyVec;
 use futures::{
     FutureExt, SinkExt,
     channel::{mpsc, oneshot},
@@ -60,7 +59,7 @@ impl<D: Digest> From<archive::Identifier<'_, D>> for Identifier<D> {
 ///
 /// These messages are sent from the consensus engine and other parts of the
 /// system to drive the state of the marshal.
-pub(crate) enum Message<S: Scheme, B: Block> {
+pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
     // -------------------- Application Messages --------------------
     /// A request to retrieve the (height, commitment) of a block by its identifier.
     /// The block must be finalized; returns `None` if the block is not finalized.
@@ -87,6 +86,16 @@ pub(crate) enum Message<S: Scheme, B: Block> {
         /// A channel to send the retrieved finalization.
         response: oneshot::Sender<Option<Finalization<S, B::Commitment>>>,
     },
+    /// A hint to fetch a finalization from the network if not available locally.
+    ///
+    /// This is fire-and-forget: the finalization will be stored in syncer and delivered
+    /// via the normal finalization flow when available.
+    HintFinalized {
+        /// The height of the finalization to fetch.
+        height: Height,
+        /// Target peers to fetch from.
+        targets: NonEmptyVec<S::PublicKey>,
+    },
     /// A request to retrieve a block by its commitment.
     Subscribe {
         /// The view in which the block was notarized. This is an optimization
@@ -97,8 +106,10 @@ pub(crate) enum Message<S: Scheme, B: Block> {
         /// A channel to send the retrieved block.
         response: oneshot::Sender<B>,
     },
-    /// A request to broadcast a block to all peers.
-    Broadcast {
+    /// A request to broadcast a proposed block to all peers.
+    Proposed {
+        /// The round in which the block was proposed.
+        round: Round,
         /// The block to broadcast.
         block: B,
     },
@@ -139,11 +150,11 @@ pub(crate) enum Message<S: Scheme, B: Block> {
 
 /// A mailbox for sending messages to the marshal [Actor](super::super::actor::Actor).
 #[derive(Clone)]
-pub struct Mailbox<S: Scheme, B: Block> {
+pub struct Mailbox<S: Scheme<B::Commitment>, B: Block> {
     sender: mpsc::Sender<Message<S, B>>,
 }
 
-impl<S: Scheme, B: Block> Mailbox<S, B> {
+impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     /// Creates a new mailbox.
     pub(crate) const fn new(sender: mpsc::Sender<Message<S, B>>) -> Self {
         Self { sender }
@@ -220,6 +231,21 @@ impl<S: Scheme, B: Block> Mailbox<S, B> {
         })
     }
 
+    /// Hints that a finalization should be fetched from the network if not available locally.
+    ///
+    /// This is fire-and-forget: the finalization will be stored in syncer and delivered
+    /// via the normal finalization flow when available.
+    pub async fn hint_finalized(&mut self, height: Height, targets: NonEmptyVec<S::PublicKey>) {
+        if self
+            .sender
+            .send(Message::HintFinalized { height, targets })
+            .await
+            .is_err()
+        {
+            error!("failed to send hint finalized message to actor: receiver dropped");
+        }
+    }
+
     /// A request to retrieve a block by its commitment.
     ///
     /// If the block is found available locally, the block will be returned immediately.
@@ -264,15 +290,15 @@ impl<S: Scheme, B: Block> Mailbox<S, B> {
             .map(|block| AncestorStream::new(self.clone(), [block]))
     }
 
-    /// Broadcast indicates that a block should be sent to all peers.
-    pub async fn broadcast(&mut self, block: B) {
+    /// Proposed requests that a proposed block is sent to all peers.
+    pub async fn proposed(&mut self, round: Round, block: B) {
         if self
             .sender
-            .send(Message::Broadcast { block })
+            .send(Message::Proposed { round, block })
             .await
             .is_err()
         {
-            error!("failed to send broadcast message to actor: receiver dropped");
+            error!("failed to send proposed message to actor: receiver dropped");
         }
     }
 
@@ -322,7 +348,7 @@ impl<S: Scheme, B: Block> Mailbox<S, B> {
     }
 }
 
-impl<S: Scheme, B: Block> Reporter for Mailbox<S, B> {
+impl<S: Scheme<B::Commitment>, B: Block> Reporter for Mailbox<S, B> {
     type Activity = Activity<S, B::Commitment>;
 
     async fn report(&mut self, activity: Self::Activity) {
@@ -342,7 +368,7 @@ impl<S: Scheme, B: Block> Reporter for Mailbox<S, B> {
 
 /// Returns a boxed subscription future for a block.
 #[inline]
-fn subscribe_block_future<S: Scheme, B: Block>(
+fn subscribe_block_future<S: Scheme<B::Commitment>, B: Block>(
     mut marshal: Mailbox<S, B>,
     commitment: B::Commitment,
 ) -> BoxFuture<'static, Option<B>> {
@@ -358,14 +384,14 @@ fn subscribe_block_future<S: Scheme, B: Block>(
 /// TODO(clabby): Once marshal can also yield the genesis block, this stream should end
 /// at block height 0 rather than 1.
 #[pin_project]
-pub struct AncestorStream<S: Scheme, B: Block> {
+pub struct AncestorStream<S: Scheme<B::Commitment>, B: Block> {
     marshal: Mailbox<S, B>,
     buffered: Vec<B>,
     #[pin]
     pending: FuturesOrdered<BoxFuture<'static, Option<B>>>,
 }
 
-impl<S: Scheme, B: Block> AncestorStream<S, B> {
+impl<S: Scheme<B::Commitment>, B: Block> AncestorStream<S, B> {
     /// Creates a new [AncestorStream] starting from the given ancestry.
     ///
     /// # Panics
@@ -373,12 +399,12 @@ impl<S: Scheme, B: Block> AncestorStream<S, B> {
     /// Panics if the initial blocks are not contiguous in height.
     pub(crate) fn new(marshal: Mailbox<S, B>, initial: impl IntoIterator<Item = B>) -> Self {
         let mut buffered = initial.into_iter().collect::<Vec<B>>();
-        buffered.sort_by_key(Block::height);
+        buffered.sort_by_key(|b| b.height());
 
         // Check that the initial blocks are contiguous in height.
         buffered.windows(2).for_each(|window| {
             assert_eq!(
-                window[0].height() + 1,
+                window[0].height().next(),
                 window[1].height(),
                 "initial blocks must be contiguous in height"
             );
@@ -392,19 +418,19 @@ impl<S: Scheme, B: Block> AncestorStream<S, B> {
     }
 }
 
-impl<S: Scheme, B: Block> Stream for AncestorStream<S, B> {
+impl<S: Scheme<B::Commitment>, B: Block> Stream for AncestorStream<S, B> {
     type Item = B;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {
         // Because marshal cannot currently yield the genesis block, we stop at height 1.
-        const END_BOUND: u64 = 1;
+        let end_bound = Height::new(1);
 
         let mut this = self.project();
 
         // If a result has been buffered, return it and queue the parent fetch if needed.
         if let Some(block) = this.buffered.pop() {
             let height = block.height();
-            let should_fetch_parent = height > END_BOUND && this.buffered.is_empty();
+            let should_fetch_parent = height > end_bound && this.buffered.is_empty();
             if should_fetch_parent {
                 let parent_commitment = block.parent();
                 let future = subscribe_block_future(this.marshal.clone(), parent_commitment);
@@ -425,7 +451,7 @@ impl<S: Scheme, B: Block> Stream for AncestorStream<S, B> {
             Poll::Ready(None) | Poll::Ready(Some(None)) => Poll::Ready(None),
             Poll::Ready(Some(Some(block))) => {
                 let height = block.height();
-                let should_fetch_parent = height > END_BOUND;
+                let should_fetch_parent = height > end_bound;
                 if should_fetch_parent {
                     let parent_commitment = block.parent();
                     let future = subscribe_block_future(this.marshal.clone(), parent_commitment);

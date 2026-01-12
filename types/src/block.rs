@@ -5,14 +5,12 @@ use alloy_rpc_types_engine::ExecutionPayloadV3;
 use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, ReadExt as _, Write};
-use commonware_consensus::Block as ConsensusBlock;
-use commonware_consensus::types::View;
+use commonware_consensus::types::{Height, View};
+use commonware_consensus::{Block as ConsensusBlock, Heightable};
 use commonware_consensus::{
     Viewable,
-    simplex::{
-        signing_scheme::bls12381_multisig::Scheme,
-        types::{Finalization, Notarization},
-    },
+    aggregation::scheme::bls12381_multisig::Scheme,
+    simplex::types::{Finalization, Notarization},
 };
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_cryptography::{
@@ -193,11 +191,13 @@ impl<C: Signer, V: Variant> Block<C, V> {
     }
 }
 
-impl<C: Signer, V: Variant> ConsensusBlock for Block<C, V> {
-    fn height(&self) -> u64 {
-        self.header.height
+impl<C: Signer, V: Variant> Heightable for Block<C, V> {
+    fn height(&self) -> Height {
+        Height::new(self.header.height)
     }
+}
 
+impl<C: Signer, V: Variant> ConsensusBlock for Block<C, V> {
     fn parent(&self) -> Self::Commitment {
         self.header.parent
     }
@@ -412,11 +412,13 @@ impl<C: Signer, V: Variant> Committable for BlockWithFinalization<C, V> {
     }
 }
 
-impl<C: Signer, V: Variant> ConsensusBlock for BlockWithFinalization<C, V> {
-    fn height(&self) -> u64 {
-        self.block.header.height
+impl<C: Signer, V: Variant> Heightable for BlockWithFinalization<C, V> {
+    fn height(&self) -> Height {
+        Height::new(self.block.header.height)
     }
+}
 
+impl<C: Signer, V: Variant> ConsensusBlock for BlockWithFinalization<C, V> {
     fn parent(&self) -> Self::Commitment {
         self.block.header.parent
     }
@@ -694,7 +696,7 @@ mod test {
         };
 
         // BlockEnvelope should expose the same ConsensusBlock properties as the underlying block
-        assert_eq!(envelope.height(), block.height());
+        assert_eq!(envelope.height().get(), block.height());
         assert_eq!(envelope.parent(), block.parent());
     }
 }

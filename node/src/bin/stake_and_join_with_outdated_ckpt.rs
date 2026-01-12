@@ -17,7 +17,7 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256, keccak256};
 use clap::Parser;
 use commonware_cryptography::Sha256;
-use commonware_cryptography::{Hasher, PrivateKeyExt, Signer, bls12381, ed25519::PrivateKey};
+use commonware_cryptography::{Hasher, Signer, bls12381, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::http_client::HttpClientBuilder;
@@ -521,12 +521,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let node_key_path = format!("{}/node{}/data/node_key.pem", args.data_dir, x);
             let consensus_key_path = format!("{}/node{}/data/consensus_key.pem", args.data_dir, x);
 
-            // Write node key
-            let encoded_node_key = ed25519_private_key.to_string();
+            // Write node key (hex encoded)
+            let encoded_node_key = commonware_utils::hex(&ed25519_private_key.encode());
             fs::write(&node_key_path, encoded_node_key).expect("Unable to write node key to disk");
 
-            // Write consensus key
-            let encoded_consensus_key = bls_private_key.to_string();
+            // Write consensus key (hex encoded)
+            let encoded_consensus_key = commonware_utils::hex(&bls_private_key.encode());
             fs::write(&consensus_key_path, encoded_consensus_key).expect("Unable to write consensus key to disk");
 
             flags.key_store_path = format!("{}/node{}/data", args.data_dir, x);

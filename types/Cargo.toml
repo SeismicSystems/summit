@@ -7,6 +7,7 @@ edition.workspace = true
 commonware-cryptography.workspace = true
 commonware-consensus.workspace = true
 commonware-codec.workspace = true
+commonware-math.workspace = true
 commonware-utils.workspace = true
 commonware-resolver.workspace = true
 commonware-p2p.workspace = true
@@ -20,7 +21,6 @@ alloy-provider.workspace = true
 alloy-transport-ipc.workspace = true
 
 futures.workspace = true
-zeroize.workspace = true
 # for reth.rs module (e2e feature only)
 alloy-genesis = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
@@ -40,6 +40,9 @@ serde_json = { workspace = true, optional = true }
 op-alloy-network = { version = "0.19.1", optional = true }
 op-alloy-rpc-types-engine = { version = "0.19.1", optional = true }
 libc = { version = "0.2.174", optional = true}
+
+[dev-dependencies]
+rand.workspace = true
 
 [features]
 base-bench = ["op-alloy-network", "op-alloy-rpc-types-engine","serde_json"]

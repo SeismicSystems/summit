@@ -1,15 +1,14 @@
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG,
-        ORCHESTRATOR_CHANNEL, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL,
-        expect_key_store,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
+        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
 };
 use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
-use commonware_p2p::authenticated;
+use commonware_p2p::{Ingress, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
@@ -344,13 +343,18 @@ impl Command {
             }
 
             // configure network
+            let network_committee_ingress: Vec<_> = network_committee
+                .iter()
+                .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
+                .collect();
+
             let mut p2p_cfg = authenticated::discovery::Config::recommended(
                 signer.clone(),
                 genesis.namespace.as_bytes(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
                 our_ip,
-                network_committee.clone(),
-                genesis.max_message_size_bytes as usize,
+                network_committee_ingress,
+                genesis.max_message_size_bytes as u32,
             );
             p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
@@ -383,11 +387,6 @@ impl Command {
             let resolver_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
             let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
 
-            // Register orchestrator channel
-            let orchestrator_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
-            let orchestrator =
-                network.register(ORCHESTRATOR_CHANNEL, orchestrator_limit, MESSAGE_BACKLOG);
-
             // Register broadcast channel
             let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
             let broadcaster =
@@ -405,14 +404,7 @@ impl Command {
             let finalizer_mailbox = engine.finalizer_mailbox.clone();
 
             // Start engine
-            let engine = engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcaster,
-                backfiller,
-            );
+            let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
             // Start RPC server
             let key_store_path = flags.key_store_path.clone();
@@ -535,13 +527,18 @@ pub fn run_node_local(
         }
 
         // configure network
+        let network_committee_ingress: Vec<_> = network_committee
+            .iter()
+            .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
+            .collect();
+
         let mut p2p_cfg = authenticated::discovery::Config::local(
             key_store.node_key.clone(),
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
             our_ip,
-            network_committee,
-            genesis.max_message_size_bytes as usize,
+            network_committee_ingress,
+            genesis.max_message_size_bytes as u32,
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
@@ -575,11 +572,6 @@ pub fn run_node_local(
         let resolver_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
         let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
 
-        // Register orchestrator channel
-        let orchestrator_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
-        let orchestrator =
-            network.register(ORCHESTRATOR_CHANNEL, orchestrator_limit, MESSAGE_BACKLOG);
-
         // Register broadcast channel
         let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
         let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
@@ -594,14 +586,7 @@ pub fn run_node_local(
 
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Start engine
-        let engine = engine.start(
-            pending,
-            recovered,
-            resolver,
-            orchestrator,
-            broadcaster,
-            backfiller,
-        );
+        let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
         // Start prometheus endpoint
         #[cfg(feature = "prom")]

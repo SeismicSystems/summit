@@ -3,14 +3,17 @@ use crate::test_harness::common;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use alloy_primitives::{Address, hex};
+use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381;
-use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_macros::test_traced;
+use commonware_math::algebra::Random;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
 use commonware_utils::from_hex_formatted;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::execution_request::ExecutionRequest;
@@ -49,9 +52,10 @@ fn test_deposit_request_single() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -64,7 +68,7 @@ fn test_deposit_request_single() {
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
@@ -108,7 +112,7 @@ fn test_deposit_request_single() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -127,18 +131,11 @@ fn test_deposit_request_single() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
         // Poll metrics
         let mut height_reached = HashSet::new();
@@ -150,7 +147,7 @@ fn test_deposit_request_single() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -241,9 +238,10 @@ fn test_deposit_request_top_up() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -256,7 +254,7 @@ fn test_deposit_request_top_up() {
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
@@ -338,7 +336,7 @@ fn test_deposit_request_top_up() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -357,18 +355,11 @@ fn test_deposit_request_top_up() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
         // Poll metrics
@@ -380,7 +371,7 @@ fn test_deposit_request_top_up() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -492,9 +483,10 @@ fn test_deposit_and_withdrawal_request_single() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -507,7 +499,7 @@ fn test_deposit_and_withdrawal_request_single() {
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
@@ -568,7 +560,7 @@ fn test_deposit_and_withdrawal_request_single() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -587,18 +579,11 @@ fn test_deposit_and_withdrawal_request_single() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
         // Poll metrics
@@ -610,7 +595,7 @@ fn test_deposit_and_withdrawal_request_single() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -716,9 +701,10 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -731,7 +717,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
@@ -804,7 +790,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -823,18 +809,11 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
         // Poll metrics
@@ -847,7 +826,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -954,9 +933,10 @@ fn test_deposit_less_than_min_stake_rejected() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -969,7 +949,7 @@ fn test_deposit_less_than_min_stake_rejected() {
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
@@ -1023,7 +1003,7 @@ fn test_deposit_less_than_min_stake_rejected() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -1042,18 +1022,11 @@ fn test_deposit_less_than_min_stake_rejected() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
         // Poll metrics
@@ -1065,7 +1038,7 @@ fn test_deposit_less_than_min_stake_rejected() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -1167,9 +1140,10 @@ fn test_deposit_and_withdrawal_request_multiple() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -1182,7 +1156,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
@@ -1256,7 +1230,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -1275,18 +1249,11 @@ fn test_deposit_and_withdrawal_request_multiple() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
         // Poll metrics
@@ -1298,7 +1265,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -1418,9 +1385,10 @@ fn test_deposit_request_invalid_signature() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -1433,7 +1401,7 @@ fn test_deposit_request_invalid_signature() {
         key_stores.sort_by_key(|ks| ks.node_key.public_key());
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&mut oracle, &node_public_keys).await;
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
 
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
@@ -1495,7 +1463,7 @@ fn test_deposit_request_invalid_signature() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -1514,18 +1482,11 @@ fn test_deposit_request_invalid_signature() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
         // Poll metrics
         let mut processed_requests = HashSet::new();
@@ -1537,7 +1498,7 @@ fn test_deposit_request_invalid_signature() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -1561,6 +1522,10 @@ fn test_deposit_request_invalid_signature() {
 
                 if metric.ends_with("deposit_request_invalid_node_sig") {
                     let value = value.parse::<u64>().unwrap();
+                    //println!("öööööööööööööööööööööööööööööö");
+                    //println!("processed_requests {}", processed_requests.len());
+                    //println!("height_reached {}", height_reached.len());
+                    //println!("öööööööööööööööööööööööööööööö");
                     // Parse the pubkey from the metric name using helper function
                     if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let validator_id = common::extract_validator_id(metric)
@@ -1571,6 +1536,7 @@ fn test_deposit_request_invalid_signature() {
                         println!("{}: {} (failed to parse pubkey)", metric, value);
                     }
                 }
+
                 if processed_requests.len() as u64 >= n && height_reached.len() as u64 >= n {
                     success = true;
                     break;

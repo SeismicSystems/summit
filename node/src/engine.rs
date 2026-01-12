@@ -1,12 +1,13 @@
 use crate::config::EngineConfig;
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::types::ViewDelta;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
-use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
+use commonware_p2p::{Blocker, Manager, Receiver, Sender};
+use commonware_parallel::Sequential;
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
 use commonware_storage::archive::immutable;
@@ -14,10 +15,10 @@ use commonware_utils::acknowledgement::Exact;
 use commonware_utils::{NZU64, NZUsize};
 use futures::FutureExt;
 use futures::future::try_join_all;
-use governor::{Quota, clock::Clock as GClock};
+use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
-use std::num::{NonZero, NonZeroU32};
+use std::num::NonZero;
 use std::time::Duration;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
@@ -27,7 +28,6 @@ use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
 use summit_types::{Block, EngineClient, PublicKey};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-use zeroize::ZeroizeOnDrop;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -80,7 +80,6 @@ pub struct Engine<
         E,
         Block<S, MinPk>,
         SummitSchemeProvider<S, MinPk>,
-        MultisigScheme<S, MinPk>,
         immutable::Archive<
             E,
             summit_types::Digest,
@@ -95,8 +94,14 @@ pub struct Engine<
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
     finalizer: Finalizer<E, C, O, S, MinPk>,
     pub finalizer_mailbox: FinalizerMailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
-    orchestrator:
-        summit_orchestrator::Actor<E, O, MinPk, S, summit_application::Mailbox<S::PublicKey>>,
+    orchestrator: summit_orchestrator::Actor<
+        E,
+        O,
+        MinPk,
+        S,
+        summit_application::Mailbox<S::PublicKey>,
+        Sequential,
+    >,
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: usize,
@@ -110,10 +115,10 @@ impl<
     E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
     C: EngineClient,
     O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Manager<PublicKey = PublicKey>,
-    S: Signer<PublicKey = PublicKey> + ZeroizeOnDrop,
+    S: Signer<PublicKey = PublicKey>,
 > Engine<E, C, O, S>
 where
-    MultisigScheme<S, MinPk>: Scheme<PublicKey = S::PublicKey>,
+    MultisigScheme<S, MinPk>: Scheme<summit_types::Digest, PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
@@ -122,7 +127,7 @@ where
         let private_scalar = group::Private::decode(&mut encoded.as_ref())
             .expect("failed to extract scalar from private key");
         let scheme_provider: SummitSchemeProvider<S, MinPk> =
-            SummitSchemeProvider::new(private_scalar);
+            SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
 
         let cancellation_token = CancellationToken::new();
 
@@ -168,21 +173,27 @@ where
                 freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
                 freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
                 freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                freezer_journal_partition: format!(
-                    "{}-finalizations-by-height-freezer-journal",
+                freezer_key_partition: format!(
+                    "{}-finalizations-by-height-freezer-key",
                     cfg.partition_prefix
                 ),
-                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
-                freezer_journal_buffer_pool: buffer_pool.clone(),
+                freezer_key_buffer_pool: buffer_pool.clone(),
+                freezer_value_partition: format!(
+                    "{}-finalizations-by-height-freezer-value",
+                    cfg.partition_prefix
+                ),
+                freezer_value_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_value_compression: FREEZER_JOURNAL_COMPRESSION,
                 ordinal_partition: format!(
                     "{}-finalizations-by-height-ordinal",
                     cfg.partition_prefix
                 ),
                 items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                codec_config: MultisigScheme::<S, MinPk>::certificate_codec_config_unbounded(),
+                codec_config: usize::MAX,
+                freezer_key_write_buffer: WRITE_BUFFER,
+                freezer_value_write_buffer: WRITE_BUFFER,
+                ordinal_write_buffer: WRITE_BUFFER,
                 replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
             },
         )
         .await
@@ -200,18 +211,24 @@ where
                 freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
                 freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
                 freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                freezer_journal_partition: format!(
-                    "{}-finalized_blocks-freezer-journal",
+                freezer_key_partition: format!(
+                    "{}-finalized_blocks-freezer-key",
                     cfg.partition_prefix
                 ),
-                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
-                freezer_journal_buffer_pool: buffer_pool.clone(),
+                freezer_key_buffer_pool: buffer_pool.clone(),
+                freezer_value_partition: format!(
+                    "{}-finalized_blocks-freezer-value",
+                    cfg.partition_prefix
+                ),
+                freezer_value_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_value_compression: FREEZER_JOURNAL_COMPRESSION,
                 ordinal_partition: format!("{}-finalized_blocks-ordinal", cfg.partition_prefix),
                 items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                codec_config: (),
+                freezer_key_write_buffer: WRITE_BUFFER,
+                freezer_value_write_buffer: WRITE_BUFFER,
+                ordinal_write_buffer: WRITE_BUFFER,
                 replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
+                codec_config: (),
             },
         )
         .await
@@ -230,7 +247,6 @@ where
             write_buffer: WRITE_BUFFER,
             block_codec_config: (),
             max_repair: MAX_REPAIR,
-            _marker: PhantomData,
         };
 
         let (syncer, syncer_mailbox) = summit_syncer::Actor::init(
@@ -252,7 +268,6 @@ where
                 namespace: cfg.namespace.as_bytes().to_vec(),
                 muxer_size: cfg.mailbox_size,
                 mailbox_size: cfg.mailbox_size,
-                rate_limit: cfg.fetch_rate_per_peer,
                 blocks_per_epoch: BLOCKS_PER_EPOCH,
                 partition_prefix: cfg.partition_prefix.clone(),
                 leader_timeout: cfg.leader_timeout,
@@ -261,6 +276,7 @@ where
                 fetch_timeout: cfg.fetch_timeout,
                 activity_timeout: ViewDelta::new(cfg.activity_timeout),
                 skip_timeout: ViewDelta::new(cfg.skip_timeout),
+                _strategy: std::marker::PhantomData,
             },
         );
 
@@ -333,10 +349,6 @@ where
             impl Sender<PublicKey = S::PublicKey>,
             impl Receiver<PublicKey = S::PublicKey>,
         ),
-        orchestrator_network: (
-            impl Sender<PublicKey = S::PublicKey>,
-            impl Receiver<PublicKey = S::PublicKey>,
-        ),
         broadcast_network: (
             impl Sender<PublicKey = S::PublicKey>,
             impl Receiver<PublicKey = S::PublicKey>,
@@ -351,7 +363,6 @@ where
                 pending_network,
                 recovered_network,
                 resolver_network,
-                orchestrator_network,
                 broadcast_network,
                 backfill_network,
             )
@@ -372,10 +383,6 @@ where
             impl Receiver<PublicKey = S::PublicKey>,
         ),
         resolver_network: (
-            impl Sender<PublicKey = S::PublicKey>,
-            impl Receiver<PublicKey = S::PublicKey>,
-        ),
-        orchestrator_network: (
             impl Sender<PublicKey = S::PublicKey>,
             impl Receiver<PublicKey = S::PublicKey>,
         ),
@@ -401,12 +408,8 @@ where
             manager: self.oracle.clone(),
             blocker: self.oracle.clone(),
             mailbox_size: self.mailbox_size,
-            requester_config: requester::Config {
-                me: Some(self.node_public_key.clone()),
-                rate_limit: Quota::per_second(NonZeroU32::new(5).unwrap()),
-                initial: Duration::from_secs(1),
-                timeout: Duration::from_secs(2),
-            },
+            initial: Duration::from_secs(1),
+            timeout: Duration::from_secs(2),
             fetch_retry_timeout: Duration::from_millis(100),
             priority_requests: false,
             priority_responses: false,
@@ -425,12 +428,9 @@ where
             self.sync_view,
         );
         // start the orchestrator
-        let orchestrator_handle = self.orchestrator.start(
-            pending_network,
-            recovered_network,
-            resolver_network,
-            orchestrator_network,
-        );
+        let orchestrator_handle =
+            self.orchestrator
+                .start(pending_network, recovered_network, resolver_network);
 
         // Wait for either all actors to finish or cancellation signal
         let actors_fut = try_join_all(vec![

@@ -5,9 +5,8 @@ use alloy_eips::eip4895::Withdrawal;
 use alloy_rpc_types_engine::ForkchoiceState;
 #[allow(unused)]
 use commonware_codec::{DecodeExt as _, ReadExt as _};
-use commonware_codec::{Read as CodecRead, Write as CodecWrite};
 use commonware_consensus::Reporter;
-use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
+use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::Finalization;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
@@ -388,15 +387,11 @@ impl<
                 let participant_count = finalization.certificate.signers.len();
 
                 // Store the finalized block header in the database
-                // Convert to concrete BLS scheme type by encoding and decoding
                 let finalized_header =
                     FinalizedHeader::new(block.header.clone(), finalization, participant_count);
-                let mut buf = Vec::new();
-                finalized_header.write(&mut buf);
-                let concrete_header = <FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, V>> as CodecRead>::read_cfg(&mut buf.as_slice(), &())
-                    .expect("failed to convert finalized header to concrete type");
+
                 self.db
-                    .store_finalized_header(new_height, &concrete_header)
+                    .store_finalized_header(new_height, &finalized_header)
                     .await;
 
                 #[cfg(debug_assertions)]
@@ -699,7 +694,8 @@ impl<
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
-        let aux_data = if is_last_block_of_epoch(self.epoch_num_of_blocks, height) {
+        let is_last = is_last_block_of_epoch(self.epoch_num_of_blocks, height);
+        let aux_data = if is_last {
             // TODO(matthias): revisit this expect when the ckpt isn't in the DB
             let checkpoint_hash = if let Some(checkpoint) = &state.pending_checkpoint {
                 checkpoint.digest

@@ -14,7 +14,7 @@ use futures::{
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::types::{Round, View};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 use summit_finalizer::FinalizerMailbox;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
@@ -58,7 +58,7 @@ fn oneshot_closed_future<T>(sender: &mut oneshot::Sender<T>) -> ChannelClosedFut
 pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
-    S: Scheme,
+    S: Scheme<Digest>,
     P: PublicKey,
     K: Signer,
     V: Variant,
@@ -79,7 +79,7 @@ pub struct Actor<
 impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
-    S: Scheme,
+    S: Scheme<Digest>,
     P: PublicKey,
     K: Signer,
     V: Variant,
@@ -163,8 +163,11 @@ impl<
                                                 let digest = block.digest();
                                                 {
                                                     let mut built = built.lock().expect("locked poisoned");
-                                                    *built = Some(block);
+                                                    *built = Some(block.clone());
                                                 }
+
+                                                // send block to syncer for caching and broadcasting
+                                                syncer.proposed(round, block).await;
 
                                                 // send digest to consensus
                                                 let _ = response.send(digest);
@@ -198,22 +201,10 @@ impl<
                                     }
                             }
                         }
-                        Message::Broadcast { payload } => {
+                        Message::Broadcast { payload: _ } => {
                             info!("{rand_id} Handling message Broadcast");
-                            let Some(built_block) =
-                                self.built_block.lock().expect("poisoned mutex").clone()
-                            else {
-                                warn!("Asked to broadcast a block with no built block");
-                                continue;
-                            };
-                            // todo(dalton): This should be a hard assert but for testing im just going to log
-                            if payload != built_block.digest() {
-                                error!(
-                                    "The payload we were asked to broadcast is different then our built block"
-                                );
-                            }
-
-                            syncer.broadcast(built_block).await;
+                            // The broadcast is handled internally by the consensus engine
+                            // No need to forward to syncer
                         }
 
                         Message::Verify {
@@ -486,7 +477,7 @@ impl<
 impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
-    S: Scheme,
+    S: Scheme<Digest>,
     P: PublicKey,
     K: Signer,
     V: Variant,

@@ -17,7 +17,7 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256, keccak256};
 use clap::Parser;
 use commonware_cryptography::Sha256;
-use commonware_cryptography::{Hasher, PrivateKeyExt, Signer, bls12381, ed25519::PrivateKey};
+use commonware_cryptography::{Hasher, Signer, bls12381, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::http_client::HttpClientBuilder;
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_catch_panics(false);
     let executor = cw_tokio::Runner::new(cfg);
 
-    executor.start(|context| {
+    let node_runtimes = executor.start(|context| {
         async move {
             // Configure telemetry
             let log_level = Level::from_str("info").expect("Invalid log level");
@@ -113,6 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Vec to hold all the join handles
             let mut handles = VecDeque::new();
             let mut node_runtimes: Vec<NodeRuntime> = Vec::new();
+            let stopped_node0: Option<NodeRuntime>;
             // let mut read_threads = Vec::new();
 
             // Start all nodes at the beginning
@@ -358,17 +359,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Stop node0's consensus engine first (to avoid IPC errors)
             let source_node = 0;
             println!("Stopping node{} consensus engine...", source_node);
-            let node0_runtime = node_runtimes.remove(source_node);
+            stopped_node0 = Some(node_runtimes.remove(source_node));
 
-            // Send stop signal and wait for runtime to shut down gracefully
-            node0_runtime.stop_tx.send(()).expect("Failed to send stop signal");
+            // Send stop signal - we'll join the thread later outside async context
+            stopped_node0.as_ref().unwrap().stop_tx.send(()).expect("Failed to send stop signal");
             println!("Waiting for node{} runtime to shut down...", source_node);
-            let _ = tokio::task::spawn_blocking(move || {
-                node0_runtime.thread.join().expect("Failed to join node0 thread");
-            }).await;
 
             // Give OS time to release ports (P2P sockets can take time to close)
-            println!("Waiting for ports to be released...");
+            // This also gives node0's runtime time to shut down gracefully
             context.sleep(Duration::from_secs(3)).await;
 
             // Stop source reth instance and wait for graceful shutdown
@@ -496,12 +494,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let node_key_path = format!("{}/node{}/data/node_key.pem", args.data_dir, x);
             let consensus_key_path = format!("{}/node{}/data/consensus_key.pem", args.data_dir, x);
 
-            // Write node key
-            let encoded_node_key = ed25519_private_key.to_string();
+            // Write node key (hex encoded)
+            let encoded_node_key = commonware_utils::hex(&ed25519_private_key.encode());
             fs::write(&node_key_path, encoded_node_key).expect("Unable to write node key to disk");
 
-            // Write consensus key
-            let encoded_consensus_key = bls_private_key.to_string();
+            // Write consensus key (hex encoded)
+            let encoded_consensus_key = commonware_utils::hex(&bls_private_key.encode());
             fs::write(&consensus_key_path, encoded_consensus_key).expect("Unable to write consensus key to disk");
 
             flags.key_store_path = format!("{}/node{}/data", args.data_dir, x);
@@ -546,6 +544,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             node_runtimes.push(NodeRuntime { thread, stop_tx });
 
+            // Wait for node4 to start up and sync to near the current height
+            println!("Waiting for node4 (joining node) to start and sync...");
+            let node4_rpc_port = get_node_flags(x as usize).rpc_port;
+            let target_sync_height = args.stop_height.saturating_sub(10);
+            loop {
+                match get_latest_height(node4_rpc_port).await {
+                    Ok(height) if height >= target_sync_height => {
+                        println!("Node4 synced to height {}, ready to participate", height);
+                        break;
+                    }
+                    Ok(height) => {
+                        println!("Node4 syncing... current height: {}", height);
+                    }
+                    Err(e) => {
+                        println!("Node4 starting up... ({})", e);
+                    }
+                }
+                context.sleep(Duration::from_secs(2)).await;
+            }
+
             // Wait for all nodes to continue making progress
             println!(
                 "Waiting for all {} nodes to reach height {}",
@@ -586,22 +604,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = node_runtime.stop_tx.send(());
             }
 
-            // Now wait for all threads to finish
-            println!("Waiting for all nodes to shut down...");
-            for (idx, node_runtime) in node_runtimes.into_iter().enumerate() {
-                println!("Waiting for node index {} to join...", idx);
-                let _ = tokio::task::spawn_blocking(move || {
-                    match node_runtime.thread.join() {
-                        Ok(_) => println!("Node index {} thread joined successfully", idx),
-                        Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
-                    }
-                }).await;
-            }
-
-            println!("All nodes shut down cleanly");
-            Ok(())
+            // Return the node runtimes so we can join them outside async context
+            Ok::<_, Box<dyn std::error::Error>>((node_runtimes, stopped_node0))
         }
-    })
+    })?;
+
+    // Join all node threads outside of async context to avoid runtime drop issues
+    println!("Waiting for all nodes to shut down...");
+
+    // Join the stopped node0 first if it exists
+    if let Some(node0) = node_runtimes.1 {
+        println!("Joining node0 thread...");
+        match node0.thread.join() {
+            Ok(_) => println!("Node0 thread joined successfully"),
+            Err(e) => println!("Node0 thread join failed: {:?}", e),
+        }
+    }
+
+    // Join the remaining nodes
+    for (idx, node_runtime) in node_runtimes.0.into_iter().enumerate() {
+        println!("Waiting for node index {} to join...", idx);
+        match node_runtime.thread.join() {
+            Ok(_) => println!("Node index {} thread joined successfully", idx),
+            Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
+        }
+    }
+
+    println!("All nodes shut down cleanly");
+    Ok(())
 }
 
 fn copy_dir_all(src: &str, dst: &str) -> std::io::Result<()> {

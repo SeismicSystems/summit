@@ -72,7 +72,7 @@ pub use ingress::mailbox::Mailbox;
 pub mod resolver;
 
 use commonware_consensus::Block;
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::simplex::types::Finalization;
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 
@@ -82,7 +82,7 @@ use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 /// Finalized blocks are reported to the application in monotonically increasing order (no gaps permitted).
 /// Notarized blocks are sent without ordering guarantees to enable execution before finalization.
 #[derive(Clone, Debug)]
-pub enum Update<B: Block, S: Scheme, A: Acknowledgement = Exact> {
+pub enum Update<B: Block, S: Scheme<B::Commitment>, A: Acknowledgement = Exact> {
     /// A new finalized tip.
     Tip(u64, B::Commitment),
     /// A new finalized block and an [Acknowledgement] for the application to signal once processed.
@@ -115,15 +115,18 @@ mod tests {
     use crate::ingress::mailbox::Identifier;
     use crate::mocks::fixtures::{Fixture, bls12381_threshold};
     use commonware_broadcast::buffered;
-    use commonware_consensus::simplex::signing_scheme::{Scheme as _, bls12381_threshold};
+    use commonware_consensus::simplex::scheme::bls12381_threshold;
     use commonware_consensus::simplex::types::{
         Activity, Finalization, Finalize, Notarization, Notarize, Proposal,
     };
-    use commonware_consensus::types::{Epoch, Round, View, ViewDelta};
-    use commonware_consensus::{Block as _, Reporter, utils};
+    use commonware_consensus::types::{
+        Epoch, Epocher, FixedEpocher, Height, Round, View, ViewDelta,
+    };
+    use commonware_consensus::Reporter;
     use commonware_cryptography::{
         Digestible, Hasher as _,
         bls12381::primitives::variant::MinPk,
+        certificate::ConstantProvider,
         ed25519::PublicKey,
         sha256::{Digest as Sha256Digest, Sha256},
     };
@@ -131,21 +134,16 @@ mod tests {
     use commonware_p2p::{
         Manager,
         simulated::{self, Link, Network, Oracle},
-        utils::requester,
     };
-    use commonware_runtime::{Clock, Metrics, Runner, buffer::PoolRef, deterministic};
+    use commonware_runtime::{Clock, Metrics, Quota, Runner, buffer::PoolRef, deterministic};
     use commonware_storage::archive::immutable;
     use commonware_utils::{NZU64, NZUsize};
-    use governor::Quota;
     use rand::{Rng, seq::SliceRandom};
     use std::{
         collections::BTreeMap,
-        marker::PhantomData,
-        num::{NonZeroU32, NonZeroUsize},
-        sync::Arc,
+        num::{NonZeroU32, NonZeroU64, NonZeroUsize},
         time::{Duration, Instant},
     };
-    use summit_types::scheme::SchemeProvider;
     use tracing::info;
 
     type D = Sha256Digest;
@@ -153,22 +151,7 @@ mod tests {
     type K = PublicKey;
     type V = MinPk;
     type S = bls12381_threshold::Scheme<K, V>;
-    type P = ConstantSchemeProvider;
-
-    #[derive(Clone)]
-    struct ConstantSchemeProvider(Arc<S>);
-    impl SchemeProvider for ConstantSchemeProvider {
-        type Scheme = S;
-
-        fn scheme(&self, _: Epoch) -> Option<Arc<S>> {
-            Some(self.0.clone())
-        }
-    }
-    impl From<S> for ConstantSchemeProvider {
-        fn from(scheme: S) -> Self {
-            Self(Arc::new(scheme))
-        }
-    }
+    type P = ConstantProvider<S, Epoch>;
 
     const PAGE_SIZE: NonZeroUsize = NZUsize!(1024);
     const PAGE_CACHE_SIZE: NonZeroUsize = NZUsize!(10);
@@ -176,7 +159,7 @@ mod tests {
     const NUM_VALIDATORS: u32 = 4;
     const QUORUM: u32 = 3;
     const NUM_BLOCKS: u64 = 160;
-    const BLOCKS_PER_EPOCH: u64 = 20;
+    const BLOCKS_PER_EPOCH: NonZeroU64 = NZU64!(20);
     const LINK: Link = Link {
         latency: Duration::from_millis(10),
         jitter: Duration::from_millis(1),
@@ -188,52 +171,48 @@ mod tests {
         success_rate: 0.7,
     };
 
+    const TEST_QUOTA: Quota = Quota::per_second(NonZeroU32::MAX);
+
     async fn setup_validator(
         context: deterministic::Context,
-        oracle: &mut Oracle<K>,
+        oracle: &mut Oracle<K, deterministic::Context>,
         validator: K,
-        scheme_provider: P,
-    ) -> (Application<B, S>, crate::ingress::mailbox::Mailbox<S, B>) {
-        let buffer_pool = PoolRef::new(PAGE_SIZE, PAGE_CACHE_SIZE);
-        let scheme = scheme_provider
-            .scheme(Epoch::new(0))
-            .expect("scheme for epoch 0");
-        let config: Config<B, _, _> = Config {
-            scheme_provider,
-            epoch_length: BLOCKS_PER_EPOCH,
+        provider: P,
+    ) -> (
+        Application<B, S>,
+        crate::ingress::mailbox::Mailbox<S, B>,
+        Height,
+    ) {
+        let config = Config {
+            scheme_provider: provider,
+            epoch_length: BLOCKS_PER_EPOCH.get(),
             mailbox_size: 100,
             namespace: NAMESPACE.to_vec(),
             view_retention_timeout: ViewDelta::new(10),
             max_repair: NZUsize!(10),
             block_codec_config: (),
-            partition_prefix: format!("validator-{}", validator.clone()),
+            partition_prefix: format!("validator_{}", validator.clone()),
             prunable_items_per_section: NZU64!(10),
-            buffer_pool,
             replay_buffer: NZUsize!(1024),
             write_buffer: NZUsize!(1024),
-            _marker: PhantomData,
+            buffer_pool: PoolRef::new(PAGE_SIZE, PAGE_CACHE_SIZE),
         };
 
         // Create the resolver
-        let mut control = oracle.control(validator.clone());
-        let backfill = control.register(1).await.unwrap();
+        let control = oracle.control(validator.clone());
+        let backfill = control.register(1, TEST_QUOTA).await.unwrap();
         let resolver_cfg = resolver::Config {
             public_key: validator.clone(),
             manager: oracle.manager(),
             blocker: control.clone(),
             mailbox_size: config.mailbox_size,
-            requester_config: requester::Config {
-                me: Some(validator.clone()),
-                rate_limit: Quota::per_second(NonZeroU32::new(5).unwrap()),
-                initial: Duration::from_secs(1),
-                timeout: Duration::from_secs(2),
-            },
+            initial: Duration::from_secs(1),
+            timeout: Duration::from_secs(2),
             fetch_retry_timeout: Duration::from_millis(100),
             priority_requests: false,
             priority_responses: false,
         };
-        let (resolver_receiver, resolver_mailbox) =
-            resolver::init(&context, resolver_cfg, backfill);
+        let resolver = resolver::init(&context, resolver_cfg, backfill);
 
         // Create a buffered broadcast engine and get its mailbox
         let broadcast_config = buffered::Config {
@@ -244,7 +223,7 @@ mod tests {
             codec_config: (),
         };
         let (broadcast_engine, buffer) = buffered::Engine::new(context.clone(), broadcast_config);
-        let network = control.register(2).await.unwrap();
+        let network = control.register(2, TEST_QUOTA).await.unwrap();
         broadcast_engine.start(network);
 
         // Initialize finalizations by height
@@ -263,21 +242,27 @@ mod tests {
                 freezer_table_initial_size: 64,
                 freezer_table_resize_frequency: 10,
                 freezer_table_resize_chunk_size: 10,
-                freezer_journal_partition: format!(
-                    "{}-finalizations-by-height-freezer-journal",
+                freezer_key_partition: format!(
+                    "{}-finalizations-by-height-freezer-key",
                     config.partition_prefix
                 ),
-                freezer_journal_target_size: 1024,
-                freezer_journal_compression: None,
-                freezer_journal_buffer_pool: config.buffer_pool.clone(),
+                freezer_key_buffer_pool: config.buffer_pool.clone(),
+                freezer_value_partition: format!(
+                    "{}-finalizations-by-height-freezer-value",
+                    config.partition_prefix
+                ),
+                freezer_value_target_size: 1024,
+                freezer_value_compression: None,
                 ordinal_partition: format!(
                     "{}-finalizations-by-height-ordinal",
                     config.partition_prefix
                 ),
                 items_per_section: NZU64!(10),
-                codec_config: scheme.certificate_codec_config(),
+                codec_config: (),
                 replay_buffer: config.replay_buffer,
-                write_buffer: config.write_buffer,
+                freezer_key_write_buffer: config.write_buffer,
+                freezer_value_write_buffer: config.write_buffer,
+                ordinal_write_buffer: config.write_buffer,
             },
         )
         .await
@@ -300,18 +285,24 @@ mod tests {
                 freezer_table_initial_size: 64,
                 freezer_table_resize_frequency: 10,
                 freezer_table_resize_chunk_size: 10,
-                freezer_journal_partition: format!(
-                    "{}-finalized_blocks-freezer-journal",
+                freezer_key_partition: format!(
+                    "{}-finalized_blocks-freezer-key",
                     config.partition_prefix
                 ),
-                freezer_journal_target_size: 1024,
-                freezer_journal_compression: None,
-                freezer_journal_buffer_pool: config.buffer_pool.clone(),
+                freezer_key_buffer_pool: config.buffer_pool.clone(),
+                freezer_value_partition: format!(
+                    "{}-finalized_blocks-freezer-value",
+                    config.partition_prefix
+                ),
+                freezer_value_target_size: 1024,
+                freezer_value_compression: None,
                 ordinal_partition: format!("{}-finalized_blocks-ordinal", config.partition_prefix),
                 items_per_section: NZU64!(10),
                 codec_config: config.block_codec_config,
                 replay_buffer: config.replay_buffer,
-                write_buffer: config.write_buffer,
+                freezer_key_write_buffer: config.write_buffer,
+                freezer_value_write_buffer: config.write_buffer,
+                ordinal_write_buffer: config.write_buffer,
             },
         )
         .await
@@ -328,16 +319,9 @@ mod tests {
         let application = Application::<B, S>::default();
 
         // Start the application
-        actor.start(
-            application.clone(),
-            buffer,
-            (resolver_receiver, resolver_mailbox),
-            0,
-            0,
-            0,
-        );
+        actor.start(application.clone(), buffer, resolver, 0, 0, 0);
 
-        (application, mailbox)
+        (application, mailbox, Height::zero())
     }
 
     fn make_finalization(proposal: Proposal<D>, schemes: &[S], quorum: u32) -> Finalization<S, D> {
@@ -345,7 +329,7 @@ mod tests {
         let finalizes: Vec<_> = schemes
             .iter()
             .take(quorum as usize)
-            .map(|scheme| Finalize::sign(scheme, NAMESPACE, proposal.clone()).unwrap())
+            .map(|scheme| Finalize::sign(scheme, proposal.clone()).unwrap())
             .collect();
 
         // Generate certificate signatures
@@ -357,7 +341,7 @@ mod tests {
         let notarizes: Vec<_> = schemes
             .iter()
             .take(quorum as usize)
-            .map(|scheme| Notarize::sign(scheme, NAMESPACE, proposal.clone()).unwrap())
+            .map(|scheme| Notarize::sign(scheme, proposal.clone()).unwrap())
             .collect();
 
         // Generate certificate signatures
@@ -367,7 +351,7 @@ mod tests {
     fn setup_network(
         context: deterministic::Context,
         tracked_peer_sets: Option<usize>,
-    ) -> Oracle<K> {
+    ) -> Oracle<K, deterministic::Context> {
         let (network, oracle) = Network::new(
             context.with_label("network"),
             simulated::Config {
@@ -380,7 +364,11 @@ mod tests {
         oracle
     }
 
-    async fn setup_network_links(oracle: &mut Oracle<K>, peers: &[K], link: Link) {
+    async fn setup_network_links(
+        oracle: &mut Oracle<K, deterministic::Context>,
+        peers: &[K],
+        link: Link,
+    ) {
         for p1 in peers.iter() {
             for p2 in peers.iter() {
                 if p2 == p1 {
@@ -435,16 +423,16 @@ mod tests {
             let mut actors = Vec::new();
 
             // Register the initial peer set.
-            oracle
-                .manager()
-                .update(0, participants.clone().into())
+            let mut manager = oracle.manager();
+            manager
+                .update(0, participants.clone().try_into().unwrap())
                 .await;
             for (i, validator) in participants.iter().enumerate() {
-                let (application, actor) = setup_validator(
-                    context.with_label(&format!("validator-{i}")),
+                let (application, actor, _processed_height) = setup_validator(
+                    context.with_label(&format!("validator_{i}")),
                     &mut oracle,
                     validator.clone(),
-                    schemes[i].clone().into(),
+                    ConstantProvider::new(schemes[i].clone()),
                 )
                 .await;
                 applications.insert(validator.clone(), application);
@@ -458,26 +446,30 @@ mod tests {
             let mut blocks = Vec::<B>::new();
             let mut parent = Sha256::hash(b"");
             for i in 1..=NUM_BLOCKS {
-                let block = B::new::<Sha256>(parent, i, i);
+                let block = B::new::<Sha256>(parent, Height::new(i), i);
                 parent = block.digest();
                 blocks.push(block);
             }
 
             // Broadcast and finalize blocks in random order
+            let epocher = FixedEpocher::new(BLOCKS_PER_EPOCH);
             blocks.shuffle(&mut context);
             for block in blocks.iter() {
                 // Skip genesis block
-                let height = block.height();
-                assert!(height > 0, "genesis block should not have been generated");
+                let height = block.height;
+                assert!(
+                    !height.is_zero(),
+                    "genesis block should not have been generated"
+                );
 
                 // Calculate the epoch and round for the block
-                let epoch = utils::epoch(BLOCKS_PER_EPOCH, height);
-                let round = Round::new(epoch, View::new(height));
+                let bounds = epocher.containing(height).unwrap();
+                let round = Round::new(bounds.epoch(), View::new(height.get()));
 
                 // Broadcast block by one validator
-                let actor_index: usize = (height % (NUM_VALIDATORS as u64)) as usize;
+                let actor_index: usize = (height.get() % (NUM_VALIDATORS as u64)) as usize;
                 let mut actor = actors[actor_index].clone();
-                actor.broadcast(block.clone()).await;
+                actor.proposed(round, block.clone()).await;
                 actor.verified(round, block.clone()).await;
 
                 // Wait for the block to be broadcast, but due to jitter, we may or may not receive
@@ -487,7 +479,7 @@ mod tests {
                 // Notarize block by the validator that broadcasted it
                 let proposal = Proposal {
                     round,
-                    parent: View::new(height.checked_sub(1).unwrap()),
+                    parent: View::new(height.previous().unwrap().get()),
                     payload: block.digest(),
                 };
                 let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
@@ -500,8 +492,8 @@ mod tests {
                 for actor in actors.iter_mut() {
                     // Always finalize 1) the last block in each epoch 2) the last block in the chain.
                     // Otherwise, finalize randomly.
-                    if height == NUM_BLOCKS
-                        || utils::is_last_block_in_epoch(BLOCKS_PER_EPOCH, height).is_some()
+                    if height == Height::new(NUM_BLOCKS)
+                        || height == bounds.last()
                         || context.gen_bool(0.2)
                     // 20% chance to finalize randomly
                     {
@@ -530,7 +522,7 @@ mod tests {
                         finished = false;
                         break;
                     };
-                    if height < NUM_BLOCKS {
+                    if Height::new(height) < Height::new(NUM_BLOCKS) {
                         finished = false;
                         break;
                     }
@@ -555,11 +547,11 @@ mod tests {
 
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
-                let (_application, actor) = setup_validator(
-                    context.with_label(&format!("validator-{i}")),
+                let (_application, actor, _processed_height) = setup_validator(
+                    context.with_label(&format!("validator_{i}")),
                     &mut oracle,
                     validator.clone(),
-                    schemes[i].clone().into(),
+                    ConstantProvider::new(schemes[i].clone()),
                 )
                 .await;
                 actors.push(actor);
@@ -569,7 +561,7 @@ mod tests {
             setup_network_links(&mut oracle, &participants, LINK).await;
 
             let parent = Sha256::hash(b"");
-            let block = B::new::<Sha256>(parent, 1, 1);
+            let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
 
             let subscription_rx = actor
@@ -593,7 +585,7 @@ mod tests {
 
             let received_block = subscription_rx.await.unwrap();
             assert_eq!(received_block.digest(), block.digest());
-            assert_eq!(received_block.height(), 1);
+            assert_eq!(received_block.height, Height::new(1));
         })
     }
 
@@ -610,11 +602,11 @@ mod tests {
 
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
-                let (_application, actor) = setup_validator(
-                    context.with_label(&format!("validator-{i}")),
+                let (_application, actor, _processed_height) = setup_validator(
+                    context.with_label(&format!("validator_{i}")),
                     &mut oracle,
                     validator.clone(),
-                    schemes[i].clone().into(),
+                    ConstantProvider::new(schemes[i].clone()),
                 )
                 .await;
                 actors.push(actor);
@@ -624,8 +616,8 @@ mod tests {
             setup_network_links(&mut oracle, &participants, LINK).await;
 
             let parent = Sha256::hash(b"");
-            let block1 = B::new::<Sha256>(parent, 1, 1);
-            let block2 = B::new::<Sha256>(block1.digest(), 2, 2);
+            let block1 = B::new::<Sha256>(parent, Height::new(1), 1);
+            let block2 = B::new::<Sha256>(block1.digest(), Height::new(2), 2);
             let commitment1 = block1.digest();
             let commitment2 = block2.digest();
 
@@ -666,9 +658,9 @@ mod tests {
             assert_eq!(received1_sub1.digest(), block1.digest());
             assert_eq!(received2.digest(), block2.digest());
             assert_eq!(received1_sub3.digest(), block1.digest());
-            assert_eq!(received1_sub1.height(), 1);
-            assert_eq!(received2.height(), 2);
-            assert_eq!(received1_sub3.height(), 1);
+            assert_eq!(received1_sub1.height, Height::new(1));
+            assert_eq!(received2.height, Height::new(2));
+            assert_eq!(received1_sub3.height, Height::new(1));
         })
     }
 
@@ -685,11 +677,11 @@ mod tests {
 
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
-                let (_application, actor) = setup_validator(
-                    context.with_label(&format!("validator-{i}")),
+                let (_application, actor, _processed_height) = setup_validator(
+                    context.with_label(&format!("validator_{i}")),
                     &mut oracle,
                     validator.clone(),
-                    schemes[i].clone().into(),
+                    ConstantProvider::new(schemes[i].clone()),
                 )
                 .await;
                 actors.push(actor);
@@ -699,8 +691,8 @@ mod tests {
             setup_network_links(&mut oracle, &participants, LINK).await;
 
             let parent = Sha256::hash(b"");
-            let block1 = B::new::<Sha256>(parent, 1, 1);
-            let block2 = B::new::<Sha256>(block1.digest(), 2, 2);
+            let block1 = B::new::<Sha256>(parent, Height::new(1), 1);
+            let block2 = B::new::<Sha256>(block1.digest(), Height::new(2), 2);
             let commitment1 = block1.digest();
             let commitment2 = block2.digest();
 
@@ -735,7 +727,7 @@ mod tests {
 
             let received2 = sub2_rx.await.unwrap();
             assert_eq!(received2.digest(), block2.digest());
-            assert_eq!(received2.height(), 2);
+            assert_eq!(received2.height, Height::new(2));
         })
     }
 
@@ -752,11 +744,11 @@ mod tests {
 
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
-                let (_application, actor) = setup_validator(
-                    context.with_label(&format!("validator-{i}")),
+                let (_application, actor, _processed_height) = setup_validator(
+                    context.with_label(&format!("validator_{i}")),
                     &mut oracle,
                     validator.clone(),
-                    schemes[i].clone().into(),
+                    ConstantProvider::new(schemes[i].clone()),
                 )
                 .await;
                 actors.push(actor);
@@ -766,11 +758,11 @@ mod tests {
             setup_network_links(&mut oracle, &participants, LINK).await;
 
             let parent = Sha256::hash(b"");
-            let block1 = B::new::<Sha256>(parent, 1, 1);
-            let block2 = B::new::<Sha256>(block1.digest(), 2, 2);
-            let block3 = B::new::<Sha256>(block2.digest(), 3, 3);
-            let block4 = B::new::<Sha256>(block3.digest(), 4, 4);
-            let block5 = B::new::<Sha256>(block4.digest(), 5, 5);
+            let block1 = B::new::<Sha256>(parent, Height::new(1), 1);
+            let block2 = B::new::<Sha256>(block1.digest(), Height::new(2), 2);
+            let block3 = B::new::<Sha256>(block2.digest(), Height::new(3), 3);
+            let block4 = B::new::<Sha256>(block3.digest(), Height::new(4), 4);
+            let block5 = B::new::<Sha256>(block4.digest(), Height::new(5), 5);
 
             let sub1_rx = actor.subscribe(None, block1.digest()).await;
             let sub2_rx = actor.subscribe(None, block2.digest()).await;
@@ -779,13 +771,15 @@ mod tests {
             let sub5_rx = actor.subscribe(None, block5.digest()).await;
 
             // Block1: Broadcasted by the actor
-            actor.broadcast(block1.clone()).await;
+            actor
+                .proposed(Round::new(Epoch::zero(), View::new(1)), block1.clone())
+                .await;
             context.sleep(Duration::from_millis(20)).await;
 
             // Block1: delivered
             let received1 = sub1_rx.await.unwrap();
             assert_eq!(received1.digest(), block1.digest());
-            assert_eq!(received1.height(), 1);
+            assert_eq!(received1.height, Height::new(1));
 
             // Block2: Verified by the actor
             actor
@@ -795,7 +789,7 @@ mod tests {
             // Block2: delivered
             let received2 = sub2_rx.await.unwrap();
             assert_eq!(received2.digest(), block2.digest());
-            assert_eq!(received2.height(), 2);
+            assert_eq!(received2.height, Height::new(2));
 
             // Block3: Notarized by the actor
             let proposal3 = Proposal {
@@ -812,7 +806,7 @@ mod tests {
             // Block3: delivered
             let received3 = sub3_rx.await.unwrap();
             assert_eq!(received3.digest(), block3.digest());
-            assert_eq!(received3.height(), 3);
+            assert_eq!(received3.height, Height::new(3));
 
             // Block4: Finalized by the actor
             let finalization4 = make_finalization(
@@ -832,17 +826,19 @@ mod tests {
             // Block4: delivered
             let received4 = sub4_rx.await.unwrap();
             assert_eq!(received4.digest(), block4.digest());
-            assert_eq!(received4.height(), 4);
+            assert_eq!(received4.height, Height::new(4));
 
             // Block5: Broadcasted by a remote node (different actor)
             let remote_actor = &mut actors[1].clone();
-            remote_actor.broadcast(block5.clone()).await;
+            remote_actor
+                .proposed(Round::new(Epoch::zero(), View::new(5)), block5.clone())
+                .await;
             context.sleep(Duration::from_millis(20)).await;
 
             // Block5: delivered
             let received5 = sub5_rx.await.unwrap();
             assert_eq!(received5.digest(), block5.digest());
-            assert_eq!(received5.height(), 5);
+            assert_eq!(received5.height, Height::new(5));
         })
     }
 
@@ -859,11 +855,11 @@ mod tests {
 
             // Single validator actor
             let me = participants[0].clone();
-            let (_application, mut actor) = setup_validator(
-                context.with_label("validator-0"),
+            let (_application, mut actor, _processed_height) = setup_validator(
+                context.with_label("validator_0"),
                 &mut oracle,
                 me,
-                schemes[0].clone().into(),
+                ConstantProvider::new(schemes[0].clone()),
             )
             .await;
 
@@ -875,7 +871,7 @@ mod tests {
 
             // Create and verify a block, then finalize it
             let parent = Sha256::hash(b"");
-            let block = B::new::<Sha256>(parent, 1, 1);
+            let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let digest = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
             actor.verified(round, block.clone()).await;
@@ -919,11 +915,11 @@ mod tests {
 
             // Single validator actor
             let me = participants[0].clone();
-            let (_application, mut actor) = setup_validator(
-                context.with_label("validator-0"),
+            let (_application, mut actor, _processed_height) = setup_validator(
+                context.with_label("validator_0"),
                 &mut oracle,
                 me,
-                schemes[0].clone().into(),
+                ConstantProvider::new(schemes[0].clone()),
             )
             .await;
 
@@ -932,7 +928,7 @@ mod tests {
 
             // Build and finalize heights 1..=3
             let parent0 = Sha256::hash(b"");
-            let block1 = B::new::<Sha256>(parent0, 1, 1);
+            let block1 = B::new::<Sha256>(parent0, Height::new(1), 1);
             let d1 = block1.digest();
             actor
                 .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
@@ -950,7 +946,7 @@ mod tests {
             let latest = actor.get_info(Identifier::Latest).await;
             assert_eq!(latest, Some((1, d1)));
 
-            let block2 = B::new::<Sha256>(d1, 2, 2);
+            let block2 = B::new::<Sha256>(d1, Height::new(2), 2);
             let d2 = block2.digest();
             actor
                 .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
@@ -968,7 +964,7 @@ mod tests {
             let latest = actor.get_info(Identifier::Latest).await;
             assert_eq!(latest, Some((2, d2)));
 
-            let block3 = B::new::<Sha256>(d2, 3, 3);
+            let block3 = B::new::<Sha256>(d2, Height::new(3), 3);
             let d3 = block3.digest();
             actor
                 .verified(Round::new(Epoch::new(0), View::new(3)), block3.clone())
@@ -1000,11 +996,11 @@ mod tests {
             } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
 
             let me = participants[0].clone();
-            let (application, mut actor) = setup_validator(
-                context.with_label("validator-0"),
+            let (application, mut actor, _height) = setup_validator(
+                context.with_label("validator_0"),
                 &mut oracle,
                 me,
-                schemes[0].clone().into(),
+                ConstantProvider::new(schemes[0].clone()),
             )
             .await;
 
@@ -1015,7 +1011,7 @@ mod tests {
 
             // Finalize a block at height 1
             let parent = Sha256::hash(b"");
-            let block = B::new::<Sha256>(parent, 1, 1);
+            let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
             actor.verified(round, block.clone()).await;
@@ -1029,7 +1025,7 @@ mod tests {
 
             // Get by height
             let by_height = actor.get_block(1).await.expect("missing block by height");
-            assert_eq!(by_height.height(), 1);
+            assert_eq!(by_height.height, Height::new(1));
             assert_eq!(by_height.digest(), commitment);
             assert_eq!(application.tip(), Some((1, commitment)));
 
@@ -1038,7 +1034,7 @@ mod tests {
                 .get_block(Identifier::Latest)
                 .await
                 .expect("missing block by latest");
-            assert_eq!(by_latest.height(), 1);
+            assert_eq!(by_latest.height, Height::new(1));
             assert_eq!(by_latest.digest(), commitment);
 
             // Missing height
@@ -1059,17 +1055,17 @@ mod tests {
             } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
 
             let me = participants[0].clone();
-            let (_application, mut actor) = setup_validator(
-                context.with_label("validator-0"),
+            let (_application, mut actor, _processed_height) = setup_validator(
+                context.with_label("validator_0"),
                 &mut oracle,
                 me,
-                schemes[0].clone().into(),
+                ConstantProvider::new(schemes[0].clone()),
             )
             .await;
 
             // 1) From cache via verified
             let parent = Sha256::hash(b"");
-            let ver_block = B::new::<Sha256>(parent, 1, 1);
+            let ver_block = B::new::<Sha256>(parent, Height::new(1), 1);
             let ver_commitment = ver_block.digest();
             let round1 = Round::new(Epoch::new(0), View::new(1));
             actor.verified(round1, ver_block.clone()).await;
@@ -1080,7 +1076,7 @@ mod tests {
             assert_eq!(got.digest(), ver_commitment);
 
             // 2) From finalized archive
-            let fin_block = B::new::<Sha256>(ver_commitment, 2, 2);
+            let fin_block = B::new::<Sha256>(ver_commitment, Height::new(2), 2);
             let fin_commitment = fin_block.digest();
             let round2 = Round::new(Epoch::new(0), View::new(2));
             actor.verified(round2, fin_block.clone()).await;
@@ -1096,7 +1092,7 @@ mod tests {
                 .await
                 .expect("missing block from finalized archive");
             assert_eq!(got.digest(), fin_commitment);
-            assert_eq!(got.height(), 2);
+            assert_eq!(got.height, Height::new(2));
 
             // 3) Missing commitment
             let missing = Sha256::hash(b"definitely-missing");
@@ -1117,11 +1113,11 @@ mod tests {
             } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
 
             let me = participants[0].clone();
-            let (_application, mut actor) = setup_validator(
-                context.with_label("validator-0"),
+            let (_application, mut actor, _processed_height) = setup_validator(
+                context.with_label("validator_0"),
                 &mut oracle,
                 me,
-                schemes[0].clone().into(),
+                ConstantProvider::new(schemes[0].clone()),
             )
             .await;
 
@@ -1131,7 +1127,7 @@ mod tests {
 
             // Finalize a block at height 1
             let parent = Sha256::hash(b"");
-            let block = B::new::<Sha256>(parent, 1, 1);
+            let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
             actor.verified(round, block.clone()).await;
@@ -1173,11 +1169,11 @@ mod tests {
             // Set up two validators
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate().take(2) {
-                let (_app, actor) = setup_validator(
-                    context.with_label(&format!("validator-{i}")),
+                let (_app, actor, _height) = setup_validator(
+                    context.with_label(&format!("validator_{i}")),
                     &mut oracle,
                     validator.clone(),
-                    schemes[i].clone().into(),
+                    ConstantProvider::new(schemes[i].clone()),
                 )
                 .await;
                 actors.push(actor);
@@ -1185,7 +1181,7 @@ mod tests {
 
             // Create block at height 1
             let parent = Sha256::hash(b"");
-            let block = B::new::<Sha256>(parent, 1, 1);
+            let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
 
             // Both validators verify the block
@@ -1275,5 +1271,75 @@ mod tests {
             let fin1_after = actors[1].get_finalization(1).await.unwrap();
             assert_eq!(fin1_after.round().view(), View::new(2));
         })
+    }
+
+    #[test_traced("INFO")]
+    fn test_broadcast_caches_block() {
+        let runner = deterministic::Runner::timed(Duration::from_secs(60));
+        runner.start(|mut context| async move {
+            let mut oracle = setup_network(context.clone(), None);
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+
+            // Set up one validator
+            let (i, validator) = participants.iter().enumerate().next().unwrap();
+            let (_application, mut actor, _processed_height) = setup_validator(
+                context.with_label(&format!("validator_{i}")),
+                &mut oracle,
+                validator.clone(),
+                ConstantProvider::new(schemes[i].clone()),
+            )
+            .await;
+
+            // Create block at height 1
+            let parent = Sha256::hash(b"");
+            let block = B::new::<Sha256>(parent, Height::new(1), 1);
+            let commitment = block.digest();
+
+            // Broadcast the block
+            actor
+                .proposed(Round::new(Epoch::new(0), View::new(1)), block.clone())
+                .await;
+
+            // Ensure the block is cached and retrievable; This should hit the in-memory cache
+            // via `buffered::Mailbox`.
+            actor
+                .get_block(&commitment)
+                .await
+                .expect("block should be cached after broadcast");
+
+            // Restart marshal, removing any in-memory cache
+            let (_application, mut actor, _processed_height) = setup_validator(
+                context.with_label(&format!("validator_{i}")),
+                &mut oracle,
+                validator.clone(),
+                ConstantProvider::new(schemes[i].clone()),
+            )
+            .await;
+
+            // Put a notarization into the cache to re-initialize the ephemeral cache for the
+            // first epoch. Without this, the marshal cannot determine the epoch of the block being fetched,
+            // so it won't look to restore the cache for the epoch.
+            let notarization = make_notarization(
+                Proposal {
+                    round: Round::new(Epoch::new(0), View::new(1)),
+                    parent: View::new(0),
+                    payload: commitment,
+                },
+                &schemes,
+                QUORUM,
+            );
+            actor.report(Activity::Notarization(notarization)).await;
+
+            // Ensure the block is cached and retrievable
+            let fetched = actor
+                .get_block(&commitment)
+                .await
+                .expect("block should be cached after broadcast");
+            assert_eq!(fetched, block);
+        });
     }
 }

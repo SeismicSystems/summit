@@ -2,13 +2,16 @@ use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
-use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
+use commonware_cryptography::{Signer, bls12381};
 use commonware_macros::test_traced;
+use commonware_math::algebra::Random;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
 use commonware_utils::from_hex_formatted;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use summit_types::{PrivateKey, keystore::KeyStore};
@@ -43,9 +46,10 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -97,7 +101,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -116,18 +120,11 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
         // Wait for the validators to checkpoint
@@ -160,7 +157,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
         public_keys.insert(public_key.clone());
 
         // Configure engine
-        let uid = format!("validator-{public_key}");
+        let uid = format!("validator_{public_key}");
         let namespace = String::from("_SEISMIC_BFT");
 
         let engine_client = engine_client_network.create_client(uid.clone());
@@ -178,18 +175,11 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
         let engine = Engine::new(context.with_label(&uid), config).await;
 
         // Get networking from late registrations
-        let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+        let (pending, recovered, resolver, orchestrator, broadcast) =
             late_registrations.into_iter().next().unwrap().1;
 
         // Start engine
-        engine.start(
-            pending,
-            recovered,
-            resolver,
-            orchestrator,
-            broadcast,
-            backfill,
-        );
+        engine.start(pending, recovered, resolver, orchestrator, broadcast);
 
         // Poll metrics
         let stop_height = 2 * BLOCKS_PER_EPOCH;
@@ -201,7 +191,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 
@@ -282,9 +272,10 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         let mut key_stores = Vec::new();
         let mut validators = Vec::new();
         for i in 0..n {
-            let node_key = PrivateKey::from_seed(i as u64);
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
             let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::from_seed(i as u64);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
             let consensus_public_key = consensus_key.public_key();
             let key_store = KeyStore {
                 node_key,
@@ -336,7 +327,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             public_keys.insert(public_key.clone());
 
             // Configure engine
-            let uid = format!("validator-{public_key}");
+            let uid = format!("validator_{public_key}");
             let namespace = String::from("_SEISMIC_BFT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
@@ -355,18 +346,11 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+            let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
 
             // Start engine
-            engine.start(
-                pending,
-                recovered,
-                resolver,
-                orchestrator,
-                broadcast,
-                backfill,
-            );
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
         // Wait for the validators to checkpoint
@@ -399,7 +383,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         public_keys.insert(public_key.clone());
 
         // Configure engine
-        let uid = format!("validator-{public_key}");
+        let uid = format!("validator_{public_key}");
         let namespace = String::from("_SEISMIC_BFT");
 
         let engine_client = engine_client_network.create_client(uid.clone());
@@ -419,18 +403,11 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         let engine = Engine::new(context.with_label(&uid), config).await;
 
         // Get networking from late registrations
-        let (pending, recovered, resolver, orchestrator, broadcast, backfill) =
+        let (pending, recovered, resolver, orchestrator, broadcast) =
             late_registrations.into_iter().next().unwrap().1;
 
         // Start engine
-        engine.start(
-            pending,
-            recovered,
-            resolver,
-            orchestrator,
-            broadcast,
-            backfill,
-        );
+        engine.start(pending, recovered, resolver, orchestrator, broadcast);
 
         // Poll metrics
         let stop_height = 2 * BLOCKS_PER_EPOCH;
@@ -442,7 +419,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             let mut success = false;
             for line in metrics.lines() {
                 // Ensure it is a metrics line
-                if !line.starts_with("validator-") {
+                if !line.starts_with("validator_") {
                     continue;
                 }
 

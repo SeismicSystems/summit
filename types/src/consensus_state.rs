@@ -474,7 +474,7 @@ mod tests {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
-    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381, ed25519};
+    use commonware_cryptography::{Signer, bls12381, ed25519};
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
         let mut withdrawal_credentials = [0u8; 32];
