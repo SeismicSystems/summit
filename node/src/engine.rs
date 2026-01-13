@@ -72,36 +72,30 @@ pub struct Engine<
     S: Signer<PublicKey = PublicKey>,
 > {
     context: E,
-    application: summit_application::Actor<E, C, MultisigScheme<S, MinPk>, S::PublicKey, S, MinPk>,
-    buffer: buffered::Engine<E, S::PublicKey, Block<S, MinPk>>,
-    buffer_mailbox: buffered::Mailbox<S::PublicKey, Block<S, MinPk>>,
+    application: summit_application::Actor<E, C, MultisigScheme, S::PublicKey, S, MinPk>,
+    buffer: buffered::Engine<E, S::PublicKey, Block>,
+    buffer_mailbox: buffered::Mailbox<S::PublicKey, Block>,
     #[allow(clippy::type_complexity)]
     syncer: summit_syncer::Actor<
         E,
-        Block<S, MinPk>,
-        SummitSchemeProvider<S, MinPk>,
+        Block,
+        SummitSchemeProvider,
         immutable::Archive<
             E,
             summit_types::Digest,
             commonware_consensus::simplex::types::Finalization<
-                MultisigScheme<S, MinPk>,
+                MultisigScheme,
                 summit_types::Digest,
             >,
         >,
-        immutable::Archive<E, summit_types::Digest, Block<S, MinPk>>,
+        immutable::Archive<E, summit_types::Digest, Block>,
         Exact,
     >,
-    syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
+    syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
     finalizer: Finalizer<E, C, O, S, MinPk>,
-    pub finalizer_mailbox: FinalizerMailbox<MultisigScheme<S, MinPk>, Block<S, MinPk>>,
-    orchestrator: summit_orchestrator::Actor<
-        E,
-        O,
-        MinPk,
-        S,
-        summit_application::Mailbox<S::PublicKey>,
-        Sequential,
-    >,
+    pub finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    orchestrator:
+        summit_orchestrator::Actor<E, O, summit_application::Mailbox<S::PublicKey>, Sequential>,
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: usize,
@@ -118,7 +112,7 @@ impl<
     S: Signer<PublicKey = PublicKey>,
 > Engine<E, C, O, S>
 where
-    MultisigScheme<S, MinPk>: Scheme<summit_types::Digest, PublicKey = S::PublicKey>,
+    MultisigScheme: Scheme<summit_types::Digest, PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
@@ -126,7 +120,7 @@ where
         let encoded = cfg.key_store.consensus_key.encode();
         let private_scalar = group::Private::decode(&mut encoded.as_ref())
             .expect("failed to extract scalar from private key");
-        let scheme_provider: SummitSchemeProvider<S, MinPk> =
+        let scheme_provider: SummitSchemeProvider =
             SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
 
         let cancellation_token = CancellationToken::new();

@@ -6,9 +6,7 @@ use crate::types::{
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
 use commonware_codec::{DecodeExt as _, Encode as _};
-use commonware_cryptography::{
-    Hasher as _, Sha256, Signer, bls12381::primitives::variant::Variant,
-};
+use commonware_cryptography::{Hasher as _, Sha256, Signer};
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
 use ssz::Encode as _;
@@ -20,15 +18,15 @@ use summit_types::{
     execution_request::{DepositRequest, compute_deposit_data_root},
 };
 
-pub struct SummitRpcServer<C: Signer, V: Variant> {
+pub struct SummitRpcServer {
     key_store_path: String,
-    finalizer_mailbox: FinalizerMailbox<MultisigScheme<C, V>, Block<C, V>>,
+    finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
 }
 
-impl<C: Signer, V: Variant> SummitRpcServer<C, V> {
+impl SummitRpcServer {
     pub fn new(
         key_store_path: String,
-        finalizer_mailbox: FinalizerMailbox<MultisigScheme<C, V>, Block<C, V>>,
+        finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     ) -> Self {
         Self {
             key_store_path,
@@ -38,11 +36,7 @@ impl<C: Signer, V: Variant> SummitRpcServer<C, V> {
 }
 
 #[async_trait]
-impl<C, V> SummitApiServer for SummitRpcServer<C, V>
-where
-    C: Signer + Send + Sync + 'static,
-    V: Variant + Send + Sync + 'static,
-{
+impl SummitApiServer for SummitRpcServer {
     async fn health(&self) -> RpcResult<String> {
         Ok("Ok".to_string())
     }

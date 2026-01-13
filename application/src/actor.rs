@@ -66,7 +66,7 @@ pub struct Actor<
     context: ContextCell<R>,
     mailbox: mpsc::Receiver<Message>,
     engine_client: C,
-    built_block: Arc<Mutex<Option<Block<K, V>>>>,
+    built_block: Arc<Mutex<Option<Block>>>,
     genesis_hash: [u8; 32],
     epoch_num_of_blocks: u64,
     cancellation_token: CancellationToken,
@@ -110,16 +110,16 @@ impl<
 
     pub fn start(
         mut self,
-        syncer: SyncerMailbox<S, Block<K, V>>,
-        finalizer: FinalizerMailbox<S, Block<K, V>>,
+        syncer: SyncerMailbox<S, Block>,
+        finalizer: FinalizerMailbox<S, Block>,
     ) -> Handle<()> {
         spawn_cell!(self.context, self.run(syncer, finalizer).await)
     }
 
     pub async fn run(
         mut self,
-        mut syncer: SyncerMailbox<S, Block<K, V>>,
-        mut finalizer: FinalizerMailbox<S, Block<K, V>>,
+        mut syncer: SyncerMailbox<S, Block>,
+        mut finalizer: FinalizerMailbox<S, Block>,
     ) {
         let rand_id: u8 = rand::random();
         let mut signal = self.context.stopped().fuse();
@@ -296,10 +296,10 @@ impl<
     async fn handle_proposal(
         &mut self,
         parent: (View, Digest),
-        syncer: &mut SyncerMailbox<S, Block<K, V>>,
-        finalizer: &mut FinalizerMailbox<S, Block<K, V>>,
+        syncer: &mut SyncerMailbox<S, Block>,
+        finalizer: &mut FinalizerMailbox<S, Block>,
         round: Round,
-    ) -> Result<Block<K, V>> {
+    ) -> Result<Block> {
         #[cfg(feature = "prom")]
         let proposal_start = std::time::Instant::now();
 
@@ -488,12 +488,7 @@ impl<
     }
 }
 
-fn handle_verify<K: Signer, V: Variant>(
-    block: &Block<K, V>,
-    parent: Block<K, V>,
-    epoch_length: u64,
-    epoch: u64,
-) -> bool {
+fn handle_verify(block: &Block, parent: Block, epoch_length: u64, epoch: u64) -> bool {
     //// You can only re-propose the same block if it's the last height in the epoch.
     if parent.digest() == block.digest() {
         let last_in_epoch = utils::last_block_in_epoch(epoch_length, epoch);

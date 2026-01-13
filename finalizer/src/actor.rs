@@ -59,7 +59,7 @@ pub struct Finalizer<
     V: Variant,
 > {
     archive_mode: bool,
-    mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>>,
+    mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block>>,
     pending_height_notifys: BTreeMap<(u64, Digest), Vec<oneshot::Sender<()>>>,
     context: ContextCell<R>,
     engine_client: C,
@@ -72,7 +72,7 @@ pub struct Finalizer<
     fork_states: BTreeMap<u64, BTreeMap<Digest, ForkState>>,
 
     // Orphaned notarized blocks that arrived before their parent
-    orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block<S, V>>>>,
+    orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block>>>,
 
     genesis_hash: [u8; 32],
     validator_max_withdrawals_per_block: usize,
@@ -105,7 +105,7 @@ impl<
     ) -> (
         Self,
         ConsensusState,
-        FinalizerMailbox<bls12381_multisig::Scheme<PublicKey, V>, Block<S, V>>,
+        FinalizerMailbox<bls12381_multisig::Scheme<PublicKey, V>, Block>,
     ) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
         let state_cfg = StateConfig {
@@ -269,12 +269,9 @@ impl<
     async fn handle_finalized_block(
         &mut self,
         ack_tx: Exact,
-        block: Block<S, V>,
+        block: Block,
         finalization: Option<
-            Finalization<
-                bls12381_multisig::Scheme<PublicKey, V>,
-                <Block<S, V> as Digestible>::Digest,
-            >,
+            Finalization<bls12381_multisig::Scheme<PublicKey, V>, <Block as Digestible>::Digest>,
         >,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
@@ -540,7 +537,7 @@ impl<
         info!(new_height, self.canonical_state.epoch, "finalized block");
     }
 
-    async fn handle_notarized_block(&mut self, block: Block<S, V>) {
+    async fn handle_notarized_block(&mut self, block: Block) {
         let mut to_process = vec![block];
 
         while let Some(block) = to_process.pop() {
@@ -807,13 +804,11 @@ impl<
 #[allow(clippy::too_many_arguments)]
 async fn execute_block<
     C: EngineClient,
-    S: Signer<PublicKey = PublicKey>,
-    V: Variant,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
     engine_client: &mut C,
     context: &ContextCell<R>,
-    block: &Block<S, V>,
+    block: &Block,
     state: &mut ConsensusState,
     epoch_num_of_blocks: u64,
     validator_max_withdrawals_per_block: usize,
@@ -951,12 +946,10 @@ async fn execute_block<
 
 #[allow(clippy::too_many_arguments)]
 async fn parse_execution_requests<
-    S: Signer<PublicKey = PublicKey>,
-    V: Variant,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
     #[allow(unused)] context: &ContextCell<R>,
-    block: &Block<S, V>,
+    block: &Block,
     new_height: u64,
     state: &mut ConsensusState,
     epoch_num_of_blocks: u64,
@@ -1109,12 +1102,10 @@ async fn parse_execution_requests<
 
 #[allow(clippy::too_many_arguments)]
 async fn process_execution_requests<
-    S: Signer<PublicKey = PublicKey>,
-    V: Variant,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
     #[allow(unused)] context: &ContextCell<R>,
-    block: &Block<S, V>,
+    block: &Block,
     new_height: u64,
     state: &mut ConsensusState,
     epoch_num_of_blocks: u64,

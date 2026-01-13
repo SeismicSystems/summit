@@ -11,7 +11,6 @@ pub use types::*;
 
 pub use api::{SummitApiClient, SummitApiServer, SummitGenesisApiClient, SummitGenesisApiServer};
 
-use commonware_cryptography::{Signer, bls12381::primitives::variant::Variant};
 use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
 use std::net::SocketAddr;
@@ -20,8 +19,8 @@ use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
 use tokio_util::sync::CancellationToken;
 
-pub async fn start_rpc_server<C: Signer, V: Variant>(
-    finalizer_mailbox: FinalizerMailbox<MultisigScheme<C, V>, Block<C, V>>,
+pub async fn start_rpc_server(
+    finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
     port: u16,
     stop_signal: Signal,
@@ -50,8 +49,8 @@ pub async fn start_rpc_server<C: Signer, V: Variant>(
 }
 
 /// Starts the RPC server and returns the handle and bound address (useful for testing)
-pub async fn start_rpc_server_with_handle<C: Signer, V: Variant>(
-    finalizer_mailbox: FinalizerMailbox<MultisigScheme<C, V>, Block<C, V>>,
+pub async fn start_rpc_server_with_handle(
+    finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
     port: u16,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
