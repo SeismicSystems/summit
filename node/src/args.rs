@@ -34,11 +34,14 @@ use crate::config::MAILBOX_SIZE;
 use crate::engine::VALIDATOR_MINIMUM_STAKE;
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
-use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::DiscoveryOracle;
+use summit_types::{
+    Block,
+    account::{ValidatorAccount, ValidatorStatus},
+};
 use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use tracing::{Level, error};
 
@@ -126,7 +129,7 @@ pub struct RunFlags {
 
     /// Path to a checkpoint file. If not there summit will start normally
     #[arg(long)]
-    pub checkpoint_or_default: Option<String>,
+    pub checkpoint_or_default: bool,
 
     /// IP address for this node (optional, will use genesis if not provided)
     #[arg(long)]
@@ -173,31 +176,30 @@ impl Command {
             console_subscriber::init();
         }
 
-        let maybe_checkpoint = if let Some(checkpoint) = &flags.checkpoint_or_default {
-            if std::fs::exists(checkpoint).unwrap_or_default() {
-                // TODO(matthias): verify the checkpoint
-                let checkpoint_bytes: Vec<u8> =
-                    std::fs::read(checkpoint).expect("failed to read checkpoint from disk");
-                let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_bytes)
-                    .expect("failed to parse checkpoint");
-                let state = ConsensusState::try_from(checkpoint)
-                    .expect("failed to create consensus state from checkpoint");
+        let mut checkpoint_parent_block = None;
 
-                Some(state)
-            } else {
-                None
-            }
-        } else {
-            flags.checkpoint_path.as_ref().map(|path| {
+        let maybe_checkpoint = flags
+            .checkpoint_path
+            .as_ref()
+            .and_then(|path| {
+                if !std::fs::exists(path).unwrap_or_default() && flags.checkpoint_or_default {
+                    None
+                } else {
+                    Some(path)
+                }
+            })
+            .map(|path| {
                 // TODO(matthias): verify the checkpoint
                 let checkpoint_bytes: Vec<u8> =
                     std::fs::read(path).expect("failed to read checkpoint from disk");
                 let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_bytes)
                     .expect("failed to parse checkpoint");
+
+                checkpoint_parent_block = Some(checkpoint.parent.clone());
+
                 ConsensusState::try_from(checkpoint)
                     .expect("failed to create consensus state from checkpoint")
-            })
-        };
+            });
 
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
         let key_store = expect_key_store(&flags.key_store_path);
@@ -371,6 +373,7 @@ impl Command {
                 flags.db_prefix.clone(),
                 &genesis,
                 initial_state,
+                checkpoint_parent_block,
                 flags.archive_mode,
             )
             .unwrap();
@@ -430,6 +433,7 @@ pub fn run_node_local(
     context: tokio::Context,
     flags: RunFlags,
     checkpoint: Option<ConsensusState>,
+    checkpoint_parent_block: Option<Block>,
 ) -> Handle<()> {
     context.spawn(async move |context| {
         let key_store = expect_key_store(&flags.key_store_path);
@@ -556,6 +560,7 @@ pub fn run_node_local(
             flags.db_prefix.clone(),
             &genesis,
             initial_state,
+            checkpoint_parent_block,
             flags.archive_mode,
         )
         .unwrap();

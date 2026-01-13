@@ -247,7 +247,7 @@ impl ssz::Decode for Block {
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
-        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
+        self.ssz_bytes_len() + 4 // We additionally write the ssz len as u32(bytes)
     }
 }
 

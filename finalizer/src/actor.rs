@@ -924,7 +924,7 @@ async fn execute_block<
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
 
-        let checkpoint = Checkpoint::new(state);
+        let checkpoint = Checkpoint::new(state, block.clone());
         state.pending_checkpoint = Some(checkpoint);
 
         #[cfg(feature = "prom")]

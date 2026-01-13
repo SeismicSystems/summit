@@ -196,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     executor.start(|node_context| async move {
                         let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None).await.unwrap();
+                            run_node_local(ctx, flags, None, None).await.unwrap();
                         });
 
                         // Wait for stop signal or node completion
@@ -524,7 +524,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 executor.start(|node_context| async move {
                     let node_handle = node_context.clone().spawn(|ctx| async move {
-                        run_node_local(ctx, flags, Some(checkpoint_state)).await.unwrap();
+                        run_node_local(ctx, flags, Some(checkpoint_state), None).await.unwrap();
                     });
 
                     // Wait for stop signal or node completion
@@ -817,7 +817,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         #[cfg(any(feature = "base-bench", feature = "bench"))]
         bench_block_dir: None,
         checkpoint_path: None,
-        checkpoint_or_default: None,
+        checkpoint_or_default: false,
         ip: None,
     }
 }

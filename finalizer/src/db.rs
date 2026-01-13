@@ -193,7 +193,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn store_finalized_checkpoint(&mut self, epoch: u64, checkpoint: &Checkpoint) {
         let key = Self::make_checkpoint_key(epoch);
         self.store_mut()
-            .update(key, Value::Checkpoint(checkpoint.clone()))
+            .update(key, Value::Checkpoint(Box::new(checkpoint.clone())))
             .await
             .expect("failed to store finalized checkpoint");
 
@@ -213,7 +213,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
             .await
             .expect("failed to get finalized checkpoint")
         {
-            Some(checkpoint)
+            Some(*checkpoint)
         } else {
             None
         }
@@ -296,7 +296,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 enum Value<V: Variant> {
     U64(u64),
     ConsensusState(Box<ConsensusState>),
-    Checkpoint(Checkpoint),
+    Checkpoint(Box<Checkpoint>),
     FinalizedHeader(Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>),
 }
 
@@ -322,7 +322,7 @@ impl<V: Variant> Read for Value<V> {
                 buf,
                 &(),
             )?))),
-            0x06 => Ok(Self::Checkpoint(Checkpoint::read_cfg(buf, &())?)),
+            0x06 => Ok(Self::Checkpoint(Box::new(Checkpoint::read_cfg(buf, &())?))),
             0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::<
                 bls12381_multisig::Scheme<PublicKey, V>,
             >::read_cfg(
@@ -374,6 +374,7 @@ mod tests {
     use commonware_utils::{NZU64, NZUsize};
     use rand::SeedableRng as _;
     use rand::rngs::StdRng;
+    use summit_types::Block;
 
     async fn create_test_db_with_context<E: Clock + Storage + Metrics, V: Variant>(
         partition: &str,
@@ -715,11 +716,13 @@ mod tests {
             let mut finalized_state2 = ConsensusState::default();
             finalized_state2.set_latest_height(200);
 
+            let parent1 = Block::genesis([0; 32]);
+            let parent2 = Block::genesis([1; 32]);
             // Create test checkpoints
             let finalized_checkpoint1 =
-                summit_types::checkpoint::Checkpoint::new(&finalized_state1);
+                summit_types::checkpoint::Checkpoint::new(&finalized_state1, parent1);
             let finalized_checkpoint2 =
-                summit_types::checkpoint::Checkpoint::new(&finalized_state2);
+                summit_types::checkpoint::Checkpoint::new(&finalized_state2, parent2);
 
             // Test that no finalized checkpoint exists initially
             assert!(db.get_finalized_checkpoint(0).await.is_none());
@@ -771,15 +774,18 @@ mod tests {
             // Create test checkpoints with different heights to ensure different digests
             let mut state5 = ConsensusState::default();
             state5.set_latest_height(500);
-            let checkpoint5 = summit_types::checkpoint::Checkpoint::new(&state5);
+            let parent5 = Block::genesis([5; 32]);
+            let checkpoint5 = summit_types::checkpoint::Checkpoint::new(&state5, parent5);
 
             let mut state3 = ConsensusState::default();
             state3.set_latest_height(300);
-            let checkpoint3 = summit_types::checkpoint::Checkpoint::new(&state3);
+            let parent3 = Block::genesis([3; 32]);
+            let checkpoint3 = summit_types::checkpoint::Checkpoint::new(&state3, parent3);
 
             let mut state7 = ConsensusState::default();
             state7.set_latest_height(700);
-            let checkpoint7 = summit_types::checkpoint::Checkpoint::new(&state7);
+            let parent7 = Block::genesis([7; 32]);
+            let checkpoint7 = summit_types::checkpoint::Checkpoint::new(&state7, parent7);
 
             // Store checkpoints out of order: 5, then 3, then 7
             db.store_finalized_checkpoint(5, &checkpoint5).await;
@@ -826,11 +832,14 @@ mod tests {
             // Create two different checkpoints for the same epoch
             let mut state1 = ConsensusState::default();
             state1.set_latest_height(100);
-            let checkpoint1 = summit_types::checkpoint::Checkpoint::new(&state1);
+
+            let parent1 = Block::genesis([1; 32]);
+            let checkpoint1 = summit_types::checkpoint::Checkpoint::new(&state1, parent1);
 
             let mut state2 = ConsensusState::default();
             state2.set_latest_height(200);
-            let checkpoint2 = summit_types::checkpoint::Checkpoint::new(&state2);
+            let parent2 = Block::genesis([2; 32]);
+            let checkpoint2 = summit_types::checkpoint::Checkpoint::new(&state2, parent2);
 
             // Store first checkpoint for epoch 2
             db.store_finalized_checkpoint(2, &checkpoint1).await;
@@ -865,15 +874,18 @@ mod tests {
             // Create checkpoints for non-consecutive epochs
             let mut state0 = ConsensusState::default();
             state0.set_latest_height(100);
-            let checkpoint0 = summit_types::checkpoint::Checkpoint::new(&state0);
+            let parent0 = Block::genesis([0; 32]);
+            let checkpoint0 = summit_types::checkpoint::Checkpoint::new(&state0, parent0);
 
             let mut state2 = ConsensusState::default();
             state2.set_latest_height(300);
-            let checkpoint2 = summit_types::checkpoint::Checkpoint::new(&state2);
+            let parent2 = Block::genesis([2; 32]);
+            let checkpoint2 = summit_types::checkpoint::Checkpoint::new(&state2, parent2);
 
             let mut state5 = ConsensusState::default();
             state5.set_latest_height(600);
-            let checkpoint5 = summit_types::checkpoint::Checkpoint::new(&state5);
+            let parent5 = Block::genesis([5; 32]);
+            let checkpoint5 = summit_types::checkpoint::Checkpoint::new(&state5, parent5);
 
             // Store checkpoints for epochs 0, 2, and 5 (skipping 1, 3, 4)
             db.store_finalized_checkpoint(0, &checkpoint0).await;

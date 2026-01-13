@@ -165,7 +165,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Start our consensus engine
-                let handle = run_node_local(context.with_label(&format!("node{x}")), flags, None);
+                let handle =
+                    run_node_local(context.with_label(&format!("node{x}")), flags, None, None);
                 consensus_handles.push(handle);
             }
 
@@ -204,7 +205,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         #[cfg(any(feature = "base-bench", feature = "bench"))]
         bench_block_dir: None,
         checkpoint_path: None,
-        checkpoint_or_default: None,
+        checkpoint_or_default: false,
         ip: None,
         archive_mode: false,
     }

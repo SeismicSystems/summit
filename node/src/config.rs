@@ -5,6 +5,7 @@ use commonware_cryptography::bls12381;
 use commonware_utils::from_hex_formatted;
 use governor::Quota;
 use std::{num::NonZeroU32, time::Duration};
+use summit_types::Block;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
@@ -52,6 +53,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub genesis_hash: [u8; 32],
 
     pub initial_state: ConsensusState,
+    pub checkpoint_parent_block: Option<Block>,
     pub archive_mode: bool,
 }
 
@@ -65,6 +67,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
         db_prefix: String,
         genesis: &Genesis,
         initial_state: ConsensusState,
+        checkpoint_parent_block: Option<Block>,
         archive_mode: bool,
     ) -> Result<Self> {
         Ok(Self {
@@ -92,6 +95,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
                 .expect("bad eth_genesis_hash")
                 .expect("bad eth_genesis_hash"),
             initial_state,
+            checkpoint_parent_block,
             archive_mode,
         })
     }

@@ -1,5 +1,5 @@
-use crate::Digest;
 use crate::consensus_state::ConsensusState;
+use crate::{Block, Digest};
 use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{Encode, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{Hasher, Sha256};
@@ -9,15 +9,20 @@ use ssz::{Decode, Encode as SszEncode};
 pub struct Checkpoint {
     pub data: Bytes,
     pub digest: Digest,
+    pub parent: Block,
 }
 
 impl Checkpoint {
-    pub fn new(state: &ConsensusState) -> Self {
+    pub fn new(state: &ConsensusState, parent: Block) -> Self {
         let data = state.encode();
         let mut hasher = Sha256::new();
         hasher.update(&data);
         let digest = hasher.finalize();
-        Self { data, digest }
+        Self {
+            parent,
+            data,
+            digest,
+        }
     }
 }
 
@@ -27,8 +32,9 @@ impl SszEncode for Checkpoint {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset =
-            <Vec<u8> as SszEncode>::ssz_fixed_len() + <[u8; 32] as SszEncode>::ssz_fixed_len();
+        let offset = <Vec<u8> as SszEncode>::ssz_fixed_len()
+            + <[u8; 32] as SszEncode>::ssz_fixed_len()
+            + <Block as SszEncode>::ssz_fixed_len();
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
 
@@ -44,6 +50,8 @@ impl SszEncode for Checkpoint {
             .expect("Digest should be 32 bytes");
 
         encoder.append(&digest_array);
+
+        encoder.append(&self.parent);
         encoder.finalize();
     }
 
@@ -51,8 +59,9 @@ impl SszEncode for Checkpoint {
         let data_vec: Vec<u8> = self.data.as_ref().to_vec();
 
         data_vec.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET  // 1 variable-length field needs 1 offset
+            + ssz::BYTES_PER_LENGTH_OFFSET * 2  // 1 variable-length field needs 1 offset
             + 32 // digest as [u8; 32]
+            + self.parent.ssz_bytes_len()
     }
 }
 
@@ -65,22 +74,24 @@ impl Decode for Checkpoint {
         let mut builder = ssz::SszDecoderBuilder::new(bytes);
         builder.register_type::<Vec<u8>>()?;
         builder.register_type::<[u8; 32]>()?;
+        builder.register_type::<Block>()?;
 
         let mut decoder = builder.build()?;
 
         let data: Vec<u8> = decoder.decode_next()?;
         let digest_bytes: [u8; 32] = decoder.decode_next()?;
-
+        let parent: Block = decoder.decode_next()?;
         Ok(Self {
             data: Bytes::from(data),
             digest: Digest::from(digest_bytes),
+            parent,
         })
     }
 }
 
 impl EncodeSize for Checkpoint {
     fn encode_size(&self) -> usize {
-        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
+        self.ssz_bytes_len() + 4 // We additionally write the ssz len as u32(4 bytes)
     }
 }
 
@@ -127,8 +138,8 @@ impl TryFrom<&Checkpoint> for ConsensusState {
 
 #[cfg(test)]
 mod tests {
-    use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
+    use crate::{Block, checkpoint::Checkpoint};
     use commonware_codec::DecodeExt;
     use commonware_cryptography::{Signer, bls12381, sha256};
     use ssz::{Decode, Encode};
@@ -161,7 +172,9 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
         };
 
-        let checkpoint = Checkpoint::new(&state);
+        let parent = Block::genesis([0; 32]);
+
+        let checkpoint = Checkpoint::new(&state, parent);
 
         // Test SSZ encoding/decoding
         let encoded = checkpoint.as_ssz_bytes();
@@ -271,7 +284,8 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
         };
 
-        let checkpoint = Checkpoint::new(&state);
+        let parent = Block::genesis([0; 32]);
+        let checkpoint = Checkpoint::new(&state, parent);
 
         // Test SSZ encoding/decoding
         let encoded = checkpoint.as_ssz_bytes();
@@ -307,7 +321,9 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
         };
 
-        let checkpoint = Checkpoint::new(&state);
+        let parent = Block::genesis([0; 32]);
+
+        let checkpoint = Checkpoint::new(&state, parent);
 
         // Test Write
         let mut buf = BytesMut::new();
@@ -424,7 +440,8 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
         };
 
-        let checkpoint = Checkpoint::new(&state);
+        let parent = Block::genesis([0; 32]);
+        let checkpoint = Checkpoint::new(&state, parent);
 
         // Test Write
         let mut buf = BytesMut::new();
@@ -465,7 +482,8 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
         };
 
-        let checkpoint = Checkpoint::new(&state);
+        let parent = Block::genesis([0; 32]);
+        let checkpoint = Checkpoint::new(&state, parent);
 
         let ssz_len = checkpoint.ssz_bytes_len();
         let encode_len = checkpoint.encode_size();
@@ -512,7 +530,9 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
         };
 
-        let checkpoint = Checkpoint::new(&original_state);
+        let parent = Block::genesis([0; 32]);
+        let checkpoint = Checkpoint::new(&original_state, parent);
+
         let converted_state = ConsensusState::try_from(&checkpoint).unwrap();
 
         assert_eq!(converted_state.epoch, original_state.epoch);
@@ -555,7 +575,9 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
         };
 
-        let mut checkpoint = Checkpoint::new(&original_state);
+        let parent = Block::genesis([0; 32]);
+        let mut checkpoint = Checkpoint::new(&original_state, parent);
+
         // Corrupt the digest
         checkpoint.digest = [0xFF; 32].into();
 
@@ -641,7 +663,9 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
         };
 
-        let checkpoint = Checkpoint::new(&original_state);
+        let parent = Block::genesis([0; 32]);
+        let checkpoint = Checkpoint::new(&original_state, parent);
+
         let converted_state = ConsensusState::try_from(&checkpoint).unwrap();
 
         // Verify all fields match

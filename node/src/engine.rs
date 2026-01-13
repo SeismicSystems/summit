@@ -102,6 +102,7 @@ pub struct Engine<
     sync_height: u64,
     sync_epoch: u64,
     sync_view: u64,
+    checkpoint_parent_block: Option<Block>,
     cancellation_token: CancellationToken,
 }
 
@@ -322,6 +323,7 @@ where
             sync_height,
             sync_epoch,
             sync_view,
+            checkpoint_parent_block: cfg.checkpoint_parent_block,
             cancellation_token,
         }
     }
@@ -420,6 +422,7 @@ where
             self.sync_height,
             self.sync_epoch,
             self.sync_view,
+            self.checkpoint_parent_block,
         );
         // start the orchestrator
         let orchestrator_handle =

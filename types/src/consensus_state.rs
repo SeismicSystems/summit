@@ -466,10 +466,10 @@ impl TryFrom<Checkpoint> for ConsensusState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PublicKey;
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
     use crate::withdrawal::PendingWithdrawal;
+    use crate::{Block, PublicKey};
 
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
@@ -740,7 +740,8 @@ mod tests {
         original_state.set_account(pubkey, account);
 
         // Convert to checkpoint
-        let checkpoint = Checkpoint::new(&original_state);
+        let parent = Block::genesis([0; 32]);
+        let checkpoint = Checkpoint::new(&original_state, parent);
 
         // Convert back to ConsensusState
         let restored_state: ConsensusState = checkpoint
