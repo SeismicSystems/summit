@@ -1,13 +1,15 @@
 //! Consensus engine orchestrator for epoch transitions.
 use crate::{Mailbox, Message};
-use summit_types::{Block, Digest, scheme::SummitSchemeProvider, utils::last_block_in_epoch};
+use summit_types::{
+    Block, Digest, PublicKey, scheme::SummitSchemeProvider, utils::last_block_in_epoch,
+};
 
 use commonware_consensus::{
     CertifiableAutomaton, Relay,
     simplex::{self, types::Context},
     types::{Epoch, Height, ViewDelta},
 };
-use commonware_cryptography::{Sha256, Signer, bls12381::primitives::variant::Variant};
+use commonware_cryptography::Sha256;
 use commonware_macros::select_loop;
 use commonware_p2p::{
     Blocker, Receiver, Sender,
@@ -26,19 +28,17 @@ use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
 use tracing::info;
 
 /// Configuration for the orchestrator.
-pub struct Config<B, V, C, A, St>
+pub struct Config<B, A, St>
 where
-    B: Blocker<PublicKey = C::PublicKey>,
-    V: Variant,
-    C: Signer,
-    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+    B: Blocker<PublicKey = PublicKey>,
+    A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
     St: Strategy,
 {
     pub oracle: B,
     pub application: A,
-    pub scheme_provider: SummitSchemeProvider<C, V>,
-    pub syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<C, V>, Block<C, V>>,
+    pub scheme_provider: SummitSchemeProvider,
+    pub syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
 
     pub namespace: Vec<u8>,
     pub muxer_size: usize,
@@ -60,13 +60,11 @@ where
     pub _strategy: std::marker::PhantomData<St>,
 }
 
-pub struct Actor<E, B, V, C, A, St>
+pub struct Actor<E, B, A, St>
 where
     E: Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
-    B: Blocker<PublicKey = C::PublicKey>,
-    V: Variant,
-    C: Signer<PublicKey = summit_types::PublicKey>,
-    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+    B: Blocker<PublicKey = PublicKey>,
+    A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
     St: Strategy,
 {
@@ -75,8 +73,8 @@ where
     application: A,
 
     oracle: B,
-    syncer_mailbox: summit_syncer::Mailbox<MultisigScheme<C, V>, Block<C, V>>,
-    scheme_provider: SummitSchemeProvider<C, V>,
+    syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
+    scheme_provider: SummitSchemeProvider,
 
     muxer_size: usize,
     partition_prefix: String,
@@ -94,17 +92,15 @@ where
     _strategy: std::marker::PhantomData<St>,
 }
 
-impl<E, B, V, C, A, St> Actor<E, B, V, C, A, St>
+impl<E, B, A, St> Actor<E, B, A, St>
 where
     E: Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
-    B: Blocker<PublicKey = C::PublicKey>,
-    V: Variant,
-    C: Signer<PublicKey = summit_types::PublicKey>,
-    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+    B: Blocker<PublicKey = PublicKey>,
+    A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
     St: Strategy,
 {
-    pub fn new(context: E, config: Config<B, V, C, A, St>) -> (Self, Mailbox) {
+    pub fn new(context: E, config: Config<B, A, St>) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
         let pool_ref = PoolRef::new(NZUsize!(16_384), NZUsize!(10_000));
 
@@ -135,16 +131,16 @@ where
     pub fn start(
         mut self,
         pending: (
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         ),
         recovered: (
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         ),
         resolver: (
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
         spawn_cell!(self.context, self.run(pending, recovered, resolver).await)
@@ -153,16 +149,16 @@ where
     async fn run(
         mut self,
         (pending_sender, pending_receiver): (
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         ),
         (recovered_sender, recovered_receiver): (
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         ),
         (resolver_sender, resolver_receiver): (
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
         // Start muxers for each physical channel used by consensus
@@ -235,7 +231,7 @@ where
                         }
 
                         // Register the new signing scheme with the scheme provider.
-                        let scheme = <SummitSchemeProvider<C, V> as EpochSchemeProvider<Digest>>::scheme_for_epoch(&self.scheme_provider, &transition);
+                        let scheme = <SummitSchemeProvider as EpochSchemeProvider<Digest>>::scheme_for_epoch(&self.scheme_provider, &transition);
                         assert!(self.scheme_provider.register(transition.epoch, scheme.clone()));
 
                         // Enter the new epoch.
@@ -273,18 +269,18 @@ where
     async fn enter_epoch(
         &mut self,
         epoch: Epoch,
-        scheme: MultisigScheme<C, V>,
+        scheme: MultisigScheme,
         pending_mux: &mut MuxHandle<
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         >,
         recovered_mux: &mut MuxHandle<
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         >,
         resolver_mux: &mut MuxHandle<
-            impl Sender<PublicKey = C::PublicKey>,
-            impl Receiver<PublicKey = C::PublicKey>,
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
         >,
     ) -> Handle<()> {
         // Start the new engine

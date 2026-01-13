@@ -7,8 +7,6 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState, PayloadId, PayloadStatus,
     PayloadStatusEnum,
 };
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
-use commonware_cryptography::{Signer, ed25519};
 use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -382,7 +380,7 @@ impl EngineClient for MockEngineClient {
             .expect("Payload ID not found")
     }
 
-    async fn check_payload<C: Signer, V: Variant>(&mut self, block: &Block<C, V>) -> PayloadStatus {
+    async fn check_payload(&mut self, block: &Block) -> PayloadStatus {
         let mut state = self.state.lock().unwrap();
 
         if state.force_invalid {
@@ -746,7 +744,7 @@ mod tests {
 
         // Simulate consensus: client2 receives the block through Engine API
         // First, client2 validates the block (like receiving it from network)
-        let block_for_validation = Block::<ed25519::PrivateKey, MinPk>::compute_digest(
+        let block_for_validation = Block::compute_digest(
             summit_types::Digest::from([0u8; 32]), // Genesis digest
             1,
             1000,
@@ -826,7 +824,7 @@ mod tests {
             for mut client in [client1.clone(), client2.clone(), client3.clone()] {
                 if client.client_id() != producer.client_id() {
                     // Each client validates the block (like receiving it from network)
-                    let block_for_validation = Block::<ed25519::PrivateKey, MinPk>::compute_digest(
+                    let block_for_validation = Block::compute_digest(
                         summit_types::Digest::from([(round - 1) as u8; 32]), // Parent digest
                         round as u64,
                         (round * 1000) as u64,
@@ -925,7 +923,7 @@ mod tests {
         client1.commit_hash(new_fork_choice).await;
 
         // Simulate network propagation to client2
-        let block_for_validation = Block::<ed25519::PrivateKey, MinPk>::compute_digest(
+        let block_for_validation = Block::compute_digest(
             summit_types::Digest::from([0u8; 32]),
             1,
             1000,

@@ -16,7 +16,7 @@ use summit_types::{
 use tokio::task::JoinHandle;
 
 // Use the default Block type parameters and the MultisigScheme with ed25519 + MinPk
-pub type TestScheme = MultisigScheme<ed25519::PrivateKey, bls12381::primitives::variant::MinPk>;
+pub type TestScheme = MultisigScheme;
 pub type TestBlock = Block;
 
 /// Mock finalizer state that can be customized per test
