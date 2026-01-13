@@ -203,8 +203,6 @@ pub mod base_benchmarking {
         ForkchoiceState, PayloadId, PayloadStatus,
     };
     use alloy_transport_ipc::IpcConnect;
-    use commonware_cryptography::Signer;
-    use commonware_cryptography::bls12381::primitives::variant::Variant;
     use op_alloy_network::Optimism;
     use serde::{Deserialize, Serialize};
     use std::fs;
@@ -403,8 +401,6 @@ pub mod benchmarking {
         ForkchoiceState, PayloadId, PayloadStatus,
     };
     use alloy_transport_ipc::IpcConnect;
-    use commonware_cryptography::Signer;
-    use commonware_cryptography::bls12381::primitives::variant::Variant;
     use serde::{Deserialize, Serialize};
     use std::fs;
     use std::path::PathBuf;
@@ -465,10 +461,7 @@ pub mod benchmarking {
             }
         }
 
-        async fn check_payload<C: Signer, V: Variant>(
-            &mut self,
-            block: &Block<C, V>,
-        ) -> PayloadStatus {
+        async fn check_payload(&mut self, block: &Block) -> PayloadStatus {
             // For Ethereum, use standard engine_newPayloadV4 without Optimism-specific logic
             self.provider
                 .new_payload_v4(
