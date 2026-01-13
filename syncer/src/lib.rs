@@ -319,7 +319,7 @@ mod tests {
         let application = Application::<B, S>::default();
 
         // Start the application
-        actor.start(application.clone(), buffer, resolver, 0, 0, 0);
+        actor.start(application.clone(), buffer, resolver, 0, 0, 0, None);
 
         (application, mailbox, Height::zero())
     }

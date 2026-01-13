@@ -59,7 +59,7 @@ impl SszEncode for Checkpoint {
         let data_vec: Vec<u8> = self.data.as_ref().to_vec();
 
         data_vec.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET * 2  // 1 variable-length field needs 1 offset
+            + ssz::BYTES_PER_LENGTH_OFFSET * 2  // 2 variable-length field needs 2 offset
             + 32 // digest as [u8; 32]
             + self.parent.ssz_bytes_len()
     }
