@@ -7,7 +7,8 @@ use crate::{
     keys::KeySubCmd,
 };
 use clap::{Args, Parser, Subcommand};
-use commonware_cryptography::Signer;
+use commonware_codec::Read;
+use commonware_cryptography::{Signer, certificate::Scheme};
 use commonware_p2p::{Ingress, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
@@ -22,6 +23,7 @@ use ssz::Decode;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::NonZeroU32,
+    path::Path,
     str::FromStr as _,
 };
 #[cfg(feature = "base-bench")]
@@ -34,15 +36,15 @@ use crate::config::MAILBOX_SIZE;
 use crate::engine::VALIDATOR_MINIMUM_STAKE;
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
-use summit_types::checkpoint::Checkpoint;
-use summit_types::consensus_state::ConsensusState;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{
     Block,
     account::{ValidatorAccount, ValidatorStatus},
 };
+use summit_types::{FinalizedHeader, checkpoint::Checkpoint};
 use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
+use summit_types::{consensus_state::ConsensusState, scheme::MultisigScheme};
 use tracing::{Level, error};
 
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
@@ -176,30 +178,14 @@ impl Command {
             console_subscriber::init();
         }
 
-        let mut checkpoint_parent_block = None;
-
-        let maybe_checkpoint = flags
-            .checkpoint_path
-            .as_ref()
-            .and_then(|path| {
-                if !std::fs::exists(path).unwrap_or_default() && flags.checkpoint_or_default {
-                    None
-                } else {
-                    Some(path)
-                }
-            })
-            .map(|path| {
-                // TODO(matthias): verify the checkpoint
-                let checkpoint_bytes: Vec<u8> =
-                    std::fs::read(path).expect("failed to read checkpoint from disk");
-                let checkpoint = Checkpoint::from_ssz_bytes(&checkpoint_bytes)
-                    .expect("failed to parse checkpoint");
-
-                checkpoint_parent_block = Some(checkpoint.parent.clone());
-
-                ConsensusState::try_from(checkpoint)
-                    .expect("failed to create consensus state from checkpoint")
-            });
+        let (maybe_checkpoint, maybe_last_block, _maybe_finalized_header) = {
+            if let Some(checkpoint_path) = &flags.checkpoint_path {
+                // Todo(dalton): Verify finalized header
+                read_checkpoint::<MultisigScheme>(checkpoint_path, flags.checkpoint_or_default)
+            } else {
+                (None, None, None)
+            }
+        };
 
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
         let key_store = expect_key_store(&flags.key_store_path);
@@ -373,7 +359,7 @@ impl Command {
                 flags.db_prefix.clone(),
                 &genesis,
                 initial_state,
-                checkpoint_parent_block,
+                maybe_last_block,
                 flags.archive_mode,
             )
             .unwrap();
@@ -690,5 +676,66 @@ fn get_node_ip(
                 }
             })
             .expect("This node is not on the committee")
+    }
+}
+
+fn read_checkpoint<S: Scheme>(
+    checkpoint_path: &String,
+    checkpoint_or_default: bool,
+) -> (
+    Option<ConsensusState>,
+    Option<Block>,
+    Option<FinalizedHeader<S>>,
+)
+where
+    <S::Certificate as Read>::Cfg: From<usize>,
+{
+    let path = Path::new(&checkpoint_path);
+
+    if path.is_file() {
+        // Only a checkpoint file
+        let checkpoint_bytes = std::fs::read(path).expect("failed to read checkpoint from disk");
+        let checkpoint =
+            Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
+
+        let consensus_state = ConsensusState::try_from(checkpoint)
+            .expect("failed to create consensus state from checkpoint");
+
+        (Some(consensus_state), None, None)
+    } else if path.is_dir() {
+        let checkpoint_path = path.join("checkpoint");
+        let last_block_path = path.join("last_block");
+        let header_path = path.join("finalized_header");
+
+        let consensus_state = {
+            let checkpoint_bytes =
+                std::fs::read(checkpoint_path).expect("failed to read checkpoint from disk");
+
+            let checkpoint =
+                Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
+
+            let consensus_state = ConsensusState::try_from(checkpoint)
+                .expect("failed to create consensus state from checkpoint");
+
+            Some(consensus_state)
+        };
+
+        let last_block = std::fs::read(last_block_path)
+            .map(|bytes| Block::from_ssz_bytes(&bytes).ok())
+            .ok()
+            .flatten();
+
+        let header = std::fs::read(header_path)
+            .map(|bytes| FinalizedHeader::<S>::from_ssz_bytes(&bytes).ok())
+            .ok()
+            .flatten();
+
+        (consensus_state, last_block, header)
+    } else {
+        if checkpoint_or_default {
+            (None, None, None)
+        } else {
+            panic!("Could not find checkpoint");
+        }
     }
 }

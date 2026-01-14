@@ -8,9 +8,9 @@ use commonware_storage::qmdb::store::NonDurable;
 use commonware_storage::qmdb::store::db::{self, Db};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
-use summit_types::FinalizedHeader;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
+use summit_types::{Block, FinalizedHeader};
 
 pub use db::Config;
 
@@ -190,10 +190,18 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     // Checkpoint operations
 
-    pub async fn store_finalized_checkpoint(&mut self, epoch: u64, checkpoint: &Checkpoint) {
+    pub async fn store_finalized_checkpoint(
+        &mut self,
+        epoch: u64,
+        checkpoint: &Checkpoint,
+        last_block: Block,
+    ) {
         let key = Self::make_checkpoint_key(epoch);
         self.store_mut()
-            .update(key, Value::Checkpoint(Box::new(checkpoint.clone())))
+            .update(
+                key,
+                Value::Checkpoint(Box::new((checkpoint.clone(), last_block))),
+            )
             .await
             .expect("failed to store finalized checkpoint");
 
@@ -205,7 +213,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     }
 
     #[allow(unused)]
-    pub async fn get_finalized_checkpoint(&self, epoch: u64) -> Option<Checkpoint> {
+    pub async fn get_finalized_checkpoint(&self, epoch: u64) -> Option<(Checkpoint, Block)> {
         let key = Self::make_checkpoint_key(epoch);
         if let Some(Value::Checkpoint(checkpoint)) = self
             .store()
@@ -219,7 +227,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         }
     }
 
-    pub async fn get_latest_finalized_checkpoint(&self) -> (Option<Checkpoint>, u64) {
+    pub async fn get_latest_finalized_checkpoint(&self) -> (Option<(Checkpoint, Block)>, u64) {
         // Get the latest checkpoint epoch (could be 0, which is valid)
         let latest_epoch = self.get_latest_checkpoint_epoch().await;
 
@@ -296,7 +304,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 enum Value<V: Variant> {
     U64(u64),
     ConsensusState(Box<ConsensusState>),
-    Checkpoint(Box<Checkpoint>),
+    Checkpoint(Box<(Checkpoint, Block)>),
     FinalizedHeader(Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>),
 }
 
@@ -322,7 +330,10 @@ impl<V: Variant> Read for Value<V> {
                 buf,
                 &(),
             )?))),
-            0x06 => Ok(Self::Checkpoint(Box::new(Checkpoint::read_cfg(buf, &())?))),
+            0x06 => Ok(Self::Checkpoint(Box::new((
+                Checkpoint::read_cfg(buf, &())?,
+                Block::read_cfg(buf, &())?,
+            )))),
             0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::<
                 bls12381_multisig::Scheme<PublicKey, V>,
             >::read_cfg(
@@ -716,48 +727,46 @@ mod tests {
             let mut finalized_state2 = ConsensusState::default();
             finalized_state2.set_latest_height(200);
 
-            let parent1 = Block::genesis([0; 32]);
-            let parent2 = Block::genesis([1; 32]);
             // Create test checkpoints
             let finalized_checkpoint1 =
-                summit_types::checkpoint::Checkpoint::new(&finalized_state1, parent1);
+                summit_types::checkpoint::Checkpoint::new(&finalized_state1);
             let finalized_checkpoint2 =
-                summit_types::checkpoint::Checkpoint::new(&finalized_state2, parent2);
+                summit_types::checkpoint::Checkpoint::new(&finalized_state2);
 
             // Test that no finalized checkpoint exists initially
             assert!(db.get_finalized_checkpoint(0).await.is_none());
             assert!(db.get_latest_finalized_checkpoint().await.0.is_none());
 
             // Store finalized checkpoint for epoch 0
-            db.store_finalized_checkpoint(0, &finalized_checkpoint1)
+            db.store_finalized_checkpoint(0, &finalized_checkpoint1, Block::genesis([0; 32]))
                 .await;
             db.commit().await;
 
             // Retrieve finalized checkpoint
             let retrieved_finalized = db.get_finalized_checkpoint(0).await;
             assert!(retrieved_finalized.is_some());
-            let retrieved_finalized = retrieved_finalized.unwrap();
+            let (retrieved_finalized, _) = retrieved_finalized.unwrap();
             assert_eq!(retrieved_finalized.data, finalized_checkpoint1.data);
             assert_eq!(retrieved_finalized.digest, finalized_checkpoint1.digest);
 
             // Test that latest checkpoint returns epoch 0 checkpoint
-            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
+            let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, finalized_checkpoint1.digest);
 
             // Store checkpoint for epoch 1
-            db.store_finalized_checkpoint(1, &finalized_checkpoint2)
+            db.store_finalized_checkpoint(1, &finalized_checkpoint2, Block::genesis([0; 32]))
                 .await;
             db.commit().await;
 
             // Both checkpoints should be accessible
-            let checkpoint0 = db.get_finalized_checkpoint(0).await.unwrap();
-            let checkpoint1 = db.get_finalized_checkpoint(1).await.unwrap();
+            let (checkpoint0, _) = db.get_finalized_checkpoint(0).await.unwrap();
+            let (checkpoint1, _) = db.get_finalized_checkpoint(1).await.unwrap();
             assert_eq!(checkpoint0.digest, finalized_checkpoint1.digest);
             assert_eq!(checkpoint1.digest, finalized_checkpoint2.digest);
             assert_ne!(checkpoint0.digest, checkpoint1.digest);
 
             // Latest should now return epoch 1 checkpoint
-            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
+            let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, finalized_checkpoint2.digest);
         });
     }
@@ -774,47 +783,47 @@ mod tests {
             // Create test checkpoints with different heights to ensure different digests
             let mut state5 = ConsensusState::default();
             state5.set_latest_height(500);
-            let parent5 = Block::genesis([5; 32]);
-            let checkpoint5 = summit_types::checkpoint::Checkpoint::new(&state5, parent5);
+            let checkpoint5 = summit_types::checkpoint::Checkpoint::new(&state5);
 
             let mut state3 = ConsensusState::default();
             state3.set_latest_height(300);
-            let parent3 = Block::genesis([3; 32]);
-            let checkpoint3 = summit_types::checkpoint::Checkpoint::new(&state3, parent3);
+            let checkpoint3 = summit_types::checkpoint::Checkpoint::new(&state3);
 
             let mut state7 = ConsensusState::default();
             state7.set_latest_height(700);
-            let parent7 = Block::genesis([7; 32]);
-            let checkpoint7 = summit_types::checkpoint::Checkpoint::new(&state7, parent7);
+            let checkpoint7 = summit_types::checkpoint::Checkpoint::new(&state7);
 
             // Store checkpoints out of order: 5, then 3, then 7
-            db.store_finalized_checkpoint(5, &checkpoint5).await;
+            db.store_finalized_checkpoint(5, &checkpoint5, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
 
             // Latest should be epoch 5
-            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
+            let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, checkpoint5.digest);
 
             // Store epoch 3 (older than current latest)
-            db.store_finalized_checkpoint(3, &checkpoint3).await;
+            db.store_finalized_checkpoint(3, &checkpoint3, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
 
             // Latest should still be epoch 5, not 3
-            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
+            let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, checkpoint5.digest);
 
             // Store epoch 7 (newer than current latest)
-            db.store_finalized_checkpoint(7, &checkpoint7).await;
+            db.store_finalized_checkpoint(7, &checkpoint7, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
 
             // Latest should now be epoch 7
-            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
+            let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, checkpoint7.digest);
 
             // All checkpoints should still be individually accessible
-            let cp3 = db.get_finalized_checkpoint(3).await.unwrap();
-            let cp5 = db.get_finalized_checkpoint(5).await.unwrap();
-            let cp7 = db.get_finalized_checkpoint(7).await.unwrap();
+            let (cp3, _) = db.get_finalized_checkpoint(3).await.unwrap();
+            let (cp5, _) = db.get_finalized_checkpoint(5).await.unwrap();
+            let (cp7, _) = db.get_finalized_checkpoint(7).await.unwrap();
             assert_eq!(cp3.digest, checkpoint3.digest);
             assert_eq!(cp5.digest, checkpoint5.digest);
             assert_eq!(cp7.digest, checkpoint7.digest);
@@ -833,32 +842,32 @@ mod tests {
             let mut state1 = ConsensusState::default();
             state1.set_latest_height(100);
 
-            let parent1 = Block::genesis([1; 32]);
-            let checkpoint1 = summit_types::checkpoint::Checkpoint::new(&state1, parent1);
+            let checkpoint1 = summit_types::checkpoint::Checkpoint::new(&state1);
 
             let mut state2 = ConsensusState::default();
             state2.set_latest_height(200);
-            let parent2 = Block::genesis([2; 32]);
-            let checkpoint2 = summit_types::checkpoint::Checkpoint::new(&state2, parent2);
+            let checkpoint2 = summit_types::checkpoint::Checkpoint::new(&state2);
 
             // Store first checkpoint for epoch 2
-            db.store_finalized_checkpoint(2, &checkpoint1).await;
+            db.store_finalized_checkpoint(2, &checkpoint1, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
 
-            let retrieved = db.get_finalized_checkpoint(2).await.unwrap();
+            let (retrieved, _) = db.get_finalized_checkpoint(2).await.unwrap();
             assert_eq!(retrieved.digest, checkpoint1.digest);
 
             // Overwrite with second checkpoint for the same epoch 2
-            db.store_finalized_checkpoint(2, &checkpoint2).await;
+            db.store_finalized_checkpoint(2, &checkpoint2, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
 
             // Should now return the second checkpoint
-            let retrieved = db.get_finalized_checkpoint(2).await.unwrap();
+            let (retrieved, _) = db.get_finalized_checkpoint(2).await.unwrap();
             assert_eq!(retrieved.digest, checkpoint2.digest);
             assert_ne!(retrieved.digest, checkpoint1.digest);
 
             // Latest should still point to epoch 2
-            let latest = db.get_latest_finalized_checkpoint().await.0.unwrap();
+            let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
             assert_eq!(latest.digest, checkpoint2.digest);
         });
     }
@@ -874,33 +883,33 @@ mod tests {
             // Create checkpoints for non-consecutive epochs
             let mut state0 = ConsensusState::default();
             state0.set_latest_height(100);
-            let parent0 = Block::genesis([0; 32]);
-            let checkpoint0 = summit_types::checkpoint::Checkpoint::new(&state0, parent0);
+            let checkpoint0 = summit_types::checkpoint::Checkpoint::new(&state0);
 
             let mut state2 = ConsensusState::default();
             state2.set_latest_height(300);
-            let parent2 = Block::genesis([2; 32]);
-            let checkpoint2 = summit_types::checkpoint::Checkpoint::new(&state2, parent2);
+            let checkpoint2 = summit_types::checkpoint::Checkpoint::new(&state2);
 
             let mut state5 = ConsensusState::default();
             state5.set_latest_height(600);
-            let parent5 = Block::genesis([5; 32]);
-            let checkpoint5 = summit_types::checkpoint::Checkpoint::new(&state5, parent5);
+            let checkpoint5 = summit_types::checkpoint::Checkpoint::new(&state5);
 
             // Store checkpoints for epochs 0, 2, and 5 (skipping 1, 3, 4)
-            db.store_finalized_checkpoint(0, &checkpoint0).await;
+            db.store_finalized_checkpoint(0, &checkpoint0, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
 
-            db.store_finalized_checkpoint(2, &checkpoint2).await;
+            db.store_finalized_checkpoint(2, &checkpoint2, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
 
-            db.store_finalized_checkpoint(5, &checkpoint5).await;
+            db.store_finalized_checkpoint(5, &checkpoint5, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
 
             // All stored checkpoints should be retrievable
-            let cp0 = db.get_finalized_checkpoint(0).await.unwrap();
-            let cp2 = db.get_finalized_checkpoint(2).await.unwrap();
-            let cp5 = db.get_finalized_checkpoint(5).await.unwrap();
+            let (cp0, _) = db.get_finalized_checkpoint(0).await.unwrap();
+            let (cp2, _) = db.get_finalized_checkpoint(2).await.unwrap();
+            let (cp5, _) = db.get_finalized_checkpoint(5).await.unwrap();
             assert_eq!(cp0.digest, checkpoint0.digest);
             assert_eq!(cp2.digest, checkpoint2.digest);
             assert_eq!(cp5.digest, checkpoint5.digest);
@@ -912,7 +921,7 @@ mod tests {
 
             // Latest should return epoch 5 (highest stored epoch)
             let (latest, epoch) = db.get_latest_finalized_checkpoint().await;
-            assert_eq!(latest.unwrap().digest, checkpoint5.digest);
+            assert_eq!(latest.unwrap().0.digest, checkpoint5.digest);
             assert_eq!(epoch, 5u64);
         });
     }

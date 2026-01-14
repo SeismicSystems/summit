@@ -281,7 +281,7 @@ where
         sync_height: u64,
         sync_epoch: u64,
         sync_view: u64,
-        checkpoint_parent_block: Option<B>,
+        checkpoint_last_block: Option<B>,
     ) -> Handle<()>
     where
         R: Resolver<
@@ -299,7 +299,7 @@ where
                 sync_height,
                 sync_epoch,
                 sync_view,
-                checkpoint_parent_block
+                checkpoint_last_block
             )
             .await
         )
@@ -315,7 +315,7 @@ where
         sync_height: u64,
         sync_epoch: u64,
         sync_view: u64,
-        checkpoint_parent_block: Option<B>,
+        checkpoint_last_block: Option<B>,
     ) where
         R: Resolver<
                 Key = handler::Request<B>,
@@ -327,15 +327,27 @@ where
         self.last_processed_round = Round::new(Epoch::new(sync_epoch), View::new(sync_view));
         self.tip = sync_height;
 
-        // If we have a checkpoint parent block meaning we loaded from checkpoint, insert it into our cache incase we need to propose
-        if let Some(parent_block) = checkpoint_parent_block {
-            self.cache
-                .put_block(
-                    self.last_processed_round,
-                    parent_block.commitment(),
-                    parent_block,
-                )
-                .await;
+        // If we have a checkpoint last block meaning we loaded from checkpoint, finalize it to complete the checkpoint
+        if let Some(last_block) = checkpoint_last_block {
+            let height = last_block.height().get();
+            self.finalize(
+                height,
+                last_block.commitment(),
+                last_block,
+                None,
+                &mut application,
+                &mut buffer,
+                &mut resolver,
+            )
+            .await;
+
+            // self.cache
+            //     .put_block(
+            //         self.last_processed_round,
+            //         parent_block.commitment(),
+            //         parent_block,
+            //     )
+            //     .await;
         }
 
         #[cfg(feature = "prom")]

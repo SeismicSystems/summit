@@ -58,35 +58,61 @@ impl SummitApiServer for SummitRpcServer {
     async fn get_checkpoint(&self, epoch: u64) -> RpcResult<CheckpointRes> {
         let maybe_checkpoint = self.finalizer_mailbox.clone().get_checkpoint(epoch).await;
 
-        let Some(checkpoint) = maybe_checkpoint else {
+        let Some((checkpoint, last_block)) = maybe_checkpoint else {
+            return Err(RpcError::CheckpointNotFound.into());
+        };
+
+        // try to get the finalized header for the last block
+        let maybe_header = self
+            .finalizer_mailbox
+            .clone()
+            .get_finalized_header(last_block.height())
+            .await;
+
+        let Some(header) = maybe_header else {
             return Err(RpcError::CheckpointNotFound.into());
         };
 
         Ok(CheckpointRes {
-            checkpoint: checkpoint.as_ssz_bytes(),
             digest: checkpoint.digest.0,
             epoch,
+            checkpoint: checkpoint.as_ssz_bytes(),
+            last_block: last_block.as_ssz_bytes(),
+            finalized_header: header.as_ssz_bytes(),
         })
     }
 
     async fn get_latest_checkpoint(&self) -> RpcResult<CheckpointRes> {
         let maybe_checkpoint = self.finalizer_mailbox.clone().get_latest_checkpoint().await;
 
-        let (Some(checkpoint), epoch) = maybe_checkpoint else {
+        let (Some((checkpoint, last_block)), epoch) = maybe_checkpoint else {
+            return Err(RpcError::CheckpointNotFound.into());
+        };
+
+        // try to get the finalized header for the last block
+        let maybe_header = self
+            .finalizer_mailbox
+            .clone()
+            .get_finalized_header(last_block.height())
+            .await;
+
+        let Some(header) = maybe_header else {
             return Err(RpcError::CheckpointNotFound.into());
         };
 
         Ok(CheckpointRes {
-            checkpoint: checkpoint.as_ssz_bytes(),
             digest: checkpoint.digest.0,
             epoch,
+            checkpoint: checkpoint.as_ssz_bytes(),
+            last_block: last_block.as_ssz_bytes(),
+            finalized_header: header.as_ssz_bytes(),
         })
     }
 
     async fn get_latest_checkpoint_info(&self) -> RpcResult<CheckpointInfoRes> {
         let maybe_checkpoint = self.finalizer_mailbox.clone().get_latest_checkpoint().await;
 
-        let (Some(checkpoint), epoch) = maybe_checkpoint else {
+        let (Some((checkpoint, _)), epoch) = maybe_checkpoint else {
             return Err(RpcError::CheckpointNotFound.into());
         };
 

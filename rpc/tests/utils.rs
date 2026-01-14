@@ -62,13 +62,24 @@ pub fn create_test_finalizer_mailbox(
                             response.send(ConsensusStateResponse::LatestEpoch(state.latest_epoch));
                     }
                     ConsensusStateRequest::GetCheckpoint(epoch) => {
-                        let checkpoint = state.checkpoints.get(&epoch).cloned().flatten();
+                        let checkpoint = state
+                            .checkpoints
+                            .get(&epoch)
+                            .cloned()
+                            .flatten()
+                            .and_then(|checkpoint| Some((checkpoint, Block::genesis([0; 32]))));
                         let _ = response.send(ConsensusStateResponse::Checkpoint(checkpoint));
                     }
                     ConsensusStateRequest::GetLatestCheckpoint => {
-                        let _ = response.send(ConsensusStateResponse::LatestCheckpoint(
-                            state.latest_checkpoint.clone().unwrap_or((None, 0)),
-                        ));
+                        let (latest_checkpoint, epoch) =
+                            state.latest_checkpoint.clone().unwrap_or((None, 0));
+
+                        let latest_checkpoint = latest_checkpoint
+                            .map(|checkpoint| (checkpoint, Block::genesis([0; 32])));
+                        let _ = response.send(ConsensusStateResponse::LatestCheckpoint((
+                            latest_checkpoint,
+                            epoch,
+                        )));
                     }
                     ConsensusStateRequest::GetValidatorBalance(public_key) => {
                         let balance = state.validator_balances.get(&public_key).cloned().flatten();
@@ -78,6 +89,7 @@ pub fn create_test_finalizer_mailbox(
                         let account = state.validator_accounts.get(&public_key).cloned().flatten();
                         let _ = response.send(ConsensusStateResponse::ValidatorAccount(account));
                     }
+                    ConsensusStateRequest::GetFinalizedHeader(_) => todo!(),
                 },
                 _ => {}
             }

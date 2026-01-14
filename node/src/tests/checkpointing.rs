@@ -181,7 +181,7 @@ fn test_checkpoint_created() {
         }
 
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
-        let checkpoint = consensus_state_query
+        let (checkpoint, _) = consensus_state_query
             .clone()
             .get_latest_checkpoint()
             .await
@@ -378,7 +378,7 @@ fn test_previous_header_hash_matches() {
         }
 
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
-        let checkpoint = consensus_state_query
+        let (checkpoint, _) = consensus_state_query
             .clone()
             .get_latest_checkpoint()
             .await
@@ -627,7 +627,7 @@ fn test_node_joins_later_with_checkpoint() {
 
         // Wait for the validators to checkpoint
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
-        let checkpoint = loop {
+        let (checkpoint, _) = loop {
             if let Some(checkpoint) = consensus_state_query
                 .clone()
                 .get_latest_checkpoint()
@@ -866,7 +866,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
 
         // Wait for the validators to checkpoint
         let consensus_state_query = consensus_state_queries.get(&0).unwrap();
-        let checkpoint = loop {
+        let (checkpoint, _) = loop {
             if let Some(checkpoint) = consensus_state_query
                 .clone()
                 .get_latest_checkpoint()

@@ -471,7 +471,11 @@ impl<
             // TODO(matthias): verify this
             if let Some(checkpoint) = &self.canonical_state.pending_checkpoint {
                 self.db
-                    .store_finalized_checkpoint(self.canonical_state.epoch, checkpoint)
+                    .store_finalized_checkpoint(
+                        self.canonical_state.epoch,
+                        checkpoint,
+                        block.clone(),
+                    )
                     .await;
             }
 
@@ -745,7 +749,7 @@ impl<
     async fn handle_consensus_state_query(
         &self,
         consensus_state_request: ConsensusStateRequest,
-        sender: oneshot::Sender<ConsensusStateResponse>,
+        sender: oneshot::Sender<ConsensusStateResponse<bls12381_multisig::Scheme<PublicKey, V>>>,
     ) {
         match consensus_state_request {
             ConsensusStateRequest::GetLatestCheckpoint => {
@@ -785,6 +789,10 @@ impl<
                     .get(&key_bytes)
                     .cloned();
                 let _ = sender.send(ConsensusStateResponse::ValidatorAccount(account));
+            }
+            ConsensusStateRequest::GetFinalizedHeader(height) => {
+                let header = self.db.get_finalized_header(height).await;
+                let _ = sender.send(ConsensusStateResponse::FinalizedHeader(header));
             }
         }
     }
@@ -924,7 +932,7 @@ async fn execute_block<
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
 
-        let checkpoint = Checkpoint::new(state, block.clone());
+        let checkpoint = Checkpoint::new(state);
         state.pending_checkpoint = Some(checkpoint);
 
         #[cfg(feature = "prom")]

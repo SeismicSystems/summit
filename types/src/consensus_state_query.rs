@@ -1,6 +1,7 @@
-use crate::PublicKey;
 use crate::account::ValidatorAccount;
 use crate::checkpoint::Checkpoint;
+use crate::{Block, FinalizedHeader, PublicKey};
+use commonware_cryptography::certificate::Scheme;
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
 
@@ -12,41 +13,43 @@ pub enum ConsensusStateRequest {
     GetLatestEpoch,
     GetValidatorBalance(PublicKey),
     GetValidatorAccount(PublicKey),
+    GetFinalizedHeader(u64),
 }
 
-pub enum ConsensusStateResponse {
-    LatestCheckpoint((Option<Checkpoint>, u64)), // (Checkpoint, Epoch#)
-    Checkpoint(Option<Checkpoint>),
+pub enum ConsensusStateResponse<S: Scheme> {
+    LatestCheckpoint((Option<(Checkpoint, Block)>, u64)), // ((Checkpoint,LastBlock), Epoch#)
+    Checkpoint(Option<(Checkpoint, Block)>),
     LatestHeight(u64),
     LatestEpoch(u64),
     ValidatorBalance(Option<u64>),
     ValidatorAccount(Option<ValidatorAccount>),
+    FinalizedHeader(Option<FinalizedHeader<S>>),
 }
 
 /// Used to send queries to the application finalizer to query the consensus state.
 #[derive(Clone, Debug)]
-pub struct ConsensusStateQuery {
+pub struct ConsensusStateQuery<S: Scheme> {
     sender: mpsc::Sender<(
         ConsensusStateRequest,
-        oneshot::Sender<ConsensusStateResponse>,
+        oneshot::Sender<ConsensusStateResponse<S>>,
     )>,
 }
 
-impl ConsensusStateQuery {
+impl<S: Scheme> ConsensusStateQuery<S> {
     pub fn new(
         buffer_size: usize,
     ) -> (
-        ConsensusStateQuery,
+        ConsensusStateQuery<S>,
         mpsc::Receiver<(
             ConsensusStateRequest,
-            oneshot::Sender<ConsensusStateResponse>,
+            oneshot::Sender<ConsensusStateResponse<S>>,
         )>,
     ) {
         let (sender, receiver) = mpsc::channel(buffer_size);
         (ConsensusStateQuery { sender }, receiver)
     }
 
-    pub async fn get_latest_checkpoint_mut(&mut self) -> (Option<Checkpoint>, u64) {
+    pub async fn get_latest_checkpoint_mut(&mut self) -> (Option<(Checkpoint, Block)>, u64) {
         let (tx, rx) = oneshot::channel();
         let req = ConsensusStateRequest::GetLatestCheckpoint;
         let _ = self.sender.send((req, tx)).await;
@@ -60,7 +63,7 @@ impl ConsensusStateQuery {
         maybe_checkpoint
     }
 
-    pub async fn get_latest_checkpoint(&self) -> (Option<Checkpoint>, u64) {
+    pub async fn get_latest_checkpoint(&self) -> (Option<(Checkpoint, Block)>, u64) {
         let (tx, rx) = oneshot::channel();
         let req = ConsensusStateRequest::GetLatestCheckpoint;
         let _ = self.sender.clone().send((req, tx)).await;
@@ -74,7 +77,7 @@ impl ConsensusStateQuery {
         maybe_checkpoint
     }
 
-    pub async fn get_checkpoint(&self, epoch: u64) -> Option<Checkpoint> {
+    pub async fn get_checkpoint(&self, epoch: u64) -> Option<(Checkpoint, Block)> {
         let (tx, rx) = oneshot::channel();
         let req = ConsensusStateRequest::GetCheckpoint(epoch);
         let _ = self.sender.clone().send((req, tx)).await;
@@ -128,5 +131,21 @@ impl ConsensusStateQuery {
             unreachable!("request and response variants must match");
         };
         balance
+    }
+
+    pub async fn get_finalized_header(&self, height: u64) -> Option<FinalizedHeader<S>> {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetFinalizedHeader(height);
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+
+        let ConsensusStateResponse::FinalizedHeader(header) = res else {
+            unreachable!("request and response variants must match");
+        };
+
+        header
     }
 }

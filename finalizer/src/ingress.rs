@@ -6,6 +6,7 @@ use futures::{
     channel::{mpsc, oneshot},
 };
 use summit_syncer::Update;
+use summit_types::FinalizedHeader;
 use summit_types::account::ValidatorAccount;
 use summit_types::{
     Block, BlockAuxData, Digest, PublicKey,
@@ -31,7 +32,7 @@ pub enum FinalizerMessage<S: Scheme<B::Commitment>, B: ConsensusBlock + Committa
     },
     QueryState {
         request: ConsensusStateRequest,
-        response: oneshot::Sender<ConsensusStateResponse>,
+        response: oneshot::Sender<ConsensusStateResponse<S>>,
     },
     SyncerUpdate {
         update: Update<B, S>,
@@ -94,7 +95,7 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         receiver
     }
 
-    pub async fn get_latest_checkpoint(&mut self) -> (Option<Checkpoint>, u64) {
+    pub async fn get_latest_checkpoint(&mut self) -> (Option<(Checkpoint, Block)>, u64) {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetLatestCheckpoint;
         let _ = self
@@ -113,7 +114,7 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         maybe_checkpoint
     }
 
-    pub async fn get_checkpoint(&mut self, epoch: u64) -> Option<Checkpoint> {
+    pub async fn get_checkpoint(&mut self, epoch: u64) -> Option<(Checkpoint, Block)> {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetCheckpoint(epoch);
         let _ = self
@@ -130,6 +131,26 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         };
 
         maybe_checkpoint
+    }
+
+    pub async fn get_finalized_header(&mut self, height: u64) -> Option<FinalizedHeader<S>> {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetFinalizedHeader(height);
+
+        let _ = self
+            .sender
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+
+        let ConsensusStateResponse::FinalizedHeader(header) = res else {
+            unreachable!("request and response variants must match");
+        };
+
+        header
     }
 
     pub async fn get_latest_height(&self) -> u64 {
