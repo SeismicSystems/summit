@@ -1134,6 +1134,10 @@ async fn parse_execution_requests<
                             );
                         }
                     }
+                    ExecutionRequest::ProtocolParam(protocol_param_request) => {
+                        info!("Received protocol param request: {protocol_param_request:?}");
+                        // TODO(matthias): handle the request
+                    }
                 }
             }
             Err(e) => {

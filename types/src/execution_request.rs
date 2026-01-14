@@ -11,6 +11,8 @@ pub enum ExecutionRequest {
     Deposit(DepositRequest),
     // EIP-7002
     Withdrawal(WithdrawalRequest),
+    // Seismic execution request
+    ProtocolParam(ProtocolParamRequest),
 }
 
 impl ExecutionRequest {
@@ -31,6 +33,11 @@ impl ExecutionRequest {
                 // Withdrawal request - parse without the leading type byte
                 let withdrawal = WithdrawalRequest::try_from_eth_bytes(&bytes[1..])?;
                 Ok(ExecutionRequest::Withdrawal(withdrawal))
+            }
+            0xFF => {
+                // Protocol param request - parse without the leading type byte
+                let protocol_param = ProtocolParamRequest::try_from_eth_bytes(&bytes[1..])?;
+                Ok(ExecutionRequest::ProtocolParam(protocol_param))
             }
             _request_type => Err("Unknown execution request type"),
         }
@@ -196,6 +203,32 @@ impl DepositRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtocolParamRequest {
+    pub param_id: u8,   // The protocol param id
+    pub param: Vec<u8>, // The protocol param value
+}
+
+impl ProtocolParamRequest {
+    pub fn try_from_eth_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
+        // Format: param_id(1) + length(1) + param(variable)
+        if bytes.len() < 2 {
+            return Err("ProtocolParamRequest must be at least 2 bytes");
+        }
+
+        let param_id = bytes[0];
+        let param_len = bytes[1] as usize;
+
+        if bytes.len() != 2 + param_len {
+            return Err("ProtocolParamRequest length mismatch");
+        }
+
+        let param = bytes[2..2 + param_len].to_vec();
+
+        Ok(ProtocolParamRequest { param_id, param })
+    }
+}
+
 impl Write for ExecutionRequest {
     fn write(&self, buf: &mut impl BufMut) {
         match self {
@@ -206,6 +239,10 @@ impl Write for ExecutionRequest {
             ExecutionRequest::Withdrawal(withdrawal) => {
                 buf.put_u8(0x01);
                 withdrawal.write(buf);
+            }
+            ExecutionRequest::ProtocolParam(protocol_param) => {
+                buf.put_u8(0xFF);
+                protocol_param.write(buf);
             }
         }
     }
@@ -228,6 +265,10 @@ impl Read for ExecutionRequest {
             0x01 => {
                 let withdrawal = WithdrawalRequest::read_cfg(buf, &())?;
                 Ok(ExecutionRequest::Withdrawal(withdrawal))
+            }
+            0xFF => {
+                let protocol_param = ProtocolParamRequest::read_cfg(buf, &())?;
+                Ok(ExecutionRequest::ProtocolParam(protocol_param))
             }
             _ => Err(Error::Invalid("ExecutionRequest", "Unknown request type")),
         }
@@ -337,6 +378,42 @@ impl Read for DepositRequest {
             consensus_signature,
             index,
         })
+    }
+}
+
+impl Write for ProtocolParamRequest {
+    fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.param_id);
+        buf.put_u8(self.param.len() as u8);
+        buf.put(&self.param[..]);
+    }
+}
+
+impl Read for ProtocolParamRequest {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        if buf.remaining() < 2 {
+            return Err(Error::Invalid(
+                "ProtocolParamRequest",
+                "Insufficient bytes for header",
+            ));
+        }
+
+        let param_id = buf.get_u8();
+        let param_len = buf.get_u8() as usize;
+
+        if buf.remaining() < param_len {
+            return Err(Error::Invalid(
+                "ProtocolParamRequest",
+                "Insufficient bytes for param data",
+            ));
+        }
+
+        let mut param = vec![0u8; param_len];
+        buf.copy_to_slice(&mut param);
+
+        Ok(ProtocolParamRequest { param_id, param })
     }
 }
 
@@ -479,6 +556,25 @@ mod tests {
     }
 
     #[test]
+    fn test_protocol_param_request_codec() {
+        let protocol_param = ProtocolParamRequest {
+            param_id: 1,
+            param: b"test_parameter_value".to_vec(),
+        };
+
+        // Test Write
+        let mut buf = BytesMut::new();
+        protocol_param.write(&mut buf);
+        assert_eq!(buf.len(), 22); // 1 (param_id) + 1 (length) + 20 (data)
+
+        // Test Read
+        let decoded = ProtocolParamRequest::read(&mut buf.as_ref()).unwrap();
+        assert_eq!(decoded, protocol_param);
+        assert_eq!(decoded.param_id, 1);
+        assert_eq!(decoded.param, b"test_parameter_value".to_vec());
+    }
+
+    #[test]
     fn test_execution_request_deposit_codec() {
         let consensus_private_key = bls12381::PrivateKey::from_seed(2);
         let deposit = DepositRequest {
@@ -530,6 +626,30 @@ mod tests {
             assert_eq!(decoded_withdrawal, withdrawal);
         } else {
             panic!("Expected withdrawal request");
+        }
+    }
+
+    #[test]
+    fn test_execution_request_protocol_param_codec() {
+        let protocol_param = ProtocolParamRequest {
+            param_id: 42,
+            param: vec![1, 2, 3, 4, 5],
+        };
+        let exec_request = ExecutionRequest::ProtocolParam(protocol_param.clone());
+
+        // Test Write
+        let mut buf = BytesMut::new();
+        exec_request.write(&mut buf);
+        assert_eq!(buf.len(), 8); // 1 (type) + 1 (param_id) + 1 (length) + 5 (data)
+        assert_eq!(buf[0], 0xFF); // ProtocolParam type byte
+
+        // Test Read
+        let decoded = ExecutionRequest::read(&mut buf.as_ref()).unwrap();
+        assert_eq!(decoded, exec_request);
+        if let ExecutionRequest::ProtocolParam(decoded_protocol_param) = decoded {
+            assert_eq!(decoded_protocol_param, protocol_param);
+        } else {
+            panic!("Expected protocol param request");
         }
     }
 

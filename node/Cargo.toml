@@ -27,6 +27,11 @@ path = "src/bin/withdraw_and_exit.rs"
 required-features = ["e2e"]
 
 [[bin]]
+name = "protocol-params"
+path = "src/bin/protocol_params.rs"
+required-features = ["e2e"]
+
+[[bin]]
 name = "execute-blocks"
 path = "src/bin/execute_blocks.rs"
 required-features = ["bench"]
