@@ -8,7 +8,7 @@ use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{bls12381, sha256};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Debug)]
 pub struct ConsensusState {
@@ -19,9 +19,9 @@ pub struct ConsensusState {
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
     pub withdrawal_queue: VecDeque<PendingWithdrawal>,
-    pub validator_accounts: HashMap<[u8; 32], ValidatorAccount>,
+    pub validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
     pub pending_checkpoint: Option<Checkpoint>,
-    pub added_validators: HashMap<u64, Vec<PublicKey>>,
+    pub added_validators: BTreeMap<u64, Vec<PublicKey>>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
     pub epoch_genesis_hash: [u8; 32],
@@ -325,7 +325,7 @@ impl Read for ConsensusState {
         }
 
         let validator_accounts_len = buf.get_u32() as usize;
-        let mut validator_accounts = HashMap::with_capacity(validator_accounts_len);
+        let mut validator_accounts = BTreeMap::new();
         for _ in 0..validator_accounts_len {
             let mut key = [0u8; 32];
             buf.copy_to_slice(&mut key);
@@ -343,7 +343,7 @@ impl Read for ConsensusState {
 
         // Read added_validators
         let added_validators_len = buf.get_u32() as usize;
-        let mut added_validators = HashMap::new();
+        let mut added_validators = BTreeMap::new();
         for _ in 0..added_validators_len {
             let key = buf.get_u64();
             let validator_count = buf.get_u32() as usize;

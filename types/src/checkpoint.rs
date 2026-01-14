@@ -132,7 +132,7 @@ mod tests {
     use commonware_codec::DecodeExt;
     use commonware_cryptography::{Signer, bls12381, sha256};
     use ssz::{Decode, Encode};
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{BTreeMap, VecDeque};
 
     fn parse_public_key(public_key: &str) -> commonware_cryptography::ed25519::PublicKey {
         commonware_cryptography::ed25519::PublicKey::decode(
@@ -153,9 +153,9 @@ mod tests {
             next_withdrawal_index: 100,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
-            validator_accounts: HashMap::new(),
+            validator_accounts: BTreeMap::new(),
             pending_checkpoint: None,
-            added_validators: HashMap::new(),
+            added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
@@ -251,7 +251,7 @@ mod tests {
         let mut withdrawal_queue = VecDeque::new();
         withdrawal_queue.push_back(pending_withdrawal);
 
-        let mut validator_accounts = HashMap::new();
+        let mut validator_accounts = BTreeMap::new();
         validator_accounts.insert([10u8; 32], validator_account1);
         validator_accounts.insert([11u8; 32], validator_account2);
 
@@ -265,7 +265,7 @@ mod tests {
             withdrawal_queue,
             validator_accounts,
             pending_checkpoint: None,
-            added_validators: HashMap::new(),
+            added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
@@ -289,7 +289,7 @@ mod tests {
     fn test_checkpoint_codec_encode_decode_empty() {
         use bytes::BytesMut;
         use commonware_codec::{EncodeSize, ReadExt, Write};
-        use std::collections::{HashMap, VecDeque};
+        use std::collections::{BTreeMap, VecDeque};
 
         let state = ConsensusState {
             epoch: 0,
@@ -299,9 +299,9 @@ mod tests {
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
-            validator_accounts: HashMap::new(),
+            validator_accounts: BTreeMap::new(),
             pending_checkpoint: None,
-            added_validators: HashMap::new(),
+            added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
@@ -404,7 +404,7 @@ mod tests {
         let mut withdrawal_queue = VecDeque::new();
         withdrawal_queue.push_back(pending_withdrawal);
 
-        let mut validator_accounts = HashMap::new();
+        let mut validator_accounts = BTreeMap::new();
         validator_accounts.insert([10u8; 32], validator_account1);
         validator_accounts.insert([11u8; 32], validator_account2);
 
@@ -418,7 +418,7 @@ mod tests {
             withdrawal_queue,
             validator_accounts,
             pending_checkpoint: None,
-            added_validators: HashMap::new(),
+            added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn test_checkpoint_encode_size_investigation() {
         use commonware_codec::EncodeSize;
-        use std::collections::{HashMap, VecDeque};
+        use std::collections::{BTreeMap, VecDeque};
 
         let state = ConsensusState {
             epoch: 0,
@@ -457,9 +457,9 @@ mod tests {
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
-            validator_accounts: HashMap::new(),
+            validator_accounts: BTreeMap::new(),
             pending_checkpoint: None,
-            added_validators: HashMap::new(),
+            added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_try_from_checkpoint_to_consensus_state() {
-        use std::collections::{HashMap, VecDeque};
+        use std::collections::{BTreeMap, VecDeque};
 
         let original_state = ConsensusState {
             epoch: 0,
@@ -504,9 +504,9 @@ mod tests {
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
-            validator_accounts: HashMap::new(),
+            validator_accounts: BTreeMap::new(),
             pending_checkpoint: None,
-            added_validators: HashMap::new(),
+            added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn test_try_from_checkpoint_with_corrupted_digest() {
-        use std::collections::{HashMap, VecDeque};
+        use std::collections::{BTreeMap, VecDeque};
 
         let original_state = ConsensusState {
             epoch: 0,
@@ -547,9 +547,9 @@ mod tests {
             next_withdrawal_index: 99,
             deposit_queue: VecDeque::new(),
             withdrawal_queue: VecDeque::new(),
-            validator_accounts: HashMap::new(),
+            validator_accounts: BTreeMap::new(),
             pending_checkpoint: None,
-            added_validators: HashMap::new(),
+            added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
@@ -622,7 +622,7 @@ mod tests {
         let mut withdrawal_queue = VecDeque::new();
         withdrawal_queue.push_back(pending_withdrawal);
 
-        let mut validator_accounts = HashMap::new();
+        let mut validator_accounts = BTreeMap::new();
         validator_accounts.insert([10u8; 32], validator_account1);
 
         let original_state = ConsensusState {
@@ -635,7 +635,7 @@ mod tests {
             withdrawal_queue,
             validator_accounts,
             pending_checkpoint: None,
-            added_validators: HashMap::new(),
+            added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
