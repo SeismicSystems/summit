@@ -342,7 +342,13 @@ impl<
             .notify_at_height(parent_height, parent_digest)
             .await;
         // await for notification
-        rx.await.expect("Finalizer dropped");
+        if !rx.await.expect("Finalizer dropped") {
+            return Err(anyhow!(
+                "Aborting block proposal for epoch {} and height {} because of an outdated height notification",
+                round.epoch().get(),
+                parent_height + 1,
+            ));
+        }
         #[cfg(feature = "prom")]
         {
             let finalizer_wait_duration = finalizer_wait_start.elapsed().as_millis() as f64;
@@ -368,7 +374,8 @@ impl<
             // This might happen because the finalizer notifies the orchestrator at the end of an
             // epoch to shut down Simplex. While Simplex is being shutdown, it will still continue to produce blocks.
             return Err(anyhow!(
-                "Aborting block proposal for epoch {}. Current epoch is {}",
+                "Aborting block proposal for height {} and epoch {}. Current epoch is {}",
+                parent_height + 1,
                 round.epoch().get(),
                 aux_data.epoch,
             ));

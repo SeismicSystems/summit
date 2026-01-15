@@ -52,6 +52,7 @@ impl ConsensusState {
         Self {
             forkchoice,
             epoch_genesis_hash: forkchoice.head_block_hash.into(),
+            head_digest: (*forkchoice.head_block_hash).into(),
             ..Default::default()
         }
     }
@@ -83,6 +84,10 @@ impl ConsensusState {
 
     pub fn get_next_withdrawal_index(&self) -> u64 {
         self.next_withdrawal_index
+    }
+
+    pub fn get_head_digest(&self) -> Digest {
+        self.head_digest
     }
 
     pub fn set_next_withdrawal_index(&mut self, index: u64) {

@@ -60,7 +60,7 @@ pub struct Finalizer<
 > {
     archive_mode: bool,
     mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block>>,
-    pending_height_notifys: BTreeMap<(u64, Digest), Vec<oneshot::Sender<()>>>,
+    pending_height_notifys: BTreeMap<(u64, Digest), Vec<oneshot::Sender<bool>>>,
     context: ContextCell<R>,
     engine_client: C,
     db: FinalizerState<R, V>,
@@ -222,23 +222,46 @@ impl<
                             }
                         },
                         FinalizerMessage::NotifyAtHeight { height, block_digest, response } => {
-                            // Check if this specific block has been executed (either canonical or fork)
-                            let executed = if self.canonical_state.get_latest_height() >= height {
-                                // Block could be canonical - we don't track canonical block digests per height,
-                                // so we assume if canonical height >= height, the block is executed
-                                true
+                            if self.canonical_state.get_latest_height() > height {
+                                // This block proposal is trying to build a block at height + 1,
+                                // but the canonical chain is already at height + 1 (or higher),
+                                // so the proposal should be aborted.
+                                let _ = response.send(false);
+                                debug!(
+                                    "Aborting height notification for height {} and digest {} at epoch {} and height {} because the height is outdated",
+                                    height,
+                                    block_digest,
+                                    self.canonical_state.get_epoch(),
+                                    self.canonical_state.get_latest_height()
+                                );
+                            } else if height == self.canonical_state.get_latest_height() {
+                                // If the height matches the height of the canonical chain,
+                                // we check if the digest matches the head of the canonical chain.
+                                // If the digests don't match, then the proposal should be aborted.
+                                if block_digest == self.canonical_state.get_head_digest() {
+                                    let _ = response.send(true);
+                                } else {
+                                    let _ = response.send(false);
+                                    debug!(
+                                        "Aborting height notification for height {} and digest {} at epoch {} and height {} because the head digest is {}",
+                                        height,
+                                        block_digest,
+                                        self.canonical_state.get_epoch(),
+                                        self.canonical_state.get_latest_height(),
+                                        self.canonical_state.get_head_digest()
+                                    );
+                                }
                             } else {
-                                // Check if it exists in fork states
-                                self.fork_states.get(&height)
-                                    .map(|forks| forks.contains_key(&block_digest))
-                                    .unwrap_or(false)
-                            };
-
-                            if executed {
-                                let _ = response.send(());
-                                continue;
+                                // If the block was already executed on one of the forks,
+                                // we send the notification immediately, otherwise we store the request
+                                if self.fork_states.get(&height)
+                                        .map(|forks| forks.contains_key(&block_digest))
+                                        .unwrap_or(false) {
+                                    let _ = response.send(true);
+                                } else {
+                                    self.pending_height_notifys.entry((height, block_digest)).or_default().push(response);
+                                }
                             }
-                            self.pending_height_notifys.entry((height, block_digest)).or_default().push(response);
                         },
                         FinalizerMessage::GetAuxData { height, parent_digest, response } => {
                             self.handle_aux_data_mailbox(height, parent_digest, response).await;
@@ -666,7 +689,7 @@ impl<
         // Notify only waiters for this specific (height, digest) pair
         if let Some(senders) = self.pending_height_notifys.remove(&(height, block_digest)) {
             for sender in senders {
-                let _ = sender.send(()); // Ignore if receiver dropped
+                let _ = sender.send(true); // Ignore if receiver dropped
             }
         }
     }

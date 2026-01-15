@@ -19,7 +19,7 @@ pub enum FinalizerMessage<S: Scheme<B::Commitment>, B: ConsensusBlock + Committa
     NotifyAtHeight {
         height: u64,
         block_digest: Digest,
-        response: oneshot::Sender<()>,
+        response: oneshot::Sender<bool>,
     },
     GetAuxData {
         height: u64,
@@ -53,7 +53,7 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         &mut self,
         height: u64,
         block_digest: Digest,
-    ) -> oneshot::Receiver<()> {
+    ) -> oneshot::Receiver<bool> {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(FinalizerMessage::NotifyAtHeight {
