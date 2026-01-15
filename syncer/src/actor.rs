@@ -340,14 +340,6 @@ where
                 &mut resolver,
             )
             .await;
-
-            // self.cache
-            //     .put_block(
-            //         self.last_processed_round,
-            //         parent_block.commitment(),
-            //         parent_block,
-            //     )
-            //     .await;
         }
 
         #[cfg(feature = "prom")]
