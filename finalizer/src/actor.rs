@@ -227,7 +227,7 @@ impl<
                                 // but the canonical chain is already at height + 1 (or higher),
                                 // so the proposal should be aborted.
                                 let _ = response.send(false);
-                                debug!(
+                                warn!(
                                     "Aborting height notification for height {} and digest {} at epoch {} and height {} because the height is outdated",
                                     height,
                                     block_digest,
@@ -242,7 +242,7 @@ impl<
                                     let _ = response.send(true);
                                 } else {
                                     let _ = response.send(false);
-                                    debug!(
+                                    warn!(
                                         "Aborting height notification for height {} and digest {} at epoch {} and height {} because the head digest is {}",
                                         height,
                                         block_digest,
@@ -698,7 +698,7 @@ impl<
         &mut self,
         height: u64,
         parent_digest: Digest,
-        sender: oneshot::Sender<BlockAuxData>,
+        sender: oneshot::Sender<Option<BlockAuxData>>,
     ) {
         // We're building a block at `height`, so we need state from parent at `height - 1`
         let parent_height = height - 1;
@@ -710,9 +710,21 @@ impl<
             .and_then(|forks| forks.get(&parent_digest))
         {
             &fork_state.consensus_state
-        } else {
-            // If not in forks, it must be canonical (or parent height = 0)
+        } else if parent_height == self.canonical_state.get_latest_height()
+            && parent_digest == self.canonical_state.get_head_digest()
+        {
+            // If not in forks, check if the height and digest match those of the canonical chain
             &self.canonical_state
+        } else {
+            warn!(
+                "Aborted aux data request with parent height {} and parent digest {} for block that doesn't connect to any forks or the canonical chain. Canonical height {} and head digest {}",
+                parent_height,
+                parent_digest,
+                self.canonical_state.get_latest_height(),
+                self.canonical_state.get_head_digest(),
+            );
+            let _ = sender.send(None);
+            return;
         };
 
         // Create checkpoint if we're at an epoch boundary.
@@ -766,7 +778,7 @@ impl<
                 forkchoice: state.forkchoice,
             }
         };
-        let _ = sender.send(aux_data);
+        let _ = sender.send(Some(aux_data));
     }
 
     async fn handle_consensus_state_query(

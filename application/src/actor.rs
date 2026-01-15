@@ -250,25 +250,33 @@ impl<
                                             #[cfg(feature = "prom")]
                                             let aux_data_start = std::time::Instant::now();
                                             let parent_digest = parent.digest();
-                                            let aux_data = finalizer_clone
+                                            let maybe_aux_data = finalizer_clone
                                                 .get_aux_data(parent.height() + 1, parent_digest)
                                                 .await
                                                 .await
                                                 .expect("Finalizer dropped");
-                                            #[cfg(feature = "prom")]
-                                            {
-                                                let aux_data_duration = aux_data_start.elapsed().as_millis() as f64;
-                                                histogram!("handle_verify_aux_data_duration_millis").record(aux_data_duration);
-                                            }
 
-                                            if handle_verify(&block, parent, self.epoch_num_of_blocks, aux_data.epoch) {
-                                                // persist valid block
-                                                syncer.verified(round, block).await;
+                                            if let Some(aux_data) = maybe_aux_data {
+                                                #[cfg(feature = "prom")]
+                                                {
+                                                    let aux_data_duration = aux_data_start.elapsed().as_millis() as f64;
+                                                    histogram!("handle_verify_aux_data_duration_millis").record(aux_data_duration);
+                                                }
 
-                                                // respond
-                                                let _ = response.send(true);
+                                                if handle_verify(&block, parent, self.epoch_num_of_blocks, aux_data.epoch) {
+                                                    // persist valid block
+                                                    syncer.verified(round, block).await;
+
+                                                    // respond
+                                                    let _ = response.send(true);
+                                                } else {
+                                                    info!("Unsuccessful vote for round {round} because the block is invalid");
+                                                    let _ = response.send(false);
+                                                }
                                             } else {
-                                                info!("Unsuccessful vote for round {round}");
+                                                info!(
+                                                    "Unsuccessful for round {round} because of an outdated height notification",
+                                                );
                                                 let _ = response.send(false);
                                             }
                                         },
@@ -343,6 +351,11 @@ impl<
             .await;
         // await for notification
         if !rx.await.expect("Finalizer dropped") {
+            debug!(
+                "Aborting block proposal for epoch {} and height {} because of an outdated height notification",
+                round.epoch().get(),
+                parent_height + 1,
+            );
             return Err(anyhow!(
                 "Aborting block proposal for epoch {} and height {} because of an outdated height notification",
                 round.epoch().get(),
@@ -359,11 +372,25 @@ impl<
         // STEP 3: Request aux data (withdrawals, checkpoint hash, header hash)
         #[cfg(feature = "prom")]
         let aux_data_start = std::time::Instant::now();
-        let mut aux_data = finalizer
+        let maybe_aux_data = finalizer
             .get_aux_data(parent_height + 1, parent_digest)
             .await
             .await
             .expect("Finalizer dropped");
+
+        let Some(mut aux_data) = maybe_aux_data else {
+            debug!(
+                "Aborting block proposal for epoch {} and height {} because of an outdated aux data request",
+                round.epoch().get(),
+                parent_height + 1,
+            );
+            return Err(anyhow!(
+                "Aborting block proposal for epoch {} and height {} because of an outdated aux data request",
+                round.epoch().get(),
+                parent_height + 1,
+            ));
+        };
+
         #[cfg(feature = "prom")]
         {
             let aux_data_duration = aux_data_start.elapsed().as_millis() as f64;

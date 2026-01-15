@@ -24,7 +24,7 @@ pub enum FinalizerMessage<S: Scheme<B::Commitment>, B: ConsensusBlock + Committa
     GetAuxData {
         height: u64,
         parent_digest: Digest,
-        response: oneshot::Sender<BlockAuxData>,
+        response: oneshot::Sender<Option<BlockAuxData>>,
     },
     GetEpochGenesisHash {
         epoch: u64,
@@ -71,7 +71,7 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         &mut self,
         height: u64,
         parent_digest: Digest,
-    ) -> oneshot::Receiver<BlockAuxData> {
+    ) -> oneshot::Receiver<Option<BlockAuxData>> {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(FinalizerMessage::GetAuxData {
