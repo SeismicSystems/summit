@@ -35,6 +35,7 @@ pub struct ConsensusStateQuery<S: Scheme> {
     )>,
 }
 
+#[allow(clippy::type_complexity)]
 impl<S: Scheme> ConsensusStateQuery<S> {
     pub fn new(
         buffer_size: usize,

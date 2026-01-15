@@ -731,11 +731,9 @@ where
             .flatten();
 
         (consensus_state, last_block, header)
+    } else if checkpoint_or_default {
+        (None, None, None)
     } else {
-        if checkpoint_or_default {
-            (None, None, None)
-        } else {
-            panic!("Could not find checkpoint");
-        }
+        panic!("Could not find checkpoint");
     }
 }
