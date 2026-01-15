@@ -275,7 +275,7 @@ impl<
                                                 }
                                             } else {
                                                 info!(
-                                                    "Unsuccessful for round {round} because of an outdated height notification",
+                                                    "Unsuccessful vote for round {round} because of an outdated height notification",
                                                 );
                                                 let _ = response.send(false);
                                             }
