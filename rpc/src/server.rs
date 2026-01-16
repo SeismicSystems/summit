@@ -223,4 +223,14 @@ impl SummitApiServer for SummitRpcServer {
             deposit_data_root: deposit_root,
         })
     }
+
+    async fn get_minimum_stake(&self) -> RpcResult<u64> {
+        let minimum_stake = self.finalizer_mailbox.get_minimum_stake().await;
+        Ok(minimum_stake)
+    }
+
+    async fn get_maximum_stake(&self) -> RpcResult<u64> {
+        let maximum_stake = self.finalizer_mailbox.get_maximum_stake().await;
+        Ok(maximum_stake)
+    }
 }

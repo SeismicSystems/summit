@@ -192,3 +192,55 @@ withdrawal_credentials = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
     handle.stop().unwrap();
 }
+
+#[tokio::test]
+async fn test_get_minimum_stake() {
+    use summit_rpc::SummitApiClient;
+
+    let state = MockFinalizerState {
+        minimum_stake: 40_000_000_000, // 40 ETH in gwei
+        ..Default::default()
+    };
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(state);
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
+        .await
+        .unwrap();
+
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
+
+    let response = client.get_minimum_stake().await;
+    assert!(response.is_ok());
+    assert_eq!(response.unwrap(), 40_000_000_000);
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_get_maximum_stake() {
+    use summit_rpc::SummitApiClient;
+
+    let state = MockFinalizerState {
+        maximum_stake: 64_000_000_000, // 64 ETH in gwei
+        ..Default::default()
+    };
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(state);
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
+        .await
+        .unwrap();
+
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
+
+    let response = client.get_maximum_stake().await;
+    assert!(response.is_ok());
+    assert_eq!(response.unwrap(), 64_000_000_000);
+
+    handle.stop().unwrap();
+}
