@@ -15,7 +15,6 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub orchestrator_mailbox: OrchestratorMailbox,
     pub epoch_num_of_blocks: u64,
     pub validator_max_withdrawals_per_block: usize,
-    pub validator_minimum_stake: u64, // in gwei
     pub validator_withdrawal_num_epochs: u64,
     /// The maximum number of validators that will be onboarded at the same time
     pub validator_onboarding_limit_per_block: usize,

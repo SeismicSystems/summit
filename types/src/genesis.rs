@@ -38,6 +38,10 @@ pub struct Genesis {
     pub max_message_size_bytes: u64,
     /// Prefix for all signed messages to prevent replay attacks.
     pub namespace: String,
+    /// Minimum validator stake in gwei
+    pub validator_minimum_stake: u64,
+    /// Maximum validator stake in gwei
+    pub validator_maximum_stake: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

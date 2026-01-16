@@ -25,6 +25,8 @@ pub struct ConsensusState {
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
     pub epoch_genesis_hash: [u8; 32],
+    pub validator_minimum_stake: u64, // in gwei
+    pub validator_maximum_stake: u64, // in gwei
 }
 
 impl Default for ConsensusState {
@@ -43,16 +45,24 @@ impl Default for ConsensusState {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         }
     }
 }
 
 impl ConsensusState {
-    pub fn new(forkchoice: ForkchoiceState) -> Self {
+    pub fn new(
+        forkchoice: ForkchoiceState,
+        validator_minimum_stake: u64,
+        validator_maximum_stake: u64,
+    ) -> Self {
         Self {
             forkchoice,
             epoch_genesis_hash: forkchoice.head_block_hash.into(),
             head_digest: (*forkchoice.head_block_hash).into(),
+            validator_minimum_stake,
+            validator_maximum_stake,
             ..Default::default()
         }
     }
@@ -300,6 +310,8 @@ impl EncodeSize for ConsensusState {
         + 32 // forkchoice.finalized_block_hash
         + 32 // epoch_genesis_hash
         + 32 // head_digest
+        + 8 // validator_minimum_stake
+        + 8 // validator_maximum_stake
     }
 }
 
@@ -382,6 +394,9 @@ impl Read for ConsensusState {
         buf.copy_to_slice(&mut head_digest_bytes);
         let head_digest = sha256::Digest(head_digest_bytes);
 
+        let validator_minimum_stake = buf.get_u64();
+        let validator_maximum_stake = buf.get_u64();
+
         Ok(Self {
             epoch,
             view,
@@ -396,6 +411,8 @@ impl Read for ConsensusState {
             removed_validators,
             forkchoice,
             epoch_genesis_hash,
+            validator_minimum_stake,
+            validator_maximum_stake,
         })
     }
 }
@@ -457,6 +474,10 @@ impl Write for ConsensusState {
 
         // Write head_digest
         buf.put_slice(&self.head_digest.0);
+
+        // Write validator stake bounds
+        buf.put_u64(self.validator_minimum_stake);
+        buf.put_u64(self.validator_maximum_stake);
     }
 }
 

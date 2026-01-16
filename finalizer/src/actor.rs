@@ -78,7 +78,6 @@ pub struct Finalizer<
     validator_max_withdrawals_per_block: usize,
     epoch_num_of_blocks: u64,
     protocol_version_digest: Digest,
-    validator_minimum_stake: u64,         // in gwei
     validator_withdrawal_num_epochs: u64, // in epochs
     validator_onboarding_limit_per_block: usize,
     validator_num_warm_up_epochs: u64,
@@ -155,7 +154,6 @@ impl<
                 validator_max_withdrawals_per_block: cfg.validator_max_withdrawals_per_block,
                 genesis_hash: cfg.genesis_hash,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
-                validator_minimum_stake: cfg.validator_minimum_stake,
                 validator_withdrawal_num_epochs: cfg.validator_withdrawal_num_epochs,
                 validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
                 validator_num_warm_up_epochs: cfg.validator_num_warm_up_epochs,
@@ -335,7 +333,6 @@ impl<
                 self.epoch_num_of_blocks,
                 self.validator_max_withdrawals_per_block,
                 self.protocol_version_digest,
-                self.validator_minimum_stake,
                 self.validator_onboarding_limit_per_block,
                 self.validator_num_warm_up_epochs,
                 self.validator_withdrawal_num_epochs,
@@ -641,7 +638,6 @@ impl<
                 self.epoch_num_of_blocks,
                 self.validator_max_withdrawals_per_block,
                 self.protocol_version_digest,
-                self.validator_minimum_stake,
                 self.validator_onboarding_limit_per_block,
                 self.validator_num_warm_up_epochs,
                 self.validator_withdrawal_num_epochs,
@@ -856,7 +852,6 @@ async fn execute_block<
     epoch_num_of_blocks: u64,
     validator_max_withdrawals_per_block: usize,
     protocol_version_digest: Digest,
-    validator_minimum_stake: u64,
     validator_onboarding_limit_per_block: usize,
     validator_num_warm_up_epochs: u64,
     validator_withdrawal_num_epochs: u64,
@@ -912,7 +907,8 @@ async fn execute_block<
             epoch_num_of_blocks,
             protocol_version_digest,
             validator_withdrawal_num_epochs,
-            validator_minimum_stake,
+            state.validator_minimum_stake,
+            state.validator_maximum_stake,
         )
         .await;
 
@@ -934,6 +930,8 @@ async fn execute_block<
             validator_onboarding_limit_per_block,
             validator_num_warm_up_epochs,
             validator_withdrawal_num_epochs,
+            state.validator_minimum_stake,
+            state.validator_maximum_stake,
         )
         .await;
         #[cfg(feature = "prom")]
@@ -999,6 +997,7 @@ async fn parse_execution_requests<
     protocol_version_digest: Digest,
     validator_withdrawal_num_epochs: u64,
     validator_minimum_stake: u64,
+    validator_maximum_stake: u64,
 ) {
     for request_bytes in &block.execution_requests {
         match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
@@ -1008,9 +1007,11 @@ async fn parse_execution_requests<
                         if verify_deposit_request(
                             context,
                             &deposit_request,
+                            state,
                             protocol_version_digest,
                             new_height,
                             validator_minimum_stake,
+                            validator_maximum_stake,
                         ) {
                             state.push_deposit(deposit_request);
                         } else {
@@ -1159,44 +1160,62 @@ async fn process_execution_requests<
     validator_onboarding_limit_per_block: usize,
     validator_num_warm_up_epochs: u64,
     validator_withdrawal_num_epochs: u64,
+    validator_minimum_stake: u64,
+    validator_maximum_stake: u64,
 ) {
     if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
         for _ in 0..validator_onboarding_limit_per_block {
             if let Some(request) = state.pop_deposit() {
-                // If the amount is less or more than the minimum stake, or the validator already has a balance
-                // then the deposit will not be processed and a withdrawal is initiated immediately
                 let node_pubkey_bytes = request.node_pubkey.as_ref().try_into().unwrap();
 
                 if let Some(account) = state.validator_accounts.get_mut(&node_pubkey_bytes) {
-                    // We already check that the amount equals the minimum stake when the request is parsed
-                    info!(
-                        "Received deposit request for an existing account, initiating immediate withdrawal: {request:?}"
-                    );
-                    let withdrawal_credentials =
-                        match parse_withdrawal_credentials(request.withdrawal_credentials) {
-                            Ok(withdrawal_credentials) => withdrawal_credentials,
-                            Err(e) => {
-                                warn!("Failed to parse withdrawal credentials: {e}");
-                                continue;
-                            }
+                    // Top-up deposit for existing validator
+                    let new_balance = account.balance + request.amount;
+
+                    // Check if new balance would be within valid range
+                    if new_balance >= validator_minimum_stake
+                        && new_balance <= validator_maximum_stake
+                    {
+                        // Valid top-up: add to balance
+                        info!(
+                            "Processing top-up deposit for existing validator. Current balance: {}, deposit: {}, new balance: {}",
+                            account.balance, request.amount, new_balance
+                        );
+                        account.balance = new_balance;
+                        continue;
+                    } else {
+                        // Invalid: new balance outside range, initiate immediate withdrawal
+                        info!(
+                            "Top-up deposit would result in balance {} outside valid range [{}, {}], initiating immediate withdrawal: {request:?}",
+                            new_balance, validator_minimum_stake, validator_maximum_stake
+                        );
+                        let withdrawal_credentials =
+                            match parse_withdrawal_credentials(request.withdrawal_credentials) {
+                                Ok(withdrawal_credentials) => withdrawal_credentials,
+                                Err(e) => {
+                                    warn!("Failed to parse withdrawal credentials: {e}");
+                                    continue;
+                                }
+                            };
+
+                        let validator_pubkey: [u8; 32] =
+                            request.node_pubkey.as_ref().try_into().unwrap();
+                        let withdrawal_request = WithdrawalRequest {
+                            source_address: withdrawal_credentials,
+                            validator_pubkey,
+                            amount: request.amount,
                         };
+                        let withdrawal_height =
+                            new_height + validator_withdrawal_num_epochs * epoch_num_of_blocks - 1;
 
-                    let validator_pubkey: [u8; 32] =
-                        request.node_pubkey.as_ref().try_into().unwrap();
-                    let withdrawal_request = WithdrawalRequest {
-                        source_address: withdrawal_credentials,
-                        validator_pubkey,
-                        amount: request.amount,
-                    };
-                    let withdrawal_height =
-                        new_height + validator_withdrawal_num_epochs * epoch_num_of_blocks - 1;
+                        // Temporarily increase `pending_withdrawal_amount` so this withdrawal
+                        // doesn't decrement the actual account balance.
+                        account.pending_withdrawal_amount += request.amount;
 
-                    // If an account exists, we have to temporary increase the `pending_withdrawal_amount`,
-                    // otherwise this withdrawal request will decrement the actual account balance.
-                    account.pending_withdrawal_amount += request.amount;
-
-                    state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_height);
-                    continue;
+                        state
+                            .push_withdrawal_request(withdrawal_request.clone(), withdrawal_height);
+                        continue;
+                    }
                 }
 
                 // Create new validator account
@@ -1208,6 +1227,26 @@ async fn process_execution_requests<
                             continue;
                         }
                     };
+
+                // Check again if the new balance is valid. We already check this above for the case
+                // that a validator account already exists.
+                // This check might not be necessary, because we already check this when parsing the
+                // deposit request.
+                if request.amount < validator_minimum_stake
+                    || request.amount > validator_maximum_stake
+                {
+                    let validator_pubkey: [u8; 32] =
+                        request.node_pubkey.as_ref().try_into().unwrap();
+                    let withdrawal_request = WithdrawalRequest {
+                        source_address: withdrawal_credentials,
+                        validator_pubkey,
+                        amount: request.amount,
+                    };
+                    let withdrawal_height =
+                        new_height + validator_withdrawal_num_epochs * epoch_num_of_blocks - 1;
+                    state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_height);
+                    continue;
+                }
 
                 // Create new ValidatorAccount from DepositRequest
                 let activation_epoch = state.epoch + validator_num_warm_up_epochs;
@@ -1307,13 +1346,31 @@ async fn process_execution_requests<
 fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng>(
     #[allow(unused)] context: &ContextCell<R>,
     deposit_request: &DepositRequest,
+    state: &ConsensusState,
     protocol_version_digest: Digest,
     #[allow(unused)] new_height: u64,
     validator_minimum_stake: u64,
+    validator_maximum_stake: u64,
 ) -> bool {
-    if deposit_request.amount != validator_minimum_stake {
+    // Check if validator already exists
+    let validator_pubkey: [u8; 32] = deposit_request.node_pubkey.as_ref().try_into().unwrap();
+    let existing_balance = state
+        .validator_accounts
+        .get(&validator_pubkey)
+        .map(|account| account.balance)
+        .unwrap_or(0);
+
+    let new_balance = existing_balance + deposit_request.amount;
+
+    // Validate that new balance is within valid range
+    if new_balance > validator_maximum_stake {
         info!(
-            "Received deposit request with amount != minimum stake, initiating immediate withdrawal: {deposit_request:?}"
+            "Deposit would result in balance {} outside valid range [{}, {}] (existing: {}, deposit: {}), initiating immediate withdrawal: {deposit_request:?}",
+            new_balance,
+            validator_minimum_stake,
+            validator_maximum_stake,
+            existing_balance,
+            deposit_request.amount
         );
         return false;
     }

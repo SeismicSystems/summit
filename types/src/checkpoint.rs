@@ -159,6 +159,8 @@ mod tests {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -269,6 +271,8 @@ mod tests {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -305,6 +309,8 @@ mod tests {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -422,6 +428,8 @@ mod tests {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -463,6 +471,8 @@ mod tests {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -510,6 +520,8 @@ mod tests {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         };
 
         let checkpoint = Checkpoint::new(&original_state);
@@ -553,6 +565,8 @@ mod tests {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         };
 
         let mut checkpoint = Checkpoint::new(&original_state);
@@ -639,6 +653,8 @@ mod tests {
             removed_validators: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
         };
 
         let checkpoint = Checkpoint::new(&original_state);

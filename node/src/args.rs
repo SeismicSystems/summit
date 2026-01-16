@@ -33,7 +33,6 @@ use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
 use crate::config::MAILBOX_SIZE;
-use crate::engine::VALIDATOR_MINIMUM_STAKE;
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
 use summit_types::keystore::KeyStore;
@@ -241,7 +240,13 @@ impl Command {
                 .map(|hash_bytes| hash_bytes.try_into())
                 .expect("bad eth_genesis_hash")
                 .expect("bad eth_genesis_hash");
-            let initial_state = get_initial_state(genesis_hash, &committee, maybe_checkpoint);
+            let initial_state = get_initial_state(
+                genesis_hash,
+                &committee,
+                maybe_checkpoint,
+                genesis.validator_minimum_stake,
+                genesis.validator_maximum_stake,
+            );
             let peers = initial_state.get_validator_keys();
 
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
@@ -464,7 +469,13 @@ pub fn run_node_local(
             .map(|hash_bytes| hash_bytes.try_into())
             .expect("bad eth_genesis_hash")
             .expect("bad eth_genesis_hash");
-        let initial_state = get_initial_state(genesis_hash, &committee, checkpoint);
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &committee,
+            checkpoint,
+            genesis.validator_minimum_stake,
+            genesis.validator_maximum_stake,
+        );
         let peers = initial_state.get_validator_keys();
 
         let engine_ipc_path =
@@ -619,6 +630,8 @@ fn get_initial_state(
     genesis_hash: [u8; 32],
     genesis_committee: &Vec<Validator>,
     checkpoint: Option<ConsensusState>,
+    validator_minimum_stake: u64,
+    validator_maximum_stake: u64,
 ) -> ConsensusState {
     let genesis_hash: B256 = genesis_hash.into();
     checkpoint.unwrap_or_else(|| {
@@ -627,7 +640,8 @@ fn get_initial_state(
             safe_block_hash: genesis_hash,
             finalized_block_hash: genesis_hash,
         };
-        let mut state = ConsensusState::new(forkchoice);
+        let mut state =
+            ConsensusState::new(forkchoice, validator_minimum_stake, validator_maximum_stake);
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for validator in genesis_committee {
             let pubkey_bytes: [u8; 32] = validator
@@ -638,7 +652,7 @@ fn get_initial_state(
             let account = ValidatorAccount {
                 consensus_public_key: validator.consensus_public_key.clone(),
                 withdrawal_credentials: validator.withdrawal_credentials,
-                balance: VALIDATOR_MINIMUM_STAKE,
+                balance: validator_minimum_stake,
                 pending_withdrawal_amount: 0,
                 status: ValidatorStatus::Active,
                 has_pending_withdrawal: false,
