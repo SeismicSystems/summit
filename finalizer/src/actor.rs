@@ -76,7 +76,6 @@ pub struct Finalizer<
     orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block>>>,
 
     genesis_hash: [u8; 32],
-    validator_max_withdrawals_per_block: usize,
     epoch_num_of_blocks: u64,
     protocol_version_digest: Digest,
     validator_withdrawal_num_epochs: u64, // in epochs
@@ -152,7 +151,6 @@ impl<
                 canonical_state: state.clone(),
                 fork_states: BTreeMap::new(),
                 orphaned_blocks: BTreeMap::new(),
-                validator_max_withdrawals_per_block: cfg.validator_max_withdrawals_per_block,
                 genesis_hash: cfg.genesis_hash,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
                 validator_withdrawal_num_epochs: cfg.validator_withdrawal_num_epochs,
@@ -332,7 +330,6 @@ impl<
                 &block,
                 &mut self.canonical_state,
                 self.epoch_num_of_blocks,
-                self.validator_max_withdrawals_per_block,
                 self.protocol_version_digest,
                 self.validator_onboarding_limit_per_block,
                 self.validator_num_warm_up_epochs,
@@ -640,7 +637,6 @@ impl<
                 &block,
                 &mut fork_state,
                 self.epoch_num_of_blocks,
-                self.validator_max_withdrawals_per_block,
                 self.protocol_version_digest,
                 self.validator_onboarding_limit_per_block,
                 self.validator_num_warm_up_epochs,
@@ -750,8 +746,7 @@ impl<
                 };
 
             // Only submit withdrawals at the end of an epoch
-            let ready_withdrawals =
-                state.get_next_ready_withdrawals(height, self.validator_max_withdrawals_per_block);
+            let ready_withdrawals = state.get_next_ready_withdrawals(height);
             let next_epoch = state.epoch;
             BlockAuxData {
                 epoch: state.epoch,
@@ -862,7 +857,6 @@ async fn execute_block<
     block: &Block,
     state: &mut ConsensusState,
     epoch_num_of_blocks: u64,
-    validator_max_withdrawals_per_block: usize,
     protocol_version_digest: Digest,
     validator_onboarding_limit_per_block: usize,
     validator_num_warm_up_epochs: u64,
@@ -887,8 +881,7 @@ async fn execute_block<
     // Make sure that the included withdrawals match the expected withdrawals
     let expected_withdrawals: Vec<Withdrawal> =
         if is_last_block_of_epoch(epoch_num_of_blocks, new_height) {
-            let pending_withdrawals =
-                state.get_next_ready_withdrawals(new_height, validator_max_withdrawals_per_block);
+            let pending_withdrawals = state.get_next_ready_withdrawals(new_height);
             pending_withdrawals.into_iter().map(|w| w.inner).collect()
         } else {
             vec![]

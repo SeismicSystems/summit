@@ -222,14 +222,13 @@ impl ConsensusState {
 
     /// Get the next K pending withdrawals that are ready for processing at the given block height.
     /// Only returns withdrawals where withdrawal_height <= block_height.
-    pub fn get_next_ready_withdrawals(&self, block_height: u64, k: usize) -> Vec<PendingWithdrawal>
+    pub fn get_next_ready_withdrawals(&self, block_height: u64) -> Vec<PendingWithdrawal>
     where
         PendingWithdrawal: Clone,
     {
         self.withdrawal_queue
             .iter()
             .filter(|withdrawal| withdrawal.withdrawal_height <= block_height)
-            .take(k)
             .cloned()
             .collect()
     }
