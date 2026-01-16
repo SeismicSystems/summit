@@ -206,8 +206,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Wait a bit for nodes to be ready
             context.sleep(Duration::from_secs(2)).await;
 
-            // Send a transaction to change a protocol param
-            println!("Sending deposit transaction to node 1");
+            // Send a transaction to update the maximum stake protocol parameter
+            println!("Sending protocol parameter update transaction to raise maximum stake to 64 ETH");
             let node0_http_port = handles[1].http_port();
             let node0_url = format!("http://localhost:{}", node0_http_port);
 
@@ -224,21 +224,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let protocol_params_contract_address = Address::from_str("0x0000000000000000000000000000506172616D73").unwrap();
 
-            // Example: Set parameter ID 1 with some test data
-            let param_id: u8 = 1;
-            let param_data = b"test_parameter_value";
+            // Set parameter ID 0x01 (MaximumStake) to 64 ETH (64_000_000_000 gwei)
+            let param_id: u8 = 0x01; // MaximumStake
+            let new_max_stake: u64 = 64_000_000_000; // 64 ETH in gwei
+
+            // Encode the u64 value as little-endian bytes
+            let param_data = new_max_stake.to_le_bytes();
 
             // Encode param with length prefix: [length, ...data]
             let mut param_value = Vec::with_capacity(param_data.len() + 1);
             param_value.push(param_data.len() as u8);
-            param_value.extend_from_slice(param_data);
+            param_value.extend_from_slice(&param_data);
 
             send_protocol_params_transaction(&provider, protocol_params_contract_address, param_id, param_value, 0)
                 .await
                 .expect("failed to send protocol params transaction");
 
             // Wait for nodes to process the transaction and make some progress
-            let target_height = BLOCKS_PER_EPOCH * 2;
+            let target_height = BLOCKS_PER_EPOCH + 1;
             println!(
                 "Waiting for all {} nodes to reach height {} (to ensure protocol param change is processed)",
                 NUM_NODES, target_height
@@ -266,6 +269,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 context.sleep(Duration::from_secs(2)).await;
             }
+
+            // Verify that the maximum stake was correctly updated
+            println!("Verifying maximum stake was updated to {} gwei...", new_max_stake);
+            let rpc_port = get_node_flags(0).rpc_port;
+            let url = format!("http://localhost:{}", rpc_port);
+            let client = HttpClientBuilder::default().build(&url).expect("Failed to create RPC client");
+
+            let max_stake = client.get_maximum_stake().await.expect("Failed to get maximum stake");
+            println!("Current maximum stake: {} gwei", max_stake);
+
+            assert_eq!(max_stake, new_max_stake, "Maximum stake should be {} gwei", new_max_stake);
+            println!("✓ Maximum stake successfully updated to {} gwei!", new_max_stake);
 
             println!("Protocol parameter change test completed successfully!");
 
