@@ -10,6 +10,7 @@ pub mod header;
 pub mod key_paths;
 pub mod keystore;
 pub mod network_oracle;
+pub mod protocol_params;
 #[cfg(feature = "e2e")]
 pub mod reth;
 pub mod rpc;

@@ -1,6 +1,7 @@
 use crate::account::{ValidatorAccount, ValidatorStatus};
 use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
+use crate::protocol_params::ProtocolParam;
 use crate::withdrawal::PendingWithdrawal;
 use crate::{Digest, PublicKey};
 use alloy_eips::eip4895::Withdrawal;
@@ -20,6 +21,7 @@ pub struct ConsensusState {
     pub deposit_queue: VecDeque<DepositRequest>,
     pub withdrawal_queue: VecDeque<PendingWithdrawal>,
     pub validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
+    pub protocol_param_changes: Vec<ProtocolParam>,
     pub pending_checkpoint: Option<Checkpoint>,
     pub added_validators: BTreeMap<u64, Vec<PublicKey>>,
     pub removed_validators: Vec<PublicKey>,
@@ -39,6 +41,7 @@ impl Default for ConsensusState {
             next_withdrawal_index: 0,
             deposit_queue: Default::default(),
             withdrawal_queue: Default::default(),
+            protocol_param_changes: Default::default(),
             validator_accounts: Default::default(),
             pending_checkpoint: None,
             added_validators: Default::default(),
@@ -285,6 +288,19 @@ impl ConsensusState {
             .map(|(pk, bls_pk)| (pk, bls_pk.into()))
             .collect()
     }
+
+    pub fn apply_protocol_parameter_changes(&mut self) {
+        while let Some(param) = self.protocol_param_changes.pop() {
+            match param {
+                ProtocolParam::MinimumStake(min_stake) => {
+                    self.validator_minimum_stake = min_stake;
+                }
+                ProtocolParam::MaximumStake(max_stake) => {
+                    self.validator_maximum_stake = max_stake;
+                }
+            }
+        }
+    }
 }
 
 impl EncodeSize for ConsensusState {
@@ -297,6 +313,8 @@ impl EncodeSize for ConsensusState {
         + self.deposit_queue.iter().map(|req| req.encode_size()).sum::<usize>()
         + 4 // withdrawal_queue length
         + self.withdrawal_queue.iter().map(|req| req.encode_size()).sum::<usize>()
+        + 4 // protocol_param_changes length
+        + self.protocol_param_changes.iter().map(|param| param.encode_size()).sum::<usize>()
         + 4 // validator_accounts length
         + self.validator_accounts.iter().map(|(key, account)| key.len() + account.encode_size()).sum::<usize>()
         + 1 // pending_checkpoint presence flag
@@ -334,6 +352,12 @@ impl Read for ConsensusState {
         let mut withdrawal_queue = VecDeque::with_capacity(withdrawal_queue_len);
         for _ in 0..withdrawal_queue_len {
             withdrawal_queue.push_back(PendingWithdrawal::read_cfg(buf, &())?);
+        }
+
+        let protocol_param_changes_len = buf.get_u32() as usize;
+        let mut protocol_param_changes = Vec::with_capacity(protocol_param_changes_len);
+        for _ in 0..protocol_param_changes_len {
+            protocol_param_changes.push(crate::protocol_params::ProtocolParam::read_cfg(buf, &())?);
         }
 
         let validator_accounts_len = buf.get_u32() as usize;
@@ -405,6 +429,7 @@ impl Read for ConsensusState {
             next_withdrawal_index,
             deposit_queue,
             withdrawal_queue,
+            protocol_param_changes,
             validator_accounts,
             pending_checkpoint,
             added_validators,
@@ -432,6 +457,11 @@ impl Write for ConsensusState {
         buf.put_u32(self.withdrawal_queue.len() as u32);
         for request in &self.withdrawal_queue {
             request.write(buf);
+        }
+
+        buf.put_u32(self.protocol_param_changes.len() as u32);
+        for param in &self.protocol_param_changes {
+            param.write(buf);
         }
 
         buf.put_u32(self.validator_accounts.len() as u32);
@@ -604,6 +634,14 @@ mod tests {
         original_state.push_withdrawal(withdrawal1);
         original_state.push_withdrawal(withdrawal2);
 
+        // Add protocol param changes
+        original_state.protocol_param_changes.push(
+            crate::protocol_params::ProtocolParam::MinimumStake(40_000_000_000),
+        );
+        original_state.protocol_param_changes.push(
+            crate::protocol_params::ProtocolParam::MaximumStake(80_000_000_000),
+        );
+
         let pubkey1 = [1u8; 32];
         let pubkey2 = [2u8; 32];
         let account1 = create_test_validator_account(1, 32000000000);
@@ -654,6 +692,21 @@ mod tests {
         assert_eq!(decoded_state.withdrawal_queue[1].inner.amount, 24000000000);
         assert_eq!(decoded_state.withdrawal_queue[1].withdrawal_height, 150);
 
+        // Verify protocol_param_changes
+        assert_eq!(decoded_state.protocol_param_changes.len(), 2);
+        match &decoded_state.protocol_param_changes[0] {
+            crate::protocol_params::ProtocolParam::MinimumStake(value) => {
+                assert_eq!(*value, 40_000_000_000)
+            }
+            _ => panic!("Expected MinimumStake variant"),
+        }
+        match &decoded_state.protocol_param_changes[1] {
+            crate::protocol_params::ProtocolParam::MaximumStake(value) => {
+                assert_eq!(*value, 80_000_000_000)
+            }
+            _ => panic!("Expected MaximumStake variant"),
+        }
+
         assert_eq!(decoded_state.validator_accounts.len(), 2);
         let decoded_account1 = decoded_state.validator_accounts.get(&pubkey1).unwrap();
         assert_eq!(decoded_account1.balance, 32000000000);
@@ -696,6 +749,18 @@ mod tests {
         let withdrawal = create_test_withdrawal(1, 16000000000, 100);
         state.push_withdrawal(withdrawal);
 
+        // Add protocol param changes
+        state
+            .protocol_param_changes
+            .push(crate::protocol_params::ProtocolParam::MinimumStake(
+                50_000_000_000,
+            ));
+        state
+            .protocol_param_changes
+            .push(crate::protocol_params::ProtocolParam::MaximumStake(
+                100_000_000_000,
+            ));
+
         let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
         state.set_account(pubkey, account);
@@ -713,6 +778,63 @@ mod tests {
         let actual_encoded = state.encode();
         let actual_size = actual_encoded.len();
 
+        assert_eq!(predicted_size, actual_size);
+    }
+
+    #[test]
+    fn test_protocol_param_changes_serialization() {
+        let mut state = ConsensusState::default();
+
+        // Add various protocol param changes
+        state
+            .protocol_param_changes
+            .push(crate::protocol_params::ProtocolParam::MinimumStake(
+                32_000_000_000,
+            ));
+        state
+            .protocol_param_changes
+            .push(crate::protocol_params::ProtocolParam::MaximumStake(
+                64_000_000_000,
+            ));
+        state
+            .protocol_param_changes
+            .push(crate::protocol_params::ProtocolParam::MinimumStake(
+                40_000_000_000,
+            ));
+
+        let mut encoded = state.encode();
+        let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
+
+        assert_eq!(
+            decoded_state.protocol_param_changes.len(),
+            state.protocol_param_changes.len()
+        );
+        assert_eq!(decoded_state.protocol_param_changes.len(), 3);
+
+        match &decoded_state.protocol_param_changes[0] {
+            crate::protocol_params::ProtocolParam::MinimumStake(value) => {
+                assert_eq!(*value, 32_000_000_000)
+            }
+            _ => panic!("Expected MinimumStake variant"),
+        }
+
+        match &decoded_state.protocol_param_changes[1] {
+            crate::protocol_params::ProtocolParam::MaximumStake(value) => {
+                assert_eq!(*value, 64_000_000_000)
+            }
+            _ => panic!("Expected MaximumStake variant"),
+        }
+
+        match &decoded_state.protocol_param_changes[2] {
+            crate::protocol_params::ProtocolParam::MinimumStake(value) => {
+                assert_eq!(*value, 40_000_000_000)
+            }
+            _ => panic!("Expected MinimumStake variant"),
+        }
+
+        // Verify encode_size is correct
+        let predicted_size = state.encode_size();
+        let actual_size = state.encode().len();
         assert_eq!(predicted_size, actual_size);
     }
 

@@ -33,6 +33,7 @@ use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
 use summit_types::network_oracle::NetworkOracle;
+use summit_types::protocol_params::ProtocolParam;
 use summit_types::scheme::EpochTransition;
 use summit_types::utils::{
     is_last_block_of_epoch, is_penultimate_block_of_epoch, parse_withdrawal_credentials,
@@ -423,6 +424,9 @@ impl<
                     );
                 }
             }
+
+            // Apply protocol parameter changes
+            self.canonical_state.apply_protocol_parameter_changes();
 
             // Add and remove validators for the next epoch
             let next_epoch = self.canonical_state.epoch + 1;
@@ -1137,7 +1141,16 @@ async fn parse_execution_requests<
                     }
                     ExecutionRequest::ProtocolParam(protocol_param_request) => {
                         info!("Received protocol param request: {protocol_param_request:?}");
-                        // TODO(matthias): handle the request
+
+                        match ProtocolParam::try_from(protocol_param_request) {
+                            Ok(protocol_param) => {
+                                info!("Adding protocol param change: {protocol_param:?}");
+                                state.protocol_param_changes.push(protocol_param);
+                            }
+                            Err(e) => {
+                                warn!("Failed to parse protocol param request: {e}");
+                            }
+                        }
                     }
                 }
             }
