@@ -26,7 +26,9 @@ use std::{
 };
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
-use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
+use summit_types::execution_request::{
+    DepositRequest, ExecutionRequest, ProtocolParamRequest, WithdrawalRequest,
+};
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
@@ -473,6 +475,30 @@ pub fn create_withdrawal_request(
         source_address,
         validator_pubkey,
         amount,
+    }
+}
+
+/// Create a ProtocolParamRequest for testing
+///
+/// # Arguments
+/// * `param_id` - The protocol parameter ID (0x00 for MinimumStake, 0x01 for MaximumStake)
+/// * `value` - The parameter value as u64
+///
+/// # Returns
+/// * `ProtocolParamRequest` - A protocol parameter request with the specified data
+///
+/// # Examples
+/// ```
+/// // Create a minimum stake parameter request
+/// let min_stake_request = create_protocol_param_request(0x00, 40_000_000_000);
+///
+/// // Create a maximum stake parameter request
+/// let max_stake_request = create_protocol_param_request(0x01, 64_000_000_000);
+/// ```
+pub fn create_protocol_param_request(param_id: u8, value: u64) -> ProtocolParamRequest {
+    ProtocolParamRequest {
+        param_id,
+        param: value.to_le_bytes().to_vec(),
     }
 }
 
