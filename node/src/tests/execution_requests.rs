@@ -309,7 +309,7 @@ fn test_deposit_request_top_up() {
         // make the validator balance invalid.
         let deposit_process_height3 = deposit_block_height3;
         let withdrawal_height3 =
-            deposit_process_height3 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH - 1;
+            deposit_process_height3 + (VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 1) * BLOCKS_PER_EPOCH - 1;
 
         let stop_height = withdrawal_height3 + 1;
         let mut execution_requests_map = HashMap::new();
@@ -417,6 +417,7 @@ fn test_deposit_request_top_up() {
         assert_eq!(account.consensus_public_key, test_deposit1.consensus_pubkey);
         assert_eq!(account.balance, test_deposit1.amount + test_deposit2.amount);
 
+        println!("stop {stop_height}");
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
 

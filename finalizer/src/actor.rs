@@ -746,7 +746,11 @@ impl<
                 };
 
             // Only submit withdrawals at the end of an epoch
-            let ready_withdrawals = state.get_next_ready_withdrawals(height);
+            let current_epoch = state.epoch;
+            let ready_withdrawals = state
+                .get_withdrawals_for_epoch(current_epoch)
+                .map(|queue| queue.iter().cloned().collect())
+                .unwrap_or_default();
             let next_epoch = state.epoch;
             BlockAuxData {
                 epoch: state.epoch,
@@ -881,8 +885,11 @@ async fn execute_block<
     // Make sure that the included withdrawals match the expected withdrawals
     let expected_withdrawals: Vec<Withdrawal> =
         if is_last_block_of_epoch(epoch_num_of_blocks, new_height) {
-            let pending_withdrawals = state.get_next_ready_withdrawals(new_height);
-            pending_withdrawals.into_iter().map(|w| w.inner).collect()
+            let current_epoch = state.epoch;
+            state
+                .get_withdrawals_for_epoch(current_epoch)
+                .map(|queue| queue.iter().map(|w| w.inner).collect())
+                .unwrap_or_default()
         } else {
             vec![]
         };
@@ -909,7 +916,6 @@ async fn execute_block<
             block,
             new_height,
             state,
-            epoch_num_of_blocks,
             protocol_version_digest,
             validator_withdrawal_num_epochs,
             state.validator_minimum_stake,
@@ -998,7 +1004,6 @@ async fn parse_execution_requests<
     block: &Block,
     new_height: u64,
     state: &mut ConsensusState,
-    epoch_num_of_blocks: u64,
     protocol_version_digest: Digest,
     validator_withdrawal_num_epochs: u64,
     validator_minimum_stake: u64,
@@ -1040,9 +1045,7 @@ async fn parse_execution_requests<
                                 validator_pubkey,
                                 amount: deposit_request.amount,
                             };
-                            let withdrawal_height = new_height
-                                + validator_withdrawal_num_epochs * epoch_num_of_blocks
-                                - 1;
+                            let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
 
                             // If an account exists, we have to temporary increase the `pending_withdrawal_amount`,
                             // otherwise this withdrawal request will decrement the actual account balance.
@@ -1053,9 +1056,11 @@ async fn parse_execution_requests<
                                 account.pending_withdrawal_amount += deposit_request.amount;
                             }
 
+                            println!("withdrawal_epoch: {withdrawal_epoch}");
+
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
-                                withdrawal_height,
+                                withdrawal_epoch,
                             );
                         }
                     }
@@ -1131,12 +1136,10 @@ async fn parse_execution_requests<
                             state.set_account(withdrawal_request.validator_pubkey, account);
 
                             // The withdrawal will be completed in `validator_withdrawal_num_epochs` epochs
-                            let withdrawal_height = new_height
-                                + validator_withdrawal_num_epochs * epoch_num_of_blocks
-                                - 1;
+                            let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
-                                withdrawal_height,
+                                withdrawal_epoch,
                             );
                         }
                     }
@@ -1219,15 +1222,13 @@ async fn process_execution_requests<
                             validator_pubkey,
                             amount: request.amount,
                         };
-                        let withdrawal_height =
-                            new_height + validator_withdrawal_num_epochs * epoch_num_of_blocks - 1;
+                        let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
 
                         // Temporarily increase `pending_withdrawal_amount` so this withdrawal
                         // doesn't decrement the actual account balance.
                         account.pending_withdrawal_amount += request.amount;
 
-                        state
-                            .push_withdrawal_request(withdrawal_request.clone(), withdrawal_height);
+                        state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_epoch);
                         continue;
                     }
                 }
@@ -1256,9 +1257,8 @@ async fn process_execution_requests<
                         validator_pubkey,
                         amount: request.amount,
                     };
-                    let withdrawal_height =
-                        new_height + validator_withdrawal_num_epochs * epoch_num_of_blocks - 1;
-                    state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_height);
+                    let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
+                    state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_epoch);
                     continue;
                 }
 
@@ -1304,7 +1304,8 @@ async fn process_execution_requests<
 
     // Remove pending withdrawals that are included in the committed block
     for withdrawal in &block.payload.payload_inner.withdrawals {
-        let pending_withdrawal = state.pop_withdrawal();
+        let current_epoch = state.epoch;
+        let pending_withdrawal = state.pop_withdrawal(current_epoch);
         // TODO(matthias): these checks should never fail. we have to make sure that these withdrawals are
         // verified when the block is verified. it is too late when the block is committed.
         let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
