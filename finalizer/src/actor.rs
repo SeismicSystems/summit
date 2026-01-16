@@ -829,6 +829,14 @@ impl<
                 let header = self.db.get_finalized_header(height).await;
                 let _ = sender.send(ConsensusStateResponse::FinalizedHeader(header));
             }
+            ConsensusStateRequest::GetMinimumStake => {
+                let stake = self.canonical_state.get_minimum_stake();
+                let _ = sender.send(ConsensusStateResponse::MinimumStake(stake));
+            }
+            ConsensusStateRequest::GetMaximumStake => {
+                let stake = self.canonical_state.get_maximum_stake();
+                let _ = sender.send(ConsensusStateResponse::MaximumStake(stake));
+            }
         }
     }
 }

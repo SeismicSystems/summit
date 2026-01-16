@@ -14,6 +14,8 @@ pub enum ConsensusStateRequest {
     GetValidatorBalance(PublicKey),
     GetValidatorAccount(PublicKey),
     GetFinalizedHeader(u64),
+    GetMinimumStake,
+    GetMaximumStake,
 }
 
 pub enum ConsensusStateResponse<S: Scheme> {
@@ -24,6 +26,8 @@ pub enum ConsensusStateResponse<S: Scheme> {
     ValidatorBalance(Option<u64>),
     ValidatorAccount(Option<ValidatorAccount>),
     FinalizedHeader(Option<FinalizedHeader<S>>),
+    MinimumStake(u64),
+    MaximumStake(u64),
 }
 
 /// Used to send queries to the application finalizer to query the consensus state.
@@ -148,5 +152,33 @@ impl<S: Scheme> ConsensusStateQuery<S> {
         };
 
         header
+    }
+
+    pub async fn get_minimum_stake(&self) -> u64 {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetMinimumStake;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::MinimumStake(stake) = res else {
+            unreachable!("request and response variants must match");
+        };
+        stake
+    }
+
+    pub async fn get_maximum_stake(&self) -> u64 {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetMaximumStake;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::MaximumStake(stake) = res else {
+            unreachable!("request and response variants must match");
+        };
+        stake
     }
 }

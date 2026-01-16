@@ -103,8 +103,12 @@ impl ConsensusState {
         self.head_digest
     }
 
-    pub fn set_next_withdrawal_index(&mut self, index: u64) {
-        self.next_withdrawal_index = index;
+    pub fn get_minimum_stake(&self) -> u64 {
+        self.validator_minimum_stake
+    }
+
+    pub fn get_maximum_stake(&self) -> u64 {
+        self.validator_maximum_stake
     }
 
     fn get_and_increment_withdrawal_index(&mut self) -> u64 {
@@ -115,6 +119,10 @@ impl ConsensusState {
 
     pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
         self.pending_checkpoint.as_ref()
+    }
+
+    pub fn set_next_withdrawal_index(&mut self, index: u64) {
+        self.next_withdrawal_index = index;
     }
 
     pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
