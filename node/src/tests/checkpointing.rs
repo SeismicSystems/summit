@@ -1,4 +1,4 @@
-use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{BLOCKS_PER_EPOCH, Engine};
 use crate::test_harness::common;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -78,13 +78,8 @@ fn test_checkpoint_created() {
         let stop_height = BLOCKS_PER_EPOCH;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -261,13 +256,8 @@ fn test_previous_header_hash_matches() {
         let stop_height = BLOCKS_PER_EPOCH + 1;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -460,13 +450,8 @@ fn test_single_engine_with_checkpoint() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
 
         // Create and populate a consensus state
-        let mut consensus_state = common::get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let mut consensus_state =
+            common::get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
         consensus_state.set_latest_height(50); // Set a specific height
 
         // Configure engine with the checkpoint
@@ -578,13 +563,8 @@ fn test_node_joins_later_with_checkpoint() {
             .expect("failed to convert genesis hash");
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -817,13 +797,8 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             .expect("failed to convert genesis hash");
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
         // Create instances
         let mut public_keys = HashSet::new();

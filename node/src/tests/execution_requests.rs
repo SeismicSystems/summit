@@ -1,4 +1,4 @@
-use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{BLOCKS_PER_EPOCH, Engine};
 use crate::test_harness::common;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -28,6 +28,7 @@ fn test_deposit_request_single() {
     // the internal validator state to make sure that the validator balance, public keys,
     // and withdrawal credentials were added correctly.
     let n = 10;
+    let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -80,13 +81,8 @@ fn test_deposit_request_single() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _, _) = common::create_deposit_request(
-            10,
-            VALIDATOR_MINIMUM_STAKE,
-            common::get_domain(),
-            None,
-            None,
-        );
+        let (test_deposit, _, _) =
+            common::create_deposit_request(10, min_stake, common::get_domain(), None, None);
 
         // Convert to ExecutionRequest and then to Requests
         let execution_requests = vec![ExecutionRequest::Deposit(test_deposit.clone())];
@@ -101,7 +97,7 @@ fn test_deposit_request_single() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
-        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -209,9 +205,12 @@ fn test_deposit_request_single() {
 
 #[test_traced("INFO")]
 fn test_deposit_request_top_up() {
-    // Adds two deposit requests to blocks at different heights, and makes sure that only
-    // the first request is processed.
+    // Adds three deposit requests to blocks at different heights, and makes sure that only
+    // the first two request are processed because the last request would put the validator
+    // over the maximum stake.
     let n = 10;
+    let minimum_stake = 32_000_000_000;
+    let maximum_stake = 40_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -267,23 +266,18 @@ fn test_deposit_request_top_up() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit1, private_key, _) = common::create_deposit_request(
-            10,
-            VALIDATOR_MINIMUM_STAKE,
-            common::get_domain(),
-            None,
-            None,
-        );
+        let (test_deposit1, private_key, _) =
+            common::create_deposit_request(10, minimum_stake, common::get_domain(), None, None);
         let (test_deposit2, _, _) = common::create_deposit_request(
             10,
-            VALIDATOR_MINIMUM_STAKE,
+            8_000_000_000,
             common::get_domain(),
             Some(private_key.clone()),
             Some(test_deposit1.withdrawal_credentials),
         );
         let (test_deposit3, _, _) = common::create_deposit_request(
             10,
-            VALIDATOR_MINIMUM_STAKE,
+            1_000_000_000,
             common::get_domain(),
             Some(private_key),
             Some(test_deposit1.withdrawal_credentials),
@@ -308,13 +302,14 @@ fn test_deposit_request_top_up() {
 
         let deposit_process_height2 =
             utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height2 / BLOCKS_PER_EPOCH);
-        let withdrawal_height2 =
+        let _withdrawal_height2 =
             deposit_process_height2 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
 
-        let deposit_process_height3 =
-            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height3 / BLOCKS_PER_EPOCH);
+        // Because we already check in `parse_execution_requests` if the deposit will
+        // make the validator balance invalid.
+        let deposit_process_height3 = deposit_block_height3;
         let withdrawal_height3 =
-            deposit_process_height3 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+            deposit_process_height3 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH - 1;
 
         let stop_height = withdrawal_height3 + 1;
         let mut execution_requests_map = HashMap::new();
@@ -324,8 +319,11 @@ fn test_deposit_request_top_up() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
-        // Set the validator balance to 0
-        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
+        // Set the validator balance to 0, min stake to 10 ETH, max stake to 50 ETH
+        let mut initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
+        initial_state.validator_minimum_stake = minimum_stake; // 32 ETH in gwei
+        initial_state.validator_maximum_stake = maximum_stake; // 40 ETH in gwei
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -417,25 +415,17 @@ fn test_deposit_request_top_up() {
             utils::parse_withdrawal_credentials(test_deposit1.withdrawal_credentials).unwrap()
         );
         assert_eq!(account.consensus_public_key, test_deposit1.consensus_pubkey);
-        assert_eq!(account.balance, test_deposit1.amount);
+        assert_eq!(account.balance, test_deposit1.amount + test_deposit2.amount);
 
         let withdrawals = engine_client_network.get_withdrawals();
-        assert_eq!(withdrawals.len(), 2);
-
-        // check test_deposit2
-        let epoch_withdrawals = withdrawals.get(&withdrawal_height2).unwrap();
-        assert_eq!(epoch_withdrawals[0].amount, test_deposit2.amount);
-
-        let address =
-            utils::parse_withdrawal_credentials(test_deposit2.withdrawal_credentials).unwrap();
-        assert_eq!(epoch_withdrawals[0].address, address);
+        assert_eq!(withdrawals.len(), 1);
 
         // check test_deposit3
         let epoch_withdrawals = withdrawals.get(&withdrawal_height3).unwrap();
-        assert_eq!(epoch_withdrawals[0].amount, test_deposit2.amount);
+        assert_eq!(epoch_withdrawals[0].amount, test_deposit3.amount);
 
         let address =
-            utils::parse_withdrawal_credentials(test_deposit2.withdrawal_credentials).unwrap();
+            utils::parse_withdrawal_credentials(test_deposit3.withdrawal_credentials).unwrap();
         assert_eq!(epoch_withdrawals[0].address, address);
 
         // Check that all nodes have the same canonical chain
@@ -457,6 +447,7 @@ fn test_deposit_and_withdrawal_request_single() {
     // and that the withdrawal request that is sent to the execution layer matches the
     // withdrawal request (execution request) that was initially added to block 7.
     let n = 10;
+    let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -514,7 +505,7 @@ fn test_deposit_and_withdrawal_request_single() {
         // Create a single deposit request using the helper
         let (test_deposit, _, _) = common::create_deposit_request(
             n as u64, // use a private key seed that doesn't exist on the consensus state
-            VALIDATOR_MINIMUM_STAKE,
+            min_stake,
             common::get_domain(),
             None,
             None,
@@ -549,7 +540,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
-        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -675,6 +666,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
     // We also add another withdraw request at height 8, which should be ignored, since there
     // is no balance left.
     let n = 10;
+    let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -730,13 +722,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _, _) = common::create_deposit_request(
-            n as u64,
-            VALIDATOR_MINIMUM_STAKE,
-            common::get_domain(),
-            None,
-            None,
-        );
+        let (test_deposit, _, _) =
+            common::create_deposit_request(n as u64, min_stake, common::get_domain(), None, None);
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal1 = common::create_withdrawal_request(
@@ -773,13 +760,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
             .build();
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -907,6 +888,7 @@ fn test_deposit_less_than_min_stake_rejected() {
     // The deposit request should be skipped and a withdrawal request for the same amount
     // should be initiated.
     let n = 10;
+    let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -964,7 +946,7 @@ fn test_deposit_less_than_min_stake_rejected() {
         // Create a single deposit request using the helper
         let (test_deposit, _, _) = common::create_deposit_request(
             n as u64,
-            VALIDATOR_MINIMUM_STAKE / 2,
+            min_stake / 2,
             common::get_domain(),
             None,
             None,
@@ -992,7 +974,7 @@ fn test_deposit_less_than_min_stake_rejected() {
             .with_execution_requests(execution_requests_map)
             .build();
         // Set the validator balance to 0
-        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -1060,15 +1042,6 @@ fn test_deposit_less_than_min_stake_rejected() {
                     }
                 }
 
-                if metric.ends_with("deposit_validator_balance") {
-                    let balance = value.parse::<u64>().unwrap();
-                    let registry_flag = common::parse_metric_substring(metric, "registry")
-                        .expect("registry flag missing");
-                    assert_eq!(balance, test_deposit.amount);
-                    // Make sure that the validator was not added to the registry
-                    assert_eq!(registry_flag, "false");
-                }
-
                 if height_reached.len() as u32 == n {
                     success = true;
                     break;
@@ -1085,6 +1058,7 @@ fn test_deposit_less_than_min_stake_rejected() {
         let state_query = consensus_state_queries.get(&0).unwrap();
         let balance = state_query.get_validator_balance(validator_node_key).await;
         // Assert that no validator account was created
+        println!("balance {balance:?}");
         assert!(balance.is_none());
 
         let withdrawals = engine_client_network.get_withdrawals();
@@ -1114,6 +1088,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
     // of a single deposit and withdrawal request, it has 5 deposit and withdrawal requests
     // (from different public keys).
     let n = 10;
+    let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -1174,7 +1149,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
         for i in 0..deposit_reqs.len() {
             let (test_deposit, _, _) = common::create_deposit_request(
                 i as u64,
-                VALIDATOR_MINIMUM_STAKE,
+                min_stake,
                 common::get_domain(),
                 None,
                 None,
@@ -1219,7 +1194,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
             .with_execution_requests(execution_requests_map)
             .build();
         // Set the validator balance to 0
-        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -1361,6 +1336,7 @@ fn test_deposit_request_invalid_signature() {
     // Adds a deposit request with an invalid signature to the block at height 5, and then
     // verifies that the request is rejected and a withdrawal request is submitted for the same amount.
     let n = 10;
+    let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -1413,21 +1389,11 @@ fn test_deposit_request_invalid_signature() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (mut test_deposit, _, _) = common::create_deposit_request(
-            n,
-            VALIDATOR_MINIMUM_STAKE,
-            common::get_domain(),
-            None,
-            None,
-        );
+        let (mut test_deposit, _, _) =
+            common::create_deposit_request(n, min_stake, common::get_domain(), None, None);
 
-        let (test_deposit2, _, _) = common::create_deposit_request(
-            2,
-            VALIDATOR_MINIMUM_STAKE,
-            common::get_domain(),
-            None,
-            None,
-        );
+        let (test_deposit2, _, _) =
+            common::create_deposit_request(2, min_stake, common::get_domain(), None, None);
         // Use signatures from another private key (to make it invalid)
         test_deposit.node_signature = test_deposit2.node_signature;
         test_deposit.consensus_signature = test_deposit2.consensus_signature;
@@ -1452,7 +1418,7 @@ fn test_deposit_request_invalid_signature() {
             .with_execution_requests(execution_requests_map)
             .build();
         // Set the validator balance to 0
-        let initial_state = get_initial_state(genesis_hash, &validators, None, None, 0);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         // Create instances
         let mut public_keys = HashSet::new();

@@ -32,7 +32,7 @@ use std::{
     thread::JoinHandle,
 };
 use summit::args::{RunFlags, run_node_local};
-use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_MINIMUM_STAKE, VALIDATOR_WITHDRAWAL_NUM_EPOCHS};
+use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_WITHDRAWAL_NUM_EPOCHS};
 use summit_rpc::SummitApiClient;
 use summit_types::PublicKey;
 use summit_types::reth::Reth;
@@ -40,6 +40,7 @@ use tokio::sync::mpsc;
 use tracing::Level;
 
 const NUM_NODES: u16 = 4;
+const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000;
 
 #[allow(unused)]
 struct NodeRuntime {

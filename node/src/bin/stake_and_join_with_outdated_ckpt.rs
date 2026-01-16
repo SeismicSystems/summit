@@ -33,7 +33,6 @@ use std::{
     thread::JoinHandle,
 };
 use summit::args::{RunFlags, run_node_local};
-use summit::engine::VALIDATOR_MINIMUM_STAKE;
 use summit_rpc::SummitApiClient;
 use summit_types::PROTOCOL_VERSION;
 use summit_types::checkpoint::Checkpoint;
@@ -45,6 +44,7 @@ use tokio::sync::mpsc;
 use tracing::Level;
 
 const NUM_NODES: u16 = 4;
+const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000;
 
 struct NodeRuntime {
     thread: JoinHandle<()>,

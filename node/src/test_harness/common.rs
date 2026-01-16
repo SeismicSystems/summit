@@ -1,7 +1,7 @@
 use commonware_cryptography::{Hasher, Sha256, Signer, bls12381};
 use commonware_math::algebra::Random;
 
-use crate::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
@@ -178,13 +178,8 @@ pub fn run_until_height(
             .try_into()
             .expect("failed to convert genesis hash");
         let engine_client_network = MockEngineNetwork::new(genesis_hash);
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -299,7 +294,7 @@ pub fn get_initial_state(
             safe_block_hash: genesis_hash,
             finalized_block_hash: genesis_hash,
         };
-        let mut state = ConsensusState::new(forkchoice);
+        let mut state = ConsensusState::new(forkchoice, balance, balance);
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for ((node_pubkey, consensus_pubkey), address) in committee.iter().zip(addresses.iter()) {
             let pubkey_bytes: [u8; 32] = node_pubkey

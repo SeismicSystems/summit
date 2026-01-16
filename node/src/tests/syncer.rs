@@ -1,4 +1,4 @@
-use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
+use crate::engine::{BLOCKS_PER_EPOCH, Engine};
 use crate::test_harness::common;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -80,13 +80,8 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             .expect("failed to convert genesis hash");
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -306,13 +301,8 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             .expect("failed to convert genesis hash");
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &validators,
-            None,
-            None,
-            VALIDATOR_MINIMUM_STAKE,
-        );
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
         // Create instances
         let mut public_keys = HashSet::new();
