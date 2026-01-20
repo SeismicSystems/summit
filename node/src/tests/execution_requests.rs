@@ -417,7 +417,6 @@ fn test_deposit_request_top_up() {
         assert_eq!(account.consensus_public_key, test_deposit1.consensus_pubkey);
         assert_eq!(account.balance, test_deposit1.amount + test_deposit2.amount);
 
-        println!("stop {stop_height}");
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
 
@@ -1059,7 +1058,6 @@ fn test_deposit_less_than_min_stake_rejected() {
         let state_query = consensus_state_queries.get(&0).unwrap();
         let balance = state_query.get_validator_balance(validator_node_key).await;
         // Assert that no validator account was created
-        println!("balance {balance:?}");
         assert!(balance.is_none());
 
         let withdrawals = engine_client_network.get_withdrawals();
@@ -1489,10 +1487,6 @@ fn test_deposit_request_invalid_signature() {
 
                 if metric.ends_with("deposit_request_invalid_node_sig") {
                     let value = value.parse::<u64>().unwrap();
-                    //println!("öööööööööööööööööööööööööööööö");
-                    //println!("processed_requests {}", processed_requests.len());
-                    //println!("height_reached {}", height_reached.len());
-                    //println!("öööööööööööööööööööööööööööööö");
                     // Parse the pubkey from the metric name using helper function
                     if let Some(pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
                         let validator_id = common::extract_validator_id(metric)

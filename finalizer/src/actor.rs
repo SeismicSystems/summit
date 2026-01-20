@@ -1,4 +1,3 @@
-use crate::archive::backup_with_enclave;
 use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_eips::eip4895::Withdrawal;
@@ -41,7 +40,7 @@ use summit_types::utils::{
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
@@ -59,7 +58,6 @@ pub struct Finalizer<
     S: Signer<PublicKey = PublicKey>,
     V: Variant,
 > {
-    archive_mode: bool,
     mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block>>,
     pending_height_notifys: BTreeMap<(u64, Digest), Vec<oneshot::Sender<bool>>>,
     context: ContextCell<R>,
@@ -139,7 +137,6 @@ impl<
 
         (
             Self {
-                archive_mode: cfg.archive_mode,
                 context: ContextCell::new(context),
                 mailbox: rx,
                 engine_client: cfg.engine_client,
@@ -469,17 +466,6 @@ impl<
                     .any(|pk| pk == &self.node_public_key)
                 {
                     self.validator_exit = true;
-                }
-            }
-
-            if self.archive_mode {
-                // Should always be there
-                if let Some(checkpoint) = &self.canonical_state.pending_checkpoint
-                    && let Err(e) =
-                        backup_with_enclave(self.canonical_state.epoch, checkpoint.clone())
-                {
-                    // This shouldn't be critical but it should be logged
-                    error!("Unable to backup with enclave: {}", e);
                 }
             }
 
@@ -1055,8 +1041,6 @@ async fn parse_execution_requests<
                             {
                                 account.pending_withdrawal_amount += deposit_request.amount;
                             }
-
-                            println!("withdrawal_epoch: {withdrawal_epoch}");
 
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
