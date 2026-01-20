@@ -35,7 +35,8 @@ use summit_types::network_oracle::NetworkOracle;
 use summit_types::protocol_params::ProtocolParam;
 use summit_types::scheme::EpochTransition;
 use summit_types::utils::{
-    is_last_block_of_epoch, is_penultimate_block_of_epoch, parse_withdrawal_credentials,
+    is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
+    parse_withdrawal_credentials,
 };
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
 use summit_types::{EngineClient, consensus_state::ConsensusState};
@@ -192,7 +193,12 @@ impl<
             .await;
 
         loop {
-            if self.validator_exit {
+            if self.validator_exit
+                && is_first_block_of_epoch(
+                    self.epoch_num_of_blocks,
+                    self.canonical_state.get_latest_height(),
+                )
+            {
                 // If the validator was removed from the committee, trigger coordinated shutdown
                 info!("Validator no longer on the committee, shutting down");
                 self.cancellation_token.cancel();
@@ -419,56 +425,6 @@ impl<
                 }
             }
 
-            // Apply protocol parameter changes
-            self.canonical_state.apply_protocol_parameter_changes();
-
-            // Add and remove validators for the next epoch
-            let next_epoch = self.canonical_state.epoch + 1;
-            if self
-                .canonical_state
-                .added_validators
-                .contains_key(&next_epoch)
-                || !self.canonical_state.removed_validators.is_empty()
-            {
-                // Activate validators for the coming epoch.
-                if let Some(added_validators) =
-                    self.canonical_state.added_validators.get(&next_epoch)
-                {
-                    for key in added_validators {
-                        let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                        let account = self
-                            .canonical_state
-                            .validator_accounts
-                            .get_mut(&key_bytes)
-                            .expect(
-                                "only validators with accounts are added to the added_validators queue",
-                            );
-                        account.status = ValidatorStatus::Active;
-                    }
-                }
-
-                for key in self.canonical_state.removed_validators.iter() {
-                    // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
-                    let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                    if let Some(account) =
-                        self.canonical_state.validator_accounts.get_mut(&key_bytes)
-                    {
-                        account.status = ValidatorStatus::Inactive;
-                    }
-                }
-
-                // If the node's public key is contained in the removed validator list,
-                // trigger an exit
-                if self
-                    .canonical_state
-                    .removed_validators
-                    .iter()
-                    .any(|pk| pk == &self.node_public_key)
-                {
-                    self.validator_exit = true;
-                }
-            }
-
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
             // This pending checkpoint should always exist, because it was created at the previous height.
@@ -516,6 +472,19 @@ impl<
             // Send the new validator list to the orchestrator amd start the Simplex engine
             // for the new epoch
             let active_validators = self.canonical_state.get_active_validators();
+
+            // If the node's public key is not contained in the new validator list,
+            // trigger an exit
+            if !active_validators
+                .iter()
+                .any(|(pk, _)| pk == &self.node_public_key)
+                && !self
+                    .canonical_state
+                    .validator_is_joining(&self.node_public_key)
+            {
+                self.validator_exit = true;
+            }
+
             self.orchestrator_mailbox
                 .report(Message::Enter(EpochTransition {
                     epoch: Epoch::new(self.canonical_state.epoch),
@@ -523,12 +492,6 @@ impl<
                 }))
                 .await;
             epoch_change = true;
-
-            // Only clear the added and removed validators after saving the state to disk
-            self.canonical_state.added_validators.remove(&next_epoch);
-            if !self.canonical_state.removed_validators.is_empty() {
-                self.canonical_state.removed_validators.clear();
-            }
 
             #[cfg(debug_assertions)]
             {
@@ -959,9 +922,14 @@ async fn execute_block<
     // allows the validators to sign the checkpoint hash in the last block
     // of the epoch
     if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
+        // Build the committee for the next epoch.
+        // This is done on the penultimate block of the current epoch,
+        // so that the withdrawal requests (from validators staking more than max stake
+        // or validators staking less than min stake) can be withdrawn on the last block.
+        update_validator_committee(state);
+
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
-
         let checkpoint = Checkpoint::new(state);
         state.pending_checkpoint = Some(checkpoint);
 
@@ -1339,6 +1307,40 @@ async fn process_execution_requests<
         // a withdrawal request will be initiated immediately, without creating a validator account.
         // This is the only case where we process a withdrawal request, without having a validator account
         // stored in the consensus state.
+    }
+}
+
+fn update_validator_committee(state: &mut ConsensusState) {
+    // Apply protocol parameter changes
+    state.apply_protocol_parameter_changes();
+
+    // Add and remove validators for the next epoch
+    let next_epoch = state.epoch + 1;
+    if state.added_validators.contains_key(&next_epoch) || !state.removed_validators.is_empty() {
+        // Activate validators for the coming epoch.
+        if let Some(added_validators) = state.added_validators.get(&next_epoch) {
+            for key in added_validators {
+                let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+                let account = state.validator_accounts.get_mut(&key_bytes).expect(
+                    "only validators with accounts are added to the added_validators queue",
+                );
+                account.status = ValidatorStatus::Active;
+            }
+        }
+
+        for key in state.removed_validators.iter() {
+            // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
+            let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+            if let Some(account) = state.validator_accounts.get_mut(&key_bytes) {
+                account.status = ValidatorStatus::Inactive;
+            }
+        }
+
+        // Clear the added and removed validators
+        state.added_validators.remove(&next_epoch);
+        if !state.removed_validators.is_empty() {
+            state.removed_validators.clear();
+        }
     }
 }
 

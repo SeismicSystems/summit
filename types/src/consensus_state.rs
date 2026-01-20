@@ -326,6 +326,14 @@ impl ConsensusState {
             }
         }
     }
+
+    pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
+        let validator_pubkey: [u8; 32] = node_pubkey.as_ref().try_into().unwrap();
+        self.validator_accounts
+            .get(&validator_pubkey)
+            .map(|acc| acc.status == ValidatorStatus::Joining)
+            .unwrap_or(false)
+    }
 }
 
 impl EncodeSize for ConsensusState {

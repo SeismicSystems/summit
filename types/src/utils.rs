@@ -37,6 +37,12 @@ pub fn is_last_block_of_epoch(epoch_length: u64, height: u64) -> bool {
     height % epoch_length == epoch_length - 1
 }
 
+pub fn is_first_block_of_epoch(epoch_length: u64, height: u64) -> bool {
+    assert!(epoch_length > 0);
+
+    height.is_multiple_of(epoch_length)
+}
+
 pub fn is_penultimate_block_of_epoch(epoch_num_blocks: u64, height: u64) -> bool {
     is_last_block_of_epoch(epoch_num_blocks, height + 1)
 }
