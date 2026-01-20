@@ -50,6 +50,9 @@ const MAX_REPAIR: NonZero<usize> = NZUsize!(10);
 //
 // Onboarding config (set arbitrarily for now)
 
+#[cfg(debug_assertions)]
+const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 10;
+#[cfg(not(debug_assertions))]
 const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 3;
 // Number of epochs after a deposit until a validator joins the committee
 pub const VALIDATOR_NUM_WARM_UP_EPOCHS: u64 = 2;

@@ -559,7 +559,22 @@ impl MockEngineNetwork {
         from_block: Option<u64>,
         until_block: Option<u64>,
     ) -> Result<(), String> {
-        let clients = self.get_clients();
+        self.verify_consensus_skip(from_block, until_block, &[])
+    }
+
+    pub fn verify_consensus_skip(
+        &self,
+        from_block: Option<u64>,
+        until_block: Option<u64>,
+        skip_validators: &[&str],
+    ) -> Result<(), String> {
+        let all_clients = self.get_clients();
+
+        // Filter out skipped validators
+        let clients: Vec<_> = all_clients
+            .into_iter()
+            .filter(|client| !skip_validators.contains(&client.client_id().as_ref()))
+            .collect();
 
         if clients.len() < 2 {
             return Ok(());
