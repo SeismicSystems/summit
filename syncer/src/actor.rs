@@ -17,6 +17,7 @@ use commonware_cryptography::PublicKey;
 use commonware_cryptography::certificate::Scheme as CertificateScheme;
 use commonware_macros::select;
 use commonware_p2p::Recipients;
+use commonware_parallel::Strategy;
 use commonware_resolver::Resolver;
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::archive::Identifier as ArchiveID;
@@ -98,13 +99,14 @@ struct BlockSubscription<B: Block> {
 /// finalization for a block that is ahead of its current view, it will request the missing blocks
 /// from its peers. This ensures that the actor can catch up to the rest of the network if it falls
 /// behind.
-pub struct Actor<E, B, P, FC, FB, A = Exact>
+pub struct Actor<E, B, P, FC, FB, T, A = Exact>
 where
     E: CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
     P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
     FC: Certificates<Commitment = B::Commitment, Scheme = P::Scheme>,
     FB: Blocks<Block = B>,
+    T: Strategy,
     A: Acknowledgement,
 {
     // ---------- Context ----------
@@ -125,6 +127,8 @@ where
     max_repair: NonZeroUsize,
     // Codec configuration for block type
     block_codec_config: B::Cfg,
+    // Strategy for parallel operations
+    strategy: T,
 
     // ---------- State ----------
     // Last view processed
@@ -157,13 +161,14 @@ where
     processed_height: Gauge,
 }
 
-impl<E, B, P, FC, FB, A> Actor<E, B, P, FC, FB, A>
+impl<E, B, P, FC, FB, T, A> Actor<E, B, P, FC, FB, T, A>
 where
     E: CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
     P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
     FC: Certificates<Commitment = B::Commitment, Scheme = P::Scheme>,
     FB: Blocks<Block = B>,
+    T: Strategy,
     A: Acknowledgement,
 {
     /// Create a new application actor.
@@ -171,15 +176,16 @@ where
         context: E,
         finalizations_by_height: FC,
         finalized_blocks: FB,
-        config: Config<B, P>,
+        config: Config<B, P, T>,
     ) -> (Self, Mailbox<P::Scheme, B>) {
         // Initialize cache
         let prunable_config = cache::Config {
-            partition_prefix: format!("{}-cache", config.partition_prefix.clone()),
+            partition_prefix: config.partition_prefix.clone(),
             prunable_items_per_section: config.prunable_items_per_section,
             replay_buffer: config.replay_buffer,
-            write_buffer: config.write_buffer,
-            freezer_journal_buffer_pool: config.buffer_pool.clone(),
+            key_write_buffer: config.key_write_buffer,
+            value_write_buffer: config.value_write_buffer,
+            key_buffer_pool: config.buffer_pool.clone(),
         };
         let cache = cache::Manager::init(
             context.with_label("cache"),
@@ -228,6 +234,7 @@ where
                     view_retention_timeout: config.view_retention_timeout,
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
+                    strategy: config.strategy,
                     last_processed_round: Round::zero(),
                     last_processed_height: 0,
                     pending_ack: None.into(),
@@ -256,6 +263,7 @@ where
                     view_retention_timeout: config.view_retention_timeout,
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
+                    strategy: config.strategy,
                     last_processed_round: Round::zero(),
                     last_processed_height: 0,
                     pending_ack: None.into(),
@@ -725,7 +733,7 @@ where
                                     // Validation
                                     if block.height() != Height::new(height)
                                         || finalization.proposal.payload != block.commitment()
-                                        || !finalization.verify(&mut self.context, &scheme)
+                                        || !finalization.verify(&mut self.context, &scheme, &self.strategy)
                                     {
                                         let _ = response.send(false);
                                         continue;
@@ -764,7 +772,7 @@ where
                                     // Validation
                                     if notarization.round() != round
                                         || notarization.proposal.payload != block.commitment()
-                                        || !notarization.verify(&mut self.context, &scheme)
+                                        || !notarization.verify(&mut self.context, &scheme, &self.strategy)
                                     {
                                         let _ = response.send(false);
                                         continue;

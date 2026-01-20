@@ -36,7 +36,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 const REPLAY_BUFFER: NonZero<usize> = NZUsize!(8 * 1024 * 1024);
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
-const BUFFER_POOL_PAGE_SIZE: NonZero<usize> = NZUsize!(4_096); // 4KB
+const BUFFER_POOL_PAGE_SIZE: u16 = 4_096; // 4KB
 const BUFFER_POOL_CAPACITY: NonZero<usize> = NZUsize!(8_192); // 32MB
 const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
 const IMMUTABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(262_144);
@@ -91,6 +91,7 @@ pub struct Engine<
             >,
         >,
         immutable::Archive<E, summit_types::Digest, Block>,
+        Sequential,
         Exact,
     >,
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
@@ -118,7 +119,10 @@ where
     MultisigScheme: Scheme<summit_types::Digest, PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
-        let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+        let buffer_pool = PoolRef::new(
+            NonZero::new(BUFFER_POOL_PAGE_SIZE).unwrap(),
+            BUFFER_POOL_CAPACITY,
+        );
 
         let encoded = cfg.key_store.consensus_key.encode();
         let private_scalar = group::Private::decode(&mut encoded.as_ref())
@@ -241,9 +245,11 @@ where
             prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
             buffer_pool: buffer_pool.clone(),
             replay_buffer: REPLAY_BUFFER,
-            write_buffer: WRITE_BUFFER,
+            key_write_buffer: WRITE_BUFFER,
+            value_write_buffer: WRITE_BUFFER,
             block_codec_config: (),
             max_repair: MAX_REPAIR,
+            strategy: Sequential,
         };
 
         let (syncer, syncer_mailbox) = summit_syncer::Actor::init(

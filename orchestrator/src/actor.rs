@@ -23,7 +23,7 @@ use commonware_utils::{NZUsize, vec::NonEmptyVec};
 use futures::{StreamExt, channel::mpsc};
 use governor::clock::Clock as GClock;
 use rand_core::CryptoRngCore;
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, num::NonZero, time::Duration};
 use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
 use tracing::info;
 
@@ -33,7 +33,7 @@ where
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
-    St: Strategy,
+    St: Strategy + Default,
 {
     pub oracle: B,
     pub application: A,
@@ -66,7 +66,7 @@ where
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
-    St: Strategy,
+    St: Strategy + Default,
 {
     context: ContextCell<E>,
     mailbox: mpsc::Receiver<Message>,
@@ -98,11 +98,11 @@ where
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
-    St: Strategy,
+    St: Strategy + Default,
 {
     pub fn new(context: E, config: Config<B, A, St>) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
-        let pool_ref = PoolRef::new(NZUsize!(16_384), NZUsize!(10_000));
+        let pool_ref = PoolRef::new(NonZero::<u16>::new(16_384).unwrap(), NZUsize!(10_000));
 
         (
             Self {
@@ -294,6 +294,7 @@ where
                 automaton: self.application.clone(),
                 relay: self.application.clone(),
                 reporter: self.syncer_mailbox.clone(),
+                strategy: St::default(),
                 partition: format!("{}_consensus_{}", self.partition_prefix, epoch),
                 mailbox_size: 1024,
                 epoch,

@@ -2,14 +2,16 @@ use commonware_consensus::Block;
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::types::{Epoch, ViewDelta};
 use commonware_cryptography::certificate::Provider;
+use commonware_parallel::Strategy;
 use commonware_runtime::buffer::PoolRef;
 use std::num::{NonZeroU64, NonZeroUsize};
 
 /// Marshal configuration.
-pub struct Config<B, P>
+pub struct Config<B, P, T>
 where
     B: Block,
     P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
+    T: Strategy,
 {
     /// Provider for epoch-specific signing schemes.
     pub scheme_provider: P,
@@ -40,12 +42,18 @@ where
     /// The size of the replay buffer for storage archives.
     pub replay_buffer: NonZeroUsize,
 
-    /// The size of the write buffer for storage archives.
-    pub write_buffer: NonZeroUsize,
+    /// The size of the write buffer for the key journal of storage archives.
+    pub key_write_buffer: NonZeroUsize,
+
+    /// The size of the write buffer for the value journal of storage archives.
+    pub value_write_buffer: NonZeroUsize,
 
     /// Codec configuration for block type.
     pub block_codec_config: B::Cfg,
 
     /// Maximum number of blocks to repair at once
     pub max_repair: NonZeroUsize,
+
+    /// Strategy for parallel operations.
+    pub strategy: T,
 }

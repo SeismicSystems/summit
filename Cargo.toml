@@ -15,18 +15,18 @@ summit-finalizer = {path = "finalizer"}
 summit-rpc = {path = "rpc"}
 summit-orchestrator = {path = "orchestrator"}
 
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-math = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
-commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "41f07a9447735d381b825d1dbaffc7bf01f606b6" }
+commonware-consensus = "0.0.65"
+commonware-cryptography = "0.0.65"
+commonware-storage = "0.0.65"
+commonware-runtime = "0.0.65"
+commonware-codec = "0.0.65"
+commonware-p2p = "0.0.65"
+commonware-broadcast = "0.0.65"
+commonware-utils = "0.0.65"
+commonware-resolver = "0.0.65"
+commonware-macros = "0.0.65"
+commonware-math = "0.0.65"
+commonware-parallel = "0.0.65"
 
 alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }
