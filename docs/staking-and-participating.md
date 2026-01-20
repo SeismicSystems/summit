@@ -36,8 +36,10 @@ A valid withdrawal transaction has to be signed by the private key associated wi
 ## Invariants
 - A validator will join the committee `VALIDATOR_NUM_WARM_UP_EPOCHS` epochs after submitting a valid deposit request. The phase after submitting the deposit request, and before joining the committee is called the `onboarding phase`.
 - If a withdrawal request is submitted in epoch `n`, then the validator will be removed from the committee at the end of epoch `n`. The withdrawal will be processed in epoch `n + VALIDATOR_WITHDRAWAL_NUM_EPOCHS`.
+- There are two parameters that govern the staking amount. `validator_min_stake` and `validator_max_stake`. The balance of a validator must always be in range `[validator_min_stake, validator_max_stake]`.
+- Any initial deposit request with `balance < validator_min_stake` or `balance > validator_max_stake` will be rejected.
 - A validator can only submit one withdrawal request at a time. If another withdrawal request is submitted, while a withdrawal request is pending, then the second withdrawal request will be ignored.
 - If a withdrawal request is submitted while a validator is in the onboarding phase, then the onboarding phase is aborted, and the withdrawal request will be processed `VALIDATOR_WITHDRAWAL_NUM_EPOCHS` epochs later.
 - No partial withdrawals. If the validator balance is `balance`, and a withdrawal request with amount `amount < balance` is submitted, then the withdrawal request will be processed for the amount of `balance`.
-- A validator can only have a balance of `VALIDATOR_MINIMUM_STAKE`. If a deposit request with `amount` is submitted, where `amount != VALIDATOR_MINIMUM_STAKE`, then the deposit request will be skipped, and a withdrawal request will be initiated immediately.
-- No top up deposits. If a validator already has a balance of `VALIDATOR_MINIMUM_STAKE`, then it cannot submit another deposit request with amount `VALIDATOR_MINIMUM_STAKE`.
+- The only exception for this is if the `validator_max_stake` parameter is changed. If a validator has a balance that is higher than the new maximum stake, then the excess amount will be withdrawn as a partial withdrawal, and the validator remains active with balance equal to `validator_max_stake`.
+- If the `validator_min_stake` parameter is changed and a validator has a balance lower than the new minimum stake, then the validator will be removed from the committee and the full balance will be withdrawn.

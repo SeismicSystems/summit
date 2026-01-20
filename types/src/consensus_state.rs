@@ -314,17 +314,21 @@ impl ConsensusState {
             .collect()
     }
 
-    pub fn apply_protocol_parameter_changes(&mut self) {
+    pub fn apply_protocol_parameter_changes(&mut self) -> bool {
+        let mut min_or_max_stake_changed = false;
         while let Some(param) = self.protocol_param_changes.pop() {
             match param {
                 ProtocolParam::MinimumStake(min_stake) => {
                     self.validator_minimum_stake = min_stake;
+                    min_or_max_stake_changed = true;
                 }
                 ProtocolParam::MaximumStake(max_stake) => {
                     self.validator_maximum_stake = max_stake;
+                    min_or_max_stake_changed = true;
                 }
             }
         }
+        min_or_max_stake_changed
     }
 
     pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
