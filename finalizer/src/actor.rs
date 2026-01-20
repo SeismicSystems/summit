@@ -1,6 +1,7 @@
 use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_eips::eip4895::Withdrawal;
+use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 #[allow(unused)]
 use commonware_codec::{DecodeExt as _, ReadExt as _};
@@ -425,6 +426,12 @@ impl<
                 }
             }
 
+            // Apply protocol parameter changes
+            let stake_changed = self.canonical_state.apply_protocol_parameter_changes();
+
+            // Build the committee for the next epoch.
+            self.update_validator_committee(stake_changed);
+
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
             // This pending checkpoint should always exist, because it was created at the previous height.
@@ -456,6 +463,14 @@ impl<
             {
                 let db_operations_duration = db_operations_start.elapsed().as_millis() as f64;
                 histogram!("database_operations_duration_millis").record(db_operations_duration);
+            }
+
+            // Clear the added and removed validators
+            self.canonical_state
+                .added_validators
+                .remove(&self.canonical_state.epoch);
+            if !self.canonical_state.removed_validators.is_empty() {
+                self.canonical_state.removed_validators.clear();
             }
 
             // Create the list of validators for the p2p network for the next epoch.
@@ -787,6 +802,100 @@ impl<
             }
         }
     }
+
+    fn update_validator_committee(&mut self, stake_changed: bool) {
+        // Add and remove validators for the next epoch
+        let next_epoch = self.canonical_state.epoch + 1;
+        if self
+            .canonical_state
+            .added_validators
+            .contains_key(&next_epoch)
+            || !self.canonical_state.removed_validators.is_empty()
+        {
+            // Activate validators for the coming epoch.
+            if let Some(added_validators) = self.canonical_state.added_validators.get(&next_epoch) {
+                for key in added_validators {
+                    let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+                    let account = self
+                        .canonical_state
+                        .validator_accounts
+                        .get_mut(&key_bytes)
+                        .expect(
+                            "only validators with accounts are added to the added_validators queue",
+                        );
+                    account.status = ValidatorStatus::Active;
+                }
+            }
+
+            for key in self.canonical_state.removed_validators.iter() {
+                // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
+                let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+                if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key_bytes) {
+                    account.status = ValidatorStatus::Inactive;
+                }
+            }
+        }
+
+        // Check stake bounds independently of validator additions/removals
+        if stake_changed {
+            // In case the min or max stake parameters changed, we check that the balance of
+            // all validators is in the allowed range [min_stake, max_stake]
+            // Withdrawals happen at the end of the current epoch (last block)
+            let withdrawal_epoch = self.canonical_state.epoch + 1;
+
+            let validators_to_process: Vec<([u8; 32], u64, Address)> = self
+                .canonical_state
+                .validator_accounts
+                .iter()
+                .filter_map(|(key, acc)| {
+                    if acc.balance < self.canonical_state.validator_minimum_stake
+                        || acc.balance > self.canonical_state.validator_maximum_stake
+                    {
+                        Some((*key, acc.balance, acc.withdrawal_credentials))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for (key, balance, withdrawal_credentials) in validators_to_process {
+                if balance < self.canonical_state.validator_minimum_stake {
+                    // Remove the validator from the committee and withdraw the full balance
+                    if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
+                        account.status = ValidatorStatus::Inactive;
+                        let withdrawal_request = WithdrawalRequest {
+                            source_address: withdrawal_credentials,
+                            validator_pubkey: key,
+                            amount: balance,
+                        };
+                        self.canonical_state
+                            .push_withdrawal_request(withdrawal_request, withdrawal_epoch);
+
+                        // Mark the account as having a pending withdrawal
+                        if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key)
+                        {
+                            account.has_pending_withdrawal = true;
+                        }
+                    }
+                } else if balance > self.canonical_state.validator_maximum_stake {
+                    // Withdraw the portion of the balance exceeding `validator_maximum_stake`
+                    let excess_amount = balance - self.canonical_state.validator_maximum_stake;
+                    let withdrawal_request = WithdrawalRequest {
+                        source_address: withdrawal_credentials,
+                        validator_pubkey: key,
+                        amount: excess_amount,
+                    };
+                    self.canonical_state
+                        .push_withdrawal_request(withdrawal_request, withdrawal_epoch);
+
+                    // Mark the account as having a pending withdrawal
+                    if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
+                        account.has_pending_withdrawal = true;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Core execution logic that applies a block's state transitions to any ConsensusState.
@@ -922,12 +1031,6 @@ async fn execute_block<
     // allows the validators to sign the checkpoint hash in the last block
     // of the epoch
     if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
-        // Build the committee for the next epoch.
-        // This is done on the penultimate block of the current epoch,
-        // so that the withdrawal requests (from validators staking more than max stake
-        // or validators staking less than min stake) can be withdrawn on the last block.
-        update_validator_committee(state);
-
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
         let checkpoint = Checkpoint::new(state);
@@ -1307,40 +1410,6 @@ async fn process_execution_requests<
         // a withdrawal request will be initiated immediately, without creating a validator account.
         // This is the only case where we process a withdrawal request, without having a validator account
         // stored in the consensus state.
-    }
-}
-
-fn update_validator_committee(state: &mut ConsensusState) {
-    // Apply protocol parameter changes
-    state.apply_protocol_parameter_changes();
-
-    // Add and remove validators for the next epoch
-    let next_epoch = state.epoch + 1;
-    if state.added_validators.contains_key(&next_epoch) || !state.removed_validators.is_empty() {
-        // Activate validators for the coming epoch.
-        if let Some(added_validators) = state.added_validators.get(&next_epoch) {
-            for key in added_validators {
-                let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                let account = state.validator_accounts.get_mut(&key_bytes).expect(
-                    "only validators with accounts are added to the added_validators queue",
-                );
-                account.status = ValidatorStatus::Active;
-            }
-        }
-
-        for key in state.removed_validators.iter() {
-            // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
-            let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-            if let Some(account) = state.validator_accounts.get_mut(&key_bytes) {
-                account.status = ValidatorStatus::Inactive;
-            }
-        }
-
-        // Clear the added and removed validators
-        state.added_validators.remove(&next_epoch);
-        if !state.removed_validators.is_empty() {
-            state.removed_validators.clear();
-        }
     }
 }
 
