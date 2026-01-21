@@ -7,7 +7,7 @@ use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::Block as ConsensusBlock;
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_cryptography::{Committable, Hasher as _, Sha256, Signer as _};
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
@@ -18,12 +18,12 @@ use summit_types::{
     execution_request::{DepositRequest, compute_deposit_data_root},
 };
 
-pub struct SummitRpcServer<S: Scheme, B: ConsensusBlock + Committable> {
+pub struct SummitRpcServer<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> {
     key_store_path: String,
     finalizer_mailbox: FinalizerMailbox<S, B>,
 }
 
-impl<S: Scheme, B: ConsensusBlock + Committable> SummitRpcServer<S, B> {
+impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> SummitRpcServer<S, B> {
     pub fn new(key_store_path: String, finalizer_mailbox: FinalizerMailbox<S, B>) -> Self {
         Self {
             key_store_path,
@@ -35,7 +35,7 @@ impl<S: Scheme, B: ConsensusBlock + Committable> SummitRpcServer<S, B> {
 #[async_trait]
 impl<S, B> SummitApiServer for SummitRpcServer<S, B>
 where
-    S: Scheme + Send + Sync + 'static,
+    S: Scheme<B::Commitment> + Send + Sync + 'static,
     B: ConsensusBlock + Committable + Send + Sync + 'static,
 {
     async fn health(&self) -> RpcResult<String> {

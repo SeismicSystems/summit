@@ -197,7 +197,7 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use commonware_codec::{ReadExt, Write};
-    use commonware_cryptography::{PrivateKeyExt, Signer};
+    use commonware_cryptography::Signer;
 
     #[test]
     fn test_validator_account_codec() {

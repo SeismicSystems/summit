@@ -4,14 +4,11 @@ use summit_types::{Block, Digest, scheme::SummitSchemeProvider};
 
 use commonware_codec::{DecodeExt, Encode, varint::UInt};
 use commonware_consensus::{
-    Automaton, Relay,
-    simplex::{
-        self,
-        types::{Context, Voter},
-    },
+    CertifiableAutomaton, Relay,
+    simplex::{self, elector::RoundRobin, types::Context},
     types::{Epoch, ViewDelta},
-    utils::last_block_in_epoch,
 };
+use commonware_cryptography::Sha256;
 use commonware_cryptography::{Signer, bls12381::primitives::variant::Variant};
 use commonware_macros::select;
 use commonware_p2p::{
@@ -21,12 +18,13 @@ use commonware_p2p::{
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::PoolRef, spawn_cell,
 };
-use commonware_utils::{NZU32, NZUsize};
+use commonware_utils::NZUsize;
 use futures::{StreamExt, channel::mpsc};
 use governor::{Quota, RateLimiter, clock::Clock as GClock};
 use rand::{CryptoRng, Rng};
 use std::{collections::BTreeMap, time::Duration};
 use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
+use summit_types::utils::last_block_in_epoch;
 use tracing::{debug, info, warn};
 
 /// Configuration for the orchestrator.
@@ -35,7 +33,8 @@ where
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
+    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+        + Relay<Digest = Digest>,
 {
     pub oracle: B,
     pub application: A,
@@ -67,7 +66,8 @@ where
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer<PublicKey = summit_types::PublicKey>,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
+    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+        + Relay<Digest = Digest>,
 {
     context: ContextCell<E>,
     mailbox: mpsc::Receiver<Message>,
@@ -99,7 +99,8 @@ where
     B: Blocker<PublicKey = C::PublicKey>,
     V: Variant,
     C: Signer<PublicKey = summit_types::PublicKey>,
-    A: Automaton<Context = Context<Digest, C::PublicKey>, Digest = Digest> + Relay<Digest = Digest>,
+    A: CertifiableAutomaton<Context = Context<Digest, C::PublicKey>, Digest = Digest>
+        + Relay<Digest = Digest>,
 {
     pub fn new(context: E, config: Config<B, V, C, A>) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
@@ -233,7 +234,7 @@ where
                     if rate_limiter.check_key(&from).is_err() {
                         continue;
                     }
-                    let boundary_height = last_block_in_epoch(self.blocks_per_epoch, our_epoch);
+                    let boundary_height = last_block_in_epoch(self.blocks_per_epoch, our_epoch.get());
                     if self.syncer_mailbox.get_finalization(boundary_height).await.is_some() {
                         // Only request the orchestrator if we don't already have it.
                         continue;
@@ -271,7 +272,7 @@ where
                     // Fetch the finalization certificate for the last block within the subchannel's epoch.
                     // If the node is state synced, marshal may not have the finalization locally, and the
                     // peer will need to fetch it from another node on the network.
-                    let boundary_height = last_block_in_epoch(self.blocks_per_epoch, epoch);
+                    let boundary_height = last_block_in_epoch(self.blocks_per_epoch, epoch.get());
                     let Some(finalization) = self.syncer_mailbox.get_finalization(boundary_height).await else {
                         debug!(epoch = epoch.get(), ?from, "missing finalization for old epoch");
                         continue;
@@ -286,12 +287,12 @@ where
                     // Forward the finalization to the sender. This operation is best-effort.
                     //
                     // TODO (#2032): Send back to orchestrator for direct insertion into marshal.
-                    let message = Voter::<MultisigScheme<C, V>, Digest>::Finalization(finalization);
+                    // Note: In 0.0.64, Vote::Finalization doesn't exist, so we send the finalization directly.
                     if recovered_global_sender
                         .send(
                             epoch.get(),
                             Recipients::One(from),
-                            message.encode().freeze(),
+                            finalization.encode().freeze(),
                             false,
                         )
                         .await.is_err() {
@@ -371,7 +372,8 @@ where
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
             simplex::Config {
-                scheme,
+                scheme: scheme.clone(),
+                elector: RoundRobin::<Sha256>::default(),
                 blocker: self.oracle.clone(),
                 automaton: self.application.clone(),
                 relay: self.application.clone(),
@@ -389,7 +391,6 @@ where
                 activity_timeout: self.activity_timeout,
                 skip_timeout: self.skip_timeout,
                 fetch_concurrent: 2,
-                fetch_rate_per_peer: Quota::per_second(NZU32!(1)),
                 buffer_pool: self.pool_ref.clone(),
             },
         );

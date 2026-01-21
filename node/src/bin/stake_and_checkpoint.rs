@@ -17,7 +17,7 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256, keccak256};
 use clap::Parser;
 use commonware_cryptography::Sha256;
-use commonware_cryptography::{Hasher, PrivateKeyExt, Signer, bls12381, ed25519::PrivateKey};
+use commonware_cryptography::{Hasher, Signer, bls12381, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::http_client::HttpClientBuilder;

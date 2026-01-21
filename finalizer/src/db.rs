@@ -1,17 +1,17 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
-use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
+use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Storage};
-use commonware_storage::adb::store::{self, Db, Store};
+use commonware_storage::qmdb::store::{Config, Store};
 use commonware_storage::translator::TwoCap;
 use commonware_utils::sequence::FixedBytes;
 use summit_types::FinalizedHeader;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 
-pub use store::Config;
+// Config is imported via commonware_storage::qmdb::store::Config
 
 // Key prefixes for different data types
 const STATE_PREFIX: u8 = 0x01;
@@ -342,14 +342,12 @@ impl<V: Variant> Write for Value<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonware_consensus::simplex::signing_scheme::bls12381_multisig::Certificate as BlsCertificate;
-    use commonware_consensus::simplex::signing_scheme::utils::Signers;
     use commonware_consensus::simplex::types::{Finalization, Proposal};
     use commonware_consensus::types::{Epoch, Round, View};
-    use commonware_cryptography::bls12381::primitives::{
-        group::{Element, G2},
-        variant::MinPk,
-    };
+    use commonware_cryptography::bls12381::certificate::multisig::Certificate as BlsCertificate;
+    use commonware_cryptography::bls12381::primitives::{group::G2, variant::MinPk};
+    use commonware_cryptography::certificate::Signers;
+    use commonware_math::algebra::Additive;
     use commonware_runtime::buffer::PoolRef;
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{NZU64, NZUsize};
@@ -455,7 +453,7 @@ mod tests {
                 proposal,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(), // Use one/generator instead of zero/infinity
+                    signature: G2::zero(), // Use one/generator instead of zero/infinity
                 },
             };
             let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized, 3);
@@ -502,7 +500,7 @@ mod tests {
                 proposal: proposal2,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(),
+                    signature: G2::zero(),
                 },
             };
             let finalized_header2 =
@@ -565,7 +563,7 @@ mod tests {
                 proposal: proposal1,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(),
+                    signature: G2::zero(),
                 },
             };
             let finalized_header1 =
@@ -595,7 +593,7 @@ mod tests {
                 proposal: proposal3,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(),
+                    signature: G2::zero(),
                 },
             };
             let finalized_header3 =
@@ -625,7 +623,7 @@ mod tests {
                 proposal: proposal2,
                 certificate: BlsCertificate {
                     signers: Signers::from(3, [0, 1, 2]),
-                    signature: G2::one(),
+                    signature: G2::zero(),
                 },
             };
             let finalized_header2 =

@@ -2,7 +2,10 @@ use alloy_primitives::Address;
 use anyhow::{Context, Result, anyhow};
 use commonware_consensus::types::Epoch;
 use dirs::home_dir;
-use std::{path::PathBuf, str::FromStr};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
     let path_buf = PathBuf::from_str(path).context("unable to parse path")?;
@@ -10,7 +13,7 @@ pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
     if path_buf.starts_with("~") {
         let home_dir = home_dir().context("Unable to find a home directory to use with path")?;
 
-        if path_buf == PathBuf::from("~") {
+        if path_buf == Path::new("~") {
             return Ok(home_dir);
         } else if let Ok(relative) = path_buf.strip_prefix("~/") {
             return Ok(home_dir.join(relative));
@@ -21,15 +24,45 @@ pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
 }
 
 pub fn last_block_in_epoch(epoch_length: u64, epoch: u64) -> u64 {
-    commonware_consensus::utils::last_block_in_epoch(epoch_length, Epoch::new(epoch))
+    assert!(epoch_length > 0);
+
+    // (epoch + 1) * epoch_length - 1
+    epoch
+        .checked_add(1)
+        .and_then(|next_epoch| next_epoch.checked_mul(epoch_length))
+        .unwrap()
+        - 1
 }
 
-pub fn is_last_block_of_epoch(epoch_num_blocks: u64, height: u64) -> bool {
-    commonware_consensus::utils::is_last_block_in_epoch(epoch_num_blocks, height).is_some()
+pub fn is_last_block_of_epoch(epoch_length: u64, height: u64) -> bool {
+    assert!(epoch_length > 0);
+
+    height % epoch_length == epoch_length - 1
+}
+
+pub fn is_first_block_of_epoch(epoch_length: u64, height: u64) -> bool {
+    assert!(epoch_length > 0);
+
+    height.is_multiple_of(epoch_length)
 }
 
 pub fn is_penultimate_block_of_epoch(epoch_num_blocks: u64, height: u64) -> bool {
     is_last_block_of_epoch(epoch_num_blocks, height + 1)
+}
+
+/// Returns the epoch that a given block height belongs to.
+pub fn epoch(epoch_length: u64, height: u64) -> Epoch {
+    assert!(epoch_length > 0);
+    Epoch::new(height / epoch_length)
+}
+
+/// Returns Some(epoch) if the given height is the last block in an epoch, otherwise None.
+pub fn is_last_block_in_epoch(epoch_length: u64, height: u64) -> Option<Epoch> {
+    if is_last_block_of_epoch(epoch_length, height) {
+        Some(epoch(epoch_length, height))
+    } else {
+        None
+    }
 }
 
 pub fn parse_withdrawal_credentials(withdrawal_credentials: [u8; 32]) -> Result<Address> {

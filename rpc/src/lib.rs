@@ -12,7 +12,7 @@ pub use types::*;
 pub use api::{SummitApiClient, SummitApiServer, SummitGenesisApiClient, SummitGenesisApiServer};
 
 use commonware_consensus::Block as ConsensusBlock;
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_cryptography::Committable;
 use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
@@ -21,7 +21,7 @@ use summit_finalizer::FinalizerMailbox;
 use tokio_util::sync::CancellationToken;
 
 pub async fn start_rpc_server<
-    S: Scheme + Send + Sync + 'static,
+    S: Scheme<B::Commitment> + Send + Sync + 'static,
     B: ConsensusBlock + Committable + Send + Sync + 'static,
 >(
     finalizer_mailbox: FinalizerMailbox<S, B>,
@@ -54,7 +54,7 @@ pub async fn start_rpc_server<
 
 /// Starts the RPC server and returns the handle and bound address (useful for testing)
 pub async fn start_rpc_server_with_handle<
-    S: Scheme + Send + Sync + 'static,
+    S: Scheme<B::Commitment> + Send + Sync + 'static,
     B: ConsensusBlock + Committable + Send + Sync + 'static,
 >(
     finalizer_mailbox: FinalizerMailbox<S, B>,

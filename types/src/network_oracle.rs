@@ -1,6 +1,6 @@
 use commonware_cryptography::PublicKey;
 use commonware_p2p::{Blocker, Manager, authenticated::discovery::Oracle};
-use commonware_utils::set::Ordered;
+use commonware_utils::ordered::Set as Ordered;
 use std::future::Future;
 
 pub trait NetworkOracle<C: PublicKey>: Send + Sync + 'static {
@@ -20,7 +20,9 @@ impl<C: PublicKey> DiscoveryOracle<C> {
 
 impl<C: PublicKey> NetworkOracle<C> for DiscoveryOracle<C> {
     async fn register(&mut self, index: u64, peers: Vec<C>) {
-        self.oracle.update(index, Ordered::from(peers)).await;
+        self.oracle
+            .update(index, Ordered::from_iter_dedup(peers))
+            .await;
     }
 }
 

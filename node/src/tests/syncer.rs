@@ -2,7 +2,7 @@ use crate::engine::{BLOCKS_PER_EPOCH, Engine, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::common;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
-use commonware_cryptography::{PrivateKeyExt, Signer, bls12381};
+use commonware_cryptography::{Signer, bls12381};
 use commonware_macros::test_traced;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};

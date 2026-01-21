@@ -10,7 +10,7 @@ use commonware_consensus::types::View;
 use commonware_consensus::{
     Viewable,
     simplex::{
-        signing_scheme::bls12381_multisig::Scheme,
+        scheme::bls12381_multisig::Scheme,
         types::{Finalization, Notarization},
     },
 };

@@ -1,5 +1,5 @@
 use commonware_consensus::types::ViewDelta;
-use commonware_consensus::{Block, simplex::signing_scheme::Scheme};
+use commonware_consensus::{Block, simplex::scheme::Scheme};
 use commonware_runtime::buffer::PoolRef;
 use std::{
     marker::PhantomData,
@@ -12,7 +12,7 @@ pub struct Config<B, P, S>
 where
     B: Block,
     P: SchemeProvider<Scheme = S>,
-    S: Scheme,
+    S: Scheme<B::Commitment>,
 {
     /// Provider for epoch-specific signing schemes.
     pub scheme_provider: P,

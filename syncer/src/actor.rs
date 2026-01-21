@@ -9,10 +9,10 @@ use super::{
 use crate::{Update, ingress::mailbox::Identifier as BlockID};
 use commonware_broadcast::{Broadcaster, buffered};
 use commonware_codec::{Decode, Encode};
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::simplex::types::{Finalization, Notarization};
 use commonware_consensus::types::{Epoch, Round, View, ViewDelta};
-use commonware_consensus::{Block, Reporter, utils};
+use commonware_consensus::{Block, Reporter};
 use commonware_cryptography::PublicKey;
 use commonware_macros::select;
 use commonware_p2p::Recipients;
@@ -25,6 +25,7 @@ use commonware_utils::{
     sequence::U64,
 };
 use pin_project::pin_project;
+use summit_types::utils;
 
 use commonware_consensus::marshal::store::{Blocks, Certificates};
 use commonware_storage::metadata;
@@ -99,7 +100,7 @@ pub struct Actor<
     E: Rng + CryptoRng + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
     P: SchemeProvider<Scheme = S>,
-    S: Scheme,
+    S: Scheme<B::Commitment>,
     FC: Certificates<Commitment = B::Commitment, Scheme = S>,
     FB: Blocks<Block = B>,
     A: Acknowledgement,
@@ -161,7 +162,7 @@ where
     E: Rng + CryptoRng + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
     P: SchemeProvider<Scheme = S>,
-    S: Scheme,
+    S: Scheme<B::Commitment>,
     FC: Certificates<Commitment = B::Commitment, Scheme = S>,
     FB: Blocks<Block = B>,
     A: Acknowledgement,

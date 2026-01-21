@@ -9,7 +9,7 @@ use crate::{
 };
 use clap::{Args, Parser, Subcommand};
 use commonware_cryptography::Signer;
-use commonware_p2p::authenticated;
+use commonware_p2p::{Ingress, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
@@ -349,8 +349,11 @@ impl Command {
                 genesis.namespace.as_bytes(),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
                 our_ip,
-                network_committee.clone(),
-                genesis.max_message_size_bytes as usize,
+                network_committee
+                    .iter()
+                    .map(|(k, addr)| (k.clone(), Ingress::from(*addr)))
+                    .collect(),
+                genesis.max_message_size_bytes as u32,
             );
             p2p_cfg.mailbox_size = MAILBOX_SIZE;
 
@@ -540,8 +543,11 @@ pub fn run_node_local(
             genesis.namespace.as_bytes(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
             our_ip,
-            network_committee,
-            genesis.max_message_size_bytes as usize,
+            network_committee
+                .into_iter()
+                .map(|(k, addr)| (k, Ingress::from(addr)))
+                .collect(),
+            genesis.max_message_size_bytes as u32,
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
 

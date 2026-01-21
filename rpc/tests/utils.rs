@@ -1,4 +1,4 @@
-use commonware_cryptography::{PrivateKeyExt, bls12381, ed25519};
+use commonware_cryptography::{bls12381, ed25519};
 use futures::{StreamExt, channel::mpsc};
 use std::collections::HashMap;
 use std::fs;

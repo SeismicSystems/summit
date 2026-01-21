@@ -72,7 +72,7 @@ pub use ingress::mailbox::Mailbox;
 pub mod resolver;
 
 use commonware_consensus::Block;
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::simplex::types::Finalization;
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 
@@ -82,7 +82,7 @@ use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 /// Finalized blocks are reported to the application in monotonically increasing order (no gaps permitted).
 /// Notarized blocks are sent without ordering guarantees to enable execution before finalization.
 #[derive(Clone, Debug)]
-pub enum Update<B: Block, S: Scheme, A: Acknowledgement = Exact> {
+pub enum Update<B: Block, S: Scheme<B::Commitment>, A: Acknowledgement = Exact> {
     /// A new finalized tip.
     Tip(u64, B::Commitment),
     /// A new finalized block and an [Acknowledgement] for the application to signal once processed.
@@ -115,7 +115,7 @@ mod tests {
     use crate::ingress::mailbox::Identifier;
     use crate::mocks::fixtures::{Fixture, bls12381_threshold};
     use commonware_broadcast::buffered;
-    use commonware_consensus::simplex::signing_scheme::{Scheme as _, bls12381_threshold};
+    use commonware_consensus::simplex::scheme::{Scheme as _, bls12381_threshold};
     use commonware_consensus::simplex::types::{
         Activity, Finalization, Finalize, Notarization, Notarize, Proposal,
     };

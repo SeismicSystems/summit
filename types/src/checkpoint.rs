@@ -130,7 +130,7 @@ mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use commonware_codec::DecodeExt;
-    use commonware_cryptography::{PrivateKeyExt, Signer, bls12381, sha256};
+    use commonware_cryptography::{Signer, bls12381, sha256};
     use ssz::{Decode, Encode};
     use std::collections::{HashMap, VecDeque};
 

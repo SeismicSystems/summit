@@ -1,4 +1,4 @@
-use commonware_cryptography::{Hasher, PrivateKeyExt, Sha256, Signer, bls12381};
+use commonware_cryptography::{Hasher, Sha256, Signer, bls12381};
 
 use crate::engine::{PROTOCOL_VERSION, VALIDATOR_MINIMUM_STAKE};
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
@@ -558,7 +558,10 @@ impl SimulatedOracle {
 impl NetworkOracle<PublicKey> for SimulatedOracle {
     async fn register(&mut self, index: u64, peers: Vec<PublicKey>) {
         self.inner
-            .update(index, commonware_utils::set::Ordered::from(peers))
+            .update(
+                index,
+                commonware_utils::ordered::Set::from_iter_dedup(peers),
+            )
             .await
     }
 }
@@ -574,7 +577,7 @@ impl Blocker for SimulatedOracle {
 
 impl Manager for SimulatedOracle {
     type PublicKey = PublicKey;
-    type Peers = commonware_utils::set::Ordered<PublicKey>;
+    type Peers = commonware_utils::ordered::Set<PublicKey>;
 
     async fn update(&mut self, id: u64, peers: Self::Peers) {
         self.inner.update(id, peers).await

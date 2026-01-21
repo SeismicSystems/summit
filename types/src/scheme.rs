@@ -1,20 +1,21 @@
 use commonware_codec::{DecodeExt, Encode};
-use commonware_consensus::simplex::signing_scheme::{self, Scheme};
+use commonware_consensus::simplex::scheme::{self, Scheme};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::sha256::Digest;
 use commonware_cryptography::{PublicKey, Signer};
-use commonware_utils::set::OrderedAssociated;
+use commonware_utils::TryFromIterator;
+use commonware_utils::ordered::BiMap;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-pub type MultisigScheme<C, V> =
-    signing_scheme::bls12381_multisig::Scheme<<C as Signer>::PublicKey, V>;
+pub type MultisigScheme<C, V> = scheme::bls12381_multisig::Scheme<<C as Signer>::PublicKey, V>;
 
 /// Supplies the signing scheme the marshal should use for a given epoch.
 pub trait SchemeProvider: Clone + Send + Sync + 'static {
     /// The signing scheme to provide.
-    type Scheme: Scheme;
+    type Scheme: Scheme<Digest>;
 
     /// Return the signing scheme that corresponds to `epoch`.
     fn scheme(&self, epoch: Epoch) -> Option<Arc<Self::Scheme>>;
@@ -69,7 +70,7 @@ impl<C: Signer, V: Variant> SummitSchemeProvider<C, V> {
 pub trait EpochSchemeProvider {
     type Variant: Variant;
     type PublicKey: PublicKey;
-    type Scheme: Scheme;
+    type Scheme: Scheme<Digest>;
 
     /// Returns a [Scheme] for the given [EpochTransition].
     fn scheme_for_epoch(&self, transition: &EpochTransition) -> Self::Scheme;
@@ -92,19 +93,18 @@ impl<C: Signer<PublicKey = crate::PublicKey>, V: Variant> EpochSchemeProvider
     type Scheme = MultisigScheme<C, V>;
 
     fn scheme_for_epoch(&self, transition: &EpochTransition) -> Self::Scheme {
-        let participants: OrderedAssociated<Self::PublicKey, V::Public> = transition
-            .validator_keys
-            .iter()
-            .map(|(pk, bls_pk)| {
+        let participants: BiMap<Self::PublicKey, V::Public> =
+            BiMap::try_from_iter(transition.validator_keys.iter().map(|(pk, bls_pk)| {
                 let minpk_public: &<MinPk as Variant>::Public = bls_pk.as_ref();
                 let encoded = minpk_public.encode();
                 let variant_pk = V::Public::decode(&mut encoded.as_ref())
                     .expect("failed to decode BLS public key");
                 (pk.clone(), variant_pk)
-            })
-            .collect();
+            }))
+            .expect("failed to create BiMap from validator keys");
 
-        MultisigScheme::<C, V>::new(participants, self.bls_private_key.clone())
+        MultisigScheme::<C, V>::signer(participants, self.bls_private_key.clone())
+            .expect("BLS private key not found in participants")
     }
 }
 

@@ -1,12 +1,12 @@
 use crate::config::EngineConfig;
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::types::ViewDelta;
-use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
-use commonware_p2p::{Blocker, Manager, Receiver, Sender, utils::requester};
+use commonware_cryptography::{Signer, certificate::Scheme as CertScheme};
+use commonware_p2p::{Blocker, Manager, Receiver, Sender};
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
 use commonware_storage::archive::immutable;
@@ -14,17 +14,17 @@ use commonware_utils::acknowledgement::Exact;
 use commonware_utils::{NZU64, NZUsize};
 use futures::FutureExt;
 use futures::future::try_join_all;
-use governor::{Quota, clock::Clock as GClock};
+use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
-use std::num::{NonZero, NonZeroU32};
+use std::num::NonZero;
 use std::time::Duration;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
-use summit_types::{Block, EngineClient, PublicKey};
+use summit_types::{Block, Digest, EngineClient, PublicKey};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use zeroize::ZeroizeOnDrop;
@@ -113,7 +113,7 @@ impl<
     S: Signer<PublicKey = PublicKey> + ZeroizeOnDrop,
 > Engine<E, C, O, S>
 where
-    MultisigScheme<S, MinPk>: Scheme<PublicKey = S::PublicKey>,
+    MultisigScheme<S, MinPk>: Scheme<Digest, PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
@@ -401,12 +401,8 @@ where
             manager: self.oracle.clone(),
             blocker: self.oracle.clone(),
             mailbox_size: self.mailbox_size,
-            requester_config: requester::Config {
-                me: Some(self.node_public_key.clone()),
-                rate_limit: Quota::per_second(NonZeroU32::new(5).unwrap()),
-                initial: Duration::from_secs(1),
-                timeout: Duration::from_secs(2),
-            },
+            initial: Duration::from_secs(1),
+            timeout: Duration::from_secs(2),
             fetch_retry_timeout: Duration::from_millis(100),
             priority_requests: false,
             priority_responses: false,

@@ -1,7 +1,7 @@
 use commonware_consensus::{
     Block, Reporter,
     simplex::{
-        signing_scheme::Scheme,
+        scheme::Scheme,
         types::{Activity, Finalization, Notarization},
     },
     types::Round,
@@ -60,7 +60,7 @@ impl<D: Digest> From<archive::Identifier<'_, D>> for Identifier<D> {
 ///
 /// These messages are sent from the consensus engine and other parts of the
 /// system to drive the state of the marshal.
-pub(crate) enum Message<S: Scheme, B: Block> {
+pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
     // -------------------- Application Messages --------------------
     /// A request to retrieve the (height, commitment) of a block by its identifier.
     /// The block must be finalized; returns `None` if the block is not finalized.
@@ -139,11 +139,11 @@ pub(crate) enum Message<S: Scheme, B: Block> {
 
 /// A mailbox for sending messages to the marshal [Actor](super::super::actor::Actor).
 #[derive(Clone)]
-pub struct Mailbox<S: Scheme, B: Block> {
+pub struct Mailbox<S: Scheme<B::Commitment>, B: Block> {
     sender: mpsc::Sender<Message<S, B>>,
 }
 
-impl<S: Scheme, B: Block> Mailbox<S, B> {
+impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     /// Creates a new mailbox.
     pub(crate) const fn new(sender: mpsc::Sender<Message<S, B>>) -> Self {
         Self { sender }
@@ -322,7 +322,7 @@ impl<S: Scheme, B: Block> Mailbox<S, B> {
     }
 }
 
-impl<S: Scheme, B: Block> Reporter for Mailbox<S, B> {
+impl<S: Scheme<B::Commitment>, B: Block> Reporter for Mailbox<S, B> {
     type Activity = Activity<S, B::Commitment>;
 
     async fn report(&mut self, activity: Self::Activity) {
@@ -342,7 +342,7 @@ impl<S: Scheme, B: Block> Reporter for Mailbox<S, B> {
 
 /// Returns a boxed subscription future for a block.
 #[inline]
-fn subscribe_block_future<S: Scheme, B: Block>(
+fn subscribe_block_future<S: Scheme<B::Commitment>, B: Block>(
     mut marshal: Mailbox<S, B>,
     commitment: B::Commitment,
 ) -> BoxFuture<'static, Option<B>> {
@@ -358,14 +358,14 @@ fn subscribe_block_future<S: Scheme, B: Block>(
 /// TODO(clabby): Once marshal can also yield the genesis block, this stream should end
 /// at block height 0 rather than 1.
 #[pin_project]
-pub struct AncestorStream<S: Scheme, B: Block> {
+pub struct AncestorStream<S: Scheme<B::Commitment>, B: Block> {
     marshal: Mailbox<S, B>,
     buffered: Vec<B>,
     #[pin]
     pending: FuturesOrdered<BoxFuture<'static, Option<B>>>,
 }
 
-impl<S: Scheme, B: Block> AncestorStream<S, B> {
+impl<S: Scheme<B::Commitment>, B: Block> AncestorStream<S, B> {
     /// Creates a new [AncestorStream] starting from the given ancestry.
     ///
     /// # Panics
@@ -392,7 +392,7 @@ impl<S: Scheme, B: Block> AncestorStream<S, B> {
     }
 }
 
-impl<S: Scheme, B: Block> Stream for AncestorStream<S, B> {
+impl<S: Scheme<B::Commitment>, B: Block> Stream for AncestorStream<S, B> {
     type Item = B;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {

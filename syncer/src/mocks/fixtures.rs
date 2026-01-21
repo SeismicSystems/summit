@@ -3,18 +3,20 @@
 //! Copied from commonware_consensus::simplex::mocks::fixtures since that module
 //! is gated behind #[cfg(test)] and not available to external crates.
 
-use commonware_consensus::simplex::signing_scheme::{
+use commonware_consensus::simplex::scheme::{
     bls12381_multisig, bls12381_threshold, ed25519 as ed_scheme,
 };
 use commonware_cryptography::{
-    PrivateKeyExt, Signer,
+    Signer,
     bls12381::{
-        dkg::ops,
-        primitives::{group, variant::Variant},
+        dkg,
+        primitives::{group, ops, sharing::Mode, variant::Variant},
     },
     ed25519,
 };
-use commonware_utils::{quorum, set::OrderedAssociated};
+use commonware_math::algebra::Random;
+use commonware_utils::NZU32;
+use commonware_utils::{TryCollect, ordered::BiMap, quorum};
 use rand::{CryptoRng, RngCore};
 
 /// A test fixture consisting of ed25519 keys and signing schemes for each validator, and a single
@@ -32,17 +34,18 @@ pub struct Fixture<S> {
 pub fn ed25519_participants<R>(
     rng: &mut R,
     n: u32,
-) -> OrderedAssociated<ed25519::PublicKey, ed25519::PrivateKey>
+) -> BiMap<ed25519::PublicKey, ed25519::PrivateKey>
 where
     R: RngCore + CryptoRng,
 {
     (0..n)
         .map(|_| {
-            let private_key = ed25519::PrivateKey::from_rng(rng);
+            let private_key = ed25519::PrivateKey::random(&mut *rng);
             let public_key = private_key.public_key();
             (public_key, private_key)
         })
-        .collect()
+        .try_collect()
+        .unwrap()
 }
 
 /// Builds ed25519 identities alongside the ed25519 signing scheme.
@@ -59,7 +62,7 @@ where
 
     let schemes = ed25519_associated
         .into_iter()
-        .map(|(_, sk)| ed_scheme::Scheme::new(participants.clone(), sk))
+        .map(|(_, sk)| ed_scheme::Scheme::signer(participants.clone(), sk).unwrap())
         .collect();
     let verifier = ed_scheme::Scheme::verifier(participants.clone());
 
@@ -84,20 +87,21 @@ where
     assert!(n > 0);
 
     let participants = ed25519_participants(rng, n).into_keys();
-    let bls_privates: Vec<_> = (0..n).map(|_| group::Private::from_rand(rng)).collect();
+    let bls_privates: Vec<_> = (0..n).map(|_| group::Private::random(&mut *rng)).collect();
     let bls_public: Vec<_> = bls_privates
         .iter()
-        .map(|sk| commonware_cryptography::bls12381::primitives::ops::compute_public::<V>(sk))
+        .map(|sk| ops::compute_public::<V>(sk))
         .collect();
 
-    let signers = participants
+    let signers: BiMap<_, _> = participants
         .clone()
         .into_iter()
         .zip(bls_public)
-        .collect::<OrderedAssociated<_, _>>();
+        .try_collect()
+        .unwrap();
     let schemes: Vec<_> = bls_privates
         .into_iter()
-        .map(|sk| bls12381_multisig::Scheme::new(signers.clone(), sk))
+        .map(|sk| bls12381_multisig::Scheme::signer(signers.clone(), sk).unwrap())
         .collect();
     let verifier = bls12381_multisig::Scheme::verifier(signers.clone());
 
@@ -122,14 +126,17 @@ where
     assert!(n > 0);
 
     let participants = ed25519_participants(rng, n).into_keys();
-    let t = quorum(n);
-    let (polynomial, shares) = ops::generate_shares::<_, V>(rng, None, n, t);
+    let n_nz = std::num::NonZeroU32::new(n).unwrap();
+    let (polynomial, shares) = dkg::deal_anonymous::<V>(&mut *rng, Mode::default(), n_nz);
 
-    let schemes = shares
+    let schemes: Vec<_> = shares
         .into_iter()
-        .map(|share| bls12381_threshold::Scheme::new(participants.clone(), &polynomial, share))
+        .map(|share| {
+            bls12381_threshold::Scheme::signer(participants.clone(), polynomial.clone(), share)
+                .unwrap()
+        })
         .collect();
-    let verifier = bls12381_threshold::Scheme::verifier(participants.clone(), &polynomial.clone());
+    let verifier = bls12381_threshold::Scheme::verifier(participants.clone(), polynomial);
 
     Fixture {
         participants: participants.into(),

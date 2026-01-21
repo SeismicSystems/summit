@@ -14,7 +14,7 @@ use futures::{
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::types::{Round, View};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
@@ -26,12 +26,13 @@ use std::{
     time::Duration,
 };
 use summit_finalizer::FinalizerMailbox;
+use summit_types::Digest;
 use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
 use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
-use summit_types::{Block, Digest, EngineClient, utils};
+use summit_types::{Block, EngineClient, utils};
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
 struct ChannelClosedFuture<'a, T> {
@@ -58,7 +59,7 @@ fn oneshot_closed_future<T>(sender: &mut oneshot::Sender<T>) -> ChannelClosedFut
 pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
-    S: Scheme,
+    S: Scheme<Digest>,
     P: PublicKey,
     K: Signer,
     V: Variant,
@@ -79,7 +80,7 @@ pub struct Actor<
 impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
-    S: Scheme,
+    S: Scheme<Digest>,
     P: PublicKey,
     K: Signer,
     V: Variant,
@@ -486,7 +487,7 @@ impl<
 impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
-    S: Scheme,
+    S: Scheme<Digest>,
     P: PublicKey,
     K: Signer,
     V: Variant,

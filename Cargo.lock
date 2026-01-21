@@ -1532,8 +1532,9 @@ dependencies = [
 
 [[package]]
 name = "commonware-broadcast"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "794f92dafaa8a6179ace6c7960ed4c3f866574ae4602891255e77e330ea4bddc"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1550,18 +1551,22 @@ dependencies = [
 
 [[package]]
 name = "commonware-codec"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0936ea935d5db5e55e31901ea6e4fe669564ba52a4f7501f14f1a58582caec0"
 dependencies = [
  "bytes",
  "paste",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "thiserror 2.0.12",
 ]
 
 [[package]]
 name = "commonware-consensus"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4c79a1e4837b9b6ed8ef1793d5ff9c15961dfecc47ff24ea1b1bba320a2598a"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1575,7 +1580,6 @@ dependencies = [
  "commonware-storage",
  "commonware-utils",
  "futures",
- "governor",
  "pin-project",
  "prometheus-client 0.24.0",
  "rand 0.8.5",
@@ -1586,15 +1590,18 @@ dependencies = [
 
 [[package]]
 name = "commonware-cryptography"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fea0ec94c9f4571cd795bb5273faa60e6cf6da68e4db51135f0cef28bf75a3df"
 dependencies = [
+ "anyhow",
  "blake3",
  "blst",
  "bytes",
  "cfg-if",
  "chacha20poly1305",
  "commonware-codec",
+ "commonware-math",
  "commonware-utils",
  "ecdsa",
  "ed25519-consensus",
@@ -1612,8 +1619,9 @@ dependencies = [
 
 [[package]]
 name = "commonware-macros"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12e904cbefa233d549e9557a047ae12bd5989153cb32bfa5abb25c65429eb338"
 dependencies = [
  "futures",
  "proc-macro-crate",
@@ -1626,9 +1634,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "commonware-math"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e3e8944632cf5fb3880759edb59416f2c6e27e2d65986a80e721348b787a064"
+dependencies = [
+ "bytes",
+ "commonware-codec",
+ "commonware-utils",
+ "rand_core 0.6.4",
+ "rayon",
+]
+
+[[package]]
 name = "commonware-p2p"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed7c998ba1807582062589f7b15725efe8380ddd8995199cc1b2d942a1436fb8"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1639,7 +1661,6 @@ dependencies = [
  "commonware-utils",
  "either",
  "futures",
- "governor",
  "num-bigint",
  "num-integer",
  "num-rational",
@@ -1653,10 +1674,10 @@ dependencies = [
 
 [[package]]
 name = "commonware-resolver"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3eb39e3d8d86e88082ff8f9e0db39b624a0fb8aa4f8bacf97166a373777d2568"
 dependencies = [
- "bimap",
  "bytes",
  "commonware-codec",
  "commonware-cryptography",
@@ -1666,7 +1687,6 @@ dependencies = [
  "commonware-stream",
  "commonware-utils",
  "futures",
- "governor",
  "prometheus-client 0.24.0",
  "rand 0.8.5",
  "thiserror 2.0.12",
@@ -1675,13 +1695,15 @@ dependencies = [
 
 [[package]]
 name = "commonware-runtime"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35d6565dd76ae8c14ba328a34c1b30e11ac3594edcd30840582d192c8734b238"
 dependencies = [
  "async-lock",
  "axum 0.8.4",
  "bytes",
  "cfg-if",
+ "commonware-codec",
  "commonware-macros",
  "commonware-utils",
  "criterion",
@@ -1706,8 +1728,9 @@ dependencies = [
 
 [[package]]
 name = "commonware-storage"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25a5236b20b3df71cfb0a9679d967b3fc47d364817497fbdf4f95e5b9e48abaa"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1729,8 +1752,9 @@ dependencies = [
 
 [[package]]
 name = "commonware-stream"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2363c7ec2857bedb948f2cafbe4d446ab9d3166feefac6e06519986c146eb7a4"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -1749,14 +1773,16 @@ dependencies = [
 
 [[package]]
 name = "commonware-utils"
-version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo.git?rev=4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46#4e3367dfdfe3f101cebe3e8c18f48431e6ce7d46"
+version = "0.0.64"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bb569927aa16e14e81ba6bb1d502e7b8f1f097248c6322a30e174ed351ce4dc"
 dependencies = [
  "bytes",
  "cfg-if",
  "commonware-codec",
  "futures",
  "getrandom 0.2.16",
+ "hashbrown 0.16.1",
  "num-bigint",
  "num-integer",
  "num-rational",
@@ -2769,7 +2795,7 @@ dependencies = [
  "futures-timer",
  "futures-util",
  "getrandom 0.3.3",
- "hashbrown 0.16.0",
+ "hashbrown 0.16.1",
  "nonzero_ext",
  "parking_lot",
  "portable-atomic",
@@ -2846,9 +2872,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.16.0"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5419bdc4f6a9207fbeba6d11b604d481addf78ecd10c11ad51e76c2f6482748d"
+checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "allocator-api2",
  "equivalent",
@@ -3234,7 +3260,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6717a8d2a5a929a1a2eb43a12812498ed141a0bcfb7e8f7844fbdbe4303bba9f"
 dependencies = [
  "equivalent",
- "hashbrown 0.16.0",
+ "hashbrown 0.16.1",
  "serde",
  "serde_core",
 ]
@@ -5351,7 +5377,7 @@ dependencies = [
  "security-framework 3.3.0",
  "security-framework-sys",
  "webpki-root-certs 0.26.11",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5917,6 +5943,7 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-macros",
+ "commonware-math",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-storage",
@@ -5995,6 +6022,7 @@ dependencies = [
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
+ "commonware-math",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-storage",
@@ -6081,6 +6109,7 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-macros",
+ "commonware-math",
  "commonware-p2p",
  "commonware-resolver",
  "commonware-runtime",
@@ -6113,6 +6142,7 @@ dependencies = [
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
+ "commonware-math",
  "commonware-p2p",
  "commonware-resolver",
  "commonware-runtime",

@@ -4,8 +4,9 @@ use crate::PublicKey;
 use alloy_primitives::U256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
-use commonware_consensus::simplex::signing_scheme::Scheme;
+use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::simplex::types::Finalization;
+use commonware_cryptography::sha256::Digest as Sha256Digest;
 use commonware_cryptography::{Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 
@@ -264,13 +265,13 @@ impl Read for Header {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FinalizedHeader<S: Scheme> {
+pub struct FinalizedHeader<S: Scheme<Sha256Digest>> {
     pub header: Header,
     pub finalization: Finalization<S, Digest>,
     pub participant_count: usize,
 }
 
-impl<S: Scheme> FinalizedHeader<S> {
+impl<S: Scheme<Sha256Digest>> FinalizedHeader<S> {
     pub fn new(
         header: Header,
         finalization: Finalization<S, Digest>,
@@ -284,7 +285,7 @@ impl<S: Scheme> FinalizedHeader<S> {
     }
 }
 
-impl<S: Scheme> ssz::Encode for FinalizedHeader<S> {
+impl<S: Scheme<Sha256Digest>> ssz::Encode for FinalizedHeader<S> {
     fn is_ssz_fixed_len() -> bool {
         false
     }
@@ -312,7 +313,7 @@ impl<S: Scheme> ssz::Encode for FinalizedHeader<S> {
     }
 }
 
-impl<S: Scheme> ssz::Decode for FinalizedHeader<S>
+impl<S: Scheme<Sha256Digest>> ssz::Decode for FinalizedHeader<S>
 where
     <S::Certificate as Read>::Cfg: From<usize>,
 {
@@ -355,13 +356,13 @@ where
     }
 }
 
-impl<S: Scheme> EncodeSize for FinalizedHeader<S> {
+impl<S: Scheme<Sha256Digest>> EncodeSize for FinalizedHeader<S> {
     fn encode_size(&self) -> usize {
         self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
     }
 }
 
-impl<S: Scheme> Write for FinalizedHeader<S> {
+impl<S: Scheme<Sha256Digest>> Write for FinalizedHeader<S> {
     fn write(&self, buf: &mut impl BufMut) {
         let ssz_bytes = &*self.as_ssz_bytes();
         let bytes_len = ssz_bytes.len() as u32;
@@ -371,7 +372,7 @@ impl<S: Scheme> Write for FinalizedHeader<S> {
     }
 }
 
-impl<S: Scheme> Read for FinalizedHeader<S>
+impl<S: Scheme<Sha256Digest>> Read for FinalizedHeader<S>
 where
     <S::Certificate as Read>::Cfg: From<usize>,
 {
@@ -397,19 +398,13 @@ mod test {
     use super::*;
     use alloy_primitives::{U256, hex};
     use commonware_codec::{DecodeExt as _, Encode as _};
-    use commonware_consensus::simplex::signing_scheme::bls12381_multisig;
-    use commonware_consensus::types::{Epoch, View};
-    use commonware_consensus::{
-        simplex::{
-            signing_scheme::utils::Signers,
-            types::{Finalization, Proposal},
-        },
-        types::Round,
-    };
-    use commonware_cryptography::bls12381::primitives::{
-        group::{Element, G2},
-        variant::MinPk,
-    };
+    use commonware_consensus::simplex::scheme::bls12381_multisig;
+    use commonware_consensus::simplex::types::{Finalization, Proposal};
+    use commonware_consensus::types::{Epoch, Round, View};
+    use commonware_cryptography::bls12381::certificate::multisig::Certificate as BlsCertificate;
+    use commonware_cryptography::bls12381::primitives::{group::G2, variant::MinPk};
+    use commonware_cryptography::certificate::Signers;
+    use commonware_math::algebra::Additive;
     use ssz::Decode;
 
     fn create_test_public_key(seed: u8) -> PublicKey {
@@ -484,12 +479,11 @@ mod test {
         };
 
         // Use BLS certificate
-        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let finalized = Finalization {
             proposal,
-            certificate: BlsCertificate {
+            certificate: BlsCertificate::<MinPk> {
                 signers: Signers::from(3, [0, 1, 2]),
-                signature: G2::one(),
+                signature: G2::zero(),
             },
         };
 
@@ -541,12 +535,11 @@ mod test {
         };
 
         // Use BLS certificate with wrong payload
-        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let wrong_finalized = Finalization {
             proposal: wrong_proposal,
-            certificate: BlsCertificate {
+            certificate: BlsCertificate::<MinPk> {
                 signers: Signers::from(5, [0, 2, 4]),
-                signature: G2::one(),
+                signature: G2::zero(),
             },
         };
 
@@ -594,12 +587,11 @@ mod test {
         };
 
         // Use BLS certificate
-        type BlsCertificate = bls12381_multisig::Certificate<MinPk>;
         let finalized = Finalization {
             proposal,
-            certificate: BlsCertificate {
+            certificate: BlsCertificate::<MinPk> {
                 signers: Signers::from(4, [0, 1, 2, 3]),
-                signature: G2::one(),
+                signature: G2::zero(),
             },
         };
 
