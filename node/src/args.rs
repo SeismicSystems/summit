@@ -370,19 +370,19 @@ impl Command {
             .unwrap();
 
             // Register pending channel
-            let pending_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
             let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
             // Register recovered channel
-            let recovered_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
             let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
 
             // Register resolver channel
-            let resolver_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
             let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
 
             // Register broadcast channel
-            let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+            let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
             let broadcaster =
                 network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
 
@@ -563,19 +563,19 @@ pub fn run_node_local(
         .unwrap();
 
         // Register pending channel
-        let pending_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
         let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
         // Register recovered channel
-        let recovered_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
         let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
 
         // Register resolver channel
-        let resolver_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
         let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
 
         // Register broadcast channel
-        let broadcaster_limit = Quota::per_second(NonZeroU32::new(8).unwrap());
+        let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
         let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
 
         let backfiller =

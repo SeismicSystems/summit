@@ -66,7 +66,7 @@ pub struct Actor<
     context: ContextCell<R>,
     mailbox: mpsc::Receiver<Message>,
     engine_client: C,
-    built_block: Arc<Mutex<Option<Block>>>,
+    built_block: Arc<Mutex<Option<(Block, Round)>>>,
     genesis_hash: [u8; 32],
     epoch_num_of_blocks: u64,
     cancellation_token: CancellationToken,
@@ -163,7 +163,7 @@ impl<
                                                 let digest = block.digest();
                                                 {
                                                     let mut built = built.lock().expect("locked poisoned");
-                                                    *built = Some(block.clone());
+                                                    *built = Some((block.clone(), round));
                                                 }
 
                                                 // send block to syncer for caching and broadcasting
@@ -205,6 +205,14 @@ impl<
                             info!("{rand_id} Handling message Broadcast");
                             // The broadcast is handled internally by the consensus engine
                             // No need to forward to syncer
+
+                            let built_block = self.built_block.lock().expect("poisoned lock").take();
+
+                            if let Some((block, round)) = built_block {
+                                syncer.proposed(round, block).await;
+                            } else {
+                                warn!("Asked to broadcast a block without one built");
+                            }
                         }
 
                         Message::Verify {

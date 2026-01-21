@@ -19,13 +19,13 @@ pub const BACKFILLER_CHANNEL: u64 = 4;
 pub const MAILBOX_SIZE: usize = 16384;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-const FETCH_CONCURRENT: usize = 4;
-const MAX_FETCH_COUNT: usize = 16;
+const FETCH_CONCURRENT: usize = 8;
+const MAX_FETCH_COUNT: usize = 32;
 const MAX_FETCH_SIZE: usize = 512 * 1024;
-const DEQUE_SIZE: usize = 10;
+const DEQUE_SIZE: usize = 32;
 pub const MESSAGE_BACKLOG: usize = 16384;
-const BACKFILL_QUOTA: u32 = 10; // in seconds
-const FETCH_RATE_P2P: u32 = 128; // in seconds
+const BACKFILL_QUOTA: u32 = 512; // in seconds
+const FETCH_RATE_P2P: u32 = 512; // in seconds
 
 pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> {
     pub engine_client: C,
