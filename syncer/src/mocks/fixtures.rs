@@ -15,7 +15,7 @@ use commonware_cryptography::{
     ed25519,
 };
 use commonware_math::algebra::Random;
-use commonware_parallel::Sequential;
+use commonware_utils::N3f1;
 use commonware_utils::ordered::{BiMap, Map};
 use rand::{CryptoRng, RngCore};
 
@@ -115,7 +115,7 @@ where
 pub fn bls12381_threshold<V, R>(
     rng: &mut R,
     n: u32,
-) -> Fixture<bls12381_threshold::Scheme<ed25519::PublicKey, V, Sequential>>
+) -> Fixture<bls12381_threshold::Scheme<ed25519::PublicKey, V>>
 where
     V: Variant,
     R: RngCore + CryptoRng,
@@ -125,8 +125,9 @@ where
     const NAMESPACE: &[u8] = b"test";
     let participants = ed25519_participants(rng, n).into_keys();
 
-    let (output, shares_map) = dkg::deal::<V, _>(rng, Mode::NonZeroCounter, participants.clone())
-        .expect("deal should succeed");
+    let (output, shares_map) =
+        dkg::deal::<V, _, N3f1>(rng, Mode::NonZeroCounter, participants.clone())
+            .expect("deal should succeed");
     let polynomial = output.public().clone();
 
     let schemes = shares_map
@@ -137,16 +138,11 @@ where
                 participants.clone(),
                 polynomial.clone(),
                 share,
-                Sequential,
             )
         })
         .collect();
-    let verifier = bls12381_threshold::Scheme::verifier(
-        NAMESPACE,
-        participants.clone(),
-        polynomial.clone(),
-        Sequential,
-    );
+    let verifier =
+        bls12381_threshold::Scheme::verifier(NAMESPACE, participants.clone(), polynomial.clone());
 
     Fixture {
         participants: participants.into(),

@@ -407,7 +407,7 @@ mod test {
         bls12381::{
             certificate::multisig::Certificate,
             primitives::{
-                group::{Private, Scalar},
+                group::Private,
                 ops::{aggregate::Signature, sign_message},
                 variant::MinPk,
             },
@@ -415,6 +415,7 @@ mod test {
         certificate::Signers,
     };
     use commonware_math::algebra::Random;
+    use commonware_utils::Participant;
     use rand::SeedableRng as _;
     use rand::rngs::StdRng;
     use ssz::Decode;
@@ -445,7 +446,7 @@ mod test {
     fn create_dummy_signature() -> Signature<MinPk> {
         // Create a deterministic private key and sign a dummy message to get a valid G2 point
         let mut rng = StdRng::seed_from_u64(42);
-        let private = Private::from(Scalar::random(&mut rng));
+        let private = Private::random(&mut rng);
         let g2_signature = sign_message::<MinPk>(&private, b"", b"test message");
 
         // Encode the G2 signature and decode it as Signature<MinPk>
@@ -506,7 +507,7 @@ mod test {
         let finalized = Finalization {
             proposal,
             certificate: Certificate::<MinPk> {
-                signers: Signers::from(3, [0, 1, 2]),
+                signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
                 signature: create_dummy_signature(),
             },
         };
@@ -562,7 +563,7 @@ mod test {
         let wrong_finalized = Finalization {
             proposal: wrong_proposal,
             certificate: Certificate::<MinPk> {
-                signers: Signers::from(5, [0, 2, 4]),
+                signers: Signers::from(5, [0, 2, 4].map(Participant::new)),
                 signature: create_dummy_signature(),
             },
         };
@@ -614,7 +615,7 @@ mod test {
         let finalized = Finalization {
             proposal,
             certificate: Certificate::<MinPk> {
-                signers: Signers::from(4, [0, 1, 2, 3]),
+                signers: Signers::from(4, [0, 1, 2, 3].map(Participant::new)),
                 signature: create_dummy_signature(),
             },
         };

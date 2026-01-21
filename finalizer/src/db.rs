@@ -373,7 +373,7 @@ mod tests {
     use commonware_consensus::simplex::types::{Finalization, Proposal};
     use commonware_consensus::types::{Epoch, Round, View};
     use commonware_cryptography::bls12381::primitives::{
-        group::{Private, Scalar},
+        group::Private,
         ops::{aggregate::Signature, sign_message},
         variant::MinPk,
     };
@@ -382,7 +382,7 @@ mod tests {
     use commonware_math::algebra::Random;
     use commonware_runtime::buffer::PoolRef;
     use commonware_runtime::{Runner as _, deterministic::Runner};
-    use commonware_utils::{NZU64, NZUsize};
+    use commonware_utils::{NZU64, NZUsize, Participant};
     use rand::SeedableRng as _;
     use rand::rngs::StdRng;
     use summit_types::Block;
@@ -398,7 +398,7 @@ mod tests {
             log_codec_config: (),
             log_items_per_section: NZU64!(4),
             translator: TwoCap,
-            buffer_pool: PoolRef::new(NZUsize!(77), NZUsize!(9)),
+            buffer_pool: PoolRef::new(std::num::NonZero::new(77u16).unwrap(), NZUsize!(9)),
         };
         FinalizerState::<E, V>::new(context, config).await
     }
@@ -406,7 +406,7 @@ mod tests {
     fn create_dummy_signature() -> Signature<MinPk> {
         // Create a deterministic private key and sign a dummy message to get a valid G2 point
         let mut rng = StdRng::seed_from_u64(42);
-        let private = Private::from(Scalar::random(&mut rng));
+        let private = Private::random(&mut rng);
         let g2_signature = sign_message::<MinPk>(&private, b"", b"test message");
 
         // Encode the G2 signature and decode it as Signature<MinPk>
@@ -499,7 +499,7 @@ mod tests {
             let finalized = Finalization {
                 proposal,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2]),
+                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
                     signature: create_dummy_signature(), // Valid dummy signature for test
                 },
             };
@@ -546,7 +546,7 @@ mod tests {
             let finalized2 = Finalization {
                 proposal: proposal2,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2]),
+                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
                     signature: create_dummy_signature(),
                 },
             };
@@ -609,7 +609,7 @@ mod tests {
             let finalized1 = Finalization {
                 proposal: proposal1,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2]),
+                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
                     signature: create_dummy_signature(),
                 },
             };
@@ -639,7 +639,7 @@ mod tests {
             let finalized3 = Finalization {
                 proposal: proposal3,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2]),
+                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
                     signature: create_dummy_signature(),
                 },
             };
@@ -669,7 +669,7 @@ mod tests {
             let finalized2 = Finalization {
                 proposal: proposal2,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2]),
+                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
                     signature: create_dummy_signature(),
                 },
             };

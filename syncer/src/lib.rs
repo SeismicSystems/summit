@@ -135,13 +135,14 @@ mod tests {
         Manager,
         simulated::{self, Link, Network, Oracle},
     };
+    use commonware_parallel::Sequential;
     use commonware_runtime::{Clock, Metrics, Quota, Runner, buffer::PoolRef, deterministic};
     use commonware_storage::archive::immutable;
     use commonware_utils::{NZU64, NZUsize};
     use rand::{Rng, seq::SliceRandom};
     use std::{
         collections::BTreeMap,
-        num::{NonZeroU32, NonZeroU64, NonZeroUsize},
+        num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize},
         time::{Duration, Instant},
     };
     use tracing::info;
@@ -153,7 +154,7 @@ mod tests {
     type S = bls12381_threshold::Scheme<K, V>;
     type P = ConstantProvider<S, Epoch>;
 
-    const PAGE_SIZE: NonZeroUsize = NZUsize!(1024);
+    const PAGE_SIZE: NonZeroU16 = NonZeroU16::new(1024).unwrap();
     const PAGE_CACHE_SIZE: NonZeroUsize = NZUsize!(10);
     const NAMESPACE: &[u8] = b"test";
     const NUM_VALIDATORS: u32 = 4;
@@ -194,8 +195,10 @@ mod tests {
             partition_prefix: format!("validator_{}", validator.clone()),
             prunable_items_per_section: NZU64!(10),
             replay_buffer: NZUsize!(1024),
-            write_buffer: NZUsize!(1024),
+            key_write_buffer: NZUsize!(1024),
+            value_write_buffer: NZUsize!(1024),
             buffer_pool: PoolRef::new(PAGE_SIZE, PAGE_CACHE_SIZE),
+            strategy: Sequential,
         };
 
         // Create the resolver
@@ -260,9 +263,9 @@ mod tests {
                 items_per_section: NZU64!(10),
                 codec_config: (),
                 replay_buffer: config.replay_buffer,
-                freezer_key_write_buffer: config.write_buffer,
-                freezer_value_write_buffer: config.write_buffer,
-                ordinal_write_buffer: config.write_buffer,
+                freezer_key_write_buffer: config.key_write_buffer,
+                freezer_value_write_buffer: config.value_write_buffer,
+                ordinal_write_buffer: config.key_write_buffer,
             },
         )
         .await
@@ -300,9 +303,9 @@ mod tests {
                 items_per_section: NZU64!(10),
                 codec_config: config.block_codec_config,
                 replay_buffer: config.replay_buffer,
-                freezer_key_write_buffer: config.write_buffer,
-                freezer_value_write_buffer: config.write_buffer,
-                ordinal_write_buffer: config.write_buffer,
+                freezer_key_write_buffer: config.key_write_buffer,
+                freezer_value_write_buffer: config.value_write_buffer,
+                ordinal_write_buffer: config.key_write_buffer,
             },
         )
         .await
@@ -333,7 +336,7 @@ mod tests {
             .collect();
 
         // Generate certificate signatures
-        Finalization::from_finalizes(&schemes[0], &finalizes).unwrap()
+        Finalization::from_finalizes(&schemes[0], &finalizes, &Sequential).unwrap()
     }
 
     fn make_notarization(proposal: Proposal<D>, schemes: &[S], quorum: u32) -> Notarization<S, D> {
@@ -345,7 +348,7 @@ mod tests {
             .collect();
 
         // Generate certificate signatures
-        Notarization::from_notarizes(&schemes[0], &notarizes).unwrap()
+        Notarization::from_notarizes(&schemes[0], &notarizes, &Sequential).unwrap()
     }
 
     fn setup_network(
