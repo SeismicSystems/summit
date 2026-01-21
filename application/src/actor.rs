@@ -203,8 +203,6 @@ impl<
                         }
                         Message::Broadcast { payload: _ } => {
                             info!("{rand_id} Handling message Broadcast");
-                            // The broadcast is handled internally by the consensus engine
-                            // No need to forward to syncer
 
                             let built_block = self.built_block.lock().expect("poisoned lock").take();
 
