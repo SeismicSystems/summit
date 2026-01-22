@@ -1,5 +1,6 @@
 pub mod account;
 mod block;
+pub mod bootstrap;
 pub mod checkpoint;
 pub mod consensus_state;
 pub mod consensus_state_query;
