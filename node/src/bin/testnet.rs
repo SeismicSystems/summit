@@ -208,5 +208,6 @@ fn get_node_flags(node: usize) -> RunFlags {
         checkpoint_or_default: false,
         ip: None,
         archive_mode: false,
+        bootstrappers: None,
     }
 }

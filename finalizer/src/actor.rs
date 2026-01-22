@@ -430,7 +430,7 @@ impl<
             let stake_changed = self.canonical_state.apply_protocol_parameter_changes();
 
             // Build the committee for the next epoch.
-            self.validator_exit =self.update_validator_committee(stake_changed);
+            self.validator_exit = self.update_validator_committee(stake_changed);
 
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
@@ -791,7 +791,7 @@ impl<
         }
     }
 
-    fn update_validator_committee(&mut self, stake_changed: bool) -> bool{
+    fn update_validator_committee(&mut self, stake_changed: bool) -> bool {
         // Add and remove validators for the next epoch
         let mut validator_exit = false;
         let next_epoch = self.canonical_state.epoch + 1;

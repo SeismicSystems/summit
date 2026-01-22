@@ -1,14 +1,35 @@
 /*
-This bin will start 4 reth nodes with an instance of consensus for each and keep running so you can run other tests or submit transactions
+This test verifies that a new validator can join the network by syncing from genesis
+using a bootstrapper node for peer discovery.
 
-Their rpc endpoints are localhost:8545-node_number
-node0_port = 8545
-node1_port = 8544
-...
-node3_port = 8542
+## Test Flow
 
+### Phase 1: Validator Withdrawal (Changes the Peer Set)
+1. Start 4 genesis validators (nodes 0-3) with their corresponding Reth instances
+2. Send a withdrawal transaction for one of the validators
+3. Wait for all nodes to reach the withdrawal epoch (validator exits the committee)
+4. Verify the withdrawal was processed
+
+This phase changes the active validator set from the genesis configuration. This is
+important because it means a new node syncing from genesis cannot simply use the
+genesis validator list as its peer set - the validator set has changed since genesis.
+
+### Phase 2: New Validator Joins via Genesis Sync
+1. Generate new ed25519 and BLS keys for the joining validator
+2. Send a deposit transaction to register the new validator
+3. Create a bootstrappers.toml file pointing to one of the active validators
+4. Start a new Reth + consensus node with the bootstrappers config (no checkpoint)
+5. The new node syncs from genesis using the bootstrapper for peer discovery
+6. Wait for the new node to catch up with the other nodes
+7. Verify the new validator is in the consensus state with the correct balance
+
+## RPC Endpoints
+- Reth HTTP: localhost:8545 - node_number (node0=8545, node1=8544, ...)
+- Consensus RPC: ports 3030, 3040, 3050, 3060 for nodes 0-3, 3070 for joining node
+- P2P: ports 26600, 26610, 26620, 26630 for nodes 0-3, 26640 for joining node
 
 */
+use alloy::hex::FromHex;
 use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
 use alloy::rpc::types::TransactionRequest;
@@ -16,6 +37,8 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256};
 use clap::Parser;
 use commonware_codec::DecodeExt;
+use commonware_cryptography::Sha256;
+use commonware_cryptography::{Hasher, Signer, bls12381, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
 use commonware_utils::from_hex_formatted;
 use futures::{FutureExt, pin_mut};
@@ -25,16 +48,19 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use std::{
     fs,
-    io::{BufRead as _, BufReader, Write as _},
+    io::{BufRead as _, BufReader},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     str::FromStr as _,
     thread::JoinHandle,
 };
 use summit::args::{RunFlags, run_node_local};
-use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_WITHDRAWAL_NUM_EPOCHS};
+use summit::engine::VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+use summit::test_harness::transactions::send_deposit_transaction;
 use summit_rpc::SummitApiClient;
+use summit_types::PROTOCOL_VERSION;
 use summit_types::PublicKey;
+use summit_types::execution_request::DepositRequest;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
 use tracing::Level;
@@ -42,10 +68,9 @@ use tracing::Level;
 const NUM_NODES: u16 = 4;
 const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000;
 
-#[allow(unused)]
 struct NodeRuntime {
-    thread: JoinHandle<()>,
-    stop_tx: mpsc::UnboundedSender<()>,
+    _thread: JoinHandle<()>,
+    _stop_tx: mpsc::UnboundedSender<()>,
 }
 
 #[derive(Parser, Debug)]
@@ -204,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 });
 
-                node_runtimes.push(NodeRuntime { thread, stop_tx });
+                node_runtimes.push(NodeRuntime { _thread: thread, _stop_tx: stop_tx });
             }
 
             // Wait a bit for nodes to be ready
@@ -242,20 +267,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("failed to send deposit transaction");
 
             // Wait for all nodes to continue making progress
-            let end_height = BLOCKS_PER_EPOCH * (VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 1);
+            let end_epoch = VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 1;
             println!(
-                "Waiting for all {} nodes to reach height {}",
-                NUM_NODES, end_height
+                "Waiting for all {} nodes to reach epoch {}",
+                NUM_NODES, end_epoch
             );
             loop {
                 let mut all_ready = true;
                 for idx in 0..(NUM_NODES - 1) {
                     let rpc_port = get_node_flags(idx as usize).rpc_port;
-                    match get_latest_height(rpc_port).await {
-                        Ok(height) => {
-                            if height < end_height {
+                    match get_latest_epoch(rpc_port).await {
+                        Ok(epoch) => {
+                            if epoch < end_epoch {
                                 all_ready = false;
-                                println!("Node {} at height {}", idx, height);
+                                println!("Node {} at epoch {}", idx, epoch);
                             }
                         }
                         Err(e) => {
@@ -265,7 +290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 if all_ready {
-                    println!("All nodes have reached height {}", end_height);
+                    println!("All nodes have reached epoch {}", end_epoch);
                     break;
                 }
                 context.sleep(Duration::from_secs(2)).await;
@@ -311,6 +336,257 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 panic!("Validator should not be on the consensus state anymore");
             }
+
+            println!("\n========== Phase 1 completed successfully! ==========");
+
+
+            // ========== PHASE 2: Add a new validator that syncs from genesis ==========
+            println!("\n========== Starting Phase 2: Adding new validator syncing from genesis ==========\n");
+            use std::io::Write as _;
+            std::io::stdout().flush().unwrap();
+
+            // Generate keys for new validator
+            let ed25519_private_key = PrivateKey::from_seed(100);
+            let ed25519_public_key = ed25519_private_key.public_key();
+            let ed25519_pubkey_bytes: [u8; 32] = ed25519_public_key.to_vec().try_into().unwrap();
+
+            let bls_private_key = bls12381::PrivateKey::from_seed(100);
+            let bls_public_key = bls_private_key.public_key();
+
+            // Withdrawal credentials (32 bytes) - 0x01 prefix for execution address withdrawal
+            let mut new_withdrawal_credentials = [0u8; 32];
+            new_withdrawal_credentials[0] = 0x01;
+            let new_withdrawal_address =
+                Address::from_hex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap();
+            new_withdrawal_credentials[12..32].copy_from_slice(new_withdrawal_address.as_slice());
+
+            let deposit_amount = VALIDATOR_MINIMUM_STAKE;
+
+            let deposit_request = DepositRequest {
+                node_pubkey: ed25519_public_key,
+                consensus_pubkey: bls_public_key.clone(),
+                withdrawal_credentials: new_withdrawal_credentials,
+                amount: deposit_amount,
+                node_signature: [0; 64],
+                consensus_signature: [0; 96],
+                index: 0,
+            };
+
+            let protocol_version_digest = Sha256::hash(&PROTOCOL_VERSION.to_le_bytes());
+            let message = deposit_request.as_message(protocol_version_digest);
+
+            // Sign with node (ed25519) key
+            let node_signature = ed25519_private_key.sign(&[], &message);
+            let node_signature_bytes: [u8; 64] = node_signature.as_ref().try_into().unwrap();
+
+            // Sign with consensus (BLS) key
+            let consensus_signature = bls_private_key.sign(&[], &message);
+            let consensus_signature_slice: &[u8] = consensus_signature.as_ref();
+            let consensus_signature_bytes: [u8; 96] = consensus_signature_slice.try_into().unwrap();
+
+            // Convert to wei for the deposit transaction
+            let deposit_amount_wei = U256::from(deposit_amount) * U256::from(1_000_000_000u64);
+
+            // Get BLS public key bytes
+            use commonware_codec::Encode;
+            let bls_pubkey_bytes: [u8; 48] = bls_public_key.encode().as_ref()[..48].try_into().unwrap();
+
+            // Deposit contract address
+            let deposit_contract =
+                Address::from_hex("0x00000000219ab540356cBB839Cbe05303d7705Fa").unwrap();
+
+            // Use different wallet for deposit (one with funds)
+            let deposit_private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+            let deposit_signer = PrivateKeySigner::from_str(deposit_private_key).expect("Failed to create signer");
+            let deposit_wallet = EthereumWallet::from(deposit_signer);
+
+            let deposit_provider = ProviderBuilder::new()
+                .wallet(deposit_wallet)
+                .connect_http(node0_url.parse().expect("Invalid URL"));
+
+            println!("Sending deposit transaction for new validator");
+            std::io::stdout().flush().unwrap();
+            send_deposit_transaction(
+                &deposit_provider,
+                deposit_contract,
+                deposit_amount_wei,
+                &ed25519_pubkey_bytes,
+                &bls_pubkey_bytes,
+                &new_withdrawal_credentials,
+                &node_signature_bytes,
+                &consensus_signature_bytes,
+                0,
+            )
+            .await
+            .expect("failed to send deposit transaction");
+
+            println!("Deposit transaction completed successfully");
+            std::io::stdout().flush().unwrap();
+
+            // Start a new Reth node for the joining validator
+            let x = NUM_NODES;
+            println!("******* STARTING RETH FOR NODE {} (joining node)", x);
+            std::io::stdout().flush().unwrap();
+            let new_node_data_dir = format!("{}/node{}/data/reth_db", args.data_dir, x);
+            fs::create_dir_all(&new_node_data_dir).expect("Failed to create data directory");
+
+            let reth_builder = Reth::new()
+                .instance(x + 1)
+                .keep_stdout()
+                .data_dir(new_node_data_dir)
+                .arg("--enclave.mock-server")
+                .arg("--enclave.endpoint-port")
+                .arg(format!("1744{x}"))
+                .arg("--auth-ipc")
+                .arg("--auth-ipc.path")
+                .arg(format!("/tmp/reth_engine_api{x}.ipc"))
+                .arg("--metrics")
+                .arg(format!("0.0.0.0:{}", 9001 + x));
+
+            let mut reth = reth_builder.spawn();
+
+            let stdout = reth.stdout().expect("Failed to get stdout");
+            let log_dir = args.log_dir.clone();
+            context.clone().spawn(async move |_| {
+                let reader = BufReader::new(stdout);
+                let mut log_file = log_dir.as_ref().map(|dir| {
+                    fs::File::create(format!("{}/node{}.log", dir, x))
+                        .expect("Failed to create log file")
+                });
+
+                for line in reader.lines() {
+                    match line {
+                        Ok(line) => {
+                            if let Some(ref mut file) = log_file {
+                                writeln!(file, "[Node {}] {}", x, line)
+                                    .expect("Failed to write to log file");
+                            }
+                        }
+                        Err(_e) => {}
+                    }
+                }
+            });
+
+            println!("Node {} rpc address: {}", x, reth.http_port());
+            handles.push_back(reth);
+
+            // Write keys for the new node
+            let node_key_path = format!("{}/node{}/data/node_key.pem", args.data_dir, x);
+            let consensus_key_path = format!("{}/node{}/data/consensus_key.pem", args.data_dir, x);
+
+            let encoded_node_key = commonware_utils::hex(&ed25519_private_key.encode());
+            fs::write(&node_key_path, encoded_node_key).expect("Unable to write node key to disk");
+
+            let encoded_consensus_key = commonware_utils::hex(&bls_private_key.encode());
+            fs::write(&consensus_key_path, encoded_consensus_key).expect("Unable to write consensus key to disk");
+
+            // Start the joining node - syncing from genesis (no checkpoint)
+            #[allow(unused_mut)]
+            let mut flags = get_node_flags(x.into());
+
+            #[cfg(any(feature = "base-bench", feature = "bench"))]
+            {
+                flags.bench_block_dir = args.bench_block_dir.clone();
+            }
+
+            flags.key_store_path = format!("{}/node{}/data", args.data_dir, x);
+            flags.ip = Some("127.0.0.1:26640".to_string());
+
+            // Create a bootstrappers.toml file with one of the genesis validators
+            // Read the genesis to get a validator's public key
+            let genesis = summit_types::Genesis::load_from_file("./example_genesis.toml")
+                .expect("Failed to load genesis");
+            let validators = genesis.get_validators().expect("Failed to get validators");
+            let bootstrap_validator = &validators[0];
+            let bootstrap_pk_hex = commonware_utils::hex(bootstrap_validator.node_public_key.as_ref());
+            let bootstrap_addr = bootstrap_validator.ip_address;
+
+            let bootstrappers_path = format!("{}/bootstrappers.toml", args.data_dir);
+            let bootstrappers_content = format!(
+                r#"[[bootstrappers]]
+node_public_key = "0x{}"
+address = "{}"
+"#,
+                bootstrap_pk_hex, bootstrap_addr
+            );
+            fs::write(&bootstrappers_path, bootstrappers_content)
+                .expect("Failed to write bootstrappers.toml");
+            println!("Created bootstrappers.toml with validator {} at {}", bootstrap_pk_hex, bootstrap_addr);
+
+            flags.bootstrappers = Some(bootstrappers_path);
+
+            println!(
+                "Starting consensus engine for node {} (syncing from genesis)",
+                ed25519_private_key.public_key()
+            );
+
+            let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+            let data_dir_clone = args.data_dir.clone();
+            let thread = std::thread::spawn(move || {
+                let storage_dir = PathBuf::from(&data_dir_clone).join("stores").join(format!("node{}", x));
+                let cfg = cw_tokio::Config::default()
+                    .with_tcp_nodelay(Some(true))
+                    .with_worker_threads(4)
+                    .with_storage_directory(storage_dir)
+                    .with_catch_panics(true);
+                let executor = cw_tokio::Runner::new(cfg);
+
+                executor.start(|node_context| async move {
+                    let node_handle = node_context.clone().spawn(|ctx| async move {
+                        // No checkpoint - sync from genesis
+                        run_node_local(ctx, flags, None, None).await.unwrap();
+                    });
+
+                    let stop_fut = stop_rx.recv().fuse();
+                    pin_mut!(stop_fut);
+                    futures::select! {
+                        _ = stop_fut => {
+                            println!("Node {} received stop signal, shutting down runtime...", x);
+                            node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
+                        }
+                        _ = node_handle.fuse() => {
+                            println!("Node {} handle completed", x);
+                        }
+                    }
+                });
+            });
+
+            node_runtimes.push(NodeRuntime { _thread: thread, _stop_tx: stop_tx });
+
+            // Wait for the new node to sync and catch up with the other nodes
+            let new_node_rpc_port = get_node_flags(x as usize).rpc_port;
+            let reference_node_rpc_port = get_node_flags(0).rpc_port;
+            println!("Waiting for new node to sync from genesis and catch up with other nodes");
+
+            loop {
+                let reference_epoch = get_latest_epoch(reference_node_rpc_port).await.unwrap_or(0);
+                match get_latest_epoch(new_node_rpc_port).await {
+                    Ok(new_node_epoch) => {
+                        println!("New node at epoch {} (reference node at epoch {})", new_node_epoch, reference_epoch);
+                        if new_node_epoch >= reference_epoch {
+                            println!("New node synced from genesis and caught up at epoch {}!", new_node_epoch);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        println!("New node starting up... ({})", e);
+                    }
+                }
+                context.sleep(Duration::from_secs(2)).await;
+            }
+
+            // Verify the new validator is in the consensus state
+            let new_validator_pubkey = commonware_utils::hex(&ed25519_pubkey_bytes);
+            let new_validator_balance = get_validator_balance(new_node_rpc_port, new_validator_pubkey.clone()).await;
+            match new_validator_balance {
+                Ok(balance) => {
+                    println!("Success: new validator {} has balance {} in consensus state", new_validator_pubkey, balance);
+                }
+                Err(e) => {
+                    panic!("New validator should be in the consensus state: {}", e);
+                }
+            }
+
 
             Ok(())
         }
@@ -365,11 +641,11 @@ where
     }
 }
 
-async fn get_latest_height(rpc_port: u16) -> Result<u64, Box<dyn std::error::Error>> {
+async fn get_latest_epoch(rpc_port: u16) -> Result<u64, Box<dyn std::error::Error>> {
     let url = format!("http://localhost:{}", rpc_port);
     let client = HttpClientBuilder::default().build(&url)?;
-    let height = client.get_latest_height().await?;
-    Ok(height)
+    let epoch = client.get_latest_epoch().await?;
+    Ok(epoch)
 }
 
 async fn get_validator_balance(

@@ -32,6 +32,11 @@ path = "src/bin/protocol_params.rs"
 required-features = ["e2e"]
 
 [[bin]]
+name = "sync-from-genesis"
+path = "src/bin/sync_from_genesis.rs"
+required-features = ["e2e"]
+
+[[bin]]
 name = "execute-blocks"
 path = "src/bin/execute_blocks.rs"
 required-features = ["bench"]
@@ -138,4 +143,4 @@ tokio-console = ["console-subscriber"]
 jemalloc = ["dep:tikv-jemalloc-ctl"]
 base-bench = ["summit-application/base-bench", "summit-types/base-bench"]
 bench = ["summit-application/bench", "summit-types/bench"]
-e2e = []
+e2e = ["summit-types/e2e"]
