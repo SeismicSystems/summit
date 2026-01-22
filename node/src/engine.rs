@@ -250,6 +250,7 @@ where
             block_codec_config: (),
             max_repair: MAX_REPAIR,
             strategy: Sequential,
+            checkpoint_finalized_header: cfg.checkpoint_finalized_header,
         };
 
         let (syncer, syncer_mailbox) = summit_syncer::Actor::init(

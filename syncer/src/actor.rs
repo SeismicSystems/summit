@@ -53,6 +53,7 @@ use std::{
 use tracing::{debug, error, info, warn};
 
 use commonware_cryptography::certificate::Provider;
+use summit_types::FinalizedHeader;
 use summit_types::utils;
 
 /// The key used to store the last processed height in the metadata store.
@@ -129,6 +130,8 @@ where
     block_codec_config: B::Cfg,
     // Strategy for parallel operations
     strategy: T,
+    // Optional finalized header from checkpoint
+    checkpoint_finalized_header: Option<FinalizedHeader<P::Scheme>>,
 
     // ---------- State ----------
     // Last view processed
@@ -235,6 +238,7 @@ where
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
                     strategy: config.strategy,
+                    checkpoint_finalized_header: config.checkpoint_finalized_header,
                     last_processed_round: Round::zero(),
                     last_processed_height: 0,
                     pending_ack: None.into(),
@@ -264,6 +268,7 @@ where
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
                     strategy: config.strategy,
+                    checkpoint_finalized_header: config.checkpoint_finalized_header,
                     last_processed_round: Round::zero(),
                     last_processed_height: 0,
                     pending_ack: None.into(),

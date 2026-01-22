@@ -182,7 +182,7 @@ impl Command {
             console_subscriber::init();
         }
 
-        let (maybe_checkpoint, maybe_last_block, _maybe_finalized_header) = {
+        let (maybe_checkpoint, maybe_last_block, maybe_finalized_header) = {
             if let Some(checkpoint_path) = &flags.checkpoint_path {
                 // Todo(dalton): Verify finalized header
                 read_checkpoint::<MultisigScheme>(checkpoint_path, flags.checkpoint_or_default)
@@ -378,6 +378,7 @@ impl Command {
                 &genesis,
                 initial_state,
                 maybe_last_block,
+                maybe_finalized_header,
                 flags.archive_mode,
             )
             .unwrap();
@@ -579,6 +580,7 @@ pub fn run_node_local(
             &genesis,
             initial_state,
             checkpoint_parent_block,
+            None,
             flags.archive_mode,
         )
         .unwrap();
