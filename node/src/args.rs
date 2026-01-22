@@ -35,6 +35,7 @@ use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 use crate::config::MAILBOX_SIZE;
 #[cfg(not(any(feature = "bench", feature = "base-bench")))]
 use summit_types::RethEngineClient;
+use summit_types::bootstrap::Bootstrappers;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{
@@ -139,6 +140,10 @@ pub struct RunFlags {
     /// Start this mode on archive mode and store a checkpoint for every epoch
     #[arg(long)]
     pub archive_mode: bool,
+
+    /// Path to a TOML file containing bootstrapper nodes (pubkey and address) for syncing
+    #[arg(long)]
+    pub bootstrappers: Option<String>,
 }
 
 impl Command {
@@ -336,10 +341,18 @@ impl Command {
             }
 
             // configure network
-            let network_committee_ingress: Vec<_> = network_committee
-                .iter()
-                .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
-                .collect();
+            let network_committee_ingress: Vec<_> =
+                if let Some(ref bootstrappers_path) = flags.bootstrappers {
+                    Bootstrappers::load_from_file(bootstrappers_path)
+                        .expect("Failed to load bootstrappers file")
+                        .to_ingress_list()
+                        .expect("Failed to parse bootstrappers")
+                } else {
+                    network_committee
+                        .iter()
+                        .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
+                        .collect()
+                };
 
             let mut p2p_cfg = authenticated::discovery::Config::recommended(
                 signer.clone(),
@@ -528,10 +541,18 @@ pub fn run_node_local(
         }
 
         // configure network
-        let network_committee_ingress: Vec<_> = network_committee
-            .iter()
-            .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
-            .collect();
+        let network_committee_ingress: Vec<_> =
+            if let Some(ref bootstrappers_path) = flags.bootstrappers {
+                Bootstrappers::load_from_file(bootstrappers_path)
+                    .expect("Failed to load bootstrappers file")
+                    .to_ingress_list()
+                    .expect("Failed to parse bootstrappers")
+            } else {
+                network_committee
+                    .iter()
+                    .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
+                    .collect()
+            };
 
         let mut p2p_cfg = authenticated::discovery::Config::local(
             key_store.node_key.clone(),
