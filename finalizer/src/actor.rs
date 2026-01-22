@@ -430,7 +430,7 @@ impl<
             let stake_changed = self.canonical_state.apply_protocol_parameter_changes();
 
             // Build the committee for the next epoch.
-            self.update_validator_committee(stake_changed);
+            self.validator_exit =self.update_validator_committee(stake_changed);
 
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
@@ -487,18 +487,6 @@ impl<
             // Send the new validator list to the orchestrator amd start the Simplex engine
             // for the new epoch
             let active_validators = self.canonical_state.get_active_validators();
-
-            // If the node's public key is not contained in the new validator list,
-            // trigger an exit
-            if !active_validators
-                .iter()
-                .any(|(pk, _)| pk == &self.node_public_key)
-                && !self
-                    .canonical_state
-                    .validator_is_joining(&self.node_public_key)
-            {
-                self.validator_exit = true;
-            }
 
             self.orchestrator_mailbox
                 .report(Message::Enter(EpochTransition {
@@ -803,8 +791,9 @@ impl<
         }
     }
 
-    fn update_validator_committee(&mut self, stake_changed: bool) {
+    fn update_validator_committee(&mut self, stake_changed: bool) -> bool{
         // Add and remove validators for the next epoch
+        let mut validator_exit = false;
         let next_epoch = self.canonical_state.epoch + 1;
         if self
             .canonical_state
@@ -828,6 +817,11 @@ impl<
             }
 
             for key in self.canonical_state.removed_validators.iter() {
+                // Check if this node exits the validator set
+                if key == &self.node_public_key {
+                    validator_exit = true;
+                }
+
                 // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
                 let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
                 if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key_bytes) {
@@ -895,6 +889,8 @@ impl<
                 }
             }
         }
+
+        validator_exit
     }
 }
 
