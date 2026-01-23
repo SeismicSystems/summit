@@ -191,7 +191,12 @@ impl ConsensusState {
     }
 
     // Withdrawal queue operations
-    pub fn push_withdrawal_request(&mut self, request: WithdrawalRequest, withdrawal_epoch: u64) {
+    pub fn push_withdrawal_request(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_epoch: u64,
+        subtract_balance: bool,
+    ) {
         let withdrawal_index = self.get_and_increment_withdrawal_index();
 
         let pending_withdrawal = PendingWithdrawal {
@@ -202,6 +207,7 @@ impl ConsensusState {
                 amount: request.amount,
             },
             pubkey: request.validator_pubkey,
+            subtract_balance,
         };
 
         self.push_withdrawal(pending_withdrawal, withdrawal_epoch);
@@ -611,6 +617,7 @@ mod tests {
                 amount,
             },
             pubkey: [index as u8; 32],
+            subtract_balance: true,
         }
     }
 

@@ -862,8 +862,11 @@ impl<
                             validator_pubkey: key,
                             amount: balance,
                         };
-                        self.canonical_state
-                            .push_withdrawal_request(withdrawal_request, withdrawal_epoch);
+                        self.canonical_state.push_withdrawal_request(
+                            withdrawal_request,
+                            withdrawal_epoch,
+                            true,
+                        );
 
                         // Mark the account as having a pending withdrawal
                         if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key)
@@ -879,8 +882,11 @@ impl<
                         validator_pubkey: key,
                         amount: excess_amount,
                     };
-                    self.canonical_state
-                        .push_withdrawal_request(withdrawal_request, withdrawal_epoch);
+                    self.canonical_state.push_withdrawal_request(
+                        withdrawal_request,
+                        withdrawal_epoch,
+                        true,
+                    );
 
                     // Mark the account as having a pending withdrawal
                     if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
@@ -1100,18 +1106,10 @@ async fn parse_execution_requests<
                             };
                             let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
 
-                            // If an account exists, we have to temporary increase the `pending_withdrawal_amount`,
-                            // otherwise this withdrawal request will decrement the actual account balance.
-
-                            if let Some(account) =
-                                state.validator_accounts.get_mut(&validator_pubkey)
-                            {
-                                account.pending_withdrawal_amount += deposit_request.amount;
-                            }
-
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
                                 withdrawal_epoch,
+                                false, // subtract_balance: deposit was never credited to balance
                             );
                         }
                     }
@@ -1191,6 +1189,7 @@ async fn parse_execution_requests<
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
                                 withdrawal_epoch,
+                                true, // subtract_balance: user-initiated withdrawal from balance
                             );
                         }
                     }
@@ -1275,11 +1274,11 @@ async fn process_execution_requests<
                         };
                         let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
 
-                        // Temporarily increase `pending_withdrawal_amount` so this withdrawal
-                        // doesn't decrement the actual account balance.
-                        account.pending_withdrawal_amount += request.amount;
-
-                        state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_epoch);
+                        state.push_withdrawal_request(
+                            withdrawal_request.clone(),
+                            withdrawal_epoch,
+                            false, // subtract_balance: top-up deposit was never credited to balance
+                        );
                         continue;
                     }
                 }
@@ -1309,7 +1308,11 @@ async fn process_execution_requests<
                         amount: request.amount,
                     };
                     let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
-                    state.push_withdrawal_request(withdrawal_request.clone(), withdrawal_epoch);
+                    state.push_withdrawal_request(
+                        withdrawal_request.clone(),
+                        withdrawal_epoch,
+                        false, // subtract_balance: new deposit was never credited (no account created)
+                    );
                     continue;
                 }
 
@@ -1362,23 +1365,14 @@ async fn process_execution_requests<
         let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
         assert_eq!(pending_withdrawal.inner, *withdrawal);
 
-        if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned()
-            && account.balance + account.pending_withdrawal_amount >= withdrawal.amount
-        {
-            // The above balance check should never fail, because we checked the balance when
-            // adding the pending withdrawal to the queue
-
-            // If `pending_withdrawal_amount` is >= withdrawal.amount, then this is an immediate withdrawal
-            // request that was triggered by a invalid deposit request.
-            if account.pending_withdrawal_amount >= withdrawal.amount {
-                account.pending_withdrawal_amount = account
-                    .pending_withdrawal_amount
-                    .saturating_sub(withdrawal.amount);
-            } else {
-                // For a normal withdrawal request, we decrement the balance directly.
+        if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned() {
+            if pending_withdrawal.subtract_balance {
+                // This is a user-initiated or system-forced withdrawal - subtract from balance
                 account.balance = account.balance.saturating_sub(withdrawal.amount);
                 account.has_pending_withdrawal = false;
             }
+            // If subtract_balance is false, this is an immediate refund of a rejected deposit.
+            // The deposit was never credited to the balance, so we don't subtract anything.
 
             #[cfg(debug_assertions)]
             {

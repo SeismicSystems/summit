@@ -219,6 +219,7 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
+            subtract_balance: true,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -379,6 +380,7 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
+            subtract_balance: true,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -623,6 +625,7 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
+            subtract_balance: true,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
