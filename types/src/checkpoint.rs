@@ -229,6 +229,7 @@ mod tests {
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
+            has_pending_deposit: false,
             has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 100,
@@ -241,6 +242,7 @@ mod tests {
             balance: 16_000_000_000,                  // 16 ETH
             pending_withdrawal_amount: 8_000_000_000, // 8 ETH pending
             status: ValidatorStatus::SubmittedExitRequest,
+            has_pending_deposit: false,
             has_pending_withdrawal: true,
             joining_epoch: 0,
             last_deposit_index: 101,
@@ -390,6 +392,7 @@ mod tests {
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
+            has_pending_deposit: false,
             has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 100,
@@ -402,6 +405,7 @@ mod tests {
             balance: 16_000_000_000,                  // 16 ETH
             pending_withdrawal_amount: 8_000_000_000, // 8 ETH pending
             status: ValidatorStatus::SubmittedExitRequest,
+            has_pending_deposit: false,
             has_pending_withdrawal: true,
             joining_epoch: 0,
             last_deposit_index: 101,
@@ -635,6 +639,7 @@ mod tests {
             balance: 32_000_000_000, // 32 ETH
             pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
+            has_pending_deposit: false,
             has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 100,

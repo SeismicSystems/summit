@@ -287,19 +287,19 @@ fn test_deposit_request_top_up() {
         let validator_node_key = test_deposit1.node_pubkey.clone();
 
         // Convert to ExecutionRequest and then to Requests
-        let execution_requests1 = vec![
-            ExecutionRequest::Deposit(test_deposit1.clone()),
-            ExecutionRequest::Deposit(test_deposit2.clone()),
-        ];
+        let execution_requests1 = vec![ExecutionRequest::Deposit(test_deposit1.clone())];
         let requests1 = common::execution_requests_to_requests(execution_requests1);
+
+        let execution_requests2 = vec![ExecutionRequest::Deposit(test_deposit2.clone())];
+        let requests2 = common::execution_requests_to_requests(execution_requests2);
 
         let execution_requests3 = vec![ExecutionRequest::Deposit(test_deposit3.clone())];
         let requests3 = common::execution_requests_to_requests(execution_requests3);
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height1 = 5;
-        let deposit_block_height2 = 5;
-        let deposit_block_height3 = 10;
+        let deposit_block_height2 = 10;
+        let deposit_block_height3 = 20;
 
         let deposit_process_height2 =
             utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height2 / BLOCKS_PER_EPOCH);
@@ -315,6 +315,7 @@ fn test_deposit_request_top_up() {
         let stop_height = withdrawal_height3 + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height1, requests1);
+        execution_requests_map.insert(deposit_block_height2, requests2);
         execution_requests_map.insert(deposit_block_height3, requests3);
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)

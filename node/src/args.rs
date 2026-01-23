@@ -678,6 +678,7 @@ fn get_initial_state(
                 balance: validator_minimum_stake,
                 pending_withdrawal_amount: 0,
                 status: ValidatorStatus::Active,
+                has_pending_deposit: false,
                 has_pending_withdrawal: false,
                 joining_epoch: 0,
                 // TODO(matthias): this index is comes from the deposit contract.

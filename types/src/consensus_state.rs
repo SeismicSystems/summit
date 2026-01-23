@@ -629,6 +629,7 @@ mod tests {
             balance,
             pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
+            has_pending_deposit: false,
             has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: index,

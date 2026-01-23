@@ -1084,7 +1084,38 @@ async fn parse_execution_requests<
                             validator_minimum_stake,
                             validator_maximum_stake,
                         ) {
-                            state.push_deposit(deposit_request);
+                            // Mark account as having a pending deposit
+                            let validator_pubkey: [u8; 32] =
+                                deposit_request.node_pubkey.as_ref().try_into().unwrap();
+                            if let Some(account) =
+                                state.validator_accounts.get_mut(&validator_pubkey)
+                            {
+                                account.has_pending_deposit = true;
+                            } else {
+                                // Create account early with Inactive status for new validators
+                                let withdrawal_credentials = match parse_withdrawal_credentials(
+                                    deposit_request.withdrawal_credentials,
+                                ) {
+                                    Ok(withdrawal_credentials) => withdrawal_credentials,
+                                    Err(e) => {
+                                        warn!("Failed to parse withdrawal credentials: {e}");
+                                        continue;
+                                    }
+                                };
+                                let new_account = ValidatorAccount {
+                                    consensus_public_key: deposit_request.consensus_pubkey.clone(),
+                                    withdrawal_credentials,
+                                    balance: 0, // Balance will be set when deposit is processed
+                                    pending_withdrawal_amount: 0,
+                                    status: ValidatorStatus::Inactive,
+                                    has_pending_deposit: true,
+                                    has_pending_withdrawal: false,
+                                    joining_epoch: 0, // Will be set when deposit is processed
+                                    last_deposit_index: deposit_request.index,
+                                };
+                                state.set_account(validator_pubkey, new_account);
+                            }
+                            state.push_deposit(deposit_request.clone());
                         } else {
                             // If the signatures fail, we create an immediate withdrawal request for the deposited amount.
                             // Since the signatures are invalid, the validator cannot be added to the committee.
@@ -1121,6 +1152,14 @@ async fn parse_execution_requests<
                             .get_account(&withdrawal_request.validator_pubkey)
                             .cloned()
                         {
+                            // If the validator already has a pending deposit request, we skip this withdrawal request
+                            if account.has_pending_deposit {
+                                info!(
+                                    "Skipping withdrawal request because the validator has a pending deposit request: {withdrawal_request:?}"
+                                );
+                                continue; // Skip this withdrawal request
+                            }
+
                             // If the validator already has a pending withdrawal request, we skip this withdrawal request
                             if account.has_pending_withdrawal {
                                 info!(
@@ -1238,9 +1277,75 @@ async fn process_execution_requests<
     if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
         for _ in 0..validator_onboarding_limit_per_block {
             if let Some(request) = state.pop_deposit() {
-                let node_pubkey_bytes = request.node_pubkey.as_ref().try_into().unwrap();
+                let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
 
-                if let Some(account) = state.validator_accounts.get_mut(&node_pubkey_bytes) {
+                // Account should always exist (created early in parse_execution_requests)
+                let Some(account) = state.validator_accounts.get_mut(&node_pubkey_bytes) else {
+                    warn!("Deposit request has no corresponding account, skipping: {request:?}");
+                    continue;
+                };
+
+                // Clear the pending deposit flag since we're processing it now
+                account.has_pending_deposit = false;
+
+                if account.status == ValidatorStatus::Inactive {
+                    // New validator: account was created early with Inactive status
+                    let new_balance = request.amount;
+
+                    // Revalidate in case stake bounds changed since deposit was parsed
+                    if new_balance < validator_minimum_stake
+                        || new_balance > validator_maximum_stake
+                    {
+                        info!(
+                            "New validator deposit {} outside valid range [{}, {}], initiating refund: {request:?}",
+                            new_balance, validator_minimum_stake, validator_maximum_stake
+                        );
+                        let withdrawal_request = WithdrawalRequest {
+                            source_address: account.withdrawal_credentials,
+                            validator_pubkey: node_pubkey_bytes,
+                            amount: request.amount,
+                        };
+                        let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
+                        state.push_withdrawal_request(
+                            withdrawal_request,
+                            withdrawal_epoch,
+                            false, // subtract_balance: deposit was never credited
+                        );
+                        // Remove the inactive account since validator won't be joining
+                        state.remove_account(&node_pubkey_bytes);
+                        continue;
+                    }
+
+                    // Activate the new validator
+                    let activation_epoch = state.epoch + validator_num_warm_up_epochs;
+                    account.balance = new_balance;
+                    account.status = ValidatorStatus::Joining;
+                    account.joining_epoch = activation_epoch;
+                    account.last_deposit_index = request.index;
+
+                    state.add_validator(activation_epoch, request.node_pubkey.clone());
+
+                    info!(
+                        "Processing new validator deposit. Balance: {}, activation epoch: {}",
+                        new_balance, activation_epoch
+                    );
+
+                    #[cfg(debug_assertions)]
+                    {
+                        use commonware_codec::Encode;
+                        let gauge: Gauge = Gauge::default();
+                        gauge.set(request.amount as i64);
+                        context.register(
+                            format!(
+                                "<creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
+                                hex::encode(request.withdrawal_credentials),
+                                hex::encode(request.node_pubkey.encode())
+                            ),
+                            "Validator balance",
+                            gauge,
+                        );
+                    }
+                } else {
                     // Top-up deposit for existing validator
                     let new_balance = account.balance + request.amount;
 
@@ -1248,114 +1353,30 @@ async fn process_execution_requests<
                     if new_balance >= validator_minimum_stake
                         && new_balance <= validator_maximum_stake
                     {
-                        // Valid top-up: add to balance
                         info!(
                             "Processing top-up deposit for existing validator. Current balance: {}, deposit: {}, new balance: {}",
                             account.balance, request.amount, new_balance
                         );
                         account.balance = new_balance;
-                        continue;
                     } else {
                         // Invalid: new balance outside range, initiate immediate withdrawal
                         info!(
                             "Top-up deposit would result in balance {} outside valid range [{}, {}], initiating immediate withdrawal: {request:?}",
                             new_balance, validator_minimum_stake, validator_maximum_stake
                         );
-                        let withdrawal_credentials =
-                            match parse_withdrawal_credentials(request.withdrawal_credentials) {
-                                Ok(withdrawal_credentials) => withdrawal_credentials,
-                                Err(e) => {
-                                    warn!("Failed to parse withdrawal credentials: {e}");
-                                    continue;
-                                }
-                            };
-
-                        let validator_pubkey: [u8; 32] =
-                            request.node_pubkey.as_ref().try_into().unwrap();
                         let withdrawal_request = WithdrawalRequest {
-                            source_address: withdrawal_credentials,
-                            validator_pubkey,
+                            source_address: account.withdrawal_credentials,
+                            validator_pubkey: node_pubkey_bytes,
                             amount: request.amount,
                         };
                         let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
 
                         state.push_withdrawal_request(
-                            withdrawal_request.clone(),
+                            withdrawal_request,
                             withdrawal_epoch,
                             false, // subtract_balance: top-up deposit was never credited to balance
                         );
-                        continue;
                     }
-                }
-
-                // Create new validator account
-                let withdrawal_credentials =
-                    match parse_withdrawal_credentials(request.withdrawal_credentials) {
-                        Ok(withdrawal_credentials) => withdrawal_credentials,
-                        Err(e) => {
-                            warn!("Failed to parse withdrawal credentials: {e}");
-                            continue;
-                        }
-                    };
-
-                // Check again if the new balance is valid. We already check this above for the case
-                // that a validator account already exists.
-                // This check might not be necessary, because we already check this when parsing the
-                // deposit request.
-                if request.amount < validator_minimum_stake
-                    || request.amount > validator_maximum_stake
-                {
-                    let validator_pubkey: [u8; 32] =
-                        request.node_pubkey.as_ref().try_into().unwrap();
-                    let withdrawal_request = WithdrawalRequest {
-                        source_address: withdrawal_credentials,
-                        validator_pubkey,
-                        amount: request.amount,
-                    };
-                    let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
-                    state.push_withdrawal_request(
-                        withdrawal_request.clone(),
-                        withdrawal_epoch,
-                        false, // subtract_balance: new deposit was never credited (no account created)
-                    );
-                    continue;
-                }
-
-                // Create new ValidatorAccount from DepositRequest
-                let activation_epoch = state.epoch + validator_num_warm_up_epochs;
-                let new_account = ValidatorAccount {
-                    consensus_public_key: request.consensus_pubkey.clone(),
-                    withdrawal_credentials,
-                    balance: request.amount,
-                    pending_withdrawal_amount: 0,
-                    // This will add them to the p2p network for the next epoch
-                    status: ValidatorStatus::Joining,
-                    has_pending_withdrawal: false,
-                    joining_epoch: activation_epoch,
-                    last_deposit_index: request.index,
-                };
-
-                state.set_account(node_pubkey_bytes, new_account);
-
-                // If the node shuts down, before the account changes are committed,
-                // then everything should work normally, because the registry is not persisted to disk
-                let activation_epoch = state.epoch + validator_num_warm_up_epochs;
-                state.add_validator(activation_epoch, request.node_pubkey.clone());
-
-                #[cfg(debug_assertions)]
-                {
-                    use commonware_codec::Encode;
-                    let gauge: Gauge = Gauge::default();
-                    gauge.set(request.amount as i64);
-                    context.register(
-                        format!(
-                            "<creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
-                            hex::encode(request.withdrawal_credentials),
-                            hex::encode(request.node_pubkey.encode())
-                        ),
-                        "Validator balance",
-                        gauge,
-                    );
                 }
             }
         }
@@ -1424,16 +1445,29 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
 ) -> bool {
     // Check if validator already exists
     let validator_pubkey: [u8; 32] = deposit_request.node_pubkey.as_ref().try_into().unwrap();
-    let existing_balance = state
-        .validator_accounts
-        .get(&validator_pubkey)
-        .map(|account| account.balance)
-        .unwrap_or(0);
+    let account = state.validator_accounts.get(&validator_pubkey);
+    let existing_balance = account.map(|acc| acc.balance).unwrap_or(0);
+
+    // Check for pending deposit or withdrawal (only if account exists)
+    if let Some(acc) = account {
+        if acc.has_pending_deposit {
+            info!(
+                "Skipping deposit request because the validator already has a pending deposit request: {deposit_request:?}"
+            );
+            return false;
+        }
+        if acc.has_pending_withdrawal {
+            info!(
+                "Skipping deposit request because the validator already has a pending withdrawal request: {deposit_request:?}"
+            );
+            return false;
+        }
+    }
 
     let new_balance = existing_balance + deposit_request.amount;
 
     // Validate that new balance is within valid range
-    if new_balance > validator_maximum_stake {
+    if new_balance < validator_minimum_stake || new_balance > validator_maximum_stake {
         info!(
             "Deposit would result in balance {} outside valid range [{}, {}] (existing: {}, deposit: {}), initiating immediate withdrawal: {deposit_request:?}",
             new_balance,
