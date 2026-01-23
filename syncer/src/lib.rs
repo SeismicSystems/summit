@@ -199,6 +199,7 @@ mod tests {
             value_write_buffer: NZUsize!(1024),
             buffer_pool: PoolRef::new(PAGE_SIZE, PAGE_CACHE_SIZE),
             strategy: Sequential,
+            checkpoint_finalized_header: None,
         };
 
         // Create the resolver

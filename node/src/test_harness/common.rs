@@ -573,6 +573,7 @@ where
         fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(512).unwrap()),
         initial_state,
         checkpoint_last_block: None,
+        checkpoint_finalized_header: None,
         archive_mode: false,
     }
 }
