@@ -5,7 +5,6 @@ use commonware_cryptography::certificate::Provider;
 use commonware_parallel::Strategy;
 use commonware_runtime::buffer::PoolRef;
 use std::num::{NonZeroU64, NonZeroUsize};
-use summit_types::FinalizedHeader;
 
 /// Marshal configuration.
 pub struct Config<B, P, T>
@@ -57,7 +56,4 @@ where
 
     /// Strategy for parallel operations.
     pub strategy: T,
-
-    /// Optional finalized header from checkpoint.
-    pub checkpoint_finalized_header: Option<FinalizedHeader<P::Scheme>>,
 }

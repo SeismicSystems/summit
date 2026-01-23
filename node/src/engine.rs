@@ -25,7 +25,7 @@ use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
-use summit_types::{Block, EngineClient, PublicKey};
+use summit_types::{Block, EngineClient, FinalizedHeader, PublicKey};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -106,6 +106,7 @@ pub struct Engine<
     sync_epoch: u64,
     sync_view: u64,
     checkpoint_last_block: Option<Block>,
+    checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
     cancellation_token: CancellationToken,
 }
 
@@ -250,7 +251,6 @@ where
             block_codec_config: (),
             max_repair: MAX_REPAIR,
             strategy: Sequential,
-            checkpoint_finalized_header: cfg.checkpoint_finalized_header,
         };
 
         let (syncer, syncer_mailbox) = summit_syncer::Actor::init(
@@ -332,6 +332,7 @@ where
             sync_epoch,
             sync_view,
             checkpoint_last_block: cfg.checkpoint_last_block,
+            checkpoint_finalized_header: cfg.checkpoint_finalized_header,
             cancellation_token,
         }
     }
@@ -431,6 +432,7 @@ where
             self.sync_epoch,
             self.sync_view,
             self.checkpoint_last_block,
+            self.checkpoint_finalized_header,
         );
         // start the orchestrator
         let orchestrator_handle =

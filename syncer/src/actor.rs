@@ -130,8 +130,6 @@ where
     block_codec_config: B::Cfg,
     // Strategy for parallel operations
     strategy: T,
-    // Optional finalized header from checkpoint
-    checkpoint_finalized_header: Option<FinalizedHeader<P::Scheme>>,
 
     // ---------- State ----------
     // Last view processed
@@ -238,7 +236,6 @@ where
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
                     strategy: config.strategy,
-                    checkpoint_finalized_header: config.checkpoint_finalized_header,
                     last_processed_round: Round::zero(),
                     last_processed_height: 0,
                     pending_ack: None.into(),
@@ -268,7 +265,6 @@ where
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
                     strategy: config.strategy,
-                    checkpoint_finalized_header: config.checkpoint_finalized_header,
                     last_processed_round: Round::zero(),
                     last_processed_height: 0,
                     pending_ack: None.into(),
@@ -295,6 +291,7 @@ where
         sync_epoch: u64,
         sync_view: u64,
         checkpoint_last_block: Option<B>,
+        checkpoint_finalized_header: Option<FinalizedHeader<P::Scheme>>,
     ) -> Handle<()>
     where
         R: Resolver<
@@ -312,7 +309,8 @@ where
                 sync_height,
                 sync_epoch,
                 sync_view,
-                checkpoint_last_block
+                checkpoint_last_block,
+                checkpoint_finalized_header,
             )
             .await
         )
@@ -329,6 +327,7 @@ where
         sync_epoch: u64,
         sync_view: u64,
         checkpoint_last_block: Option<B>,
+        checkpoint_finalized_header: Option<FinalizedHeader<P::Scheme>>,
     ) where
         R: Resolver<
                 Key = handler::Request<B>,
@@ -343,10 +342,7 @@ where
         // If we have a checkpoint last block meaning we loaded from checkpoint, finalize it to complete the checkpoint
         if let Some(last_block) = checkpoint_last_block {
             let height = last_block.height().get();
-            let finalization = self
-                .checkpoint_finalized_header
-                .take()
-                .map(|h| h.finalization);
+            let finalization = checkpoint_finalized_header.map(|h| h.finalization);
             self.finalize(
                 height,
                 last_block.commitment(),

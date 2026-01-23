@@ -199,7 +199,6 @@ mod tests {
             value_write_buffer: NZUsize!(1024),
             buffer_pool: PoolRef::new(PAGE_SIZE, PAGE_CACHE_SIZE),
             strategy: Sequential,
-            checkpoint_finalized_header: None,
         };
 
         // Create the resolver
@@ -323,7 +322,7 @@ mod tests {
         let application = Application::<B, S>::default();
 
         // Start the application
-        actor.start(application.clone(), buffer, resolver, 0, 0, 0, None);
+        actor.start(application.clone(), buffer, resolver, 0, 0, 0, None, None);
 
         (application, mailbox, Height::zero())
     }
