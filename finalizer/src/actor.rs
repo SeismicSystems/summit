@@ -762,7 +762,7 @@ impl<
                     .canonical_state
                     .validator_accounts
                     .get(&key_bytes)
-                    .map(|account| account.balance);
+                    .map(|account| account.balance + account.pending_withdrawal_amount);
                 let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
             }
             ConsensusStateRequest::GetValidatorAccount(public_key) => {
@@ -855,28 +855,35 @@ impl<
             for (key, balance, withdrawal_credentials) in validators_to_process {
                 if balance < self.canonical_state.validator_minimum_stake {
                     // Remove the validator from the committee and withdraw the full balance
+                    // Update account first: move balance to pending_withdrawal_amount
                     if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
                         account.status = ValidatorStatus::Inactive;
-                        let withdrawal_request = WithdrawalRequest {
-                            source_address: withdrawal_credentials,
-                            validator_pubkey: key,
-                            amount: balance,
-                        };
-                        self.canonical_state.push_withdrawal_request(
-                            withdrawal_request,
-                            withdrawal_epoch,
-                            true,
-                        );
-
-                        // Mark the account as having a pending withdrawal
-                        if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key)
-                        {
-                            account.has_pending_withdrawal = true;
-                        }
+                        account.balance = 0;
+                        account.pending_withdrawal_amount += balance;
+                        account.has_pending_withdrawal = true;
                     }
+
+                    let withdrawal_request = WithdrawalRequest {
+                        source_address: withdrawal_credentials,
+                        validator_pubkey: key,
+                        amount: balance,
+                    };
+                    self.canonical_state.push_withdrawal_request(
+                        withdrawal_request,
+                        withdrawal_epoch,
+                        true, // subtract_balance
+                    );
                 } else if balance > self.canonical_state.validator_maximum_stake {
                     // Withdraw the portion of the balance exceeding `validator_maximum_stake`
                     let excess_amount = balance - self.canonical_state.validator_maximum_stake;
+
+                    // Move excess from balance to pending_withdrawal_amount
+                    if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
+                        account.balance -= excess_amount;
+                        account.pending_withdrawal_amount += excess_amount;
+                        account.has_pending_withdrawal = true;
+                    }
+
                     let withdrawal_request = WithdrawalRequest {
                         source_address: withdrawal_credentials,
                         validator_pubkey: key,
@@ -885,13 +892,8 @@ impl<
                     self.canonical_state.push_withdrawal_request(
                         withdrawal_request,
                         withdrawal_epoch,
-                        true,
+                        true, // subtract_balance
                     );
-
-                    // Mark the account as having a pending withdrawal
-                    if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
-                        account.has_pending_withdrawal = true;
-                    }
                 }
             }
         }
@@ -1181,6 +1183,9 @@ async fn parse_execution_requests<
                                 account.status = ValidatorStatus::SubmittedExitRequest;
                             }
 
+                            // Move balance to pending_withdrawal_amount
+                            account.balance = 0;
+                            account.pending_withdrawal_amount += remaining_balance;
                             account.has_pending_withdrawal = true;
                             state.set_account(withdrawal_request.validator_pubkey, account);
 
@@ -1189,7 +1194,7 @@ async fn parse_execution_requests<
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
                                 withdrawal_epoch,
-                                true, // subtract_balance: user-initiated withdrawal from balance
+                                true, // subtract_balance
                             );
                         }
                     }
@@ -1365,14 +1370,23 @@ async fn process_execution_requests<
         let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
         assert_eq!(pending_withdrawal.inner, *withdrawal);
 
+        // If subtract_balance is false, this is an immediate refund of a rejected deposit.
+        // No account modifications needed - the money was never part of the account.
+        // Note: if a deposit request with an invalid amount (below minimum or above maximum stake) was submitted,
+        // a withdrawal request will be initiated immediately, without creating a validator account.
+        // These are the cases where we process a withdrawal request without having a validator account
+        // stored in the consensus state.
+        if !pending_withdrawal.subtract_balance {
+            continue;
+        }
+
+        // For subtract_balance = true, the money was moved from balance to pending_withdrawal_amount
+        // at creation time. Now we subtract from pending_withdrawal_amount.
         if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned() {
-            if pending_withdrawal.subtract_balance {
-                // This is a user-initiated or system-forced withdrawal - subtract from balance
-                account.balance = account.balance.saturating_sub(withdrawal.amount);
-                account.has_pending_withdrawal = false;
-            }
-            // If subtract_balance is false, this is an immediate refund of a rejected deposit.
-            // The deposit was never credited to the balance, so we don't subtract anything.
+            account.pending_withdrawal_amount = account
+                .pending_withdrawal_amount
+                .saturating_sub(withdrawal.amount);
+            account.has_pending_withdrawal = false;
 
             #[cfg(debug_assertions)]
             {
@@ -1389,17 +1403,13 @@ async fn process_execution_requests<
                 );
             }
 
-            // If the remaining balance is 0, remove the validator account from the state.
-            if account.balance == 0 {
+            // If both balance and pending_withdrawal_amount are 0, remove the validator account.
+            if account.balance == 0 && account.pending_withdrawal_amount == 0 {
                 state.remove_account(&pending_withdrawal.pubkey);
             } else {
                 state.set_account(pending_withdrawal.pubkey, account);
             }
         }
-        // Note: if a deposit request with amount less than the minimum stake was submitted,
-        // a withdrawal request will be initiated immediately, without creating a validator account.
-        // This is the only case where we process a withdrawal request, without having a validator account
-        // stored in the consensus state.
     }
 }
 
