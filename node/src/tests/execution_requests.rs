@@ -1999,3 +1999,372 @@ fn test_protocol_param_stake_update_committee() {
         context.auditor().state()
     })
 }
+
+#[test_traced("INFO")]
+fn test_duplicate_deposit_blocked() {
+    // Tests that a second deposit request from the same validator is ignored
+    // while the first deposit is still pending.
+    //
+    // Test setup:
+    // - Genesis validators start with 32 ETH each
+    // - Submit two top-up deposits for the same validator at blocks 3 and 4
+    // - Only the first deposit should be processed, second should be ignored
+    let n = 10;
+    let min_stake = 32_000_000_000;
+    let max_stake = 100_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Create two top-up deposits for validator 0
+        let deposit_amount1 = 5_000_000_000; // 5 ETH
+        let deposit_amount2 = 3_000_000_000; // 3 ETH
+        let (deposit1, _, _) = common::create_deposit_request(
+            0,
+            deposit_amount1,
+            common::get_domain(),
+            Some(key_stores[0].node_key.clone()),
+            None,
+        );
+        let (deposit2, _, _) = common::create_deposit_request(
+            0,
+            deposit_amount2,
+            common::get_domain(),
+            Some(key_stores[0].node_key.clone()),
+            Some(deposit1.withdrawal_credentials),
+        );
+
+        let validator0_pubkey = validators[0].0.clone();
+
+        let execution_requests1 = vec![ExecutionRequest::Deposit(deposit1.clone())];
+        let requests1 = common::execution_requests_to_requests(execution_requests1);
+
+        let execution_requests2 = vec![ExecutionRequest::Deposit(deposit2.clone())];
+        let requests2 = common::execution_requests_to_requests(execution_requests2);
+
+        // First deposit at block 3, second at block 4 (both before processing at block 9)
+        let deposit_block_height1 = 3;
+        let deposit_block_height2 = 4;
+        let stop_height = BLOCKS_PER_EPOCH + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(deposit_block_height1, requests1);
+        execution_requests_map.insert(deposit_block_height2, requests2);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .build();
+
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        initial_state.validator_maximum_stake = max_stake;
+
+        let mut public_keys = HashSet::new();
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SEISMIC_BFT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // Wait for all validators to reach stop height
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Verify only the first deposit was processed
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        let account = state_query
+            .get_validator_account(validator0_pubkey)
+            .await
+            .unwrap();
+
+        // Balance should be initial (32 ETH) + first deposit (5 ETH) = 37 ETH
+        // Second deposit (3 ETH) should have been ignored
+        assert_eq!(account.balance, min_stake + deposit_amount1);
+
+        // No refund withdrawals should have been created (second deposit was just ignored)
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert!(withdrawals.is_empty());
+
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
+fn test_duplicate_withdrawal_blocked() {
+    // Tests that a second withdrawal request from the same validator is ignored
+    // while the first withdrawal is still pending.
+    //
+    // Test setup:
+    // - Genesis validators start with 32 ETH each
+    // - Submit two withdrawal requests for the same validator at blocks 3 and 4
+    // - Only the first withdrawal should be processed, second should be ignored
+    let n = 10;
+    let min_stake = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        // Create addresses AFTER sorting so they match sorted validators
+        let addresses: Vec<Address> = (0..n).map(|i| Address::from([i as u8; 20])).collect();
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Create two withdrawal requests for validator 0
+        let validator0_pubkey: [u8; 32] = validators[0].0.as_ref().try_into().unwrap();
+        let withdrawal_address = addresses[0];
+
+        let withdrawal1 =
+            common::create_withdrawal_request(withdrawal_address, validator0_pubkey, min_stake);
+        let withdrawal2 =
+            common::create_withdrawal_request(withdrawal_address, validator0_pubkey, min_stake);
+
+        let execution_requests1 = vec![ExecutionRequest::Withdrawal(withdrawal1.clone())];
+        let requests1 = common::execution_requests_to_requests(execution_requests1);
+
+        let execution_requests2 = vec![ExecutionRequest::Withdrawal(withdrawal2.clone())];
+        let requests2 = common::execution_requests_to_requests(execution_requests2);
+
+        // First withdrawal at block 3, second at block 4
+        let withdrawal_block_height1 = 3;
+        let withdrawal_block_height2 = 4;
+        let withdrawal_epoch =
+            (withdrawal_block_height1 / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
+        let stop_height = withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(withdrawal_block_height1, requests1);
+        execution_requests_map.insert(withdrawal_block_height2, requests2);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .build();
+
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+
+        let mut public_keys = HashSet::new();
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SEISMIC_BFT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // Wait for n-1 validators (validator 0 exits)
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 1 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Verify only one withdrawal occurred
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(withdrawals.len(), 1);
+
+        let epoch_withdrawals = withdrawals.get(&withdrawal_height).unwrap();
+        assert_eq!(epoch_withdrawals.len(), 1);
+        assert_eq!(epoch_withdrawals[0].amount, min_stake);
+        assert_eq!(epoch_withdrawals[0].address, withdrawal_address);
+
+        let validator0_client_id = format!("validator_{}", validators[0].0);
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &[&validator0_client_id])
+                .is_ok()
+        );
+
+        context.auditor().state()
+    })
+}

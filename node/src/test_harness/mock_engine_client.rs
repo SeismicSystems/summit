@@ -633,10 +633,16 @@ impl MockEngineNetwork {
     }
 
     /// Get all withdrawals from the canonical chain
+    /// Uses the client with the highest chain height to ensure we get
+    /// withdrawals even when some validators have exited early.
     pub fn get_withdrawals(&self) -> HashMap<u64, Vec<Withdrawal>> {
         let clients = self.get_clients();
-        let withdrawals = clients[0].get_withdrawals();
-        withdrawals
+        // Find the client with the highest chain height
+        let best_client = clients
+            .iter()
+            .max_by_key(|c| c.get_chain_height())
+            .expect("no clients");
+        best_client.get_withdrawals()
     }
 }
 
