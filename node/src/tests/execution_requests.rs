@@ -28,7 +28,7 @@ fn test_deposit_request_single() {
     // Adds a deposit request to the block at height 5, and then checks
     // the internal validator state to make sure that the validator balance, public keys,
     // and withdrawal credentials were added correctly.
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -209,7 +209,7 @@ fn test_deposit_request_top_up() {
     // Adds three deposit requests to blocks at different heights, and makes sure that only
     // the first two request are processed because the last request would put the validator
     // over the maximum stake.
-    let n = 10;
+    let n = 5;
     let minimum_stake = 32_000_000_000;
     let maximum_stake = 40_000_000_000;
     let link = Link {
@@ -448,7 +448,7 @@ fn test_deposit_and_withdrawal_request_single() {
     // It is verified that the validator balance is correctly decremented after the withdrawal,
     // and that the withdrawal request that is sent to the execution layer matches the
     // withdrawal request (execution request) that was initially added to block 7.
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -667,7 +667,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
     // the entire remaining balance should be withdrawn.
     // We also add another withdraw request at height 8, which should be ignored, since there
     // is no balance left.
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -889,7 +889,7 @@ fn test_deposit_less_than_min_stake_rejected() {
     // Adds a deposit request to the block at height 5.
     // The deposit request should be skipped and a withdrawal request for the same amount
     // should be initiated.
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -1088,7 +1088,7 @@ fn test_deposit_greater_than_max_stake_rejected() {
     // Adds a deposit request to the block at height 5 with amount exceeding max stake.
     // The deposit request should be rejected and a withdrawal request for the same amount
     // should be initiated to refund the depositor.
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let max_stake = 64_000_000_000;
     let link = Link {
@@ -1282,7 +1282,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
     // This test is very similar to `test_deposit_and_withdrawal_request`, but instead
     // of a single deposit and withdrawal request, it has 5 deposit and withdrawal requests
     // (from different public keys).
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -1530,7 +1530,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 fn test_deposit_request_invalid_signature() {
     // Adds a deposit request with an invalid signature to the block at height 5, and then
     // verifies that the request is rejected and a withdrawal request is submitted for the same amount.
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -1737,7 +1737,7 @@ fn test_deposit_request_invalid_signature() {
 fn test_protocol_param_max_stake() {
     // Adds a protocol param request for maximum stake to the block at height 5
     // and verifies that the maximum stake is changed at the end of the epoch.
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -2203,7 +2203,7 @@ fn test_duplicate_deposit_blocked() {
     // - Genesis validators start with 32 ETH each
     // - Submit two top-up deposits for the same validator at blocks 3 and 4
     // - Only the first deposit should be processed, second should be ignored
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let max_stake = 100_000_000_000;
     let link = Link {
@@ -2393,7 +2393,7 @@ fn test_duplicate_withdrawal_blocked() {
     // - Genesis validators start with 32 ETH each
     // - Submit two withdrawal requests for the same validator at blocks 3 and 4
     // - Only the first withdrawal should be processed, second should be ignored
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -2571,7 +2571,7 @@ fn test_deposit_blocked_by_pending_withdrawal() {
     // - Genesis validators start with 32 ETH each
     // - Submit withdrawal at block 3, then deposit at block 4
     // - Withdrawal should be processed, deposit should be rejected and refunded
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let max_stake = 100_000_000_000;
     let link = Link {
@@ -2765,7 +2765,7 @@ fn test_withdrawal_blocked_by_pending_deposit() {
     // - New validator submits deposit at block 3
     // - Same validator submits withdrawal at block 4 (before deposit is processed)
     // - Deposit should be processed, withdrawal should be ignored
-    let n = 10;
+    let n = 5;
     let min_stake = 32_000_000_000;
     let max_stake = 100_000_000_000;
     let link = Link {
@@ -2940,6 +2940,184 @@ fn test_withdrawal_blocked_by_pending_deposit() {
         // No withdrawals should have occurred
         let withdrawals = engine_client_network.get_withdrawals();
         assert!(withdrawals.is_empty());
+
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
+fn test_withdrawal_wrong_source_address_rejected() {
+    // Tests that a withdrawal request with a source address that doesn't match
+    // the validator's withdrawal credentials is rejected.
+    //
+    // Test setup:
+    // - Genesis validators start with 32 ETH each, with known withdrawal addresses
+    // - Submit a withdrawal request for validator 0 with a WRONG source address
+    // - The withdrawal should be rejected, validator balance unchanged
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        // Create addresses AFTER sorting so they match sorted validators
+        let addresses: Vec<Address> = (0..n).map(|i| Address::from([i as u8; 20])).collect();
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Create a withdrawal request for validator 0 with WRONG source address
+        // Validator 0's correct address is addresses[0], but we use addresses[1]
+        let validator0_pubkey: [u8; 32] = validators[0].0.as_ref().try_into().unwrap();
+        let wrong_address = addresses[1]; // Wrong address - should be addresses[0]
+
+        let withdrawal =
+            common::create_withdrawal_request(wrong_address, validator0_pubkey, min_stake);
+
+        let execution_requests1 = vec![ExecutionRequest::Withdrawal(withdrawal.clone())];
+        let requests1 = common::execution_requests_to_requests(execution_requests1);
+
+        // Submit withdrawal at block 3
+        let withdrawal_block_height = 3;
+        // Calculate when withdrawal would have been processed if it were valid
+        let withdrawal_epoch =
+            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
+        let stop_height = withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(withdrawal_block_height, requests1);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .build();
+
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+
+        let mut public_keys = HashSet::new();
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SEISMIC_BFT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // Wait for all validators to reach stop_height
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Verify no withdrawal occurred (request was rejected due to wrong address)
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert!(withdrawals.is_empty());
+
+        // Verify validator 0's balance is unchanged
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        let account = state_query
+            .get_validator_account(validators[0].0.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(account.balance, min_stake);
+        assert_eq!(account.status, ValidatorStatus::Active);
 
         assert!(
             engine_client_network
