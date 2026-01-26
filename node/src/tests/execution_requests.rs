@@ -1084,6 +1084,200 @@ fn test_deposit_less_than_min_stake_rejected() {
 }
 
 #[test_traced("INFO")]
+fn test_deposit_greater_than_max_stake_rejected() {
+    // Adds a deposit request to the block at height 5 with amount exceeding max stake.
+    // The deposit request should be rejected and a withdrawal request for the same amount
+    // should be initiated to refund the depositor.
+    let n = 10;
+    let min_stake = 32_000_000_000;
+    let max_stake = 64_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+    // Create context
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        // Create simulated network
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+
+        // Start network
+        network.start();
+
+        // Register participants
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        // Link all validators
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        // Create the engine clients
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Create a deposit request with amount exceeding max stake
+        let deposit_amount = max_stake + 10_000_000_000; // 74 ETH, exceeds 64 ETH max
+        let (test_deposit, _, _) = common::create_deposit_request(
+            n as u64,
+            deposit_amount,
+            common::get_domain(),
+            None,
+            None,
+        );
+
+        let validator_node_key = test_deposit.node_pubkey.clone();
+
+        // Convert to ExecutionRequest and then to Requests
+        let execution_requests1 = vec![ExecutionRequest::Deposit(test_deposit.clone())];
+        let requests1 = common::execution_requests_to_requests(execution_requests1);
+
+        // Create execution requests map (add deposit to block 5)
+        let deposit_block_height = 5;
+
+        let deposit_process_height =
+            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height / BLOCKS_PER_EPOCH);
+        let withdrawal_height =
+            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+
+        let stop_height = withdrawal_height + 1;
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(deposit_block_height, requests1);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .build();
+
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        initial_state.validator_maximum_stake = max_stake;
+
+        // Create instances
+        let mut public_keys = HashSet::new();
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SEISMIC_BFT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // Poll metrics until all validators reach stop_height
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height == stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Assert that no validator account was created (deposit was rejected)
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        let balance = state_query.get_validator_balance(validator_node_key).await;
+        assert!(balance.is_none());
+
+        // Verify that a refund withdrawal was initiated
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(withdrawals.len(), 1);
+
+        let epoch_withdrawals = withdrawals.get(&withdrawal_height).unwrap();
+        assert_eq!(epoch_withdrawals[0].amount, deposit_amount);
+
+        let address =
+            utils::parse_withdrawal_credentials(test_deposit.withdrawal_credentials).unwrap();
+        assert_eq!(epoch_withdrawals[0].address, address);
+
+        // Check that all nodes have the same canonical chain
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
 fn test_deposit_and_withdrawal_request_multiple() {
     // This test is very similar to `test_deposit_and_withdrawal_request`, but instead
     // of a single deposit and withdrawal request, it has 5 deposit and withdrawal requests
