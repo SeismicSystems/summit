@@ -232,6 +232,7 @@ where
 
                         // Register the new signing scheme with the scheme provider.
                         let scheme = <SummitSchemeProvider as EpochSchemeProvider<Digest>>::scheme_for_epoch(&self.scheme_provider, &transition);
+                        let num_validators = transition.validator_keys.len();
                         assert!(self.scheme_provider.register(transition.epoch, scheme.clone()));
 
                         // Enter the new epoch.
@@ -246,7 +247,11 @@ where
                             .await;
                         engines.insert(transition.epoch, engine);
 
-                        info!(epoch = transition.epoch.get(), "entered epoch");
+                        info!(
+                            epoch = transition.epoch.get(),
+                            num_validators,
+                            "entered epoch"
+                        );
                     }
                     Message::Exit(epoch) => {
                         // Remove the engine and abort it.
@@ -316,7 +321,7 @@ where
         let recovered_sc = recovered_mux.register(epoch.get()).await.unwrap();
         let resolver_sc = resolver_mux.register(epoch.get()).await.unwrap();
 
-        info!("orchestrator: starting Simplex engine for epoch {}", epoch);
+        info!(epoch = epoch.get(), "starting Simplex consensus engine");
         engine.start(pending_sc, recovered_sc, resolver_sc)
     }
 }
