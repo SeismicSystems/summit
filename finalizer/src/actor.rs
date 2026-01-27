@@ -42,7 +42,7 @@ use summit_types::utils::{
 use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
@@ -125,14 +125,19 @@ impl<
         // If we want to load a checkpoint, we have to make sure that the DB is cleared.
         let state = if let Some(state) = db.get_latest_consensus_state().await {
             info!(
-                "Loading consensus state from database at epoch {} and height {}",
-                state.epoch, state.latest_height
+                epoch = state.epoch,
+                height = state.latest_height,
+                num_validators = state.validator_accounts.len(),
+                "loaded consensus state from database"
             );
             state
         } else {
             info!(
-                "Consensus state not found in database, using provided state with epoch {} and height {} - epoch_num_of_blocks: {}",
-                cfg.initial_state.epoch, cfg.initial_state.latest_height, cfg.epoch_num_of_blocks
+                epoch = cfg.initial_state.epoch,
+                height = cfg.initial_state.latest_height,
+                num_validators = cfg.initial_state.validator_accounts.len(),
+                epoch_num_of_blocks = cfg.epoch_num_of_blocks,
+                "using provided initial state (no state found in database)"
             );
             cfg.initial_state
         };
@@ -440,6 +445,11 @@ impl<
             // block. So if a node checkpoints, it will start at the height of the penultimate block.
             // TODO(matthias): verify this
             if let Some(checkpoint) = &self.canonical_state.pending_checkpoint.take() {
+                debug!(
+                    epoch = self.canonical_state.epoch,
+                    checkpoint_digest = ?checkpoint.digest,
+                    "storing finalized checkpoint to database"
+                );
                 self.db
                     .store_finalized_checkpoint(
                         self.canonical_state.epoch,
@@ -453,6 +463,20 @@ impl<
             self.canonical_state.epoch += 1;
             // Set the epoch genesis hash for the next epoch
             self.canonical_state.epoch_genesis_hash = block.digest().0;
+
+            let active_count = self.canonical_state.get_active_validators().len();
+            let joining_count = self
+                .canonical_state
+                .validator_accounts
+                .values()
+                .filter(|a| a.status == ValidatorStatus::Joining)
+                .count();
+            info!(
+                epoch = self.canonical_state.epoch,
+                active_validators = active_count,
+                joining_validators = joining_count,
+                "transitioned to new epoch"
+            );
 
             self.db
                 .store_consensus_state(new_height, &self.canonical_state)
@@ -614,7 +638,14 @@ impl<
             };
             self.engine_client.commit_hash(fork_forkchoice).await;
 
+            let total_fork_count: usize = self.fork_states.values().map(|f| f.len()).sum();
             info!(height, ?block_digest, "executed notarized block into fork");
+            trace!(
+                height,
+                total_fork_states = total_fork_count,
+                heights_tracked = self.fork_states.len(),
+                "fork state summary"
+            );
             self.height_notify_up_to(height, block_digest);
 
             // Add orphaned children to the processing queue
@@ -729,6 +760,13 @@ impl<
                 forkchoice: state.forkchoice,
             }
         };
+        trace!(
+            height,
+            epoch = aux_data.epoch,
+            num_withdrawals = aux_data.withdrawals.len(),
+            has_checkpoint = aux_data.checkpoint_hash.is_some(),
+            "prepared aux data for block proposal"
+        );
         let _ = sender.send(Some(aux_data));
     }
 
@@ -813,6 +851,11 @@ impl<
                             "only validators with accounts are added to the added_validators queue",
                         );
                     account.status = ValidatorStatus::Active;
+                    info!(
+                        next_epoch,
+                        validator = hex::encode(key_bytes),
+                        "activated validator for next epoch"
+                    );
                 }
             }
 
@@ -820,12 +863,18 @@ impl<
                 // Check if this node exits the validator set
                 if key == &self.node_public_key {
                     validator_exit = true;
+                    warn!(next_epoch, "this node is being removed from validator set");
                 }
 
                 // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
                 let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
                 if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key_bytes) {
                     account.status = ValidatorStatus::Inactive;
+                    info!(
+                        next_epoch,
+                        validator = hex::encode(key_bytes),
+                        "deactivated validator"
+                    );
                 }
             }
         }
@@ -863,6 +912,13 @@ impl<
                         account.has_pending_withdrawal = true;
                     }
 
+                    info!(
+                        validator = hex::encode(key),
+                        balance,
+                        min_stake = self.canonical_state.validator_minimum_stake,
+                        "validator below minimum stake, scheduling full withdrawal"
+                    );
+
                     let withdrawal_request = WithdrawalRequest {
                         source_address: withdrawal_credentials,
                         validator_pubkey: key,
@@ -883,6 +939,14 @@ impl<
                         account.pending_withdrawal_amount += excess_amount;
                         account.has_pending_withdrawal = true;
                     }
+
+                    info!(
+                        validator = hex::encode(key),
+                        balance,
+                        max_stake = self.canonical_state.validator_maximum_stake,
+                        excess_amount,
+                        "validator above maximum stake, scheduling partial withdrawal"
+                    );
 
                     let withdrawal_request = WithdrawalRequest {
                         source_address: withdrawal_credentials,
@@ -962,10 +1026,13 @@ async fn execute_block<
         && state.forkchoice.head_block_hash == block.eth_parent_hash()
     {
         let eth_hash = block.eth_block_hash();
+        let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(
-            "Commiting block 0x{} for height {}",
-            hex(&eth_hash),
-            new_height
+            new_height,
+            epoch = state.epoch,
+            tx_count,
+            eth_hash = hex(&eth_hash),
+            "committing block to execution layer"
         );
 
         state.forkchoice.head_block_hash = eth_hash.into();
@@ -1014,8 +1081,15 @@ async fn execute_block<
                 .record(process_requests_duration);
         }
     } else {
+        let payload_valid = payload_status.is_valid();
+        let withdrawals_match = block.payload.payload_inner.withdrawals == expected_withdrawals;
+        let parent_matches = state.forkchoice.head_block_hash == block.eth_parent_hash();
         warn!(
-            "Height: {new_height} contains invalid eth payload. Not executing but keeping part of chain"
+            new_height,
+            payload_valid,
+            withdrawals_match,
+            parent_matches,
+            "block validation failed, not executing but keeping in chain"
         );
     }
 
@@ -1038,6 +1112,12 @@ async fn execute_block<
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
         let checkpoint = Checkpoint::new(state);
+        debug!(
+            new_height,
+            epoch = state.epoch,
+            checkpoint_digest = ?checkpoint.digest,
+            "created checkpoint at penultimate block of epoch"
+        );
         state.pending_checkpoint = Some(checkpoint);
 
         #[cfg(feature = "prom")]
@@ -1230,6 +1310,13 @@ async fn parse_execution_requests<
 
                             // The withdrawal will be completed in `validator_withdrawal_num_epochs` epochs
                             let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
+                            info!(
+                                validator = hex::encode(withdrawal_request.validator_pubkey),
+                                amount = remaining_balance,
+                                withdrawal_epoch,
+                                current_epoch = state.epoch,
+                                "scheduled full withdrawal for validator"
+                            );
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
                                 withdrawal_epoch,
@@ -1326,8 +1413,11 @@ async fn process_execution_requests<
                     state.add_validator(activation_epoch, request.node_pubkey.clone());
 
                     info!(
-                        "Processing new validator deposit. Balance: {}, activation epoch: {}",
-                        new_balance, activation_epoch
+                        validator = hex::encode(node_pubkey_bytes),
+                        balance = new_balance,
+                        activation_epoch,
+                        current_epoch = state.epoch,
+                        "processing new validator deposit"
                     );
 
                     #[cfg(debug_assertions)]
@@ -1354,8 +1444,11 @@ async fn process_execution_requests<
                         && new_balance <= validator_maximum_stake
                     {
                         info!(
-                            "Processing top-up deposit for existing validator. Current balance: {}, deposit: {}, new balance: {}",
-                            account.balance, request.amount, new_balance
+                            validator = hex::encode(node_pubkey_bytes),
+                            previous_balance = account.balance,
+                            deposit_amount = request.amount,
+                            new_balance,
+                            "processing top-up deposit for existing validator"
                         );
                         account.balance = new_balance;
                     } else {
@@ -1383,6 +1476,13 @@ async fn process_execution_requests<
     }
 
     // Remove pending withdrawals that are included in the committed block
+    if !block.payload.payload_inner.withdrawals.is_empty() {
+        debug!(
+            new_height,
+            num_withdrawals = block.payload.payload_inner.withdrawals.len(),
+            "processing withdrawals from committed block"
+        );
+    }
     for withdrawal in &block.payload.payload_inner.withdrawals {
         let current_epoch = state.epoch;
         let pending_withdrawal = state.pop_withdrawal(current_epoch);
@@ -1426,6 +1526,10 @@ async fn process_execution_requests<
 
             // If both balance and pending_withdrawal_amount are 0, remove the validator account.
             if account.balance == 0 && account.pending_withdrawal_amount == 0 {
+                info!(
+                    validator = hex::encode(pending_withdrawal.pubkey),
+                    "removing validator account after full withdrawal"
+                );
                 state.remove_account(&pending_withdrawal.pubkey);
             } else {
                 state.set_account(pending_withdrawal.pubkey, account);
