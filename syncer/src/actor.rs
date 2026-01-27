@@ -1119,10 +1119,20 @@ where
                         application,
                     )
                     .await;
-                    debug!(height = block.height().get(), "repaired block");
+                    debug!(
+                        height = block.height().get(),
+                        gap_start = gap_start.get(),
+                        gap_end = gap_end.get(),
+                        "repaired missing block from local storage"
+                    );
                     cursor = block;
                 } else {
                     // Request the next missing block digest
+                    debug!(
+                        ?commitment,
+                        target_height = cursor.height().get() - 1,
+                        "requesting missing block from network for gap repair"
+                    );
                     resolver.fetch(Request::<B>::Block(commitment)).await;
                     break 'cache_repair;
                 }

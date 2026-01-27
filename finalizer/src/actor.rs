@@ -508,9 +508,14 @@ impl<
                 .register(self.canonical_state.epoch, network_keys)
                 .await;
 
-            // Send the new validator list to the orchestrator amd start the Simplex engine
+            // Send the new validator list to the orchestrator and start the Simplex engine
             // for the new epoch
             let active_validators = self.canonical_state.get_active_validators();
+            debug!(
+                epoch = self.canonical_state.epoch,
+                num_active_validators = active_validators.len(),
+                "signaling orchestrator to enter new epoch"
+            );
 
             self.orchestrator_mailbox
                 .report(Message::Enter(EpochTransition {
@@ -531,11 +536,21 @@ impl<
 
         if epoch_change {
             // Shut down the Simplex engine for the old epoch
+            debug!(
+                old_epoch = self.canonical_state.epoch - 1,
+                "signaling orchestrator to exit old epoch"
+            );
             self.orchestrator_mailbox
                 .report(Message::Exit(Epoch::new(self.canonical_state.epoch - 1)))
                 .await;
         }
-        info!(new_height, self.canonical_state.epoch, "finalized block");
+        let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
+        info!(
+            new_height,
+            epoch = self.canonical_state.epoch,
+            tx_count,
+            "finalized block"
+        );
     }
 
     async fn handle_notarized_block(&mut self, block: Block) {

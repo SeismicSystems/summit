@@ -45,7 +45,7 @@ use summit_types::{
 use summit_types::{FinalizedHeader, checkpoint::Checkpoint};
 use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use summit_types::{consensus_state::ConsensusState, scheme::MultisigScheme};
-use tracing::{Level, error};
+use tracing::{Level, error, info};
 
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
@@ -240,6 +240,14 @@ impl Command {
             let mut committee: Vec<Validator> =
                 genesis.get_validators().expect("Failed to get validators");
             committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
+
+            info!(
+                namespace = genesis.namespace,
+                genesis_validators = committee.len(),
+                min_stake = genesis.validator_minimum_stake,
+                max_stake = genesis.validator_maximum_stake,
+                "loaded genesis configuration"
+            );
 
             let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
                 .map(|hash_bytes| hash_bytes.try_into())
@@ -739,6 +747,14 @@ where
         let consensus_state = ConsensusState::try_from(checkpoint)
             .expect("failed to create consensus state from checkpoint");
 
+        info!(
+            epoch = consensus_state.epoch,
+            height = consensus_state.latest_height,
+            num_validators = consensus_state.validator_accounts.len(),
+            checkpoint_path = %path.display(),
+            "loaded checkpoint from file"
+        );
+
         (Some(consensus_state), None, None)
     } else if path.is_dir() {
         let checkpoint_path = path.join("checkpoint");
@@ -767,6 +783,18 @@ where
             .map(|bytes| FinalizedHeader::<S>::from_ssz_bytes(&bytes).ok())
             .ok()
             .flatten();
+
+        if let Some(ref state) = consensus_state {
+            info!(
+                epoch = state.epoch,
+                height = state.latest_height,
+                num_validators = state.validator_accounts.len(),
+                has_last_block = last_block.is_some(),
+                has_finalized_header = header.is_some(),
+                checkpoint_dir = %path.display(),
+                "loaded checkpoint from directory"
+            );
+        }
 
         (consensus_state, last_block, header)
     } else if checkpoint_or_default {
