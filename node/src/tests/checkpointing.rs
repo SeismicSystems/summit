@@ -740,6 +740,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
     // it uses that checkpoint to initialize the consensus DB
     // In this test the joining node is not included in the list of peers that is passed to the engine.
     let n = 5;
+    let end_epoch = 4;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -840,7 +841,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         }
 
         // Wait for the validators to checkpoint
-        let consensus_state_query = consensus_state_queries.get(&0).unwrap();
+        let consensus_state_query = consensus_state_queries.get(&0).clone().unwrap();
         let (checkpoint, _) = loop {
             if let Some(checkpoint) = consensus_state_query
                 .clone()
@@ -904,11 +905,13 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         let (pending, recovered, resolver, orchestrator, broadcast) =
             late_registrations.into_iter().next().unwrap().1;
 
+        consensus_state_queries.insert(n - 1, engine.finalizer_mailbox.clone());
+
         // Start engine
         engine.start(pending, recovered, resolver, orchestrator, broadcast);
 
         // Poll metrics
-        let stop_height = 3 * BLOCKS_PER_EPOCH;
+        let stop_height = end_epoch * BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();
@@ -936,14 +939,14 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
                     let value = value.parse::<u64>().unwrap();
                     if value == stop_height {
                         nodes_finished.insert(metric.to_string());
-                        if nodes_finished.len() as u32 == n {
+                        if nodes_finished.len() == n as usize {
                             success = true;
                             break;
                         }
                     }
                 }
 
-                if nodes_finished.len() as u32 >= n {
+                if nodes_finished.len() >= n as usize {
                     success = true;
                     break;
                 }
@@ -954,6 +957,23 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
 
             // Still waiting for all validators to complete
             context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Check that all validators (including the joining validator) stored the same checkpoints
+        let mut reference_mailbox = consensus_state_queries.remove(&0).unwrap();
+        let mut reference_digests = Vec::with_capacity(end_epoch as usize);
+        for epoch in 0..end_epoch {
+            let (ckpt, _) = reference_mailbox.get_checkpoint(epoch).await.unwrap();
+            reference_digests.push(ckpt.digest);
+        }
+        for i in 1..n {
+            let mut mailbox = consensus_state_queries.remove(&i).unwrap();
+            // Only check starting from epoch 1 because the joining node won't have
+            // a checkpoint for epoch 0
+            for j in 1..end_epoch {
+                let (ckpt, _) = mailbox.get_checkpoint(j).await.unwrap();
+                assert_eq!(ckpt.digest, reference_digests[j as usize]);
+            }
         }
 
         // Check that all nodes have the same canonical chain

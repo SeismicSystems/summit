@@ -439,7 +439,7 @@ impl<
             // The checkpoint is created at the penultimate block of the epoch, and finalized at the last
             // block. So if a node checkpoints, it will start at the height of the penultimate block.
             // TODO(matthias): verify this
-            if let Some(checkpoint) = &self.canonical_state.pending_checkpoint {
+            if let Some(checkpoint) = &self.canonical_state.pending_checkpoint.take() {
                 self.db
                     .store_finalized_checkpoint(
                         self.canonical_state.epoch,
