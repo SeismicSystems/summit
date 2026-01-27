@@ -42,3 +42,4 @@ metrics = { version = "0.24.0", optional = true }
 
 [features]
 prom = ["metrics"]
+bench = ["summit-types/bench"]
