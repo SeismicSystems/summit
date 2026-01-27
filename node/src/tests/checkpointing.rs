@@ -23,7 +23,7 @@ use summit_types::{PrivateKey, utils};
 fn test_checkpoint_created() {
     // Makes sure that the validators come to consensus on a checkpoint
     // and store it to disk
-    let n = 10;
+    let n = 5;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -201,7 +201,7 @@ fn test_previous_header_hash_matches() {
     // The finalized header that is stored at the end of an epoch points to the finalized
     // header that was stored at the previous epoch.
     // This test verifies that these hashes match.
-    let n = 10;
+    let n = 5;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),

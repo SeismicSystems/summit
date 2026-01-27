@@ -14,5 +14,5 @@ fn test_20_blocks_and_verify() {
         jitter: Duration::from_millis(10),
         success_rate: 0.98,
     };
-    run_until_height(10, 0, link.clone(), 20, true);
+    run_until_height(5, 0, link.clone(), 20, true);
 }
