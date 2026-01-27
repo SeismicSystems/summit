@@ -161,10 +161,20 @@ impl<
                                             Ok(block) => {
                                                 // store block
                                                 let digest = block.digest();
+                                                let height = block.height();
+                                                let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
                                                 {
                                                     let mut built = built.lock().expect("locked poisoned");
                                                     *built = Some((block.clone(), round));
                                                 }
+
+                                                info!(
+                                                    height,
+                                                    epoch = round.epoch().get(),
+                                                    view = round.view().get(),
+                                                    tx_count,
+                                                    "proposed block"
+                                                );
 
                                                 // send block to syncer for caching and broadcasting
                                                 syncer.proposed(round, block).await;
