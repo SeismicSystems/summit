@@ -314,6 +314,16 @@ where
         let sync_height = initial_state.latest_height;
         let sync_epoch = initial_state.epoch;
         let sync_view = initial_state.view;
+        let num_validators = initial_state.validator_accounts.len();
+
+        info!(
+            sync_height,
+            sync_epoch,
+            sync_view,
+            num_validators,
+            blocks_per_epoch = BLOCKS_PER_EPOCH,
+            "engine initialized"
+        );
 
         Self {
             context,
