@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
 use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
-use summit_types::{Block, Digest, EngineClient, utils};
+use summit_types::{Block, BlockAuxData, Digest, EngineClient, utils};
 
 // Define a future that checks if the oneshot channel is closed using a mutable reference
 struct ChannelClosedFuture<'a, T> {
@@ -262,12 +262,33 @@ impl<
                                         result = requester => {
                                             let (parent, block) = result.unwrap();
 
-                                            // Request the current epoch
+                                            let parent_digest = parent.digest();
+                                            let parent_height = parent.height();
+
+                                            // Wait for parent block to be executed by finalizer
+                                            // This ensures the parent's state is available for aux_data
+                                            let parent_executed = finalizer_clone
+                                                .notify_at_height(parent_height, parent_digest)
+                                                .await
+                                                .await
+                                                .unwrap_or(false);
+
+                                            if !parent_executed {
+                                                warn!(
+                                                    ?round,
+                                                    parent_height,
+                                                    ?parent_digest,
+                                                    "parent block not executed by finalizer"
+                                                );
+                                                let _ = response.send(false);
+                                                return;
+                                            }
+
+                                            // Request aux data for the block we're verifying
                                             #[cfg(feature = "prom")]
                                             let aux_data_start = std::time::Instant::now();
-                                            let parent_digest = parent.digest();
                                             let maybe_aux_data = finalizer_clone
-                                                .get_aux_data(parent.height() + 1, parent_digest)
+                                                .get_aux_data(parent_height + 1, parent_digest)
                                                 .await
                                                 .await
                                                 .expect("Finalizer dropped");
@@ -279,7 +300,7 @@ impl<
                                                     histogram!("handle_verify_aux_data_duration_millis").record(aux_data_duration);
                                                 }
 
-                                                if handle_verify(&block, parent, self.epoch_num_of_blocks, aux_data.epoch) {
+                                                if handle_verify(&block, parent, self.epoch_num_of_blocks, &aux_data) {
                                                     // persist valid block
                                                     syncer.verified(round, block).await;
 
@@ -538,20 +559,68 @@ impl<
     }
 }
 
-fn handle_verify(block: &Block, parent: Block, epoch_length: u64, epoch: u64) -> bool {
-    //// You can only re-propose the same block if it's the last height in the epoch.
+fn handle_verify(block: &Block, parent: Block, epoch_length: u64, aux_data: &BlockAuxData) -> bool {
+    // You can only re-propose the same block if it's the last height in the epoch.
     if parent.digest() == block.digest() {
-        let last_in_epoch = utils::last_block_in_epoch(epoch_length, epoch);
+        let last_in_epoch = utils::last_block_in_epoch(epoch_length, aux_data.epoch);
         return block.height() == last_in_epoch;
     }
 
+    // Basic structural validation
     if block.parent() != parent.digest() {
+        warn!("block parent mismatch");
         return false;
     }
     if block.height() != parent.height() + 1 {
+        warn!("block height mismatch");
         return false;
     }
     if block.timestamp() <= parent.timestamp() {
+        warn!("block timestamp not increasing");
+        return false;
+    }
+
+    // Validate checkpoint_hash (None means [0; 32], matching Block::compute_digest)
+    let expected_checkpoint_hash: Digest =
+        aux_data.checkpoint_hash.unwrap_or_else(|| [0; 32].into());
+    if block.header.checkpoint_hash != expected_checkpoint_hash {
+        warn!(
+            expected = ?expected_checkpoint_hash,
+            actual = ?block.header.checkpoint_hash,
+            "checkpoint_hash mismatch"
+        );
+        return false;
+    }
+
+    // Validate added_validators
+    if block.header.added_validators != aux_data.added_validators {
+        warn!(
+            expected_count = aux_data.added_validators.len(),
+            actual_count = block.header.added_validators.len(),
+            "added_validators mismatch"
+        );
+        return false;
+    }
+
+    // Validate removed_validators
+    if block.header.removed_validators != aux_data.removed_validators {
+        warn!(
+            expected_count = aux_data.removed_validators.len(),
+            actual_count = block.header.removed_validators.len(),
+            "removed_validators mismatch"
+        );
+        return false;
+    }
+
+    // Validate withdrawals
+    let expected_withdrawals: Vec<_> = aux_data.withdrawals.iter().map(|w| w.inner).collect();
+    let actual_withdrawals: &[_] = &block.payload.payload_inner.withdrawals;
+    if actual_withdrawals != expected_withdrawals.as_slice() {
+        warn!(
+            expected_count = expected_withdrawals.len(),
+            actual_count = actual_withdrawals.len(),
+            "withdrawals mismatch"
+        );
         return false;
     }
 

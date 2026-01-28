@@ -1,6 +1,5 @@
 use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
-use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 #[allow(unused)]
@@ -1022,24 +1021,9 @@ async fn execute_block<
         histogram!("payload_check_duration_millis").record(payload_check_duration);
     }
 
-    // Verify withdrawal requests that were included in the block
-    // Make sure that the included withdrawals match the expected withdrawals
-    let expected_withdrawals: Vec<Withdrawal> =
-        if is_last_block_of_epoch(epoch_num_of_blocks, new_height) {
-            let current_epoch = state.epoch;
-            state
-                .get_withdrawals_for_epoch(current_epoch)
-                .map(|queue| queue.iter().map(|w| w.inner).collect())
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
-
-    // Validate block against state
-    if payload_status.is_valid()
-        && block.payload.payload_inner.withdrawals == expected_withdrawals
-        && state.forkchoice.head_block_hash == block.eth_parent_hash()
-    {
+    // Validate block against execution layer state
+    // Note: withdrawals are validated in the application layer before voting
+    if payload_status.is_valid() && state.forkchoice.head_block_hash == block.eth_parent_hash() {
         let eth_hash = block.eth_block_hash();
         let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(
@@ -1097,12 +1081,10 @@ async fn execute_block<
         }
     } else {
         let payload_valid = payload_status.is_valid();
-        let withdrawals_match = block.payload.payload_inner.withdrawals == expected_withdrawals;
         let parent_matches = state.forkchoice.head_block_hash == block.eth_parent_hash();
         warn!(
             new_height,
             payload_valid,
-            withdrawals_match,
             parent_matches,
             "block validation failed, not executing but keeping in chain"
         );
