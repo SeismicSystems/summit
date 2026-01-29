@@ -126,6 +126,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
         pending_checkpoint: None,
         added_validators: BTreeMap::new(),
         removed_validators: Vec::new(),
+        pending_execution_requests: Vec::new(),
         forkchoice: ForkchoiceState {
             head_block_hash: genesis_hash.into(),
             safe_block_hash: genesis_hash.into(),

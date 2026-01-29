@@ -26,6 +26,9 @@ pub struct ConsensusState {
     pub pending_checkpoint: Option<Checkpoint>,
     pub added_validators: BTreeMap<u64, Vec<AddedValidator>>,
     pub removed_validators: Vec<PublicKey>,
+    /// Execution requests that need to be deferred. Currently this only applies to
+    /// withdrawal requests received in the last block of an epoch.
+    pub pending_execution_requests: Vec<alloy_primitives::Bytes>,
     pub forkchoice: ForkchoiceState,
     pub epoch_genesis_hash: [u8; 32],
     pub validator_minimum_stake: u64, // in gwei
@@ -47,6 +50,7 @@ impl Default for ConsensusState {
             pending_checkpoint: None,
             added_validators: Default::default(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -371,6 +375,8 @@ impl EncodeSize for ConsensusState {
         + self.added_validators.values().map(|validators| 8 + 4 + validators.iter().map(|av| av.node_key.encode_size() + av.consensus_key.encode_size()).sum::<usize>()).sum::<usize>()
         + 4 // removed_validators length
         + self.removed_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
+        + 4 // pending_execution_requests length
+        + self.pending_execution_requests.iter().map(|req| 4 + req.len()).sum::<usize>()
         + 32 // forkchoice.head_block_hash
         + 32 // forkchoice.safe_block_hash
         + 32 // forkchoice.finalized_block_hash
@@ -456,6 +462,16 @@ impl Read for ConsensusState {
             removed_validators.push(PublicKey::read_cfg(buf, &())?);
         }
 
+        // Read pending_execution_requests
+        let pending_execution_requests_len = buf.get_u32() as usize;
+        let mut pending_execution_requests = Vec::with_capacity(pending_execution_requests_len);
+        for _ in 0..pending_execution_requests_len {
+            let len = buf.get_u32() as usize;
+            let mut bytes = vec![0u8; len];
+            buf.copy_to_slice(&mut bytes);
+            pending_execution_requests.push(alloy_primitives::Bytes::from(bytes));
+        }
+
         // Read forkchoice
         let mut head_block_hash = [0u8; 32];
         buf.copy_to_slice(&mut head_block_hash);
@@ -493,6 +509,7 @@ impl Read for ConsensusState {
             pending_checkpoint,
             added_validators,
             removed_validators,
+            pending_execution_requests,
             forkchoice,
             epoch_genesis_hash,
             validator_minimum_stake,
@@ -556,6 +573,13 @@ impl Write for ConsensusState {
         buf.put_u32(self.removed_validators.len() as u32);
         for validator in &self.removed_validators {
             validator.write(buf);
+        }
+
+        // Write pending_execution_requests
+        buf.put_u32(self.pending_execution_requests.len() as u32);
+        for request in &self.pending_execution_requests {
+            buf.put_u32(request.len() as u32);
+            buf.put_slice(request);
         }
 
         // Write forkchoice

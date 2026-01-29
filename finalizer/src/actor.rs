@@ -1050,6 +1050,7 @@ async fn execute_block<
             validator_withdrawal_num_epochs,
             state.validator_minimum_stake,
             state.validator_maximum_stake,
+            epoch_num_of_blocks,
         )
         .await;
 
@@ -1148,8 +1149,13 @@ async fn parse_execution_requests<
     validator_withdrawal_num_epochs: u64,
     validator_minimum_stake: u64,
     validator_maximum_stake: u64,
+    epoch_num_of_blocks: u64,
 ) {
-    for request_bytes in &block.execution_requests {
+    // Combine any pending execution requests with the current block's requests
+    let mut all_requests = std::mem::take(&mut state.pending_execution_requests);
+    all_requests.extend(block.execution_requests.iter().cloned());
+
+    for request_bytes in &all_requests {
         match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
             Ok(execution_request) => {
                 match execution_request {
@@ -1295,6 +1301,18 @@ async fn parse_execution_requests<
                                         "cancelled pending validator activation due to withdrawal request"
                                     );
                                 }
+                            } else if is_last_block_of_epoch(epoch_num_of_blocks, new_height) {
+                                // On the last block of an epoch, buffer the withdrawal request
+                                // to be processed at the penultimate block of the next epoch.
+                                // This ensures the validator is included in removed_validators
+                                // which can be properly reflected in the header.
+                                info!(
+                                    validator = hex::encode(withdrawal_request.validator_pubkey),
+                                    current_epoch = state.epoch,
+                                    "buffering withdrawal request for active validator on last block of epoch"
+                                );
+                                state.pending_execution_requests.push(request_bytes.clone());
+                                continue;
                             } else {
                                 // Validator is already active - add to removed_validators
                                 state.removed_validators.push(public_key);

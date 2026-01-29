@@ -158,6 +158,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -275,6 +276,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -314,6 +316,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -438,6 +441,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -482,6 +486,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -532,6 +537,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -578,6 +584,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -670,6 +677,7 @@ mod tests {
             pending_checkpoint: None,
             added_validators: BTreeMap::new(),
             removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
