@@ -11,6 +11,7 @@ This documentation is designed to provide auditors and developers with a compreh
 - **[Actor System](./actor-system.md)** - Actor-based architecture and message passing patterns
 - **[Staking and Participating](./staking-and-participating.md)** - How to become a validator
 - **[Deposits and Withdrawals](./deposits-and-withdrawals.md)** - Internal state management for deposits and withdrawals
+- **[Checkpointing](./checkpointing.md)** - Checkpoint creation, loading, and verification
 
 ## Quick Reference
 

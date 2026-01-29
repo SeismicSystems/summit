@@ -1183,6 +1183,9 @@ async fn parse_execution_requests<
                                 ) {
                                     Ok(withdrawal_credentials) => withdrawal_credentials,
                                     Err(e) => {
+                                        // The deposited funds would be lost in this case.
+                                        // The deposit contract verifies that the withdrawal credentials
+                                        // follow the expected format, so this should never happen.
                                         warn!("Failed to parse withdrawal credentials: {e}");
                                         continue;
                                     }
@@ -1210,6 +1213,9 @@ async fn parse_execution_requests<
                             ) {
                                 Ok(withdrawal_credentials) => withdrawal_credentials,
                                 Err(e) => {
+                                    // The deposited funds would be lost in this case.
+                                    // The deposit contract verifies that the withdrawal credentials
+                                    // follow the expected format, so this should never happen.
                                     warn!("Failed to parse withdrawal credentials: {e}");
                                     continue;
                                 }
