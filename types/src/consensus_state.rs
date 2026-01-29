@@ -1,6 +1,7 @@
 use crate::account::{ValidatorAccount, ValidatorStatus};
 use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
+use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
 use crate::withdrawal::PendingWithdrawal;
 use crate::{Digest, PublicKey};
@@ -23,7 +24,7 @@ pub struct ConsensusState {
     pub validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
     pub protocol_param_changes: Vec<ProtocolParam>,
     pub pending_checkpoint: Option<Checkpoint>,
-    pub added_validators: BTreeMap<u64, Vec<PublicKey>>,
+    pub added_validators: BTreeMap<u64, Vec<AddedValidator>>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
     pub epoch_genesis_hash: [u8; 32],
@@ -129,11 +130,11 @@ impl ConsensusState {
         self.pending_checkpoint = checkpoint;
     }
 
-    pub fn get_added_validators(&self, epoch: u64) -> Option<&Vec<PublicKey>> {
+    pub fn get_added_validators(&self, epoch: u64) -> Option<&Vec<AddedValidator>> {
         self.added_validators.get(&epoch)
     }
 
-    pub fn add_validator(&mut self, epoch: u64, validator: PublicKey) {
+    pub fn add_validator(&mut self, epoch: u64, validator: AddedValidator) {
         self.added_validators
             .entry(epoch)
             .or_default()
@@ -367,7 +368,7 @@ impl EncodeSize for ConsensusState {
         + 1 // pending_checkpoint presence flag
         + self.pending_checkpoint.as_ref().map_or(0, |cp| cp.encode_size())
         + 4 // added_validators length
-        + self.added_validators.values().map(|validators| 8 + 4 + validators.iter().map(|pk| pk.encode_size()).sum::<usize>()).sum::<usize>()
+        + self.added_validators.values().map(|validators| 8 + 4 + validators.iter().map(|av| av.node_key.encode_size() + av.consensus_key.encode_size()).sum::<usize>()).sum::<usize>()
         + 4 // removed_validators length
         + self.removed_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
         + 32 // forkchoice.head_block_hash
@@ -438,7 +439,12 @@ impl Read for ConsensusState {
             let validator_count = buf.get_u32() as usize;
             let mut validators = Vec::with_capacity(validator_count);
             for _ in 0..validator_count {
-                validators.push(PublicKey::read_cfg(buf, &())?);
+                let node_key = PublicKey::read_cfg(buf, &())?;
+                let consensus_key = bls12381::PublicKey::read_cfg(buf, &())?;
+                validators.push(AddedValidator {
+                    node_key,
+                    consensus_key,
+                });
             }
             added_validators.insert(key, validators);
         }
@@ -541,7 +547,8 @@ impl Write for ConsensusState {
             buf.put_u64(*key);
             buf.put_u32(validators.len() as u32);
             for validator in validators {
-                validator.write(buf);
+                validator.node_key.write(buf);
+                validator.consensus_key.write(buf);
             }
         }
 
@@ -704,10 +711,22 @@ mod tests {
         original_state.set_account(pubkey2, account2);
 
         // Add validators scheduled for future epochs
-        let validator1 = ed25519::PrivateKey::from_seed(10).public_key();
-        let validator2 = ed25519::PrivateKey::from_seed(20).public_key();
-        let validator3 = ed25519::PrivateKey::from_seed(30).public_key();
-        let validator4 = ed25519::PrivateKey::from_seed(40).public_key();
+        let validator1 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(10).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(10).public_key(),
+        };
+        let validator2 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(20).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(20).public_key(),
+        };
+        let validator3 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(30).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(30).public_key(),
+        };
+        let validator4 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(40).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(40).public_key(),
+        };
 
         // Schedule validators for epoch 9 (current epoch + 2)
         original_state.add_validator(9, validator1.clone());
@@ -827,9 +846,18 @@ mod tests {
         state.set_account(pubkey, account);
 
         // Add validators scheduled for future epochs
-        let validator1 = ed25519::PrivateKey::from_seed(10).public_key();
-        let validator2 = ed25519::PrivateKey::from_seed(20).public_key();
-        let validator3 = ed25519::PrivateKey::from_seed(30).public_key();
+        let validator1 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(10).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(10).public_key(),
+        };
+        let validator2 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(20).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(20).public_key(),
+        };
+        let validator3 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(30).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(30).public_key(),
+        };
 
         state.add_validator(5, validator1.clone());
         state.add_validator(6, validator2.clone());

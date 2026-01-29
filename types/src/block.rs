@@ -1,4 +1,4 @@
-use crate::{Header, PublicKey};
+use crate::{AddedValidator, Header, PublicKey};
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
 use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
@@ -49,7 +49,7 @@ impl Block {
         view: u64,
         checkpoint_hash: Option<Digest>,
         prev_epoch_header_hash: Digest,
-        added_validators: Vec<PublicKey>,
+        added_validators: Vec<AddedValidator>,
         removed_validators: Vec<PublicKey>,
     ) -> Self {
         let payload_ssz = payload.as_ssz_bytes();
@@ -463,6 +463,7 @@ mod test {
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
     use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_cryptography::bls12381::primitives::variant::MinPk;
+    use commonware_cryptography::{Signer, bls12381};
 
     fn create_test_public_key(seed: u8) -> PublicKey {
         let test_keys = [
@@ -477,8 +478,17 @@ mod test {
         PublicKey::decode(&key_bytes[..]).expect("Valid test key from known vectors")
     }
 
-    fn create_test_validators() -> (Vec<PublicKey>, Vec<PublicKey>) {
-        let added = vec![create_test_public_key(20), create_test_public_key(21)];
+    fn create_test_validators() -> (Vec<AddedValidator>, Vec<PublicKey>) {
+        let added = vec![
+            AddedValidator {
+                node_key: create_test_public_key(20),
+                consensus_key: bls12381::PrivateKey::from_seed(20).public_key(),
+            },
+            AddedValidator {
+                node_key: create_test_public_key(21),
+                consensus_key: bls12381::PrivateKey::from_seed(21).public_key(),
+            },
+        ];
         let removed = vec![create_test_public_key(30)];
         (added, removed)
     }

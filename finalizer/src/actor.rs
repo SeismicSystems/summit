@@ -38,7 +38,9 @@ use summit_types::utils::{
     is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
     parse_withdrawal_credentials,
 };
-use summit_types::{Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature};
+use summit_types::{
+    AddedValidator, Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature,
+};
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
@@ -855,8 +857,8 @@ impl<
         {
             // Activate validators for the coming epoch.
             if let Some(added_validators) = self.canonical_state.added_validators.get(&next_epoch) {
-                for key in added_validators {
-                    let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+                for validator in added_validators {
+                    let key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
                     let account = self
                         .canonical_state
                         .validator_accounts
@@ -1283,7 +1285,7 @@ async fn parse_execution_requests<
                                 if let Some(validators) =
                                     state.added_validators.get_mut(&account.joining_epoch)
                                     && let Some(pos) =
-                                        validators.iter().position(|v| v == &public_key)
+                                        validators.iter().position(|v| v.node_key == public_key)
                                 {
                                     validators.remove(pos);
                                     info!(
@@ -1402,12 +1404,20 @@ async fn process_execution_requests<
 
                     // Activate the new validator
                     let activation_epoch = state.epoch + validator_num_warm_up_epochs;
+                    // Clone the consensus key before add_validator since it needs &mut state
+                    let consensus_key = account.consensus_public_key.clone();
                     account.balance = new_balance;
                     account.status = ValidatorStatus::Joining;
                     account.joining_epoch = activation_epoch;
                     account.last_deposit_index = request.index;
 
-                    state.add_validator(activation_epoch, request.node_pubkey.clone());
+                    state.add_validator(
+                        activation_epoch,
+                        AddedValidator {
+                            node_key: request.node_pubkey.clone(),
+                            consensus_key,
+                        },
+                    );
 
                     info!(
                         validator = hex::encode(node_pubkey_bytes),

@@ -5,9 +5,20 @@ use alloy_primitives::U256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::simplex::types::Finalization;
+use commonware_cryptography::bls12381;
 use commonware_cryptography::certificate::Scheme;
 use commonware_cryptography::{Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
+
+/// Represents a validator being added to the committee.
+/// Contains both the node identity key (ed25519) and consensus signing key (BLS).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddedValidator {
+    /// The node's identity public key (ed25519)
+    pub node_key: PublicKey,
+    /// The validator's consensus signing key (BLS12-381)
+    pub consensus_key: bls12381::PublicKey,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
@@ -21,7 +32,7 @@ pub struct Header {
     pub checkpoint_hash: Digest,
     pub prev_epoch_header_hash: Digest,
     pub block_value: U256,
-    pub added_validators: Vec<PublicKey>,
+    pub added_validators: Vec<AddedValidator>,
     pub removed_validators: Vec<PublicKey>,
     // precomputed digest of this header
     pub digest: Digest,
@@ -40,7 +51,7 @@ impl Header {
         checkpoint_hash: Digest,
         prev_epoch_header_hash: Digest,
         block_value: U256,
-        added_validators: Vec<PublicKey>,
+        added_validators: Vec<AddedValidator>,
         removed_validators: Vec<PublicKey>,
     ) -> Self {
         let mut hasher = Sha256::new();
@@ -52,16 +63,21 @@ impl Header {
         hasher.update(&checkpoint_hash);
         hasher.update(&prev_epoch_header_hash);
         hasher.update(&block_value.as_ssz_bytes());
-        // Hash the validator lists by converting to bytes
-        let added_validators_bytes: Vec<[u8; 32]> = added_validators
-            .iter()
-            .map(|pk| pk.as_ref().try_into().expect("PublicKey is 32 bytes"))
-            .collect();
+        // Hash the added validators (both node key and consensus key)
+        for av in &added_validators {
+            let node_key_bytes: [u8; 32] = av
+                .node_key
+                .as_ref()
+                .try_into()
+                .expect("PublicKey is 32 bytes");
+            hasher.update(&node_key_bytes);
+            hasher.update(av.consensus_key.as_ref());
+        }
+        // Hash removed validators
         let removed_validators_bytes: Vec<[u8; 32]> = removed_validators
             .iter()
             .map(|pk| pk.as_ref().try_into().expect("PublicKey is 32 bytes"))
             .collect();
-        hasher.update(&added_validators_bytes.as_ssz_bytes());
         hasher.update(&removed_validators_bytes.as_ssz_bytes());
         hasher.update(&view.to_be_bytes());
         let digest = hasher.finalize();
@@ -84,6 +100,9 @@ impl Header {
     }
 }
 
+// Size of AddedValidator in SSZ: 32 bytes (node_key) + 48 bytes (BLS consensus_key) = 80 bytes
+const ADDED_VALIDATOR_SSZ_SIZE: usize = 32 + 48;
+
 impl ssz::Encode for Header {
     fn is_ssz_fixed_len() -> bool {
         false
@@ -93,7 +112,7 @@ impl ssz::Encode for Header {
         let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
             + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
             + <U256 as ssz::Encode>::ssz_fixed_len() // block_value
-            + <Vec<[u8; 32]> as ssz::Encode>::ssz_fixed_len() * 2; // added_validators, removed_validators offsets
+            + <Vec<u8> as ssz::Encode>::ssz_fixed_len() * 2; // added_validators, removed_validators offsets
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
 
@@ -119,17 +138,25 @@ impl ssz::Encode for Header {
             .try_into()
             .expect("Digest is 32 bytes");
 
-        // Convert PublicKey vectors to byte arrays for SSZ
-        let added_validators: Vec<[u8; 32]> = self
-            .added_validators
-            .iter()
-            .map(|pk| pk.as_ref().try_into().expect("PublicKey is 32 bytes"))
-            .collect();
-        let removed_validators: Vec<[u8; 32]> = self
-            .removed_validators
-            .iter()
-            .map(|pk| pk.as_ref().try_into().expect("PublicKey is 32 bytes"))
-            .collect();
+        // Serialize AddedValidator as concatenated bytes: node_key (32) + consensus_key (48)
+        let mut added_validators_bytes =
+            Vec::with_capacity(self.added_validators.len() * ADDED_VALIDATOR_SSZ_SIZE);
+        for av in &self.added_validators {
+            let node_key_bytes: [u8; 32] = av
+                .node_key
+                .as_ref()
+                .try_into()
+                .expect("PublicKey is 32 bytes");
+            added_validators_bytes.extend_from_slice(&node_key_bytes);
+            added_validators_bytes.extend_from_slice(av.consensus_key.as_ref());
+        }
+
+        // Convert removed_validators PublicKey to byte arrays
+        let mut removed_validators_bytes = Vec::with_capacity(self.removed_validators.len() * 32);
+        for pk in &self.removed_validators {
+            let pk_bytes: [u8; 32] = pk.as_ref().try_into().expect("PublicKey is 32 bytes");
+            removed_validators_bytes.extend_from_slice(&pk_bytes);
+        }
 
         encoder.append(&parent);
         encoder.append(&self.height);
@@ -141,8 +168,8 @@ impl ssz::Encode for Header {
         encoder.append(&checkpoint_hash);
         encoder.append(&prev_epoch_header_hash);
         encoder.append(&self.block_value);
-        encoder.append(&added_validators);
-        encoder.append(&removed_validators);
+        encoder.append(&added_validators_bytes);
+        encoder.append(&removed_validators_bytes);
         encoder.finalize();
     }
 
@@ -151,8 +178,8 @@ impl ssz::Encode for Header {
             + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
             + <U256 as ssz::Encode>::ssz_fixed_len(); // block_value
 
-        // Calculate length as if they were Vec<[u8; 32]>
-        let added_validators_len = self.added_validators.len() * 32;
+        // AddedValidator: 32 (node_key) + 48 (consensus_key) = 80 bytes each
+        let added_validators_len = self.added_validators.len() * ADDED_VALIDATOR_SSZ_SIZE;
         let removed_validators_len = self.removed_validators.len() * 32;
 
         fixed_size
@@ -179,8 +206,8 @@ impl ssz::Decode for Header {
         builder.register_type::<[u8; 32]>()?; // checkpoint_hash
         builder.register_type::<[u8; 32]>()?; // prev_epoch_header_hash
         builder.register_type::<U256>()?; // block_value
-        builder.register_type::<Vec<[u8; 32]>>()?; // added_validators
-        builder.register_type::<Vec<[u8; 32]>>()?; // removed_validators
+        builder.register_type::<Vec<u8>>()?; // added_validators (raw bytes)
+        builder.register_type::<Vec<u8>>()?; // removed_validators (raw bytes)
 
         let mut decoder = builder.build()?;
 
@@ -194,23 +221,45 @@ impl ssz::Decode for Header {
         let checkpoint_hash: [u8; 32] = decoder.decode_next()?;
         let prev_epoch_header_hash: [u8; 32] = decoder.decode_next()?;
         let block_value: U256 = decoder.decode_next()?;
-        let added_validators_bytes: Vec<[u8; 32]> = decoder.decode_next()?;
-        let removed_validators_bytes: Vec<[u8; 32]> = decoder.decode_next()?;
+        let added_validators_bytes: Vec<u8> = decoder.decode_next()?;
+        let removed_validators_bytes: Vec<u8> = decoder.decode_next()?;
 
-        // Convert byte arrays back to PublicKeys
+        // Parse AddedValidator entries (80 bytes each: 32 node_key + 48 consensus_key)
         use commonware_codec::DecodeExt as _;
-        let added_validators: Vec<PublicKey> = added_validators_bytes
-            .into_iter()
-            .map(|bytes| {
-                PublicKey::decode(&bytes[..]).map_err(|_| {
-                    ssz::DecodeError::BytesInvalid("Invalid PublicKey bytes".to_string())
+        if !added_validators_bytes
+            .len()
+            .is_multiple_of(ADDED_VALIDATOR_SSZ_SIZE)
+        {
+            return Err(ssz::DecodeError::BytesInvalid(
+                "Invalid added_validators length".to_string(),
+            ));
+        }
+        let added_validators: Vec<AddedValidator> = added_validators_bytes
+            .chunks_exact(ADDED_VALIDATOR_SSZ_SIZE)
+            .map(|chunk| {
+                let node_key = PublicKey::decode(&chunk[..32]).map_err(|_| {
+                    ssz::DecodeError::BytesInvalid("Invalid node_key bytes".to_string())
+                })?;
+                let consensus_key = bls12381::PublicKey::decode(&chunk[32..]).map_err(|_| {
+                    ssz::DecodeError::BytesInvalid("Invalid consensus_key bytes".to_string())
+                })?;
+                Ok(AddedValidator {
+                    node_key,
+                    consensus_key,
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, ssz::DecodeError>>()?;
+
+        // Parse removed_validators (32 bytes each)
+        if !removed_validators_bytes.len().is_multiple_of(32) {
+            return Err(ssz::DecodeError::BytesInvalid(
+                "Invalid removed_validators length".to_string(),
+            ));
+        }
         let removed_validators: Vec<PublicKey> = removed_validators_bytes
-            .into_iter()
-            .map(|bytes| {
-                PublicKey::decode(&bytes[..]).map_err(|_| {
+            .chunks_exact(32)
+            .map(|chunk| {
+                PublicKey::decode(chunk).map_err(|_| {
                     ssz::DecodeError::BytesInvalid("Invalid PublicKey bytes".to_string())
                 })
             })
@@ -404,6 +453,7 @@ mod test {
         types::Round,
     };
     use commonware_cryptography::{
+        Signer,
         bls12381::{
             certificate::multisig::Certificate,
             primitives::{
@@ -433,11 +483,20 @@ mod test {
         PublicKey::decode(&key_bytes[..]).expect("Valid test key from known vectors")
     }
 
-    fn create_test_validators() -> (Vec<PublicKey>, Vec<PublicKey>) {
+    fn create_test_validators() -> (Vec<AddedValidator>, Vec<PublicKey>) {
         let added = vec![
-            create_test_public_key(1),
-            create_test_public_key(2),
-            create_test_public_key(3),
+            AddedValidator {
+                node_key: create_test_public_key(1),
+                consensus_key: bls12381::PrivateKey::from_seed(1).public_key(),
+            },
+            AddedValidator {
+                node_key: create_test_public_key(2),
+                consensus_key: bls12381::PrivateKey::from_seed(2).public_key(),
+            },
+            AddedValidator {
+                node_key: create_test_public_key(3),
+                consensus_key: bls12381::PrivateKey::from_seed(3).public_key(),
+            },
         ];
         let removed = vec![create_test_public_key(10), create_test_public_key(11)];
         (added, removed)

@@ -41,7 +41,7 @@ pub struct BlockAuxData {
     pub withdrawals: Vec<PendingWithdrawal>,
     pub checkpoint_hash: Option<Digest>,
     pub header_hash: Digest,
-    pub added_validators: Vec<PublicKey>,
+    pub added_validators: Vec<AddedValidator>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
 }
