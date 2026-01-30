@@ -33,6 +33,8 @@ pub struct ConsensusState {
     pub epoch_genesis_hash: [u8; 32],
     pub validator_minimum_stake: u64, // in gwei
     pub validator_maximum_stake: u64, // in gwei
+    /// A 47KB blob for benchmarking/testing purposes
+    pub blob: Vec<u8>,
 }
 
 impl Default for ConsensusState {
@@ -55,6 +57,7 @@ impl Default for ConsensusState {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            blob: vec![0u8; 47 * 1024], // 47KB blob
         }
     }
 }
@@ -71,6 +74,7 @@ impl ConsensusState {
             head_digest: (*forkchoice.head_block_hash).into(),
             validator_minimum_stake,
             validator_maximum_stake,
+            blob: vec![0u8; 47 * 1024], // 47KB blob
             ..Default::default()
         }
     }
@@ -384,6 +388,8 @@ impl EncodeSize for ConsensusState {
         + 32 // head_digest
         + 8 // validator_minimum_stake
         + 8 // validator_maximum_stake
+        + 4 // blob length
+        + self.blob.len() // blob data
     }
 }
 
@@ -496,6 +502,10 @@ impl Read for ConsensusState {
         let validator_minimum_stake = buf.get_u64();
         let validator_maximum_stake = buf.get_u64();
 
+        let blob_len = buf.get_u32() as usize;
+        let mut blob = vec![0u8; blob_len];
+        buf.copy_to_slice(&mut blob);
+
         Ok(Self {
             epoch,
             view,
@@ -514,6 +524,7 @@ impl Read for ConsensusState {
             epoch_genesis_hash,
             validator_minimum_stake,
             validator_maximum_stake,
+            blob,
         })
     }
 }
@@ -596,6 +607,10 @@ impl Write for ConsensusState {
         // Write validator stake bounds
         buf.put_u64(self.validator_minimum_stake);
         buf.put_u64(self.validator_maximum_stake);
+
+        // Write blob
+        buf.put_u32(self.blob.len() as u32);
+        buf.put_slice(&self.blob);
     }
 }
 

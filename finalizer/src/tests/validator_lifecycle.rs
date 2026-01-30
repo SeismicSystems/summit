@@ -135,6 +135,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
         epoch_genesis_hash: genesis_hash,
         validator_minimum_stake: 32_000_000_000,
         validator_maximum_stake: 64_000_000_000,
+        blob: vec![0u8; 47 * 1024],
     }
 }
 
