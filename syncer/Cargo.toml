@@ -38,3 +38,7 @@ tracing-subscriber = "0.3.19"
 [features]
 prom = ["metrics", "prometheus-client"]
 test-mocks = []
+
+[[bench]]
+name = "archive_write"
+harness = false
