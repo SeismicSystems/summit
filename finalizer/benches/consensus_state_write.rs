@@ -6,10 +6,10 @@ use commonware_storage::translator::EightCap;
 use commonware_utils::{NZU64, NZUsize};
 use std::time::Instant;
 use summit_finalizer::db::{Config, FinalizerState};
+use summit_types::Block;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
-use summit_types::Block;
 
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 
@@ -67,14 +67,19 @@ fn main() {
     let num_epochs = 1000;
     let blocks_per_epoch = 100;
 
-    println!("Benchmarking consensus state write performance over {} epochs", num_epochs);
-    println!("Validators: {}, Blocks per epoch: {}", num_validators, blocks_per_epoch);
+    println!(
+        "Benchmarking consensus state write performance over {} epochs",
+        num_epochs
+    );
+    println!(
+        "Validators: {}, Blocks per epoch: {}",
+        num_validators, blocks_per_epoch
+    );
     println!();
 
     // Use tokio runtime with disk storage
     let storage_dir = std::env::temp_dir().join(format!("summit_bench_{}", std::process::id()));
-    let cfg = commonware_runtime::tokio::Config::default()
-        .with_storage_directory(&storage_dir);
+    let cfg = commonware_runtime::tokio::Config::default().with_storage_directory(&storage_dir);
     let executor = Runner::new(cfg);
 
     executor.start(|context| async move {
@@ -107,7 +112,8 @@ fn main() {
             // Store checkpoint
             let checkpoint = Checkpoint::new(&state);
             let checkpoint_start = Instant::now();
-            db.store_finalized_checkpoint(epoch, &checkpoint, Block::genesis([0; 32])).await;
+            db.store_finalized_checkpoint(epoch, &checkpoint, Block::genesis([0; 32]))
+                .await;
             db.commit().await;
             let checkpoint_duration = checkpoint_start.elapsed().as_micros();
             checkpoint_times.push((epoch, checkpoint_duration));
@@ -136,9 +142,27 @@ fn main() {
         println!("  Max:     {} µs", state_max);
 
         // Compare different ranges (skip first 50 for warm-up)
-        let range_50_60: u128 = write_times.iter().skip(50).take(10).map(|(_, t)| *t).sum::<u128>() / 10;
-        let range_450_460: u128 = write_times.iter().skip(450).take(10).map(|(_, t)| *t).sum::<u128>() / 10;
-        let last_10_avg: u128 = write_times.iter().rev().take(10).map(|(_, t)| *t).sum::<u128>() / 10;
+        let range_50_60: u128 = write_times
+            .iter()
+            .skip(50)
+            .take(10)
+            .map(|(_, t)| *t)
+            .sum::<u128>()
+            / 10;
+        let range_450_460: u128 = write_times
+            .iter()
+            .skip(450)
+            .take(10)
+            .map(|(_, t)| *t)
+            .sum::<u128>()
+            / 10;
+        let last_10_avg: u128 = write_times
+            .iter()
+            .rev()
+            .take(10)
+            .map(|(_, t)| *t)
+            .sum::<u128>()
+            / 10;
         println!("  Epochs 50-60 avg:    {} µs", range_50_60);
         println!("  Epochs 450-460 avg:  {} µs", range_450_460);
         println!("  Last 10 epochs avg:  {} µs", last_10_avg);
@@ -149,7 +173,8 @@ fn main() {
 
         // Calculate statistics for checkpoint writes
         let checkpoint_times_vec: Vec<u128> = checkpoint_times.iter().map(|(_, t)| *t).collect();
-        let checkpoint_avg = checkpoint_times_vec.iter().sum::<u128>() / checkpoint_times_vec.len() as u128;
+        let checkpoint_avg =
+            checkpoint_times_vec.iter().sum::<u128>() / checkpoint_times_vec.len() as u128;
         let checkpoint_min = *checkpoint_times_vec.iter().min().unwrap();
         let checkpoint_max = *checkpoint_times_vec.iter().max().unwrap();
 
@@ -159,13 +184,33 @@ fn main() {
         println!("  Max:     {} µs", checkpoint_max);
 
         // Compare different ranges (skip first 50 for warm-up)
-        let cp_range_50_60: u128 = checkpoint_times.iter().skip(50).take(10).map(|(_, t)| *t).sum::<u128>() / 10;
-        let cp_range_450_460: u128 = checkpoint_times.iter().skip(450).take(10).map(|(_, t)| *t).sum::<u128>() / 10;
-        let last_10_checkpoint_avg: u128 = checkpoint_times.iter().rev().take(10).map(|(_, t)| *t).sum::<u128>() / 10;
+        let cp_range_50_60: u128 = checkpoint_times
+            .iter()
+            .skip(50)
+            .take(10)
+            .map(|(_, t)| *t)
+            .sum::<u128>()
+            / 10;
+        let cp_range_450_460: u128 = checkpoint_times
+            .iter()
+            .skip(450)
+            .take(10)
+            .map(|(_, t)| *t)
+            .sum::<u128>()
+            / 10;
+        let last_10_checkpoint_avg: u128 = checkpoint_times
+            .iter()
+            .rev()
+            .take(10)
+            .map(|(_, t)| *t)
+            .sum::<u128>()
+            / 10;
         println!("  Epochs 50-60 avg:    {} µs", cp_range_50_60);
         println!("  Epochs 450-460 avg:  {} µs", cp_range_450_460);
         println!("  Last 10 epochs avg:  {} µs", last_10_checkpoint_avg);
-        let checkpoint_change_pct = ((last_10_checkpoint_avg as f64 - cp_range_50_60 as f64) / cp_range_50_60 as f64) * 100.0;
+        let checkpoint_change_pct = ((last_10_checkpoint_avg as f64 - cp_range_50_60 as f64)
+            / cp_range_50_60 as f64)
+            * 100.0;
         println!("  Change (50-60 vs last 10): {:.1}%", checkpoint_change_pct);
     });
 
