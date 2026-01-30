@@ -43,3 +43,7 @@ metrics = { version = "0.24.0", optional = true }
 [features]
 prom = ["metrics"]
 bench = ["summit-types/bench"]
+
+[[bench]]
+name = "consensus_state_write"
+harness = false
