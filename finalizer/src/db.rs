@@ -6,7 +6,7 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::qmdb::store::NonDurable;
 use commonware_storage::qmdb::store::db::{self, Db};
-use commonware_storage::translator::TwoCap;
+use commonware_storage::translator::EightCap;
 use commonware_utils::sequence::FixedBytes;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
@@ -26,12 +26,12 @@ const LATEST_FINALIZED_HEADER_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const LATEST_CHECKPOINT_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 2];
 
 pub struct FinalizerState<E: Clock + Storage + Metrics, V: Variant> {
-    store: Option<Db<E, FixedBytes<64>, Value<V>, TwoCap, NonDurable>>,
+    store: Option<Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable>>,
 }
 
 impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
-    pub async fn new(context: E, cfg: Config<TwoCap, ()>) -> Self {
-        let store = Db::<_, FixedBytes<64>, Value<V>, TwoCap>::init(context, cfg)
+    pub async fn new(context: E, cfg: Config<EightCap, ()>) -> Self {
+        let store = Db::<_, FixedBytes<64>, Value<V>, EightCap>::init(context, cfg)
             .await
             .expect("failed to initialize unified store")
             .into_dirty();
@@ -39,11 +39,11 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         Self { store: Some(store) }
     }
 
-    fn store(&self) -> &Db<E, FixedBytes<64>, Value<V>, TwoCap, NonDurable> {
+    fn store(&self) -> &Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable> {
         self.store.as_ref().expect("store should always be present")
     }
 
-    fn store_mut(&mut self) -> &mut Db<E, FixedBytes<64>, Value<V>, TwoCap, NonDurable> {
+    fn store_mut(&mut self) -> &mut Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable> {
         self.store.as_mut().expect("store should always be present")
     }
 
@@ -57,21 +57,24 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     fn make_consensus_state_key(height: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = CONSENSUS_STATE_PREFIX;
-        key[1..9].copy_from_slice(&height.to_be_bytes());
+        // Use little-endian so varying bytes come first (for EightCap translator)
+        key[1..9].copy_from_slice(&height.to_le_bytes());
         FixedBytes::new(key)
     }
 
     fn make_finalized_header_key(height: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = FINALIZED_HEADER_PREFIX;
-        key[1..9].copy_from_slice(&height.to_be_bytes());
+        // Use little-endian so varying bytes come first (for EightCap translator)
+        key[1..9].copy_from_slice(&height.to_le_bytes());
         FixedBytes::new(key)
     }
 
     fn make_checkpoint_key(epoch: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = CHECKPOINT_PREFIX;
-        key[1..9].copy_from_slice(&epoch.to_be_bytes());
+        // Use little-endian so varying bytes come first (for EightCap translator)
+        key[1..9].copy_from_slice(&epoch.to_le_bytes());
         FixedBytes::new(key)
     }
 
@@ -186,6 +189,14 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         } else {
             None
         }
+    }
+
+    pub async fn delete_consensus_state(&mut self, height: u64) -> bool {
+        let key = Self::make_consensus_state_key(height);
+        self.store_mut()
+            .delete(key)
+            .await
+            .expect("failed to delete consensus state")
     }
 
     // Checkpoint operations
@@ -397,7 +408,7 @@ mod tests {
             log_compression: None,
             log_codec_config: (),
             log_items_per_section: NZU64!(4),
-            translator: TwoCap,
+            translator: EightCap,
             buffer_pool: PoolRef::new(std::num::NonZero::new(77u16).unwrap(), NZUsize!(9)),
         };
         FinalizerState::<E, V>::new(context, config).await
