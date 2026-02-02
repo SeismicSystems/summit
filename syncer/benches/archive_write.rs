@@ -13,7 +13,7 @@ use commonware_cryptography::sha256::{Digest as Sha256Digest, Sha256};
 use commonware_cryptography::{Committable, Digest, Digestible, Hasher as _};
 use commonware_runtime::buffer::PoolRef;
 use commonware_runtime::{Metrics, Runner as _, tokio::Runner};
-use commonware_storage::archive::immutable;
+use commonware_storage::archive::{Archive as _, immutable};
 use commonware_utils::{NZU64, NZUsize};
 use std::num::{NonZeroU16, NonZeroU64};
 use std::time::Instant;
@@ -138,7 +138,7 @@ struct BenchConfig {
     freezer_table_resize_chunk_size: u32,
 }
 
-fn run_benchmark_once(config: &BenchConfig, num_blocks: u64) -> (f64, f64) {
+fn run_benchmark_once(config: &BenchConfig, num_blocks: u64) -> (f64, f64, f64, f64) {
     let storage_dir = std::env::temp_dir().join(format!(
         "summit_syncer_bench_{}_{}",
         config.name.replace(" ", "_"),
@@ -194,98 +194,88 @@ fn run_benchmark_once(config: &BenchConfig, num_blocks: u64) -> (f64, f64) {
             Blocks::put(&mut finalized_blocks, block)
                 .await
                 .expect("failed to store finalized block");
+            finalized_blocks
+                .sync()
+                .await
+                .expect("failed to sync finalized block");
             let block_duration = start.elapsed().as_micros();
             block_write_times.push((height, block_duration));
         }
 
-        // Calculate statistics: compare first half vs second half (after 100 warm-up)
-        let after_warmup: Vec<u128> = block_write_times
+        // Calculate statistics
+        let first_1000_avg: f64 = block_write_times
             .iter()
-            .skip(100)
+            .take(1000)
             .map(|(_, t)| *t)
-            .collect();
-        let mid = after_warmup.len() / 2;
-        let first_half_avg: f64 = after_warmup[..mid].iter().sum::<u128>() as f64 / mid as f64;
-        let second_half_avg: f64 = after_warmup[mid..].iter().sum::<u128>() as f64 / mid as f64;
+            .sum::<u128>() as f64
+            / 1000.0;
+        let last_1000_avg: f64 = block_write_times
+            .iter()
+            .rev()
+            .take(1000)
+            .map(|(_, t)| *t)
+            .sum::<u128>() as f64
+            / 1000.0;
 
-        let change_pct = ((second_half_avg - first_half_avg) / first_half_avg) * 100.0;
+        let change_pct = ((last_1000_avg - first_1000_avg) / first_1000_avg) * 100.0;
         let avg = block_write_times.iter().map(|(_, t)| *t).sum::<u128>() as f64
             / block_write_times.len() as f64;
 
-        (avg, change_pct)
+        (avg, change_pct, first_1000_avg, last_1000_avg)
     });
 
     let _ = std::fs::remove_dir_all(&storage_dir);
     result
 }
 
-fn run_benchmark(config: &BenchConfig, num_blocks: u64, iterations: usize) -> (f64, f64) {
+fn run_benchmark(config: &BenchConfig, num_blocks: u64, iterations: usize) -> (f64, f64, f64, f64) {
     let mut avgs = Vec::new();
     let mut degradations = Vec::new();
+    let mut first_1000s = Vec::new();
+    let mut last_1000s = Vec::new();
 
     for _ in 0..iterations {
-        let (avg, degradation) = run_benchmark_once(config, num_blocks);
+        let (avg, degradation, first_1000, last_1000) = run_benchmark_once(config, num_blocks);
         avgs.push(avg);
         degradations.push(degradation);
+        first_1000s.push(first_1000);
+        last_1000s.push(last_1000);
     }
 
     let avg_avg = avgs.iter().sum::<f64>() / avgs.len() as f64;
     let avg_degradation = degradations.iter().sum::<f64>() / degradations.len() as f64;
+    let avg_first_1000 = first_1000s.iter().sum::<f64>() / first_1000s.len() as f64;
+    let avg_last_1000 = last_1000s.iter().sum::<f64>() / last_1000s.len() as f64;
 
-    (avg_avg, avg_degradation)
+    (avg_avg, avg_degradation, avg_first_1000, avg_last_1000)
 }
 
 fn main() {
-    let num_blocks = 5000;
-    let iterations = 5;
+    let num_blocks = 1_000_000;
+    let iterations = 1;
 
     println!("Syncer Archive Write Benchmark");
     println!("==============================");
     println!("Blocks: {}, Iterations: {}", num_blocks, iterations);
     println!();
-    println!("Comparing marshal (commonware) vs optimized (summit) configs:");
-    println!("  marshal_original:  initial_size=64,    resize_freq=10,  chunk=10");
-    println!("  summit_optimized:  initial_size=16384, resize_freq=255, chunk=1000");
-    println!();
 
-    let configs = vec![
-        // Original marshal config (commonware upstream)
-        BenchConfig {
-            name: "marshal_original",
-            items_per_section: NZU64!(10),
-            freezer_table_initial_size: 64,
-            freezer_table_resize_frequency: 10,
-            freezer_table_resize_chunk_size: 10,
-        },
-        // Optimized config (summit syncer)
-        BenchConfig {
-            name: "summit_optimized",
-            items_per_section: NZU64!(10),
-            freezer_table_initial_size: 16384,
-            freezer_table_resize_frequency: 255,
-            freezer_table_resize_chunk_size: 1000,
-        },
-    ];
+    let config = BenchConfig {
+        name: "marshal",
+        items_per_section: NZU64!(10),
+        freezer_table_initial_size: 64,
+        freezer_table_resize_frequency: 10,
+        freezer_table_resize_chunk_size: 10,
+    };
 
-    println!(
-        "{:<25} {:>12} {:>15}  (avg of {} iterations)",
-        "Configuration", "Avg (µs)", "Degradation", iterations
-    );
-    println!("{:-<25} {:->12} {:->15}", "", "", "");
+    print!("Testing ({} iters)...", iterations);
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
-    for config in &configs {
-        print!("Testing {} ({} iters)...", config.name, iterations);
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    let (avg, change_pct, first_1000, last_1000) = run_benchmark(&config, num_blocks, iterations);
 
-        let (avg, change_pct) = run_benchmark(config, num_blocks, iterations);
-
-        println!(
-            "\r{:<25} {:>12.1} {:>14.1}%",
-            config.name, avg, change_pct
-        );
-    }
-
-    println!("\n=========================================================");
-    println!("Lower degradation % = more consistent performance over time");
-    println!("Lower avg = faster writes overall");
+    println!("\r                         ");
+    println!("Results:");
+    println!("  First 1000 blocks avg: {:.1} µs", first_1000);
+    println!("  Last 1000 blocks avg:  {:.1} µs", last_1000);
+    println!("  Overall avg:           {:.1} µs", avg);
+    println!("  Degradation:           {:.1}%", change_pct);
 }
