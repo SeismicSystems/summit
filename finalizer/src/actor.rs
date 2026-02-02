@@ -779,7 +779,8 @@ impl<
                 .get_withdrawals_for_epoch(current_epoch)
                 .map(|queue| queue.iter().cloned().collect())
                 .unwrap_or_default();
-            let next_epoch = state.epoch;
+            let next_epoch = state.epoch + 1;
+
             BlockAuxData {
                 epoch: state.epoch,
                 withdrawals: ready_withdrawals,
