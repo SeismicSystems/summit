@@ -40,12 +40,14 @@ use futures::{
 };
 use governor::clock::Clock as GClock;
 #[cfg(feature = "prom")]
-use metrics::counter;
+use metrics::{counter, histogram};
 #[cfg(feature = "prom")]
 use prometheus_client::metrics::gauge::Gauge;
 use rand_core::CryptoRngCore;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+#[cfg(feature = "prom")]
+use std::time::Instant;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     future::Future,
@@ -992,6 +994,9 @@ where
     ) {
         self.notify_subscribers(commitment, &block).await;
 
+        #[cfg(feature = "prom")]
+        let store_start = Instant::now();
+
         // In parallel, update the finalized blocks and finalizations archives
         if let Err(e) = try_join!(
             // Update the finalized blocks archive
@@ -1011,6 +1016,13 @@ where
             }
         ) {
             panic!("failed to finalize: {e}");
+        }
+
+        #[cfg(feature = "prom")]
+        {
+            let store_duration = store_start.elapsed().as_micros() as f64;
+            histogram!("syncer_block_store_duration_micros").record(store_duration);
+            counter!("syncer_blocks_stored_total").increment(1);
         }
 
         // Update metrics and send tip update to application

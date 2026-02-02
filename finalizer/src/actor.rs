@@ -415,9 +415,17 @@ impl<
                 let finalized_header =
                     FinalizedHeader::new(block.header.clone(), finalization, participant_count);
 
+                #[cfg(feature = "prom")]
+                let header_start = Instant::now();
                 self.db
                     .store_finalized_header(new_height, &finalized_header)
                     .await;
+                #[cfg(feature = "prom")]
+                {
+                    let header_duration = header_start.elapsed().as_micros() as f64;
+                    histogram!("finalizer_db_finalized_header_write_micros")
+                        .record(header_duration);
+                }
 
                 #[cfg(debug_assertions)]
                 {
@@ -451,6 +459,8 @@ impl<
                     checkpoint_digest = ?checkpoint.digest,
                     "storing finalized checkpoint to database"
                 );
+                #[cfg(feature = "prom")]
+                let checkpoint_start = Instant::now();
                 self.db
                     .store_finalized_checkpoint(
                         self.canonical_state.epoch,
@@ -458,6 +468,11 @@ impl<
                         block.clone(),
                     )
                     .await;
+                #[cfg(feature = "prom")]
+                {
+                    let checkpoint_duration = checkpoint_start.elapsed().as_micros() as f64;
+                    histogram!("finalizer_db_checkpoint_write_micros").record(checkpoint_duration);
+                }
             }
 
             // Increment epoch
@@ -479,15 +494,29 @@ impl<
                 "transitioned to new epoch"
             );
 
+            #[cfg(feature = "prom")]
+            let consensus_state_start = Instant::now();
             self.db
                 .store_consensus_state(new_height, &self.canonical_state)
                 .await;
+            #[cfg(feature = "prom")]
+            {
+                let consensus_state_duration = consensus_state_start.elapsed().as_micros() as f64;
+                histogram!("finalizer_db_consensus_state_write_micros")
+                    .record(consensus_state_duration);
+            }
+
             // This will commit all changes to the state db
+            #[cfg(feature = "prom")]
+            let commit_start = Instant::now();
             self.db.commit().await;
             #[cfg(feature = "prom")]
             {
+                let commit_duration = commit_start.elapsed().as_micros() as f64;
+                histogram!("finalizer_db_commit_micros").record(commit_duration);
                 let db_operations_duration = db_operations_start.elapsed().as_millis() as f64;
                 histogram!("database_operations_duration_millis").record(db_operations_duration);
+                counter!("finalizer_epochs_completed_total").increment(1);
             }
 
             // Clear the added and removed validators
