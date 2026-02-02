@@ -1,6 +1,7 @@
 mod deposit_withdrawal_combined;
 mod deposits;
 mod protocol_params;
+mod validator_set;
 mod withdrawals;
 
 // Shared imports for all execution request tests
