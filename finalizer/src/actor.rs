@@ -11,7 +11,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
-use commonware_storage::translator::EightCap;
+use commonware_storage::translator::{EightCap, TwoCap};
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use commonware_utils::{NZU64, NZUsize, hex};
 use futures::channel::{mpsc, oneshot};
@@ -115,7 +115,7 @@ impl<
             log_codec_config: (),
             log_items_per_section: NZU64!(262_144),
             translator: EightCap,
-            buffer_pool: cfg.buffer_pool,
+            buffer_pool: cfg.buffer_pool.clone(),
         };
 
         let db =

@@ -1,15 +1,19 @@
+use std::collections::BTreeMap;
+
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Storage};
+use commonware_storage::qmdb::Durable;
 use commonware_storage::qmdb::store::NonDurable;
 use commonware_storage::qmdb::store::db::{self, Db};
-use commonware_storage::translator::EightCap;
+use commonware_storage::translator::{EightCap, TwoCap};
 use commonware_utils::sequence::FixedBytes;
+use commonware_utils::{NZU64, NZUsize};
 use summit_types::checkpoint::Checkpoint;
-use summit_types::consensus_state::ConsensusState;
+use summit_types::consensus_state::{ConsensusState, ConsensusStateOLD};
 use summit_types::{Block, FinalizedHeader};
 
 pub use db::Config;
@@ -29,12 +33,203 @@ pub struct FinalizerState<E: Clock + Storage + Metrics, V: Variant> {
     store: Option<Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable>>,
 }
 
+pub struct FinalizerStateDump<V: Variant> {
+    pub latest_consensus_state_height: u64,
+
+    pub latest_finalized_header_height: u64,
+
+    pub latest_checkpoint_epoch: u64,
+
+    pub checkpoints: BTreeMap<u64, Box<(Checkpoint, Block)>>, // Epoch -> Checkpoint
+    pub consensus_states: BTreeMap<u64, Box<ConsensusStateOLD>>, // height -> ConsensusState
+
+    pub finalized_headers:
+        BTreeMap<u64, Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>>, // height -> Header
+}
+
+pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
+    store: Db<E, FixedBytes<64>, ValueOLD<V>, TwoCap, Durable>,
+) -> FinalizerStateDump<V> {
+    // *******************
+    // Temporary migration code
+
+    /*
+    Latest checkpoint epoch
+    All previous checkpoints
+    Latest consensus state height
+    All previous consensus states that are stored(check every height in old database and if it exists move it to new data database)
+    Latest Finalized Header height
+    All previous Finalized Headers
+     */
+
+    // get latest consensus state height
+    let key = FinalizerState::<E, V>::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
+    let ValueOLD::U64(latest_consensus_state_height) = store
+        .get(&key)
+        .await
+        .expect("failed to get latest consensus state height")
+        .expect("No latest height in old store")
+    else {
+        panic!("latest consensus height is not u64")
+    };
+
+    let key = FinalizerState::<E, V>::pad_key(&LATEST_FINALIZED_HEADER_HEIGHT_KEY);
+    let ValueOLD::U64(latest_finalized_header_height) = store
+        .get(&key)
+        .await
+        .expect("failed to get latest finalized header height")
+        .expect("No finalized Header height")
+    else {
+        panic!("latest finalized header height not u64");
+    };
+
+    // get latest checkpoint epoch
+    let key = FinalizerState::<E, V>::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
+    let ValueOLD::U64(latest_checkpoint_epoch) = store
+        .get(&key)
+        .await
+        .expect("failed to get latest finalized header height")
+        .expect("No finalized Header height")
+    else {
+        panic!("latest finalized header height not u64");
+    };
+
+    // Extract all the consensus states
+    let mut consensus_states = BTreeMap::new();
+    for i in 0..=latest_consensus_state_height {
+        let key = FinalizerState::<E, V>::make_consensus_state_key(i);
+        if let Some(ValueOLD::ConsensusState(state)) = store
+            .get(&key)
+            .await
+            .expect("failed to get consensus state")
+        {
+            consensus_states.insert(i, state);
+        }
+    }
+
+    // extract all the checkpoints
+    let mut checkpoints = BTreeMap::new();
+    for i in 0..=latest_checkpoint_epoch {
+        let key = FinalizerState::<E, V>::make_checkpoint_key(i);
+        if let Some(ValueOLD::Checkpoint(checkpoint)) =
+            store.get(&key).await.expect("failed to get checkpoint")
+        {
+            checkpoints.insert(i, checkpoint);
+        }
+    }
+
+    // extract all finalized headers
+    let mut finalized_headers = BTreeMap::new();
+    for i in 0..=latest_finalized_header_height {
+        let key = FinalizerState::<E, V>::make_finalized_header_key(i);
+        if let Some(ValueOLD::FinalizedHeader(header)) =
+            store.get(&key).await.expect("failed to get checkpoint")
+        {
+            finalized_headers.insert(i, header);
+        }
+    }
+
+    let dump = FinalizerStateDump {
+        latest_consensus_state_height,
+        latest_finalized_header_height,
+        latest_checkpoint_epoch,
+        checkpoints,
+        consensus_states,
+        finalized_headers,
+    };
+
+    // Now that we have dumped the entire database. Delete it so we can put the new one there
+    store
+        .destroy()
+        .await
+        .expect("Unable to destroy old database after dumping");
+
+    dump
+}
+
+pub async fn migrate_to_new_db<E: Clock + Storage + Metrics, V: Variant>(
+    mut db: Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable>,
+    dump: FinalizerStateDump<V>,
+) -> Db<E, FixedBytes<64>, Value<V>, EightCap, Durable> {
+    // set latest consensus state height
+    let key = FinalizerState::<E, V>::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
+    db.update(key, Value::U64(dump.latest_consensus_state_height))
+        .await
+        .expect("Failed to update latest consensus state");
+
+    // set latest checkpoint epoch
+    let key = FinalizerState::<E, V>::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
+    db.update(key, Value::U64(dump.latest_checkpoint_epoch))
+        .await
+        .expect("Failed to update latest checkpoint epoch");
+
+    // set latest finalized header height
+    let key = FinalizerState::<E, V>::pad_key(&LATEST_FINALIZED_HEADER_HEIGHT_KEY);
+    db.update(key, Value::U64(dump.latest_finalized_header_height))
+        .await
+        .expect("Failed to update latest consensus state");
+
+    // set all consensusstate
+    for (height, state) in dump.consensus_states {
+        let key = FinalizerState::<E, V>::make_consensus_state_key(height);
+
+        let old_state = *state;
+        let new_consensus_state: ConsensusState = old_state.into();
+        db.update(key, Value::ConsensusState(Box::new(new_consensus_state)))
+            .await
+            .expect("Failed to update consensus state");
+    }
+
+    // set all checkpoints
+    for (epoch, checkpoint) in dump.checkpoints {
+        let key = FinalizerState::<E, V>::make_checkpoint_key(epoch);
+
+        db.update(key, Value::Checkpoint(checkpoint))
+            .await
+            .expect("Unable to store checkpoint");
+    }
+
+    // set all headers
+    for (height, header) in dump.finalized_headers {
+        let key = FinalizerState::<E, V>::make_finalized_header_key(height);
+
+        db.update(key, Value::FinalizedHeader(header))
+            .await
+            .expect("Store finalized Header");
+    }
+
+    let (db, _) = db.commit(None).await.expect("failed to update database");
+
+    db
+}
+
 impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn new(context: E, cfg: Config<EightCap, ()>) -> Self {
+        let state_cfg_old = Config {
+            log_partition: cfg.log_partition.clone(),
+            log_write_buffer: NZUsize!(1024 * 1024),
+            log_compression: None,
+            log_codec_config: (),
+            log_items_per_section: NZU64!(262_144),
+            translator: TwoCap,
+            buffer_pool: cfg.buffer_pool.clone(),
+        };
+        let old_store =
+            Db::<_, FixedBytes<64>, ValueOLD<V>, TwoCap>::init(context.clone(), state_cfg_old)
+                .await
+                .expect("failed to initialize unified store");
+
+        let state_dump = dump_state(old_store).await;
+
         let store = Db::<_, FixedBytes<64>, Value<V>, EightCap>::init(context, cfg)
             .await
             .expect("failed to initialize unified store")
             .into_dirty();
+
+        let store = migrate_to_new_db(store, state_dump).await.into_dirty();
+
+        // Just panic out at this point the migration should be complete
+        panic!("Migration complete");
 
         Self { store: Some(store) }
     }
@@ -319,6 +514,14 @@ enum Value<V: Variant> {
     FinalizedHeader(Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>),
 }
 
+#[derive(Clone)]
+enum ValueOLD<V: Variant> {
+    U64(u64),
+    ConsensusState(Box<ConsensusStateOLD>),
+    Checkpoint(Box<(Checkpoint, Block)>),
+    FinalizedHeader(Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>),
+}
+
 impl<V: Variant> EncodeSize for Value<V> {
     fn encode_size(&self) -> usize {
         1 + match self {
@@ -356,6 +559,67 @@ impl<V: Variant> Read for Value<V> {
 }
 
 impl<V: Variant> Write for Value<V> {
+    fn write(&self, buf: &mut impl BufMut) {
+        match self {
+            Self::U64(val) => {
+                buf.put_u8(0x01);
+                buf.put_u64(*val);
+            }
+            Self::ConsensusState(state) => {
+                buf.put_u8(0x05);
+                state.write(buf);
+            }
+            Self::Checkpoint(checkpoint) => {
+                buf.put_u8(0x06);
+                checkpoint.write(buf);
+            }
+            Self::FinalizedHeader(header) => {
+                buf.put_u8(0x07);
+                header.write(buf);
+            }
+        }
+    }
+}
+
+/******************************************************************* */
+
+impl<V: Variant> EncodeSize for ValueOLD<V> {
+    fn encode_size(&self) -> usize {
+        1 + match self {
+            Self::U64(_) => 8,
+            Self::ConsensusState(state) => state.encode_size(),
+            Self::Checkpoint(checkpoint) => checkpoint.encode_size(),
+            Self::FinalizedHeader(header) => header.encode_size(),
+        }
+    }
+}
+
+impl<V: Variant> Read for ValueOLD<V> {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let value_type = buf.get_u8();
+        match value_type {
+            0x01 => Ok(Self::U64(buf.get_u64())),
+            0x05 => Ok(Self::ConsensusState(Box::new(ConsensusStateOLD::read_cfg(
+                buf,
+                &(),
+            )?))),
+            0x06 => Ok(Self::Checkpoint(Box::new((
+                Checkpoint::read_cfg(buf, &())?,
+                Block::read_cfg(buf, &())?,
+            )))),
+            0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::<
+                bls12381_multisig::Scheme<PublicKey, V>,
+            >::read_cfg(
+                buf, &()
+            )?))),
+            byte => Err(Error::InvalidVarint(byte as usize)),
+        }
+    }
+}
+
+impl<V: Variant> Write for ValueOLD<V> {
     fn write(&self, buf: &mut impl BufMut) {
         match self {
             Self::U64(val) => {

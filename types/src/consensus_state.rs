@@ -35,6 +35,26 @@ pub struct ConsensusState {
     pub validator_maximum_stake: u64, // in gwei
 }
 
+#[derive(Clone, Debug)]
+pub struct ConsensusStateOLD {
+    pub epoch: u64,
+    pub view: u64,
+    pub latest_height: u64,
+    pub head_digest: Digest,
+    pub next_withdrawal_index: u64,
+    pub deposit_queue: VecDeque<DepositRequest>,
+    pub withdrawal_queue: BTreeMap<u64, VecDeque<PendingWithdrawal>>, // epoch -> withdrawals
+    pub validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
+    pub protocol_param_changes: Vec<ProtocolParam>,
+    pub pending_checkpoint: Option<Checkpoint>,
+    pub added_validators: BTreeMap<u64, Vec<PublicKey>>,
+    pub removed_validators: Vec<PublicKey>,
+    pub forkchoice: ForkchoiceState,
+    pub epoch_genesis_hash: [u8; 32],
+    pub validator_minimum_stake: u64, // in gwei
+    pub validator_maximum_stake: u64, // in gwei
+}
+
 impl Default for ConsensusState {
     fn default() -> Self {
         Self {
@@ -604,6 +624,577 @@ impl TryFrom<Checkpoint> for ConsensusState {
 
     fn try_from(checkpoint: Checkpoint) -> Result<Self, Self::Error> {
         ConsensusState::decode(checkpoint.data)
+    }
+}
+
+/************************************************************************************ */
+
+impl Default for ConsensusStateOLD {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            view: 0,
+            latest_height: 0,
+            head_digest: sha256::Digest([0u8; 32]),
+            next_withdrawal_index: 0,
+            deposit_queue: Default::default(),
+            withdrawal_queue: Default::default(),
+            protocol_param_changes: Default::default(),
+            validator_accounts: Default::default(),
+            pending_checkpoint: None,
+            added_validators: Default::default(),
+            removed_validators: Vec::new(),
+            forkchoice: Default::default(),
+            epoch_genesis_hash: [0u8; 32],
+            validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
+            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+        }
+    }
+}
+
+impl ConsensusStateOLD {
+    pub fn new(
+        forkchoice: ForkchoiceState,
+        validator_minimum_stake: u64,
+        validator_maximum_stake: u64,
+    ) -> Self {
+        Self {
+            forkchoice,
+            epoch_genesis_hash: forkchoice.head_block_hash.into(),
+            head_digest: (*forkchoice.head_block_hash).into(),
+            validator_minimum_stake,
+            validator_maximum_stake,
+            ..Default::default()
+        }
+    }
+
+    // State variable operations
+    pub fn get_epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.epoch = epoch;
+    }
+
+    pub fn get_view(&self) -> u64 {
+        self.view
+    }
+
+    pub fn set_view(&mut self, view: u64) {
+        self.view = view;
+    }
+
+    pub fn get_latest_height(&self) -> u64 {
+        self.latest_height
+    }
+
+    pub fn set_latest_height(&mut self, height: u64) {
+        self.latest_height = height;
+    }
+
+    pub fn get_next_withdrawal_index(&self) -> u64 {
+        self.next_withdrawal_index
+    }
+
+    pub fn get_head_digest(&self) -> Digest {
+        self.head_digest
+    }
+
+    pub fn get_minimum_stake(&self) -> u64 {
+        self.validator_minimum_stake
+    }
+
+    pub fn get_maximum_stake(&self) -> u64 {
+        self.validator_maximum_stake
+    }
+
+    fn get_and_increment_withdrawal_index(&mut self) -> u64 {
+        let current = self.next_withdrawal_index;
+        self.next_withdrawal_index += 1;
+        current
+    }
+
+    pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
+        self.pending_checkpoint.as_ref()
+    }
+
+    pub fn set_next_withdrawal_index(&mut self, index: u64) {
+        self.next_withdrawal_index = index;
+    }
+
+    pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
+        self.pending_checkpoint = checkpoint;
+    }
+
+    pub fn get_added_validators(&self, epoch: u64) -> Option<&Vec<PublicKey>> {
+        self.added_validators.get(&epoch)
+    }
+
+    pub fn add_validator(&mut self, epoch: u64, validator: PublicKey) {
+        self.added_validators
+            .entry(epoch)
+            .or_default()
+            .push(validator);
+    }
+
+    pub fn get_removed_validators(&self) -> &Vec<PublicKey> {
+        &self.removed_validators
+    }
+
+    pub fn set_removed_validators(&mut self, validators: Vec<PublicKey>) {
+        self.removed_validators = validators;
+    }
+
+    pub fn get_forkchoice(&self) -> &ForkchoiceState {
+        &self.forkchoice
+    }
+
+    pub fn set_forkchoice(&mut self, forkchoice: ForkchoiceState) {
+        self.forkchoice = forkchoice;
+    }
+
+    pub fn get_epoch_genesis_hash(&self) -> [u8; 32] {
+        self.epoch_genesis_hash
+    }
+
+    pub fn set_epoch_genesis_hash(&mut self, hash: [u8; 32]) {
+        self.epoch_genesis_hash = hash;
+    }
+
+    // Account operations
+    pub fn get_account(&self, pubkey: &[u8; 32]) -> Option<&ValidatorAccount> {
+        self.validator_accounts.get(pubkey)
+    }
+
+    pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
+        self.validator_accounts.insert(pubkey, account);
+    }
+
+    pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
+        self.validator_accounts.remove(pubkey)
+    }
+
+    // Deposit queue operations
+    pub fn push_deposit(&mut self, request: DepositRequest) {
+        self.deposit_queue.push_back(request);
+    }
+
+    pub fn peek_deposit(&self) -> Option<&DepositRequest> {
+        self.deposit_queue.front()
+    }
+
+    pub fn pop_deposit(&mut self) -> Option<DepositRequest> {
+        self.deposit_queue.pop_front()
+    }
+
+    // Withdrawal queue operations
+    pub fn push_withdrawal_request(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_epoch: u64,
+        subtract_balance: bool,
+    ) {
+        let withdrawal_index = self.get_and_increment_withdrawal_index();
+
+        let pending_withdrawal = PendingWithdrawal {
+            inner: Withdrawal {
+                index: withdrawal_index,
+                validator_index: 0,
+                address: request.source_address,
+                amount: request.amount,
+            },
+            pubkey: request.validator_pubkey,
+            subtract_balance,
+        };
+
+        self.push_withdrawal(pending_withdrawal, withdrawal_epoch);
+    }
+
+    pub fn push_withdrawal(&mut self, request: PendingWithdrawal, withdrawal_epoch: u64) {
+        self.withdrawal_queue
+            .entry(withdrawal_epoch)
+            .or_default()
+            .push_back(request);
+    }
+
+    pub fn peek_withdrawal(&self, withdrawal_epoch: u64) -> Option<&PendingWithdrawal> {
+        self.withdrawal_queue
+            .get(&withdrawal_epoch)
+            .and_then(|queue| queue.front())
+    }
+
+    pub fn pop_withdrawal(&mut self, withdrawal_epoch: u64) -> Option<PendingWithdrawal> {
+        if let Some(queue) = self.withdrawal_queue.get_mut(&withdrawal_epoch) {
+            let withdrawal = queue.pop_front();
+            // Remove the epoch entry if the queue is now empty
+            if queue.is_empty() {
+                self.withdrawal_queue.remove(&withdrawal_epoch);
+            }
+            withdrawal
+        } else {
+            None
+        }
+    }
+
+    /// Get all pending withdrawals for a specific epoch
+    pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Option<&VecDeque<PendingWithdrawal>> {
+        self.withdrawal_queue.get(&epoch)
+    }
+
+    /// Get the number of pending withdrawals for a specific epoch
+    pub fn get_withdrawal_count_for_epoch(&self, epoch: u64) -> usize {
+        self.withdrawal_queue
+            .get(&epoch)
+            .map(|queue| queue.len())
+            .unwrap_or(0)
+    }
+
+    /// Get all epochs that have pending withdrawals
+    pub fn get_epochs_with_withdrawals(&self) -> Vec<u64> {
+        self.withdrawal_queue.keys().copied().collect()
+    }
+
+    pub fn get_validator_keys(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
+            .validator_accounts
+            .iter()
+            .filter(|(_, acc)| !(acc.status == ValidatorStatus::Inactive))
+            .map(|(v, acc)| {
+                let mut key_bytes = &v[..];
+                let node_public_key =
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let consensus_public_key = acc.consensus_public_key.clone();
+                (node_public_key, consensus_public_key)
+            })
+            .collect();
+        peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        peers
+    }
+
+    pub fn get_active_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
+            .validator_accounts
+            .iter()
+            .filter(|(_, acc)| acc.status == ValidatorStatus::Active)
+            .map(|(v, acc)| {
+                let mut key_bytes = &v[..];
+                let node_public_key =
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let consensus_public_key = acc.consensus_public_key.clone();
+                (node_public_key, consensus_public_key)
+            })
+            .collect();
+        peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        peers
+    }
+
+    pub fn get_active_or_joining_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
+            .validator_accounts
+            .iter()
+            .filter(|(_, acc)| {
+                acc.status == ValidatorStatus::Active || acc.status == ValidatorStatus::Joining
+            })
+            .map(|(v, acc)| {
+                let mut key_bytes = &v[..];
+                let node_public_key =
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let consensus_public_key = acc.consensus_public_key.clone();
+                (node_public_key, consensus_public_key)
+            })
+            .collect();
+        peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        peers
+    }
+
+    pub fn get_active_validators_as<BLS: Clone>(&self) -> Vec<(PublicKey, BLS)>
+    where
+        bls12381::PublicKey: Into<BLS>,
+    {
+        self.get_active_validators()
+            .into_iter()
+            .map(|(pk, bls_pk)| (pk, bls_pk.into()))
+            .collect()
+    }
+
+    pub fn apply_protocol_parameter_changes(&mut self) -> bool {
+        let mut min_or_max_stake_changed = false;
+        while let Some(param) = self.protocol_param_changes.pop() {
+            match param {
+                ProtocolParam::MinimumStake(min_stake) => {
+                    self.validator_minimum_stake = min_stake;
+                    min_or_max_stake_changed = true;
+                }
+                ProtocolParam::MaximumStake(max_stake) => {
+                    self.validator_maximum_stake = max_stake;
+                    min_or_max_stake_changed = true;
+                }
+            }
+        }
+        min_or_max_stake_changed
+    }
+
+    pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
+        let validator_pubkey: [u8; 32] = node_pubkey.as_ref().try_into().unwrap();
+        self.validator_accounts
+            .get(&validator_pubkey)
+            .map(|acc| acc.status == ValidatorStatus::Joining)
+            .unwrap_or(false)
+    }
+}
+
+impl EncodeSize for ConsensusStateOLD {
+    fn encode_size(&self) -> usize {
+        8 // epoch
+        + 8 // view
+        + 8 // latest_height
+        + 8 // next_withdrawal_index
+        + 4 // deposit_queue length
+        + self.deposit_queue.iter().map(|req| req.encode_size()).sum::<usize>()
+        + 4 // withdrawal_queue epoch count
+        + self.withdrawal_queue.values().map(|queue| {
+            8 // epoch (u64)
+            + 4 // queue length (u32)
+            + queue.iter().map(|req| req.encode_size()).sum::<usize>()
+        }).sum::<usize>()
+        + 4 // protocol_param_changes length
+        + self.protocol_param_changes.iter().map(|param| param.encode_size()).sum::<usize>()
+        + 4 // validator_accounts length
+        + self.validator_accounts.iter().map(|(key, account)| key.len() + account.encode_size()).sum::<usize>()
+        + 1 // pending_checkpoint presence flag
+        + self.pending_checkpoint.as_ref().map_or(0, |cp| cp.encode_size())
+        + 4 // added_validators length
+        + self.added_validators.values().map(|validators| 8 + 4 + validators.iter().map(|pk| pk.encode_size()).sum::<usize>()).sum::<usize>()
+        + 4 // removed_validators length
+        + self.removed_validators.iter().map(|pk| pk.encode_size()).sum::<usize>()
+        + 32 // forkchoice.head_block_hash
+        + 32 // forkchoice.safe_block_hash
+        + 32 // forkchoice.finalized_block_hash
+        + 32 // epoch_genesis_hash
+        + 32 // head_digest
+        + 8 // validator_minimum_stake
+        + 8 // validator_maximum_stake
+    }
+}
+
+impl Read for ConsensusStateOLD {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let epoch = buf.get_u64();
+        let view = buf.get_u64();
+        let latest_height = buf.get_u64();
+        let next_withdrawal_index = buf.get_u64();
+
+        let deposit_queue_len = buf.get_u32() as usize;
+        let mut deposit_queue = VecDeque::with_capacity(deposit_queue_len);
+        for _ in 0..deposit_queue_len {
+            deposit_queue.push_back(DepositRequest::read_cfg(buf, &())?);
+        }
+
+        let withdrawal_queue_epoch_count = buf.get_u32() as usize;
+        let mut withdrawal_queue = BTreeMap::new();
+        for _ in 0..withdrawal_queue_epoch_count {
+            let epoch = buf.get_u64();
+            let queue_len = buf.get_u32() as usize;
+            let mut queue = VecDeque::with_capacity(queue_len);
+            for _ in 0..queue_len {
+                queue.push_back(PendingWithdrawal::read_cfg(buf, &())?);
+            }
+            withdrawal_queue.insert(epoch, queue);
+        }
+
+        let protocol_param_changes_len = buf.get_u32() as usize;
+        let mut protocol_param_changes = Vec::with_capacity(protocol_param_changes_len);
+        for _ in 0..protocol_param_changes_len {
+            protocol_param_changes.push(crate::protocol_params::ProtocolParam::read_cfg(buf, &())?);
+        }
+
+        let validator_accounts_len = buf.get_u32() as usize;
+        let mut validator_accounts = BTreeMap::new();
+        for _ in 0..validator_accounts_len {
+            let mut key = [0u8; 32];
+            buf.copy_to_slice(&mut key);
+            let account = ValidatorAccount::read_cfg(buf, &())?;
+            validator_accounts.insert(key, account);
+        }
+
+        // Read pending_checkpoint
+        let has_pending_checkpoint = buf.get_u8() != 0;
+        let pending_checkpoint = if has_pending_checkpoint {
+            Some(Checkpoint::read_cfg(buf, &())?)
+        } else {
+            None
+        };
+
+        // Read added_validators
+        let added_validators_len = buf.get_u32() as usize;
+        let mut added_validators = BTreeMap::new();
+        for _ in 0..added_validators_len {
+            let key = buf.get_u64();
+            let validator_count = buf.get_u32() as usize;
+            let mut validators = Vec::with_capacity(validator_count);
+            for _ in 0..validator_count {
+                validators.push(PublicKey::read_cfg(buf, &())?);
+            }
+            added_validators.insert(key, validators);
+        }
+
+        // Read removed_validators
+        let removed_validators_len = buf.get_u32() as usize;
+        let mut removed_validators = Vec::with_capacity(removed_validators_len);
+        for _ in 0..removed_validators_len {
+            removed_validators.push(PublicKey::read_cfg(buf, &())?);
+        }
+
+        // Read forkchoice
+        let mut head_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut head_block_hash);
+        let mut safe_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut safe_block_hash);
+        let mut finalized_block_hash = [0u8; 32];
+        buf.copy_to_slice(&mut finalized_block_hash);
+
+        let forkchoice = ForkchoiceState {
+            head_block_hash: head_block_hash.into(),
+            safe_block_hash: safe_block_hash.into(),
+            finalized_block_hash: finalized_block_hash.into(),
+        };
+
+        let mut epoch_genesis_hash = [0u8; 32];
+        buf.copy_to_slice(&mut epoch_genesis_hash);
+
+        let mut head_digest_bytes = [0u8; 32];
+        buf.copy_to_slice(&mut head_digest_bytes);
+        let head_digest = sha256::Digest(head_digest_bytes);
+
+        let validator_minimum_stake = buf.get_u64();
+        let validator_maximum_stake = buf.get_u64();
+
+        Ok(Self {
+            epoch,
+            view,
+            latest_height,
+            head_digest,
+            next_withdrawal_index,
+            deposit_queue,
+            withdrawal_queue,
+            protocol_param_changes,
+            validator_accounts,
+            pending_checkpoint,
+            added_validators,
+            removed_validators,
+            forkchoice,
+            epoch_genesis_hash,
+            validator_minimum_stake,
+            validator_maximum_stake,
+        })
+    }
+}
+
+impl Write for ConsensusStateOLD {
+    fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64(self.epoch);
+        buf.put_u64(self.view);
+        buf.put_u64(self.latest_height);
+        buf.put_u64(self.next_withdrawal_index);
+
+        buf.put_u32(self.deposit_queue.len() as u32);
+        for request in &self.deposit_queue {
+            request.write(buf);
+        }
+
+        buf.put_u32(self.withdrawal_queue.len() as u32);
+        for (epoch, queue) in &self.withdrawal_queue {
+            buf.put_u64(*epoch);
+            buf.put_u32(queue.len() as u32);
+            for request in queue {
+                request.write(buf);
+            }
+        }
+
+        buf.put_u32(self.protocol_param_changes.len() as u32);
+        for param in &self.protocol_param_changes {
+            param.write(buf);
+        }
+
+        buf.put_u32(self.validator_accounts.len() as u32);
+        for (key, account) in &self.validator_accounts {
+            buf.put_slice(key);
+            account.write(buf);
+        }
+
+        // Write pending_checkpoint
+        if let Some(checkpoint) = &self.pending_checkpoint {
+            buf.put_u8(1); // has checkpoint
+            checkpoint.write(buf);
+        } else {
+            buf.put_u8(0); // no checkpoint
+        }
+
+        // Write added_validators
+        buf.put_u32(self.added_validators.len() as u32);
+        for (key, validators) in &self.added_validators {
+            buf.put_u64(*key);
+            buf.put_u32(validators.len() as u32);
+            for validator in validators {
+                validator.write(buf);
+            }
+        }
+
+        // Write removed_validators
+        buf.put_u32(self.removed_validators.len() as u32);
+        for validator in &self.removed_validators {
+            validator.write(buf);
+        }
+
+        // Write forkchoice
+        buf.put_slice(self.forkchoice.head_block_hash.as_slice());
+        buf.put_slice(self.forkchoice.safe_block_hash.as_slice());
+        buf.put_slice(self.forkchoice.finalized_block_hash.as_slice());
+
+        // Write epoch_genesis_hash
+        buf.put_slice(&self.epoch_genesis_hash);
+
+        // Write head_digest
+        buf.put_slice(&self.head_digest.0);
+
+        // Write validator stake bounds
+        buf.put_u64(self.validator_minimum_stake);
+        buf.put_u64(self.validator_maximum_stake);
+    }
+}
+
+impl TryFrom<Checkpoint> for ConsensusStateOLD {
+    type Error = Error;
+
+    fn try_from(checkpoint: Checkpoint) -> Result<Self, Self::Error> {
+        ConsensusStateOLD::decode(checkpoint.data)
+    }
+}
+
+impl Into<ConsensusState> for ConsensusStateOLD {
+    fn into(self) -> ConsensusState {
+        ConsensusState {
+            epoch: self.epoch,
+            view: self.view,
+            latest_height: self.latest_height,
+            head_digest: self.head_digest,
+            next_withdrawal_index: self.next_withdrawal_index,
+            deposit_queue: self.deposit_queue,
+            withdrawal_queue: self.withdrawal_queue,
+            validator_accounts: self.validator_accounts,
+            protocol_param_changes: self.protocol_param_changes,
+            pending_checkpoint: self.pending_checkpoint,
+            added_validators: BTreeMap::new(), // This particular testnet has never added any validators so we dont even convert here
+            removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
+            forkchoice: self.forkchoice,
+            epoch_genesis_hash: self.epoch_genesis_hash,
+            validator_minimum_stake: self.validator_minimum_stake,
+            validator_maximum_stake: self.validator_maximum_stake,
+        }
     }
 }
 
