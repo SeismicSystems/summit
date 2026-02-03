@@ -175,7 +175,7 @@ fn test_checkpoint_created() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        let consensus_state_query = consensus_state_queries.get(&0).unwrap();
+        let mut consensus_state_query = consensus_state_queries.get(&0).unwrap().clone();
         let (checkpoint, _) = consensus_state_query
             .clone()
             .get_latest_checkpoint()
@@ -184,6 +184,18 @@ fn test_checkpoint_created() {
             .expect("failed to query checkpoint");
         let _consensus_state =
             ConsensusState::try_from(&checkpoint).expect("failed to parse consensus state");
+
+        // Verify the finalized header's checkpoint_hash matches the checkpoint digest
+        let last_block_epoch_0 = utils::last_block_in_epoch(BLOCKS_PER_EPOCH, 0);
+        let finalized_header = consensus_state_query
+            .get_finalized_header(last_block_epoch_0)
+            .await
+            .expect("failed to get finalized header");
+        assert_eq!(
+            finalized_header.header.checkpoint_hash.as_ref(),
+            checkpoint.digest.as_ref(),
+            "checkpoint_hash in header should match checkpoint digest"
+        );
 
         // Check that all nodes have the same canonical chain
         assert!(
