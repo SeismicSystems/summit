@@ -756,12 +756,18 @@ impl<
         // The proposed block will contain the checkpoint that was saved at the previous height.
         let is_last = is_last_block_of_epoch(self.epoch_num_of_blocks, height);
         let aux_data = if is_last {
-            // TODO(matthias): revisit this expect when the ckpt isn't in the DB
-            let checkpoint_hash = if let Some(checkpoint) = &state.pending_checkpoint {
-                checkpoint.digest
-            } else {
-                unreachable!("pending checkpoint was calculated at the previous height")
+            // The pending_checkpoint should have been set when processing the penultimate block.
+            // If it's None, we can't propose the last block (e.g., node restarted from checkpoint).
+            // Return None to let another validators propose/validate this block.
+            let Some(checkpoint) = &state.pending_checkpoint else {
+                warn!(
+                    height,
+                    "pending_checkpoint is None at last block of epoch, aborting aux data request"
+                );
+                let _ = sender.send(None);
+                return;
             };
+            let checkpoint_hash = checkpoint.digest;
             // TODO(matthias): should we verify the ckpt height against the `height` variable?
 
             // This is not the header from the last block, but the header from
