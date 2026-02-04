@@ -4,14 +4,11 @@ use alloy_primitives::{Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Error, Read, ReadExt as _, Write};
+use commonware_codec::{EncodeSize, Error, Read, Write};
+use commonware_consensus::Viewable;
 use commonware_consensus::types::{Height, View};
 use commonware_consensus::{Block as ConsensusBlock, Heightable};
-use commonware_consensus::{
-    Viewable, aggregation::scheme::bls12381_multisig::Scheme, simplex::types::Finalization,
-};
-use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
-use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, Signer, sha256::Digest};
+use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -289,90 +286,12 @@ impl Committable for Block {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BlockWithFinalization<
-    C: Signer = commonware_cryptography::bls12381::PrivateKey,
-    V: Variant = MinPk,
-> {
-    pub block: Block,
-    pub finalized: Option<Finalization<Scheme<C::PublicKey, V>, Digest>>,
-}
-
-impl<C: Signer, V: Variant> Digestible for BlockWithFinalization<C, V> {
-    type Digest = Digest;
-
-    fn digest(&self) -> Digest {
-        self.block.header.digest
-    }
-}
-
-impl<C: Signer, V: Variant> Committable for BlockWithFinalization<C, V> {
-    type Commitment = Digest;
-
-    fn commitment(&self) -> Digest {
-        self.block.header.digest
-    }
-}
-
-impl<C: Signer, V: Variant> Heightable for BlockWithFinalization<C, V> {
-    fn height(&self) -> Height {
-        Height::new(self.block.header.height)
-    }
-}
-
-impl<C: Signer, V: Variant> ConsensusBlock for BlockWithFinalization<C, V> {
-    fn parent(&self) -> Self::Commitment {
-        self.block.header.parent
-    }
-}
-
-impl<C: Signer, V: Variant> Read for BlockWithFinalization<C, V> {
-    type Cfg = ();
-
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let block = Block::read(buf)?;
-        let has_finalized = buf.get_u8();
-        let finalized = if has_finalized == 1 {
-            Some(Finalization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(
-                buf,
-                &buf.remaining(),
-            )?)
-        } else {
-            None
-        };
-        Ok(Self { block, finalized })
-    }
-}
-
-impl<C: Signer, V: Variant> Write for BlockWithFinalization<C, V> {
-    fn write(&self, buf: &mut impl BufMut) {
-        self.block.write(buf);
-        if let Some(ref finalized) = self.finalized {
-            buf.put_u8(1u8);
-            finalized.write(buf);
-        } else {
-            buf.put_u8(0u8);
-        }
-    }
-}
-
-impl<C: Signer, V: Variant> EncodeSize for BlockWithFinalization<C, V> {
-    fn encode_size(&self) -> usize {
-        let mut size = self.block.encode_size() + 1; // +1 for the has_finalized flag
-        if let Some(ref finalized) = self.finalized {
-            size += finalized.encode_size();
-        }
-        size
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use alloy_primitives::{Bytes as AlloyBytes, U256, hex};
     use alloy_rpc_types_engine::{ExecutionPayloadV1, ExecutionPayloadV2};
     use commonware_codec::{DecodeExt as _, Encode as _};
-    use commonware_cryptography::bls12381::primitives::variant::MinPk;
     use commonware_cryptography::{Signer, bls12381};
 
     fn create_test_public_key(seed: u8) -> PublicKey {
@@ -538,83 +457,5 @@ mod test {
         // The Write implementation adds a 4-byte length prefix
         assert_eq!(actual_encoded.len(), pure_ssz.len() + 4);
         assert_eq!(actual_encoded.len(), encode_len);
-    }
-
-    #[test]
-    fn test_block_envelope_without_finalization() {
-        let block = Block::genesis([0; 32]);
-        let envelope =
-            BlockWithFinalization::<commonware_cryptography::bls12381::PrivateKey, MinPk> {
-                block: block.clone(),
-                finalized: None,
-            };
-
-        // Test encoding and decoding
-        let encoded = envelope.encode();
-        let decoded =
-            BlockWithFinalization::<commonware_cryptography::bls12381::PrivateKey, MinPk>::decode(
-                encoded.clone(),
-            )
-            .unwrap();
-
-        // Verify round-trip: encode the decoded value and compare bytes
-        let re_encoded = decoded.encode();
-        assert_eq!(
-            encoded, re_encoded,
-            "Round-trip encoding should be identical"
-        );
-
-        // Verify structure
-        assert!(decoded.finalized.is_none());
-        assert_eq!(envelope.block.header.height, decoded.block.header.height);
-        assert_eq!(
-            envelope.block.header.timestamp,
-            decoded.block.header.timestamp
-        );
-    }
-
-    #[test]
-    fn test_block_envelope_encode_size_without_finalization() {
-        let block = Block::genesis([0; 32]);
-        let envelope =
-            BlockWithFinalization::<commonware_cryptography::bls12381::PrivateKey, MinPk> {
-                block: block.clone(),
-                finalized: None,
-            };
-
-        let encode_size = envelope.encode_size();
-        let actual_encoded = envelope.encode();
-
-        // Size should be block size + 1 byte for the flag
-        assert_eq!(actual_encoded.len(), encode_size);
-        assert_eq!(encode_size, block.encode_size() + 1);
-    }
-
-    #[test]
-    fn test_block_envelope_digestible() {
-        let block = Block::genesis([0; 32]);
-        let envelope =
-            BlockWithFinalization::<commonware_cryptography::bls12381::PrivateKey, MinPk> {
-                block: block.clone(),
-                finalized: None,
-            };
-
-        // BlockEnvelope digest should match the underlying block digest
-        assert_eq!(envelope.digest(), block.digest());
-        assert_eq!(envelope.commitment(), block.commitment());
-    }
-
-    #[test]
-    fn test_block_envelope_consensus_block() {
-        let block = Block::genesis([0; 32]);
-        let envelope =
-            BlockWithFinalization::<commonware_cryptography::bls12381::PrivateKey, MinPk> {
-                block: block.clone(),
-                finalized: None,
-            };
-
-        // BlockEnvelope should expose the same ConsensusBlock properties as the underlying block
-        assert_eq!(envelope.height().get(), block.height());
-        assert_eq!(envelope.parent(), block.parent());
     }
 }
