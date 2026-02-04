@@ -8,9 +8,7 @@ use commonware_codec::{EncodeSize, Error, Read, ReadExt as _, Write};
 use commonware_consensus::types::{Height, View};
 use commonware_consensus::{Block as ConsensusBlock, Heightable};
 use commonware_consensus::{
-    Viewable,
-    aggregation::scheme::bls12381_multisig::Scheme,
-    simplex::types::{Finalization, Notarization},
+    Viewable, aggregation::scheme::bls12381_multisig::Scheme, simplex::types::Finalization,
 };
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, Signer, sha256::Digest};
@@ -288,94 +286,6 @@ impl Committable for Block {
 
     fn commitment(&self) -> Digest {
         self.header.digest
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notarized<C: Signer, V: Variant> {
-    pub proof: Notarization<Scheme<C::PublicKey, V>, Digest>,
-    pub block: Block,
-}
-
-impl<C: Signer, V: Variant> Notarized<C, V> {
-    pub fn new(proof: Notarization<Scheme<C::PublicKey, V>, Digest>, block: Block) -> Self {
-        Self { proof, block }
-    }
-}
-
-impl<C: Signer, V: Variant> Write for Notarized<C, V> {
-    fn write(&self, buf: &mut impl BufMut) {
-        self.proof.write(buf);
-        self.block.write(buf);
-    }
-}
-
-impl<C: Signer, V: Variant> Read for Notarized<C, V> {
-    type Cfg = ();
-
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof =
-            Notarization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(buf, &buf.remaining())?; // todo: get a test on this to make sure buf.remaining is safe
-        let block = Block::read(buf)?;
-
-        // Ensure the proof is for the block
-        if proof.proposal.payload != block.digest() {
-            return Err(Error::Invalid(
-                "types::Notarized",
-                "Proof payload does not match block digest",
-            ));
-        }
-        Ok(Self { proof, block })
-    }
-}
-
-impl<C: Signer, V: Variant> EncodeSize for Notarized<C, V> {
-    fn encode_size(&self) -> usize {
-        self.proof.encode_size() + self.block.encode_size()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Finalized<C: Signer, V: Variant> {
-    pub proof: Finalization<Scheme<C::PublicKey, V>, Digest>,
-    pub block: Block,
-}
-
-impl<C: Signer, V: Variant> Finalized<C, V> {
-    pub fn new(proof: Finalization<Scheme<C::PublicKey, V>, Digest>, block: Block) -> Self {
-        Self { proof, block }
-    }
-}
-
-impl<C: Signer, V: Variant> Write for Finalized<C, V> {
-    fn write(&self, buf: &mut impl BufMut) {
-        self.proof.write(buf);
-        self.block.write(buf);
-    }
-}
-
-impl<C: Signer, V: Variant> Read for Finalized<C, V> {
-    type Cfg = ();
-
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let proof =
-            Finalization::<Scheme<C::PublicKey, V>, Digest>::read_cfg(buf, &buf.remaining())?;
-        let block = Block::read(buf)?;
-
-        // Ensure the proof is for the block
-        if proof.proposal.payload != block.digest() {
-            return Err(Error::Invalid(
-                "types::Finalized",
-                "Proof payload does not match block digest",
-            ));
-        }
-        Ok(Self { proof, block })
-    }
-}
-
-impl<C: Signer, V: Variant> EncodeSize for Finalized<C, V> {
-    fn encode_size(&self) -> usize {
-        self.proof.encode_size() + self.block.encode_size()
     }
 }
 
