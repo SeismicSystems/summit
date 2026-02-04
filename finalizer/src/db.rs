@@ -62,6 +62,7 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
     All previous Finalized Headers
      */
 
+    tracing::error!("Dump: Getting Latest keys");
     // get latest consensus state height
     let key = FinalizerState::<E, V>::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
     let ValueOLD::U64(latest_consensus_state_height) = store
@@ -94,9 +95,11 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
         panic!("latest finalized header height not u64");
     };
 
+    tracing::error!("Dump: Extracting all consensus states");
     // Extract all the consensus states
     let mut consensus_states = BTreeMap::new();
     for i in 0..=latest_consensus_state_height {
+        tracing::error!("Dump: dumping consensus state for height {i}");
         let key = FinalizerState::<E, V>::make_consensus_state_key(i);
         if let Some(ValueOLD::ConsensusState(state)) = store
             .get(&key)
@@ -107,9 +110,11 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
         }
     }
 
+    tracing::error!("Dump: extracting all checkpoints ");
     // extract all the checkpoints
     let mut checkpoints = BTreeMap::new();
     for i in 0..=latest_checkpoint_epoch {
+        tracing::error!("Dump: dumping checkpoint for  epoch {i}");
         let key = FinalizerState::<E, V>::make_checkpoint_key(i);
         if let Some(ValueOLD::Checkpoint(checkpoint)) =
             store.get(&key).await.expect("failed to get checkpoint")
@@ -118,9 +123,11 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
         }
     }
 
+    tracing::error!("Dump: extracting all finalized headers");
     // extract all finalized headers
     let mut finalized_headers = BTreeMap::new();
     for i in 0..=latest_finalized_header_height {
+        tracing::error!("Dump: dumping finalized header for epoch {i}");
         let key = FinalizerState::<E, V>::make_finalized_header_key(i);
         if let Some(ValueOLD::FinalizedHeader(header)) =
             store.get(&key).await.expect("failed to get checkpoint")
@@ -138,12 +145,14 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
         finalized_headers,
     };
 
+    tracing::error!("Dump: Destroying old DB");
     // Now that we have dumped the entire database. Delete it so we can put the new one there
     store
         .destroy()
         .await
         .expect("Unable to destroy old database after dumping");
 
+    tracing::error!("Dump: Complete");
     dump
 }
 
@@ -151,6 +160,7 @@ pub async fn migrate_to_new_db<E: Clock + Storage + Metrics, V: Variant>(
     mut db: Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable>,
     dump: FinalizerStateDump<V>,
 ) -> Db<E, FixedBytes<64>, Value<V>, EightCap, Durable> {
+    tracing::error!("Migrate: Start");
     // set latest consensus state height
     let key = FinalizerState::<E, V>::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
     db.update(key, Value::U64(dump.latest_consensus_state_height))
@@ -169,8 +179,10 @@ pub async fn migrate_to_new_db<E: Clock + Storage + Metrics, V: Variant>(
         .await
         .expect("Failed to update latest consensus state");
 
+    tracing::error!("Migrate: migrating all consensus states");
     // set all consensusstate
     for (height, state) in dump.consensus_states {
+        tracing::error!("Migrate: consensus state for height: {height}");
         let key = FinalizerState::<E, V>::make_consensus_state_key(height);
 
         let old_state = *state;
@@ -180,8 +192,10 @@ pub async fn migrate_to_new_db<E: Clock + Storage + Metrics, V: Variant>(
             .expect("Failed to update consensus state");
     }
 
+    tracing::error!("Migrate: migrating checkpoints");
     // set all checkpoints
     for (epoch, checkpoint) in dump.checkpoints {
+        tracing::error!("Migrate: checkpoint for epoch: {epoch}");
         let key = FinalizerState::<E, V>::make_checkpoint_key(epoch);
 
         db.update(key, Value::Checkpoint(checkpoint))
@@ -189,8 +203,10 @@ pub async fn migrate_to_new_db<E: Clock + Storage + Metrics, V: Variant>(
             .expect("Unable to store checkpoint");
     }
 
+    tracing::error!("Migrate: migrating headers");
     // set all headers
     for (height, header) in dump.finalized_headers {
+        tracing::error!("Migrate: migrating finalized header for height: {height}");
         let key = FinalizerState::<E, V>::make_finalized_header_key(height);
 
         let old_header = *header;
@@ -200,13 +216,16 @@ pub async fn migrate_to_new_db<E: Clock + Storage + Metrics, V: Variant>(
             .expect("Store finalized Header");
     }
 
+    tracing::error!("Migrate: Committing db");
     let (db, _) = db.commit(None).await.expect("failed to update database");
 
+    tracing::error!("Migrate: Migration complete");
     db
 }
 
 impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn new(context: E, cfg: Config<EightCap, ()>) -> Self {
+        tracing::error!("Starting finalizer");
         let state_cfg_old = Config {
             log_partition: cfg.log_partition.clone(),
             log_write_buffer: NZUsize!(1024 * 1024),
@@ -216,18 +235,23 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
             translator: TwoCap,
             buffer_pool: cfg.buffer_pool.clone(),
         };
+
+        tracing::error!("Loading old store");
         let old_store =
             Db::<_, FixedBytes<64>, ValueOLD<V>, TwoCap>::init(context.clone(), state_cfg_old)
                 .await
                 .expect("failed to initialize unified store");
 
+        tracing::error!("Starting state dump");
         let state_dump = dump_state(old_store).await;
 
+        tracing::error!("loading new store");
         let store = Db::<_, FixedBytes<64>, Value<V>, EightCap>::init(context, cfg)
             .await
             .expect("failed to initialize unified store")
             .into_dirty();
 
+        tracing::error!("Migrating dump to DB");
         let store = migrate_to_new_db(store, state_dump).await.into_dirty();
 
         // Just panic out at this point the migration should be complete
