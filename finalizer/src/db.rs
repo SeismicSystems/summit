@@ -14,6 +14,7 @@ use commonware_utils::sequence::FixedBytes;
 use commonware_utils::{NZU64, NZUsize};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::{ConsensusState, ConsensusStateOLD};
+use summit_types::utils::last_block_in_epoch;
 use summit_types::{Block, FinalizedHeader, FinalizedHeaderOLD};
 
 pub use db::Config;
@@ -98,14 +99,16 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
     tracing::error!("Dump: Extracting all consensus states");
     // Extract all the consensus states
     let mut consensus_states = BTreeMap::new();
-    for i in 0..=latest_consensus_state_height {
-        tracing::error!("Dump: dumping consensus state for height {i}");
-        let key = FinalizerState::<E, V>::make_consensus_state_key(i);
+    for i in 0..=latest_checkpoint_epoch {
+        let height = last_block_in_epoch(10_000, i);
+        tracing::error!("Dump: dumping consensus state for height {height}");
+        let key = make_consensus_state_keyOLD(height);
         if let Some(ValueOLD::ConsensusState(state)) = store
             .get(&key)
             .await
             .expect("failed to get consensus state")
         {
+            tracing::error!("Found state for height {height}");
             consensus_states.insert(i, state);
         }
     }
@@ -115,7 +118,7 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
     let mut checkpoints = BTreeMap::new();
     for i in 0..=latest_checkpoint_epoch {
         tracing::error!("Dump: dumping checkpoint for  epoch {i}");
-        let key = FinalizerState::<E, V>::make_checkpoint_key(i);
+        let key = make_checkpoint_keyOLD(i);
         if let Some(ValueOLD::Checkpoint(checkpoint)) =
             store.get(&key).await.expect("failed to get checkpoint")
         {
@@ -126,12 +129,14 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
     tracing::error!("Dump: extracting all finalized headers");
     // extract all finalized headers
     let mut finalized_headers = BTreeMap::new();
-    for i in 0..=latest_finalized_header_height {
-        tracing::error!("Dump: dumping finalized header for epoch {i}");
-        let key = FinalizerState::<E, V>::make_finalized_header_key(i);
+    for i in 0..=latest_checkpoint_epoch {
+        let height = last_block_in_epoch(10_000, i);
+        tracing::error!("Dump: dumping finalized header for height {height}");
+        let key = make_finalized_header_keyOLD(height);
         if let Some(ValueOLD::FinalizedHeader(header)) =
             store.get(&key).await.expect("failed to get checkpoint")
         {
+            tracing::error!("found header for height: {height}");
             finalized_headers.insert(i, header);
         }
     }
@@ -666,6 +671,27 @@ impl<V: Variant> Write for ValueOLD<V> {
             }
         }
     }
+}
+
+fn make_consensus_state_keyOLD(height: u64) -> FixedBytes<64> {
+    let mut key = [0u8; 64];
+    key[0] = CONSENSUS_STATE_PREFIX;
+    key[1..9].copy_from_slice(&height.to_be_bytes());
+    FixedBytes::new(key)
+}
+
+fn make_finalized_header_keyOLD(height: u64) -> FixedBytes<64> {
+    let mut key = [0u8; 64];
+    key[0] = FINALIZED_HEADER_PREFIX;
+    key[1..9].copy_from_slice(&height.to_be_bytes());
+    FixedBytes::new(key)
+}
+
+fn make_checkpoint_keyOLD(epoch: u64) -> FixedBytes<64> {
+    let mut key = [0u8; 64];
+    key[0] = CHECKPOINT_PREFIX;
+    key[1..9].copy_from_slice(&epoch.to_be_bytes());
+    FixedBytes::new(key)
 }
 
 #[cfg(test)]
