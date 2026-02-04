@@ -38,6 +38,24 @@ pub struct Header {
     pub digest: Digest,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderOLD {
+    pub parent: Digest,
+    pub height: u64,
+    pub timestamp: u64,
+    pub epoch: u64,
+    pub view: u64,
+    pub payload_hash: Digest,
+    pub execution_request_hash: Digest,
+    pub checkpoint_hash: Digest,
+    pub prev_epoch_header_hash: Digest,
+    pub block_value: U256,
+    pub added_validators: Vec<PublicKey>,
+    pub removed_validators: Vec<PublicKey>,
+    // precomputed digest of this header
+    pub digest: Digest,
+}
+
 impl Header {
     #[allow(clippy::too_many_arguments)]
     pub fn compute_digest(
@@ -319,6 +337,13 @@ pub struct FinalizedHeader<S: Scheme> {
     pub participant_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FinalizedHeaderOLD<S: Scheme> {
+    pub header: HeaderOLD,
+    pub finalization: Finalization<S, Digest>,
+    pub participant_count: usize,
+}
+
 impl<S: Scheme> FinalizedHeader<S> {
     pub fn new(
         header: Header,
@@ -438,6 +463,396 @@ where
                 "Unable to decode bytes for finalized header",
             )
         })
+    }
+}
+
+/*************************************** */
+
+impl HeaderOLD {
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_digest(
+        parent: Digest,
+        height: u64,
+        timestamp: u64,
+        epoch: u64,
+        view: u64,
+        payload_hash: Digest,
+        execution_request_hash: Digest,
+        checkpoint_hash: Digest,
+        prev_epoch_header_hash: Digest,
+        block_value: U256,
+        added_validators: Vec<PublicKey>,
+        removed_validators: Vec<PublicKey>,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(&parent);
+        hasher.update(&height.to_be_bytes());
+        hasher.update(&timestamp.to_be_bytes());
+        hasher.update(&payload_hash);
+        hasher.update(&execution_request_hash);
+        hasher.update(&checkpoint_hash);
+        hasher.update(&prev_epoch_header_hash);
+        hasher.update(&block_value.as_ssz_bytes());
+        // Hash the validator lists by converting to bytes
+        let added_validators_bytes: Vec<[u8; 32]> = added_validators
+            .iter()
+            .map(|pk| pk.as_ref().try_into().expect("PublicKey is 32 bytes"))
+            .collect();
+        let removed_validators_bytes: Vec<[u8; 32]> = removed_validators
+            .iter()
+            .map(|pk| pk.as_ref().try_into().expect("PublicKey is 32 bytes"))
+            .collect();
+        hasher.update(&added_validators_bytes.as_ssz_bytes());
+        hasher.update(&removed_validators_bytes.as_ssz_bytes());
+        hasher.update(&view.to_be_bytes());
+        let digest = hasher.finalize();
+
+        Self {
+            parent,
+            height,
+            timestamp,
+            epoch,
+            view,
+            payload_hash,
+            execution_request_hash,
+            checkpoint_hash,
+            prev_epoch_header_hash,
+            block_value,
+            added_validators,
+            removed_validators,
+            digest,
+        }
+    }
+}
+
+impl ssz::Encode for HeaderOLD {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
+            + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
+            + <U256 as ssz::Encode>::ssz_fixed_len() // block_value
+            + <Vec<[u8; 32]> as ssz::Encode>::ssz_fixed_len() * 2; // added_validators, removed_validators offsets
+
+        let mut encoder = ssz::SszEncoder::container(buf, offset);
+
+        let parent: [u8; 32] = self.parent.deref().try_into().expect("Digest is 32 bytes");
+        let payload_hash: [u8; 32] = self
+            .payload_hash
+            .deref()
+            .try_into()
+            .expect("Digest is 32 bytes");
+        let execution_request_hash: [u8; 32] = self
+            .execution_request_hash
+            .deref()
+            .try_into()
+            .expect("Digest is 32 bytes");
+        let checkpoint_hash: [u8; 32] = self
+            .checkpoint_hash
+            .deref()
+            .try_into()
+            .expect("Digest is 32 bytes");
+        let prev_epoch_header_hash: [u8; 32] = self
+            .prev_epoch_header_hash
+            .deref()
+            .try_into()
+            .expect("Digest is 32 bytes");
+
+        // Convert PublicKey vectors to byte arrays for SSZ
+        let added_validators: Vec<[u8; 32]> = self
+            .added_validators
+            .iter()
+            .map(|pk| pk.as_ref().try_into().expect("PublicKey is 32 bytes"))
+            .collect();
+        let removed_validators: Vec<[u8; 32]> = self
+            .removed_validators
+            .iter()
+            .map(|pk| pk.as_ref().try_into().expect("PublicKey is 32 bytes"))
+            .collect();
+
+        encoder.append(&parent);
+        encoder.append(&self.height);
+        encoder.append(&self.timestamp);
+        encoder.append(&self.epoch);
+        encoder.append(&self.view);
+        encoder.append(&payload_hash);
+        encoder.append(&execution_request_hash);
+        encoder.append(&checkpoint_hash);
+        encoder.append(&prev_epoch_header_hash);
+        encoder.append(&self.block_value);
+        encoder.append(&added_validators);
+        encoder.append(&removed_validators);
+        encoder.finalize();
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        let fixed_size = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
+            + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
+            + <U256 as ssz::Encode>::ssz_fixed_len(); // block_value
+
+        // Calculate length as if they were Vec<[u8; 32]>
+        let added_validators_len = self.added_validators.len() * 32;
+        let removed_validators_len = self.removed_validators.len() * 32;
+
+        fixed_size
+            + ssz::BYTES_PER_LENGTH_OFFSET * 2  // 2 variable-length fields need 2 offsets
+            + added_validators_len
+            + removed_validators_len
+    }
+}
+
+impl ssz::Decode for HeaderOLD {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        let mut builder = ssz::SszDecoderBuilder::new(bytes);
+        builder.register_type::<[u8; 32]>()?; // parent
+        builder.register_type::<u64>()?; // height
+        builder.register_type::<u64>()?; // timestamp
+        builder.register_type::<u64>()?; // epoch
+        builder.register_type::<u64>()?; // view
+        builder.register_type::<[u8; 32]>()?; // payload_hash
+        builder.register_type::<[u8; 32]>()?; // execution_request_hash
+        builder.register_type::<[u8; 32]>()?; // checkpoint_hash
+        builder.register_type::<[u8; 32]>()?; // prev_epoch_header_hash
+        builder.register_type::<U256>()?; // block_value
+        builder.register_type::<Vec<[u8; 32]>>()?; // added_validators
+        builder.register_type::<Vec<[u8; 32]>>()?; // removed_validators
+
+        let mut decoder = builder.build()?;
+
+        let parent: [u8; 32] = decoder.decode_next()?;
+        let height: u64 = decoder.decode_next()?;
+        let timestamp: u64 = decoder.decode_next()?;
+        let epoch: u64 = decoder.decode_next()?;
+        let view: u64 = decoder.decode_next()?;
+        let payload_hash: [u8; 32] = decoder.decode_next()?;
+        let execution_request_hash: [u8; 32] = decoder.decode_next()?;
+        let checkpoint_hash: [u8; 32] = decoder.decode_next()?;
+        let prev_epoch_header_hash: [u8; 32] = decoder.decode_next()?;
+        let block_value: U256 = decoder.decode_next()?;
+        let added_validators_bytes: Vec<[u8; 32]> = decoder.decode_next()?;
+        let removed_validators_bytes: Vec<[u8; 32]> = decoder.decode_next()?;
+
+        // Convert byte arrays back to PublicKeys
+        use commonware_codec::DecodeExt as _;
+        let added_validators: Vec<PublicKey> = added_validators_bytes
+            .into_iter()
+            .map(|bytes| {
+                PublicKey::decode(&bytes[..]).map_err(|_| {
+                    ssz::DecodeError::BytesInvalid("Invalid PublicKey bytes".to_string())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let removed_validators: Vec<PublicKey> = removed_validators_bytes
+            .into_iter()
+            .map(|bytes| {
+                PublicKey::decode(&bytes[..]).map_err(|_| {
+                    ssz::DecodeError::BytesInvalid("Invalid PublicKey bytes".to_string())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self::compute_digest(
+            parent.into(),
+            height,
+            timestamp,
+            epoch,
+            view,
+            payload_hash.into(),
+            execution_request_hash.into(),
+            checkpoint_hash.into(),
+            prev_epoch_header_hash.into(),
+            block_value,
+            added_validators,
+            removed_validators,
+        ))
+    }
+}
+
+impl EncodeSize for HeaderOLD {
+    fn encode_size(&self) -> usize {
+        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
+    }
+}
+
+impl Write for HeaderOLD {
+    fn write(&self, buf: &mut impl BufMut) {
+        let ssz_bytes = &*self.as_ssz_bytes();
+        let bytes_len = ssz_bytes.len() as u32;
+
+        buf.put(&bytes_len.to_be_bytes()[..]);
+        buf.put(ssz_bytes);
+    }
+}
+
+impl Read for HeaderOLD {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let len: u32 = buf.get_u32();
+        if len > buf.remaining() as u32 {
+            return Err(Error::Invalid("Header", "improper encoded length"));
+        }
+
+        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk())
+            .map_err(|_| Error::Invalid("Header", "Unable to decode bytes for header"))
+    }
+}
+
+impl<S: Scheme> FinalizedHeaderOLD<S> {
+    pub fn new(
+        header: HeaderOLD,
+        finalization: Finalization<S, Digest>,
+        participant_count: usize,
+    ) -> Self {
+        Self {
+            header,
+            finalization,
+            participant_count,
+        }
+    }
+}
+
+impl<S: Scheme> ssz::Encode for FinalizedHeaderOLD<S> {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        // Encode header, participant count, and finalization
+        let header_bytes = self.header.as_ssz_bytes();
+        let mut finalized_bytes = Vec::new();
+        self.finalization.write(&mut finalized_bytes);
+
+        let offset = 8 + 4; // Two 4-byte offsets (for variable fields) + 4 bytes for u32
+        let mut encoder = ssz::SszEncoder::container(buf, offset);
+        encoder.append(&header_bytes);
+        encoder.append(&(self.participant_count as u32));
+        encoder.append(&finalized_bytes);
+        encoder.finalize();
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        let header_bytes = self.header.as_ssz_bytes();
+        let mut finalized_bytes = Vec::new();
+        self.finalization.write(&mut finalized_bytes);
+
+        12 + header_bytes.len() + finalized_bytes.len() // Fixed part: 2 offsets + u32 = 12 bytes
+    }
+}
+
+impl<S: Scheme> ssz::Decode for FinalizedHeaderOLD<S>
+where
+    <S::Certificate as Read>::Cfg: From<usize>,
+{
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        let mut builder = ssz::SszDecoderBuilder::new(bytes);
+        builder.register_type::<Vec<u8>>()?; // header bytes
+        builder.register_type::<u32>()?; // participant count
+        builder.register_type::<Vec<u8>>()?; // finalized bytes
+
+        let mut decoder = builder.build()?;
+        let header_bytes: Vec<u8> = decoder.decode_next()?;
+        let participant_count: u32 = decoder.decode_next()?;
+        let finalized_bytes: Vec<u8> = decoder.decode_next()?;
+
+        let header = HeaderOLD::from_ssz_bytes(&header_bytes)
+            .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
+
+        // Decode the finalization using the stored participant count
+        let mut finalized_buf = finalized_bytes.as_slice();
+        let cfg = <S::Certificate as Read>::Cfg::from(participant_count as usize);
+        let finalization = Finalization::<S, Digest>::read_cfg(&mut finalized_buf, &cfg)
+            .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
+
+        // Ensure the finalization is for the header
+        if finalization.proposal.payload != header.digest {
+            return Err(ssz::DecodeError::BytesInvalid(
+                "Finalization payload does not match header digest".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            header,
+            finalization,
+            participant_count: participant_count as usize,
+        })
+    }
+}
+
+impl<S: Scheme> EncodeSize for FinalizedHeaderOLD<S> {
+    fn encode_size(&self) -> usize {
+        self.ssz_bytes_len() + ssz::BYTES_PER_LENGTH_OFFSET
+    }
+}
+
+impl<S: Scheme> Write for FinalizedHeaderOLD<S> {
+    fn write(&self, buf: &mut impl BufMut) {
+        let ssz_bytes = &*self.as_ssz_bytes();
+        let bytes_len = ssz_bytes.len() as u32;
+
+        buf.put(&bytes_len.to_be_bytes()[..]);
+        buf.put(ssz_bytes);
+    }
+}
+
+impl<S: Scheme> Read for FinalizedHeaderOLD<S>
+where
+    <S::Certificate as Read>::Cfg: From<usize>,
+{
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let len: u32 = buf.get_u32();
+        if len > buf.remaining() as u32 {
+            return Err(Error::Invalid("FinalizedHeader", "improper encoded length"));
+        }
+
+        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk()).map_err(|_| {
+            Error::Invalid(
+                "FinalizedHeader",
+                "Unable to decode bytes for finalized header",
+            )
+        })
+    }
+}
+
+impl Into<Header> for HeaderOLD {
+    fn into(self) -> Header {
+        Header {
+            parent: self.parent,
+            height: self.height,
+            timestamp: self.timestamp,
+            epoch: self.epoch,
+            view: self.view,
+            payload_hash: self.payload_hash,
+            execution_request_hash: self.execution_request_hash,
+            checkpoint_hash: self.checkpoint_hash,
+            prev_epoch_header_hash: self.prev_epoch_header_hash,
+            block_value: self.block_value,
+            added_validators: Default::default(),
+            removed_validators: Default::default(),
+            digest: self.digest,
+        }
+    }
+}
+
+impl<S: Scheme> Into<FinalizedHeader<S>> for FinalizedHeaderOLD<S> {
+    fn into(self) -> FinalizedHeader<S> {
+        FinalizedHeader {
+            header: self.header.into(),
+            finalization: self.finalization,
+            participant_count: self.participant_count,
+        }
     }
 }
 

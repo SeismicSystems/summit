@@ -14,7 +14,7 @@ use commonware_utils::sequence::FixedBytes;
 use commonware_utils::{NZU64, NZUsize};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::{ConsensusState, ConsensusStateOLD};
-use summit_types::{Block, FinalizedHeader};
+use summit_types::{Block, FinalizedHeader, FinalizedHeaderOLD};
 
 pub use db::Config;
 
@@ -44,7 +44,7 @@ pub struct FinalizerStateDump<V: Variant> {
     pub consensus_states: BTreeMap<u64, Box<ConsensusStateOLD>>, // height -> ConsensusState
 
     pub finalized_headers:
-        BTreeMap<u64, Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>>, // height -> Header
+        BTreeMap<u64, Box<FinalizedHeaderOLD<bls12381_multisig::Scheme<PublicKey, V>>>>, // height -> Header
 }
 
 pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
@@ -193,7 +193,9 @@ pub async fn migrate_to_new_db<E: Clock + Storage + Metrics, V: Variant>(
     for (height, header) in dump.finalized_headers {
         let key = FinalizerState::<E, V>::make_finalized_header_key(height);
 
-        db.update(key, Value::FinalizedHeader(header))
+        let old_header = *header;
+        let new_header = old_header.into();
+        db.update(key, Value::FinalizedHeader(Box::new(new_header)))
             .await
             .expect("Store finalized Header");
     }
@@ -519,7 +521,7 @@ enum ValueOLD<V: Variant> {
     U64(u64),
     ConsensusState(Box<ConsensusStateOLD>),
     Checkpoint(Box<(Checkpoint, Block)>),
-    FinalizedHeader(Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>),
+    FinalizedHeader(Box<FinalizedHeaderOLD<bls12381_multisig::Scheme<PublicKey, V>>>),
 }
 
 impl<V: Variant> EncodeSize for Value<V> {
@@ -609,7 +611,7 @@ impl<V: Variant> Read for ValueOLD<V> {
                 Checkpoint::read_cfg(buf, &())?,
                 Block::read_cfg(buf, &())?,
             )))),
-            0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeader::<
+            0x07 => Ok(Self::FinalizedHeader(Box::new(FinalizedHeaderOLD::<
                 bls12381_multisig::Scheme<PublicKey, V>,
             >::read_cfg(
                 buf, &()
