@@ -109,7 +109,7 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
             .expect("failed to get consensus state")
         {
             tracing::error!("Found state for height {height}");
-            consensus_states.insert(i, state);
+            consensus_states.insert(height, state);
         }
     }
 
@@ -137,7 +137,7 @@ pub async fn dump_state<E: Clock + Storage + Metrics, V: Variant>(
             store.get(&key).await.expect("failed to get checkpoint")
         {
             tracing::error!("found header for height: {height}");
-            finalized_headers.insert(i, header);
+            finalized_headers.insert(height, header);
         }
     }
 
