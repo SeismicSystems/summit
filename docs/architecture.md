@@ -26,7 +26,7 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
  │  • Leader election       │                             │  (State Execution)   │                                    
  │  • View management       │                             │                      │                                    
  │  • Notarization (2/3+1)  │                             │  • Canonical state   │                                    
- │  • Finalization (3/3)    │                             │  • Fork states       │                                    
+ │  • Finalization (2/3+1)  │                             │  • Fork states       │                                    
  │  • Reports consensus     │                             │  • Execute blocks    │                                    
  │    messages              │                             │  • Commit to engine  │                                    
  │                          │                             │  • Create checkpoints│                                    
@@ -131,8 +131,8 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
      │  commonware_     │                                                                                             
      │  storage         │                                                                                             
      │                  │                                                                                             
-     │  • ADB Store     │                                                                                             
-     │    (append-only) │                                                                                             
+     │  • QMDB Store    │
+     │    (key-value)   │                                                                                             
      │  • Consensus     │                                                                                             
      │    state by      │                                                                                             
      │    height        │                                                                                             

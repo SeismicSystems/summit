@@ -24,25 +24,25 @@ Summit defines a generic `EngineClient` trait that abstracts execution client co
 ```rust
 pub trait EngineClient: Clone + Send + Sync + 'static {
     fn start_building_block(
-        &self,
+        &mut self,
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
     ) -> impl Future<Output = Option<PayloadId>> + Send;
 
     fn get_payload(
-        &self,
+        &mut self,
         payload_id: PayloadId,
     ) -> impl Future<Output = ExecutionPayloadEnvelopeV4> + Send;
 
-    fn check_payload<C: Signer, V: Variant>(
-        &self,
-        block: &Block<C, V>,
+    fn check_payload(
+        &mut self,
+        block: &Block,
     ) -> impl Future<Output = PayloadStatus> + Send;
 
     fn commit_hash(
-        &self, 
-        fork_choice_state: ForkchoiceState
+        &mut self,
+        fork_choice_state: ForkchoiceState,
     ) -> impl Future<Output = ()> + Send;
 }
 ```
@@ -54,6 +54,7 @@ The `RethEngineClient` implements the trait using Alloy's Engine API client:
 ```rust
 #[derive(Clone)]
 pub struct RethEngineClient {
+    engine_ipc_path: String,
     provider: RootProvider,
 }
 ```
@@ -71,11 +72,11 @@ Updates the execution client's view of the canonical chain and optionally starts
 
 ### 2. `engine_getPayloadV4`
 
-Retrieves a built block from the execution client. Called shortly after start_building block
+Retrieves a built block from the execution client. Called shortly after `start_building_block`.
 
 ### 3. `engine_newPayloadV4`
 
-Validates and stores a block without committing it to the canonical chain. Used when validitating received blocks to verify with execution
+Validates and stores a block without committing it to the canonical chain. Used when validating received blocks to verify with execution.
 
 ## Communication Patterns
 

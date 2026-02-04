@@ -8,7 +8,6 @@ This documentation is designed to provide auditors and developers with a compreh
 - **[Commonware Dependencies](./commonware-dependencies.md)** - Detailed analysis of Commonware library usage
 - **[Engine API Integration](./engine-api-integration.md)** - Communication patterns with execution clients (Reth)
 - **[Security Model](./security-model.md)** - Cryptographic primitives and security considerations
-- **[Actor System](./actor-system.md)** - Actor-based architecture and message passing patterns
 - **[Staking and Participating](./staking-and-participating.md)** - How to become a validator
 - **[Deposits and Withdrawals](./deposits-and-withdrawals.md)** - Internal state management for deposits and withdrawals
 - **[Checkpointing](./checkpointing.md)** - Checkpoint creation, loading, and verification
