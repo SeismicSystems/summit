@@ -305,7 +305,6 @@ pub fn get_initial_state(
                 .expect("Public key must be 32 bytes");
             let account = ValidatorAccount {
                 consensus_public_key: consensus_pubkey.clone(),
-                // TODO(matthias): we have to add a withdrawal address to the genesis
                 withdrawal_credentials: *address,
                 balance,
                 pending_withdrawal_amount: 0,

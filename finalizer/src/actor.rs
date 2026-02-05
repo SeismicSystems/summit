@@ -275,6 +275,11 @@ impl<
                         },
                         FinalizerMessage::GetEpochGenesisHash { epoch, response } => {
                             // TODO(matthias): verify that this can never happen
+                            // The finalizer sends a message to the orchestrator to start the new epoch.
+                            // The orchestrator will start the new Simplex instance, which will then request
+                            // the epoch genesis hash from the finalizer.
+                            // Since the finalizer increments `self.canonical_state.epoch` before sending the message to the
+                            // orchestrator, the finalizer should never receive a GetEpochGenesisHash request for the wrong epoch.
                             assert_eq!(epoch, self.canonical_state.epoch);
                             let _ = response.send(self.canonical_state.epoch_genesis_hash);
                         },

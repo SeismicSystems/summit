@@ -251,7 +251,7 @@ impl<
                             };
                             let block_request = syncer.subscribe(Some(round), payload).await;
 
-                            // Wait for the blocks to be available or the request to be cancelled in a separate task (to
+                            // Wait for the blocks to be available or the request to be canceled in a separate task (to
                             // continue processing other messages)
                             self.context.with_label("verify").spawn({
                                 let mut syncer = syncer.clone();
