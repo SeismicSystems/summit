@@ -15,18 +15,18 @@ summit-finalizer = {path = "finalizer"}
 summit-rpc = {path = "rpc"}
 summit-orchestrator = {path = "orchestrator"}
 
-commonware-consensus = "0.0.65"
-commonware-cryptography = "0.0.65"
-commonware-storage = "0.0.65"
-commonware-runtime = "0.0.65"
-commonware-codec = "0.0.65"
-commonware-p2p = "0.0.65"
-commonware-broadcast = "0.0.65"
-commonware-utils = "0.0.65"
-commonware-resolver = "0.0.65"
-commonware-macros = "0.0.65"
-commonware-math = "0.0.65"
-commonware-parallel = "0.0.65"
+commonware-consensus = "2026.2.0"
+commonware-cryptography = "2026.2.0"
+commonware-storage = "2026.2.0"
+commonware-runtime = "2026.2.0"
+commonware-codec = "2026.2.0"
+commonware-p2p = "2026.2.0"
+commonware-broadcast = "2026.2.0"
+commonware-utils = "2026.2.0"
+commonware-resolver = "2026.2.0"
+commonware-macros = "2026.2.0"
+commonware-math = "2026.2.0"
+commonware-parallel = "2026.2.0"
 
 alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }

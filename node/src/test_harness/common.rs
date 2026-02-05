@@ -9,12 +9,12 @@ use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::Write;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
-use commonware_p2p::{Blocker, Manager};
+use commonware_p2p::{Blocker, Manager, Provider};
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
     deterministic::{self, Runner},
 };
-use commonware_utils::from_hex_formatted;
+use commonware_utils::{from_hex_formatted, ordered};
 use governor::Quota;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -32,6 +32,7 @@ use summit_types::execution_request::{
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
+use tokio::sync::mpsc;
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
@@ -598,10 +599,10 @@ impl<E: Clock> SimulatedOracle<E> {
 }
 
 impl<E: Clock> NetworkOracle<PublicKey> for SimulatedOracle<E> {
-    async fn register(&mut self, index: u64, peers: Vec<PublicKey>) {
+    async fn track(&mut self, index: u64, peers: Vec<PublicKey>) {
         use commonware_utils::ordered::Set;
         self.inner
-            .update(index, Set::try_from(peers).expect("peers should be unique"))
+            .track(index, Set::try_from(peers).expect("peers should be unique"))
             .await
     }
 }
@@ -615,21 +616,26 @@ impl<E: Clock> Blocker for SimulatedOracle<E> {
     }
 }
 
-impl<E: Clock> Manager for SimulatedOracle<E> {
+impl<E: Clock> Provider for SimulatedOracle<E> {
     type PublicKey = PublicKey;
-    type Peers = commonware_utils::ordered::Set<PublicKey>;
 
-    async fn update(&mut self, id: u64, peers: Self::Peers) {
-        self.inner.update(id, peers).await
-    }
-
-    async fn peer_set(&mut self, id: u64) -> Option<Self::Peers> {
+    async fn peer_set(&mut self, id: u64) -> Option<ordered::Set<Self::PublicKey>> {
         self.inner.peer_set(id).await
     }
 
     async fn subscribe(
         &mut self,
-    ) -> futures::channel::mpsc::UnboundedReceiver<(u64, Self::Peers, Self::Peers)> {
+    ) -> mpsc::UnboundedReceiver<(
+        u64,
+        ordered::Set<Self::PublicKey>,
+        ordered::Set<Self::PublicKey>,
+    )> {
         self.inner.subscribe().await
+    }
+}
+
+impl<E: Clock> Manager for SimulatedOracle<E> {
+    async fn track(&mut self, id: u64, peers: ordered::Set<Self::PublicKey>) {
+        self.inner.track(id, peers).await
     }
 }

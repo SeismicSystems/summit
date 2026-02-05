@@ -115,7 +115,7 @@ where
 pub fn bls12381_threshold<V, R>(
     rng: &mut R,
     n: u32,
-) -> Fixture<bls12381_threshold::Scheme<ed25519::PublicKey, V>>
+) -> Fixture<bls12381_threshold::standard::Scheme<ed25519::PublicKey, V>>
 where
     V: Variant,
     R: RngCore + CryptoRng,
@@ -133,7 +133,7 @@ where
     let schemes = shares_map
         .into_iter()
         .filter_map(|(_, share)| {
-            bls12381_threshold::Scheme::signer(
+            bls12381_threshold::standard::Scheme::signer(
                 NAMESPACE,
                 participants.clone(),
                 polynomial.clone(),
@@ -141,8 +141,11 @@ where
             )
         })
         .collect();
-    let verifier =
-        bls12381_threshold::Scheme::verifier(NAMESPACE, participants.clone(), polynomial.clone());
+    let verifier = bls12381_threshold::standard::Scheme::verifier(
+        NAMESPACE,
+        participants.clone(),
+        polynomial.clone(),
+    );
 
     Fixture {
         participants: participants.into(),

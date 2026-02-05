@@ -1,5 +1,5 @@
 use commonware_cryptography::bls12381::primitives::variant::Variant;
-use commonware_runtime::buffer::PoolRef;
+use commonware_runtime::buffer::paged::CacheRef;
 use std::marker::PhantomData;
 use summit_orchestrator::Mailbox as OrchestratorMailbox;
 use summit_types::network_oracle::NetworkOracle;
@@ -20,7 +20,7 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub validator_onboarding_limit_per_block: usize,
     /// Number of epochs to wait before activating validators after deposit
     pub validator_num_warm_up_epochs: u64,
-    pub buffer_pool: PoolRef,
+    pub page_cache: CacheRef,
     pub genesis_hash: [u8; 32],
     /// Optional initial state to initialize the finalizer with
     pub initial_state: ConsensusState,

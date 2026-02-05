@@ -17,7 +17,8 @@ use commonware_p2p::{
 };
 use commonware_parallel::Strategy;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::PoolRef, spawn_cell,
+    Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
+    spawn_cell,
 };
 use commonware_utils::{NZUsize, vec::NonEmptyVec};
 use futures::{StreamExt, channel::mpsc};
@@ -78,7 +79,7 @@ where
 
     muxer_size: usize,
     partition_prefix: String,
-    pool_ref: PoolRef,
+    page_cache: CacheRef,
     blocks_per_epoch: u64,
 
     // Consensus timeouts
@@ -102,7 +103,7 @@ where
 {
     pub fn new(context: E, config: Config<B, A, St>) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
-        let pool_ref = PoolRef::new(NonZero::<u16>::new(16_384).unwrap(), NZUsize!(10_000));
+        let page_cache = CacheRef::new(NonZero::<u16>::new(16_384).unwrap(), NZUsize!(10_000));
 
         (
             Self {
@@ -114,7 +115,7 @@ where
                 scheme_provider: config.scheme_provider,
                 muxer_size: config.muxer_size,
                 partition_prefix: config.partition_prefix,
-                pool_ref,
+                page_cache,
                 blocks_per_epoch: config.blocks_per_epoch,
                 leader_timeout: config.leader_timeout,
                 notarization_timeout: config.notarization_timeout,
@@ -193,7 +194,7 @@ where
             on_stopped => {
                 info!("context shutdown, stopping orchestrator");
             },
-            message = pending_backup.next() => {
+            message = pending_backup.recv() => {
                 // If a message is received in an unregistered sub-channel in the pending network,
                 // ensure we have the boundary finalization.
                 let Some((their_epoch, (from, _))) = message else {
@@ -312,7 +313,7 @@ where
                 activity_timeout: self.activity_timeout,
                 skip_timeout: self.skip_timeout,
                 fetch_concurrent: 2,
-                buffer_pool: self.pool_ref.clone(),
+                page_cache: self.page_cache.clone(),
             },
         );
 

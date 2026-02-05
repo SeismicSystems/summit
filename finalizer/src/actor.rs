@@ -115,7 +115,7 @@ impl<
             log_codec_config: (),
             log_items_per_section: NZU64!(262_144),
             translator: EightCap,
-            buffer_pool: cfg.buffer_pool,
+            page_cache: cfg.page_cache,
         };
 
         let db =
@@ -189,7 +189,7 @@ impl<
             .map(|(node_key, _)| node_key.clone())
             .collect();
         self.oracle
-            .register(self.canonical_state.epoch, network_keys)
+            .track(self.canonical_state.epoch, network_keys)
             .await;
 
         self.orchestrator_mailbox
@@ -540,7 +540,7 @@ impl<
                 .map(|(node_key, _)| node_key.clone())
                 .collect();
             self.oracle
-                .register(self.canonical_state.epoch, network_keys)
+                .track(self.canonical_state.epoch, network_keys)
                 .await;
 
             // Send the new validator list to the orchestrator and start the Simplex engine

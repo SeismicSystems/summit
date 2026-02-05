@@ -6,24 +6,26 @@ use commonware_consensus::{
 };
 use commonware_cryptography::Digest;
 use commonware_storage::archive;
-use commonware_utils::vec::NonEmptyVec;
-use futures::{
-    FutureExt, SinkExt,
+use commonware_utils::{
     channel::{mpsc, oneshot},
+    vec::NonEmptyVec,
+};
+use futures::{
+    FutureExt,
     future::BoxFuture,
     stream::{FuturesOrdered, Stream},
 };
 use pin_project::pin_project;
 use std::{
     pin::Pin,
-    task::{Context as StdContext, Poll},
+    task::{Context, Poll},
 };
 use tracing::error;
 
 /// An identifier for a block request.
 pub enum Identifier<D: Digest> {
     /// The height of the block to retrieve.
-    Height(u64),
+    Height(Height),
     /// The commitment of the block to retrieve.
     Commitment(D),
     /// The highest finalized block. It may be the case that marshal does not have some of the
@@ -31,10 +33,17 @@ pub enum Identifier<D: Digest> {
     Latest,
 }
 
-// Allows using u64 directly for convenience.
+// Allows using Height directly for convenience.
+impl<D: Digest> From<Height> for Identifier<D> {
+    fn from(src: Height) -> Self {
+        Self::Height(src)
+    }
+}
+
+// Allows using u64 directly for convenience (converted to Height).
 impl<D: Digest> From<u64> for Identifier<D> {
     fn from(src: u64) -> Self {
-        Self::Height(src)
+        Self::Height(Height::new(src))
     }
 }
 
@@ -49,7 +58,7 @@ impl<D: Digest> From<&D> for Identifier<D> {
 impl<D: Digest> From<archive::Identifier<'_, D>> for Identifier<D> {
     fn from(src: archive::Identifier<'_, D>) -> Self {
         match src {
-            archive::Identifier::Index(index) => Self::Height(index),
+            archive::Identifier::Index(index) => Self::Height(Height::new(index)),
             archive::Identifier::Key(key) => Self::Commitment(*key),
         }
     }
@@ -67,7 +76,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
         /// The identifier of the block to get the information of.
         identifier: Identifier<B::Commitment>,
         /// A channel to send the retrieved (height, commitment).
-        response: oneshot::Sender<Option<(u64, B::Commitment)>>,
+        response: oneshot::Sender<Option<(Height, B::Commitment)>>,
     },
     /// A request to retrieve a block by its identifier.
     ///
@@ -82,7 +91,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
     /// A request to retrieve a finalization by height.
     GetFinalization {
         /// The height of the finalization to retrieve.
-        height: u64,
+        height: Height,
         /// A channel to send the retrieved finalization.
         response: oneshot::Sender<Option<Finalization<S, B::Commitment>>>,
     },
@@ -144,7 +153,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
     /// The default sync floor is height 0.
     SetFloor {
         /// The candidate sync floor height.
-        height: u64,
+        height: Height,
     },
 }
 
@@ -164,7 +173,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     pub async fn get_info(
         &mut self,
         identifier: impl Into<Identifier<B::Commitment>>,
-    ) -> Option<(u64, B::Commitment)> {
+    ) -> Option<(Height, B::Commitment)> {
         let (tx, rx) = oneshot::channel();
         if self
             .sender
@@ -211,7 +220,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     /// storage. It is not an indication to go fetch the [Finalization] from the network.
     pub async fn get_finalization(
         &mut self,
-        height: u64,
+        height: Height,
     ) -> Option<Finalization<S, B::Commitment>> {
         let (tx, rx) = oneshot::channel();
         if self
@@ -321,7 +330,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     /// this height to the application.
     ///
     /// The default sync floor is height 0.
-    pub async fn set_floor(&mut self, height: u64) {
+    pub async fn set_floor(&mut self, height: Height) {
         if self
             .sender
             .send(Message::SetFloor { height })
@@ -421,7 +430,7 @@ impl<S: Scheme<B::Commitment>, B: Block> AncestorStream<S, B> {
 impl<S: Scheme<B::Commitment>, B: Block> Stream for AncestorStream<S, B> {
     type Item = B;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // Because marshal cannot currently yield the genesis block, we stop at height 1.
         let end_bound = Height::new(1);
 

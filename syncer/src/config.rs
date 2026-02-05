@@ -3,7 +3,7 @@ use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::types::{Epoch, ViewDelta};
 use commonware_cryptography::certificate::Provider;
 use commonware_parallel::Strategy;
-use commonware_runtime::buffer::PoolRef;
+use commonware_runtime::buffer::paged::CacheRef;
 use std::num::{NonZeroU64, NonZeroUsize};
 
 /// Marshal configuration.
@@ -36,8 +36,8 @@ where
     /// Prunable archive partition prefix.
     pub prunable_items_per_section: NonZeroU64,
 
-    /// The buffer pool to use for the freezer journal.
-    pub buffer_pool: PoolRef,
+    /// The page cache to use for the freezer journal.
+    pub page_cache: CacheRef,
 
     /// The size of the replay buffer for storage archives.
     pub replay_buffer: NonZeroUsize,

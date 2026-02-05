@@ -3,21 +3,21 @@
 use crate::Block;
 use crate::ingress::handler::{self, Handler};
 use commonware_cryptography::PublicKey;
-use commonware_p2p::{Blocker, Manager, Receiver, Sender};
+use commonware_p2p::{Blocker, Provider, Receiver, Sender};
 use commonware_resolver::p2p;
 use commonware_runtime::{Clock, Metrics, Spawner};
-use futures::channel::mpsc;
+use commonware_utils::channel::mpsc;
 use governor::clock::Clock as GClock;
 use rand::Rng;
 use std::time::Duration;
 
 /// Configuration for the P2P [Resolver](commonware_resolver::Resolver).
-pub struct Config<P: PublicKey, C: Manager<PublicKey = P>, B: Blocker<PublicKey = P>> {
+pub struct Config<P: PublicKey, C: Provider<PublicKey = P>, B: Blocker<PublicKey = P>> {
     /// The public key to identify this node.
     pub public_key: P,
 
     /// The provider of peers that can be consulted for fetching data.
-    pub manager: C,
+    pub provider: C,
 
     /// The blocker that will be used to block peers that send invalid responses.
     pub blocker: B,
@@ -52,7 +52,7 @@ pub fn init<E, C, Bl, B, S, R, P>(
 )
 where
     E: Rng + Spawner + Clock + GClock + Metrics,
-    C: Manager<PublicKey = P>,
+    C: Provider<PublicKey = P>,
     Bl: Blocker<PublicKey = P>,
     B: Block,
     S: Sender<PublicKey = P>,
@@ -64,7 +64,7 @@ where
     let (resolver_engine, resolver) = p2p::Engine::new(
         ctx.with_label("resolver"),
         p2p::Config {
-            manager: config.manager,
+            provider: config.provider,
             blocker: config.blocker,
             consumer: handler.clone(),
             producer: handler,

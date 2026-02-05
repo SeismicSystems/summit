@@ -11,7 +11,7 @@ use commonware_consensus::Reporter;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
-use commonware_runtime::buffer::PoolRef;
+use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
 use commonware_runtime::{Clock, Metrics, Runner as _};
 use commonware_utils::NZUsize;
@@ -171,7 +171,7 @@ fn test_get_latest_epoch() {
             validator_withdrawal_num_epochs: 2,
             validator_onboarding_limit_per_block: 10,
             validator_num_warm_up_epochs: 2,
-            buffer_pool: PoolRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
+            page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
             initial_state,
             protocol_version: 1,
@@ -273,7 +273,7 @@ fn test_get_epoch_genesis_hash() {
             validator_withdrawal_num_epochs: 2,
             validator_onboarding_limit_per_block: 10,
             validator_num_warm_up_epochs: 2,
-            buffer_pool: PoolRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
+            page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
             initial_state,
             protocol_version: 1,
@@ -362,7 +362,7 @@ fn test_get_aux_data_from_canonical_chain() {
             validator_withdrawal_num_epochs: 2,
             validator_onboarding_limit_per_block: 10,
             validator_num_warm_up_epochs: 2,
-            buffer_pool: PoolRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
+            page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
             initial_state,
             protocol_version: 1,
@@ -431,7 +431,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             validator_withdrawal_num_epochs: 2,
             validator_onboarding_limit_per_block: 10,
             validator_num_warm_up_epochs: 2,
-            buffer_pool: PoolRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
+            page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
             initial_state,
             protocol_version: 1,

@@ -2,9 +2,8 @@ use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{EncodeSize, Error as CodecError, Read, ReadExt, Write};
 use commonware_consensus::{Block, types::Round};
 use commonware_resolver::{Consumer, p2p::Producer};
-use commonware_utils::Span;
-use futures::{
-    SinkExt,
+use commonware_utils::{
+    Span,
     channel::{mpsc, oneshot},
 };
 use std::{

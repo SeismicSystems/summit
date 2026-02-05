@@ -1571,18 +1571,16 @@ dependencies = [
 
 [[package]]
 name = "commonware-broadcast"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bf3ce8bf336b0ed47c5596de852dca00af534663376108e30b5d1554a226762"
+checksum = "0ffa29e885815ceb4e9ac4e1cb840aa96fb5493ad0c3ea5ac401212385137736"
 dependencies = [
- "bytes",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-macros",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
- "futures",
  "prometheus-client 0.24.0",
  "thiserror 2.0.12",
  "tracing",
@@ -1590,11 +1588,13 @@ dependencies = [
 
 [[package]]
 name = "commonware-codec"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "932a888c88c67ed0a2e35861cb3106f0238826ef99af3fd79e1da5cfa682fe6b"
+checksum = "52f6cacfdaad565ab6565b7c896cdf9d6d58a528e162150c2697d4d925a9938e"
 dependencies = [
  "bytes",
+ "cfg-if",
+ "commonware-macros",
  "paste",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -1603,9 +1603,9 @@ dependencies = [
 
 [[package]]
 name = "commonware-consensus"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e59253a02e2157aa1a487b1506d2453627b7b6d0434aede81e9ff5ee1232b700"
+checksum = "0ec7c97f3cb71e54a24a12af393d063d4daacf17ffcb69d79b9b519e5d19bafe"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1631,9 +1631,9 @@ dependencies = [
 
 [[package]]
 name = "commonware-cryptography"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baf84215a142eb4b5c633ef048fc3d39210e74dd4c00943667421ad65fecbc86"
+checksum = "ea20d380b73eb74eb977c40b0ef3df88ad7a428a582c38ada2d64fd7a1ef909b"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -1643,6 +1643,7 @@ dependencies = [
  "cfg-if",
  "chacha20poly1305",
  "commonware-codec",
+ "commonware-macros",
  "commonware-math",
  "commonware-parallel",
  "commonware-utils",
@@ -1651,6 +1652,8 @@ dependencies = [
  "ecdsa",
  "ed25519-consensus",
  "getrandom 0.2.16",
+ "num-rational",
+ "num-traits",
  "p256",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -1663,28 +1666,36 @@ dependencies = [
 
 [[package]]
 name = "commonware-macros"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fba0d95a5099b688944998efe0c2c65d7929355e9c9203ff3db5e5fffba4c1a"
+checksum = "241d65be9575e6de767236514985c9906e8ef0f6f6a5ce8faa6719886bf23270"
 dependencies = [
- "futures",
+ "commonware-macros-impl",
+ "tokio",
+]
+
+[[package]]
+name = "commonware-macros-impl"
+version = "2026.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6b7bdc304661c89e6d294c5581367db81a16cf161b27c036a9f855e317b21b8"
+dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.104",
  "toml",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
 name = "commonware-math"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "634c6488502ca976d1013b230e34a46f3998883d583f1ea4483b14a81231eb3e"
+checksum = "d2c6de52eb60c386ad2376d44ff247c41e2e7b03a436041e7065a2054799e31e"
 dependencies = [
  "bytes",
  "commonware-codec",
+ "commonware-macros",
  "commonware-parallel",
  "commonware-utils",
  "rand_core 0.6.4",
@@ -1692,11 +1703,10 @@ dependencies = [
 
 [[package]]
 name = "commonware-p2p"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27005677f181e0324c339800da0729f987a20904dcb3d4dd7c188a0334f7e387"
+checksum = "9b3035f95ed50d7c440f0fbab6593409226bb42dfe105235975f6751e44051bf"
 dependencies = [
- "bytes",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-macros",
@@ -1719,19 +1729,20 @@ dependencies = [
 
 [[package]]
 name = "commonware-parallel"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69ce87c7e89435d3730a4fe18c83f0502d8953fae90e62bd1384164c9239786e"
+checksum = "757b851e79eef082156ab7e33e354bda406ba9abbbc614fe3c92145d23a102fc"
 dependencies = [
  "cfg-if",
+ "commonware-macros",
  "rayon",
 ]
 
 [[package]]
 name = "commonware-resolver"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c8f548df3773f33ec9d45f55327d239eb49688fcbd481a73f50a59c7002699f"
+checksum = "247e2bca77b21f598178b0194b519560616136222f8b10d4aa8cf801a6de91eb"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1750,9 +1761,9 @@ dependencies = [
 
 [[package]]
 name = "commonware-runtime"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "699b7fd1f4a028442313f1c98cca47765bc4294e56884ca21efe0de5e38f89a5"
+checksum = "68f3c41066ea741c799381b31df729c572705cd27925601db577cd44f9cf0358"
 dependencies = [
  "async-lock",
  "axum 0.8.4",
@@ -1764,6 +1775,7 @@ dependencies = [
  "commonware-parallel",
  "commonware-utils",
  "criterion",
+ "crossbeam-queue",
  "futures",
  "getrandom 0.2.16",
  "governor",
@@ -1786,9 +1798,9 @@ dependencies = [
 
 [[package]]
 name = "commonware-storage"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e97b508b9e1527fabe81f91776ff7bfac13cd98759d2a8877c369143d9c4f6"
+checksum = "31db25d40fcdf233e93dfec1749e0d7ee7b1dcdd9507f31f9f445fa98972ab8c"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1810,11 +1822,10 @@ dependencies = [
 
 [[package]]
 name = "commonware-stream"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd88ee96b41da08924fe093f7be3299988698f58a768340f045e8a6120a4f234"
+checksum = "30e6e61b311c4d65b16cfc70076e1d560fa1cf8975cc9afbe293501bf4814aad"
 dependencies = [
- "bytes",
  "chacha20poly1305",
  "commonware-codec",
  "commonware-cryptography",
@@ -1831,13 +1842,14 @@ dependencies = [
 
 [[package]]
 name = "commonware-utils"
-version = "0.0.65"
+version = "2026.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dff0b48bf9e9ca3efdfd14aba67dbbc8da1f6132329c477e562592747dd052a"
+checksum = "d350ec4edcf243e8f746f8d6011956910c705325b295df3d686e77067b8b381b"
 dependencies = [
  "bytes",
  "cfg-if",
  "commonware-codec",
+ "commonware-macros",
  "futures",
  "getrandom 0.2.16",
  "hashbrown 0.16.1",
@@ -1848,6 +1860,7 @@ dependencies = [
  "pin-project",
  "rand 0.8.5",
  "thiserror 2.0.12",
+ "tokio",
  "zeroize",
 ]
 
@@ -2070,6 +2083,15 @@ name = "crossbeam-epoch"
 version = "0.9.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f58bbc28f91df819d0aa2a2c00cd19754769c2fad90579b3592b1c9ba7a3115"
 dependencies = [
  "crossbeam-utils",
 ]

@@ -6,9 +6,9 @@ use anyhow::{Context, Result, anyhow};
 use commonware_macros::select;
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::SystemTimeExt;
+use commonware_utils::channel::mpsc;
 use futures::{
-    FutureExt, StreamExt as _,
-    channel::{mpsc, oneshot},
+    FutureExt,
     future::{self, Either, try_join},
 };
 use rand::Rng;
@@ -18,10 +18,8 @@ use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::types::{Round, View};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
-use futures::task::Poll;
 use std::marker::PhantomData;
 use std::{
-    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -32,28 +30,6 @@ use tracing::{debug, info, warn};
 use metrics::{counter, histogram};
 use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
 use summit_types::{Block, BlockAuxData, Digest, EngineClient, utils};
-
-// Define a future that checks if the oneshot channel is closed using a mutable reference
-struct ChannelClosedFuture<'a, T> {
-    sender: &'a mut oneshot::Sender<T>,
-}
-
-impl<T> Future for ChannelClosedFuture<'_, T> {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut futures::task::Context<'_>) -> Poll<Self::Output> {
-        // Use poll_canceled to check if the receiver has dropped the channel
-        match self.sender.poll_canceled(cx) {
-            Poll::Ready(()) => Poll::Ready(()), // Receiver dropped, channel closed
-            Poll::Pending => Poll::Pending,     // Channel still open
-        }
-    }
-}
-
-// Helper function to create the future using a mutable reference
-fn oneshot_closed_future<T>(sender: &mut oneshot::Sender<T>) -> ChannelClosedFuture<'_, T> {
-    ChannelClosedFuture { sender }
-}
 
 pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -126,7 +102,7 @@ impl<
         let cancellation_token = self.cancellation_token.clone();
         loop {
             select! {
-                message = self.mailbox.next() => {
+                message = self.mailbox.recv() => {
                     let Some(message) = message else {
                         break;
                     };
@@ -185,7 +161,7 @@ impl<
                                             Err(e) => warn!("Failed to create a block for round {round}: {e}")
                                         }
                                     },
-                                    _ = oneshot_closed_future(&mut response) => {
+                                    _ = response.closed() => {
                                         // simplex dropped receiver
                                         #[cfg(feature = "prom")]
                                         {
@@ -317,7 +293,7 @@ impl<
                                                 let _ = response.send(false);
                                             }
                                         },
-                                        _ = oneshot_closed_future(&mut response) => {
+                                        _ = response.closed() => {
                                             warn!("verify aborted for round {round}");
                                         }
                                     }

@@ -4,10 +4,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::PublicKey;
 use commonware_cryptography::sha256::Digest;
-use futures::{
-    SinkExt,
-    channel::{mpsc, oneshot},
-};
+use commonware_utils::channel::{mpsc, oneshot};
 use std::marker::PhantomData;
 
 pub enum Message {

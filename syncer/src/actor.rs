@@ -23,6 +23,7 @@ use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, 
 use commonware_storage::archive::Identifier as ArchiveID;
 use commonware_utils::{
     Acknowledgement, BoxedError,
+    channel::{mpsc, oneshot},
     futures::{AbortablePool, Aborter},
     sequence::U64,
 };
@@ -32,12 +33,9 @@ use commonware_consensus::marshal::store::{Blocks, Certificates};
 use commonware_storage::metadata;
 use commonware_storage::metadata::Metadata;
 use commonware_utils::acknowledgement::Exact;
+use commonware_utils::channel::fallible::OneshotExt;
 use commonware_utils::futures::OptionFuture;
-use futures::{
-    StreamExt,
-    channel::{mpsc, oneshot},
-    try_join,
-};
+use futures::try_join;
 use governor::clock::Clock as GClock;
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
@@ -65,7 +63,7 @@ const LATEST_KEY: U64 = U64::new(0xFF);
 /// A pending acknowledgement from the application for processing a block at the contained height/commitment.
 #[pin_project]
 struct PendingAck<B: Block, A: Acknowledgement> {
-    height: u64,
+    height: Height,
     commitment: B::Commitment,
     #[pin]
     receiver: A::Waiter,
@@ -137,11 +135,11 @@ where
     // Last view processed
     last_processed_round: Round,
     // Last height processed by the application
-    last_processed_height: u64,
+    last_processed_height: Height,
     // Pending application acknowledgement, if any
     pending_ack: OptionFuture<PendingAck<B, A>>,
     // Highest known finalized height
-    tip: u64,
+    tip: Height,
     // Outstanding subscriptions for blocks
     block_subscriptions: BTreeMap<B::Commitment, BlockSubscription<B>>,
 
@@ -149,7 +147,7 @@ where
     // Prunable cache
     cache: cache::Manager<E, B, P::Scheme>,
     // Metadata tracking application progress
-    application_metadata: Metadata<E, U64, u64>,
+    application_metadata: Metadata<E, U64, Height>,
     // Finalizations stored by height
     finalizations_by_height: FC,
     // Finalized blocks stored by height
@@ -188,7 +186,7 @@ where
             replay_buffer: config.replay_buffer,
             key_write_buffer: config.key_write_buffer,
             value_write_buffer: config.value_write_buffer,
-            key_buffer_pool: config.buffer_pool.clone(),
+            key_page_cache: config.page_cache.clone(),
         };
         let cache = cache::Manager::init(
             context.with_label("cache"),
@@ -239,9 +237,9 @@ where
                     block_codec_config: config.block_codec_config,
                     strategy: config.strategy,
                     last_processed_round: Round::zero(),
-                    last_processed_height: 0,
+                    last_processed_height: Height::zero(),
                     pending_ack: None.into(),
-                    tip: 0,
+                    tip: Height::zero(),
                     block_subscriptions: BTreeMap::new(),
                     cache,
                     application_metadata,
@@ -268,9 +266,9 @@ where
                     block_codec_config: config.block_codec_config,
                     strategy: config.strategy,
                     last_processed_round: Round::zero(),
-                    last_processed_height: 0,
+                    last_processed_height: Height::zero(),
                     pending_ack: None.into(),
-                    tip: 0,
+                    tip: Height::zero(),
                     block_subscriptions: BTreeMap::new(),
                     cache,
                     application_metadata,
@@ -337,14 +335,14 @@ where
             >,
         K: PublicKey,
     {
-        self.last_processed_height = sync_height;
+        self.last_processed_height = Height::new(sync_height);
         self.last_processed_round = Round::new(Epoch::new(sync_epoch), View::new(sync_view));
-        self.tip = sync_height;
+        self.tip = Height::new(sync_height);
         info!(sync_height, sync_epoch, sync_view, "syncer initialized");
 
         // If we have a checkpoint last block meaning we loaded from checkpoint, finalize it to complete the checkpoint
         if let Some(last_block) = checkpoint_last_block {
-            let height = last_block.height().get();
+            let height = last_block.height();
             let finalization = checkpoint_finalized_header.map(|h| h.finalization);
             self.finalize(
                 height,
@@ -360,7 +358,8 @@ where
 
         #[cfg(feature = "prom")]
         {
-            self.processed_height.set(self.last_processed_height as i64);
+            self.processed_height
+                .set(self.last_processed_height.get() as i64);
         }
 
         // Create a local pool for waiter futures.
@@ -372,7 +371,7 @@ where
             application
                 .report(Update::Tip(height.get(), commitment))
                 .await;
-            self.tip = height.get();
+            self.tip = height;
             #[cfg(feature = "prom")]
             self.finalized_height.set(height.get() as i64);
         }
@@ -387,7 +386,7 @@ where
         loop {
             // Remove any dropped subscribers. If all subscribers dropped, abort the waiter.
             self.block_subscriptions.retain(|_, bs| {
-                bs.subscribers.retain(|tx| !tx.is_canceled());
+                bs.subscribers.retain(|tx| !tx.is_closed());
                 !bs.subscribers.is_empty()
             });
 
@@ -410,19 +409,19 @@ where
                                 .handle_block_processed(height, commitment, &mut resolver)
                                 .await
                             {
-                                error!(?e, height, "failed to update application progress");
+                                error!(?e, %height, "failed to update application progress");
                                 return;
                             }
                             self.try_dispatch_block(&mut application).await;
                         }
                         Err(e) => {
-                            error!(?e, height, "application did not acknowledge block");
+                            error!(?e, %height, "application did not acknowledge block");
                             return;
                         }
                     }
                 },
                 // Handle consensus inputs before backfill or resolver traffic
-                mailbox_message = self.mailbox.next() => {
+                mailbox_message = self.mailbox.recv() => {
                     let Some(message) = mailbox_message else {
                         info!("mailbox closed, shutting down");
                         return;
@@ -439,17 +438,17 @@ where
                                     .await
                                     .ok()
                                     .flatten()
-                                    .map(|b| (b.height().get(), commitment)),
+                                    .map(|b| (b.height(), commitment)),
                                 BlockID::Height(height) => self
                                     .finalizations_by_height
-                                    .get(ArchiveID::Index(height))
+                                    .get(ArchiveID::Index(height.get()))
                                     .await
                                     .ok()
                                     .flatten()
                                     .map(|f| (height, f.proposal.payload)),
-                                BlockID::Latest => self.get_latest().await.map(|(h, c)| (h.get(), c)),
+                                BlockID::Latest => self.get_latest().await,
                             };
-                            let _ = response.send(info);
+                            response.send_lossy(info);
                         }
                         Message::Proposed { round, block } => {
                             self.cache_verified(round, block.commitment(), block.clone()).await;
@@ -487,7 +486,7 @@ where
                                 // If found, persist the block
                                 let height = block.height();
                                 self.finalize(
-                                    height.get(),
+                                    height,
                                     commitment,
                                     block,
                                     Some(finalization),
@@ -496,7 +495,7 @@ where
                                     &mut resolver,
                                 )
                                 .await;
-                                debug!(?round, height = height.get(), "finalized block stored");
+                                debug!(?round, %height, "finalized block stored");
                             } else {
                                 // Otherwise, fetch the block from the network.
                                 debug!(?round, ?commitment, "finalized block missing");
@@ -507,33 +506,33 @@ where
                             match identifier {
                                 BlockID::Commitment(commitment) => {
                                     let result = self.find_block(&mut buffer, commitment).await;
-                                    let _ = response.send(result);
+                                    response.send_lossy(result);
                                 }
                                 BlockID::Height(height) => {
                                     let result = self.get_finalized_block(height).await;
-                                    let _ = response.send(result);
+                                    response.send_lossy(result);
                                 }
                                 BlockID::Latest => {
                                     let block = match self.get_latest().await {
                                         Some((_, commitment)) => self.find_block(&mut buffer, commitment).await,
                                         None => None,
                                     };
-                                    let _ = response.send(block);
+                                    response.send_lossy(block);
                                 }
                             }
                         }
                         Message::GetFinalization { height, response } => {
                             let finalization = self.get_finalization_by_height(height).await;
-                            let _ = response.send(finalization);
+                            response.send_lossy(finalization);
                         }
                         Message::HintFinalized { height, targets } => {
                             // Skip if height is at or below the floor
-                            if height.get() <= self.last_processed_height {
+                            if height <= self.last_processed_height {
                                 continue;
                             }
 
                             // Skip if finalization is already available locally
-                            if self.get_finalization_by_height(height.get()).await.is_some() {
+                            if self.get_finalization_by_height(height).await.is_some() {
                                 continue;
                             }
 
@@ -544,7 +543,7 @@ where
                         Message::Subscribe { round, commitment, response } => {
                             // Check for block locally
                             if let Some(block) = self.find_block(&mut buffer, commitment).await {
-                                let _ = response.send(block);
+                                response.send_lossy(block);
                                 continue;
                             }
 
@@ -563,8 +562,8 @@ where
                                         ?round,
                                         ?commitment,
                                         last_processed_round = ?self.last_processed_round,
-                                        last_processed_height = self.last_processed_height,
-                                        tip = self.tip,
+                                        last_processed_height = %self.last_processed_height,
+                                        tip = %self.tip,
                                         "subscription for block in past round that wasn't finalized - possible notarize-nullify race"
                                     );
 
@@ -601,13 +600,13 @@ where
                         }
                         Message::SetFloor { height } => {
                             if let Some(stored_height) = self.application_metadata.get(&LATEST_KEY) && *stored_height >= height {
-                                warn!(height, existing = stored_height, "sync floor not updated, lower than existing");
+                                warn!(%height, existing = %stored_height, "sync floor not updated, lower than existing");
                                 continue;
                             }
 
                             // Update the processed height
                             if let Err(err) = self.set_processed_height(height, &mut resolver).await {
-                                error!(?err, height, "failed to update sync floor");
+                                error!(?err, %height, "failed to update sync floor");
                                 return;
                             }
 
@@ -620,26 +619,26 @@ where
                             if let Err(err) = try_join!(
                                 // Prune the finalized blocks archive
                                 async {
-                                    self.finalized_blocks.prune(Height::new(height)).await.map_err(Box::new)?;
+                                    self.finalized_blocks.prune(height).await.map_err(Box::new)?;
                                     Ok::<_, BoxedError>(())
                                 },
                                 // Prune the finalization certificate archive
                                 async {
                                     self.finalizations_by_height
-                                        .prune(Height::new(height))
+                                        .prune(height)
                                         .await
                                         .map_err(Box::new)?;
                                     Ok::<_, BoxedError>(())
                                 }
                             ) {
-                                error!(?err, height, "failed to prune finalized archives");
+                                error!(?err, %height, "failed to prune finalized archives");
                                 return;
                             }
                         }
                     }
                 },
                 // Handle resolver messages last
-                message = resolver_rx.next() => {
+                message = resolver_rx.recv() => {
                     let Some(message) = message else {
                         info!("handler closed, shutting down");
                         return;
@@ -653,23 +652,24 @@ where
                                         debug!(?commitment, "block missing on request");
                                         continue;
                                     };
-                                    let _ = response.send(block.encode());
+                                    response.send_lossy(block.encode());
                                 }
                                 Request::Finalized { height } => {
+                                    let height = Height::new(height);
                                     // Get finalization
                                     let Some(finalization) = self.get_finalization_by_height(height).await else {
-                                        debug!(height, "finalization missing on request");
+                                        debug!(%height, "finalization missing on request");
                                         continue;
                                     };
 
                                     // Get block
                                     let Some(block) = self.get_finalized_block(height).await else {
-                                        debug!(height, "finalized block missing on request");
+                                        debug!(%height, "finalized block missing on request");
                                         continue;
                                     };
 
                                     // Send finalization
-                                    let _ = response.send((finalization, block).encode());
+                                    response.send_lossy((finalization, block).encode());
                                 }
                                 Request::Notarized { round } => {
                                     // Get notarization
@@ -684,7 +684,7 @@ where
                                         debug!(?commitment, "block missing on request");
                                         continue;
                                     };
-                                    let _ = response.send((notarization, block).encode());
+                                    response.send_lossy((notarization, block).encode());
                                 }
                             }
                         },
@@ -693,13 +693,13 @@ where
                                 Request::Block(commitment) => {
                                     // Parse block
                                     let Ok(block) = B::decode_cfg(value.as_ref(), &self.block_codec_config) else {
-                                        let _ = response.send(false);
+                                        response.send_lossy(false);
                                         continue;
                                     };
 
                                     // Validation
                                     if block.commitment() != commitment {
-                                        let _ = response.send(false);
+                                        response.send_lossy(false);
                                         continue;
                                     }
 
@@ -708,7 +708,7 @@ where
                                     let finalization = self.cache.get_finalization_for(commitment).await;
 
                                      self.finalize(
-                                        height.get(),
+                                        height,
                                         commitment,
                                         block,
                                         finalization,
@@ -717,13 +717,14 @@ where
                                         &mut resolver,
                                     )
                                     .await;
-                                    debug!(?commitment, height = height.get(), "received block");
-                                    let _ = response.send(true);
+                                    debug!(?commitment, %height, "received block");
+                                    response.send_lossy(true);
                                 },
                                 Request::Finalized { height } => {
-                                    let epoch = utils::epoch(self.epoch_length, height);
+                                    let height = Height::new(height);
+                                    let epoch = utils::epoch(self.epoch_length, height.get());
                                     let Some(scheme) = self.get_scheme_certificate_verifier(epoch) else {
-                                        let _ = response.send(false);
+                                        response.send_lossy(false);
                                         continue;
                                     };
 
@@ -734,21 +735,21 @@ where
                                             &(scheme.certificate_codec_config(), self.block_codec_config.clone()),
                                         )
                                     else {
-                                        let _ = response.send(false);
+                                        response.send_lossy(false);
                                         continue;
                                     };
 
                                     // Validation
-                                    if block.height() != Height::new(height)
+                                    if block.height() != height
                                         || finalization.proposal.payload != block.commitment()
                                         || !finalization.verify(&mut self.context, &scheme, &self.strategy)
                                     {
-                                        let _ = response.send(false);
+                                        response.send_lossy(false);
                                         continue;
                                     }
 
                                     // Valid finalization received
-                                    let _ = response.send(true);
+                                    response.send_lossy(true);
                                     self.finalize(
                                         height,
                                         block.commitment(),
@@ -762,7 +763,7 @@ where
                                 },
                                 Request::Notarized { round } => {
                                     let Some(scheme) = self.get_scheme_certificate_verifier(round.epoch()) else {
-                                        let _ = response.send(false);
+                                        response.send_lossy(false);
                                         continue;
                                     };
 
@@ -773,7 +774,7 @@ where
                                             &(scheme.certificate_codec_config(), self.block_codec_config.clone()),
                                         )
                                     else {
-                                        let _ = response.send(false);
+                                        response.send_lossy(false);
                                         continue;
                                     };
 
@@ -782,12 +783,12 @@ where
                                         || notarization.proposal.payload != block.commitment()
                                         || !notarization.verify(&mut self.context, &scheme, &self.strategy)
                                     {
-                                        let _ = response.send(false);
+                                        response.send_lossy(false);
                                         continue;
                                     }
 
                                     // Valid notarization received
-                                    let _ = response.send(true);
+                                    response.send_lossy(true);
                                     let commitment = block.commitment();
                                     debug!(?round, ?commitment, "received notarization");
 
@@ -800,7 +801,7 @@ where
                                     let height = block.height();
                                     if let Some(finalization) = self.cache.get_finalization_for(commitment).await {
                                         self.finalize(
-                                            height.get(),
+                                            height,
                                             commitment,
                                             block.clone(),
                                             Some(finalization),
@@ -838,7 +839,7 @@ where
     async fn notify_subscribers(&mut self, commitment: B::Commitment, block: &B) {
         if let Some(mut bs) = self.block_subscriptions.remove(&commitment) {
             for subscriber in bs.subscribers.drain(..) {
-                let _ = subscriber.send(block.clone());
+                subscriber.send_lossy(block.clone());
             }
         }
     }
@@ -854,20 +855,20 @@ where
             return;
         }
 
-        let next_height = self.last_processed_height.saturating_add(1);
+        let next_height = self.last_processed_height.next();
         let Some(block) = self.get_finalized_block(next_height).await else {
             return;
         };
         assert_eq!(
             block.height(),
-            Height::new(next_height),
+            next_height,
             "finalized block height mismatch"
         );
 
         let (height, commitment) = (block.height(), block.commitment());
         let (ack, ack_waiter) = A::handle();
 
-        if utils::is_last_block_in_epoch(self.epoch_length, next_height).is_some() {
+        if utils::is_last_block_in_epoch(self.epoch_length, next_height.get()).is_some() {
             let finalize = self.get_finalization_by_height(next_height).await;
             application
                 .report(Update::FinalizedBlock((block, finalize), ack))
@@ -879,7 +880,7 @@ where
         }
 
         self.pending_ack.replace(PendingAck {
-            height: height.get(),
+            height,
             commitment,
             receiver: ack_waiter,
         });
@@ -888,7 +889,7 @@ where
     /// Handle acknowledgement from the application that a block has been processed.
     async fn handle_block_processed(
         &mut self,
-        height: u64,
+        height: Height,
         commitment: B::Commitment,
         resolver: &mut impl Resolver<Key = Request<B>>,
     ) -> Result<(), metadata::Error> {
@@ -939,8 +940,12 @@ where
     // -------------------- Immutable Storage --------------------
 
     /// Get a finalized block from the immutable archive.
-    async fn get_finalized_block(&self, height: u64) -> Option<B> {
-        match self.finalized_blocks.get(ArchiveID::Index(height)).await {
+    async fn get_finalized_block(&self, height: Height) -> Option<B> {
+        match self
+            .finalized_blocks
+            .get(ArchiveID::Index(height.get()))
+            .await
+        {
             Ok(block) => block,
             Err(e) => panic!("failed to get block: {e}"),
         }
@@ -949,11 +954,11 @@ where
     /// Get a finalization from the archive by height.
     async fn get_finalization_by_height(
         &self,
-        height: u64,
+        height: Height,
     ) -> Option<Finalization<P::Scheme, B::Commitment>> {
         match self
             .finalizations_by_height
-            .get(ArchiveID::Index(height))
+            .get(ArchiveID::Index(height.get()))
             .await
         {
             Ok(finalization) => finalization,
@@ -966,7 +971,7 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn finalize(
         &mut self,
-        height: u64,
+        height: Height,
         commitment: B::Commitment,
         block: B,
         finalization: Option<Finalization<P::Scheme, B::Commitment>>,
@@ -986,7 +991,7 @@ where
     /// application.
     async fn store_finalization(
         &mut self,
-        height: u64,
+        height: Height,
         commitment: B::Commitment,
         block: B,
         finalization: Option<Finalization<P::Scheme, B::Commitment>>,
@@ -1008,7 +1013,7 @@ where
             async {
                 if let Some(finalization) = finalization {
                     self.finalizations_by_height
-                        .put(Height::new(height), commitment, finalization)
+                        .put(height, commitment, finalization)
                         .await
                         .map_err(Box::new)?;
                 }
@@ -1027,20 +1032,22 @@ where
 
         // Update metrics and send tip update to application
         if height > self.tip {
-            let gap = height - self.tip;
+            let gap = height.get() - self.tip.get();
             if gap > 1 {
                 debug!(
-                    previous_tip = self.tip,
-                    new_tip = height,
+                    previous_tip = %self.tip,
+                    new_tip = %height,
                     gap,
                     "tip advanced by multiple blocks (catch-up)"
                 );
             }
-            application.report(Update::Tip(height, commitment)).await;
+            application
+                .report(Update::Tip(height.get(), commitment))
+                .await;
             self.tip = height;
             #[cfg(feature = "prom")]
             {
-                self.finalized_height.set(height as i64);
+                self.finalized_height.set(height.get() as i64);
             }
         }
 
@@ -1062,7 +1069,7 @@ where
     async fn get_latest(&mut self) -> Option<(Height, B::Commitment)> {
         let height = self.finalizations_by_height.last_index()?;
         let finalization = self
-            .get_finalization_by_height(height.get())
+            .get_finalization_by_height(height)
             .await
             .expect("finalization missing");
         Some((height, finalization.proposal.payload))
@@ -1100,7 +1107,7 @@ where
         resolver: &mut impl Resolver<Key = Request<B>>,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
     ) {
-        let start = Height::new(self.last_processed_height.saturating_add(1));
+        let start = self.last_processed_height.next();
         'cache_repair: loop {
             let (gap_start, Some(gap_end)) = self.finalized_blocks.next_gap(start) else {
                 // No gaps detected
@@ -1109,8 +1116,8 @@ where
 
             // Attempt to repair the gap backwards from the end of the gap, using
             // blocks from our local storage.
-            let Some(mut cursor) = self.get_finalized_block(gap_end.get()).await else {
-                panic!("gapped block missing that should exist: {}", gap_end.get());
+            let Some(mut cursor) = self.get_finalized_block(gap_end).await else {
+                panic!("gapped block missing that should exist: {gap_end}");
             };
 
             // Compute the lower bound of the recursive repair. `gap_start` is `Some`
@@ -1124,7 +1131,7 @@ where
                 if let Some(block) = self.find_block(buffer, commitment).await {
                     let finalization = self.cache.get_finalization_for(commitment).await;
                     self.store_finalization(
-                        block.height().get(),
+                        block.height(),
                         commitment,
                         block.clone(),
                         finalization,
@@ -1132,9 +1139,9 @@ where
                     )
                     .await;
                     debug!(
-                        height = block.height().get(),
-                        gap_start = gap_start.get(),
-                        gap_end = gap_end.get(),
+                        height = %block.height(),
+                        gap_start = %gap_start,
+                        gap_end = %gap_end,
                         "repaired missing block from local storage"
                     );
                     cursor = block;
@@ -1174,7 +1181,7 @@ where
     /// outstanding requests below the new processed height.
     async fn set_processed_height(
         &mut self,
-        height: u64,
+        height: Height,
         resolver: &mut impl Resolver<Key = Request<B>>,
     ) -> Result<(), metadata::Error> {
         self.application_metadata
@@ -1182,11 +1189,17 @@ where
             .await?;
         self.last_processed_height = height;
         #[cfg(feature = "prom")]
-        self.processed_height.set(self.last_processed_height as i64);
+        self.processed_height
+            .set(self.last_processed_height.get() as i64);
 
         // Cancel any existing requests below the new sync floor.
         resolver
-            .retain(Request::<B>::Finalized { height }.predicate())
+            .retain(
+                Request::<B>::Finalized {
+                    height: height.get(),
+                }
+                .predicate(),
+            )
             .await;
 
         Ok(())

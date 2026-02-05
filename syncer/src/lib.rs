@@ -136,7 +136,9 @@ mod tests {
         simulated::{self, Link, Network, Oracle},
     };
     use commonware_parallel::Sequential;
-    use commonware_runtime::{Clock, Metrics, Quota, Runner, buffer::PoolRef, deterministic};
+    use commonware_runtime::{
+        Clock, Metrics, Quota, Runner, buffer::paged::CacheRef, deterministic,
+    };
     use commonware_storage::archive::immutable;
     use commonware_utils::{NZU64, NZUsize};
     use rand::{Rng, seq::SliceRandom};
@@ -151,7 +153,7 @@ mod tests {
     type B = Block<D>;
     type K = PublicKey;
     type V = MinPk;
-    type S = bls12381_threshold::Scheme<K, V>;
+    type S = bls12381_threshold::standard::Scheme<K, V>;
     type P = ConstantProvider<S, Epoch>;
 
     const PAGE_SIZE: NonZeroU16 = NonZeroU16::new(1024).unwrap();
@@ -197,7 +199,7 @@ mod tests {
             replay_buffer: NZUsize!(1024),
             key_write_buffer: NZUsize!(1024),
             value_write_buffer: NZUsize!(1024),
-            buffer_pool: PoolRef::new(PAGE_SIZE, PAGE_CACHE_SIZE),
+            page_cache: CacheRef::new(PAGE_SIZE, PAGE_CACHE_SIZE),
             strategy: Sequential,
         };
 
@@ -206,7 +208,7 @@ mod tests {
         let backfill = control.register(1, TEST_QUOTA).await.unwrap();
         let resolver_cfg = resolver::Config {
             public_key: validator.clone(),
-            manager: oracle.manager(),
+            provider: oracle.manager(),
             blocker: control.clone(),
             mailbox_size: config.mailbox_size,
             initial: Duration::from_secs(1),
@@ -249,7 +251,7 @@ mod tests {
                     "{}-finalizations-by-height-freezer-key",
                     config.partition_prefix
                 ),
-                freezer_key_buffer_pool: config.buffer_pool.clone(),
+                freezer_key_page_cache: config.page_cache.clone(),
                 freezer_value_partition: format!(
                     "{}-finalizations-by-height-freezer-value",
                     config.partition_prefix
@@ -292,7 +294,7 @@ mod tests {
                     "{}-finalized_blocks-freezer-key",
                     config.partition_prefix
                 ),
-                freezer_key_buffer_pool: config.buffer_pool.clone(),
+                freezer_key_page_cache: config.page_cache.clone(),
                 freezer_value_partition: format!(
                     "{}-finalized_blocks-freezer-value",
                     config.partition_prefix
@@ -428,7 +430,7 @@ mod tests {
             // Register the initial peer set.
             let mut manager = oracle.manager();
             manager
-                .update(0, participants.clone().try_into().unwrap())
+                .track(0, participants.clone().try_into().unwrap())
                 .await;
             for (i, validator) in participants.iter().enumerate() {
                 let (application, actor, _processed_height) = setup_validator(
@@ -888,13 +890,19 @@ mod tests {
             actor.report(Activity::Finalization(finalization)).await;
 
             // Latest should now be the finalized block
-            assert_eq!(actor.get_info(Identifier::Latest).await, Some((1, digest)));
+            assert_eq!(
+                actor.get_info(Identifier::Latest).await,
+                Some((Height::new(1), digest))
+            );
 
             // Height 1 now present
-            assert_eq!(actor.get_info(1).await, Some((1, digest)));
+            assert_eq!(actor.get_info(1).await, Some((Height::new(1), digest)));
 
             // Commitment should map to its height
-            assert_eq!(actor.get_info(&digest).await, Some((1, digest)));
+            assert_eq!(
+                actor.get_info(&digest).await,
+                Some((Height::new(1), digest))
+            );
 
             // Missing height
             assert!(actor.get_info(2).await.is_none());
@@ -947,7 +955,7 @@ mod tests {
             );
             actor.report(Activity::Finalization(f1)).await;
             let latest = actor.get_info(Identifier::Latest).await;
-            assert_eq!(latest, Some((1, d1)));
+            assert_eq!(latest, Some((Height::new(1), d1)));
 
             let block2 = B::new::<Sha256>(d1, Height::new(2), 2);
             let d2 = block2.digest();
@@ -965,7 +973,7 @@ mod tests {
             );
             actor.report(Activity::Finalization(f2)).await;
             let latest = actor.get_info(Identifier::Latest).await;
-            assert_eq!(latest, Some((2, d2)));
+            assert_eq!(latest, Some((Height::new(2), d2)));
 
             let block3 = B::new::<Sha256>(d2, Height::new(3), 3);
             let d3 = block3.digest();
@@ -983,7 +991,7 @@ mod tests {
             );
             actor.report(Activity::Finalization(f3)).await;
             let latest = actor.get_info(Identifier::Latest).await;
-            assert_eq!(latest, Some((3, d3)));
+            assert_eq!(latest, Some((Height::new(3), d3)));
         })
     }
 
@@ -1125,7 +1133,7 @@ mod tests {
             .await;
 
             // Before any finalization, get_finalization should be None
-            let finalization = actor.get_finalization(1).await;
+            let finalization = actor.get_finalization(Height::new(1)).await;
             assert!(finalization.is_none());
 
             // Finalize a block at height 1
@@ -1144,7 +1152,7 @@ mod tests {
 
             // Get finalization by height
             let finalization = actor
-                .get_finalization(1)
+                .get_finalization(Height::new(1))
                 .await
                 .expect("missing finalization by height");
             assert_eq!(finalization.proposal.parent, View::new(0));
@@ -1154,7 +1162,7 @@ mod tests {
             );
             assert_eq!(finalization.proposal.payload, commitment);
 
-            assert!(actor.get_finalization(2).await.is_none());
+            assert!(actor.get_finalization(Height::new(2)).await.is_none());
         })
     }
 
@@ -1237,8 +1245,8 @@ mod tests {
             assert_eq!(block1, block);
 
             // Verify both validators have finalizations stored
-            let fin0 = actors[0].get_finalization(1).await.unwrap();
-            let fin1 = actors[1].get_finalization(1).await.unwrap();
+            let fin0 = actors[0].get_finalization(Height::new(1)).await.unwrap();
+            let fin1 = actors[1].get_finalization(Height::new(1)).await.unwrap();
 
             // Verify the finalizations have the expected different views
             assert_eq!(fin0.proposal.payload, block.digest());
@@ -1248,12 +1256,12 @@ mod tests {
 
             // Both validators can retrieve block by height
             assert_eq!(
-                actors[0].get_info(Identifier::Height(1)).await,
-                Some((1, commitment))
+                actors[0].get_info(Identifier::Height(Height::new(1))).await,
+                Some((Height::new(1), commitment))
             );
             assert_eq!(
-                actors[1].get_info(Identifier::Height(1)).await,
-                Some((1, commitment))
+                actors[1].get_info(Identifier::Height(Height::new(1))).await,
+                Some((Height::new(1), commitment))
             );
 
             // Test that a validator receiving BOTH finalizations handles it correctly
@@ -1267,11 +1275,11 @@ mod tests {
             context.sleep(Duration::from_millis(100)).await;
 
             // Validator 0 should still have the original finalization (v1)
-            let fin0_after = actors[0].get_finalization(1).await.unwrap();
+            let fin0_after = actors[0].get_finalization(Height::new(1)).await.unwrap();
             assert_eq!(fin0_after.round().view(), View::new(1));
 
             // Validator 1 should still have the original finalization (v2)
-            let fin1_after = actors[1].get_finalization(1).await.unwrap();
+            let fin1_after = actors[1].get_finalization(Height::new(1)).await.unwrap();
             assert_eq!(fin1_after.round().view(), View::new(2));
         })
     }

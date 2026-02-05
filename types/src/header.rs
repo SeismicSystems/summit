@@ -567,7 +567,7 @@ mod test {
             proposal,
             certificate: Certificate::<MinPk> {
                 signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
-                signature: create_dummy_signature(),
+                signature: create_dummy_signature().into(),
             },
         };
 
@@ -623,7 +623,7 @@ mod test {
             proposal: wrong_proposal,
             certificate: Certificate::<MinPk> {
                 signers: Signers::from(5, [0, 2, 4].map(Participant::new)),
-                signature: create_dummy_signature(),
+                signature: create_dummy_signature().into(),
             },
         };
 
@@ -675,7 +675,7 @@ mod test {
             proposal,
             certificate: Certificate::<MinPk> {
                 signers: Signers::from(4, [0, 1, 2, 3].map(Participant::new)),
-                signature: create_dummy_signature(),
+                signature: create_dummy_signature().into(),
             },
         };
 

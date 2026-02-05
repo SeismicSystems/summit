@@ -5,7 +5,7 @@ use commonware_consensus::{
     simplex::types::{Finalization, Notarization},
     types::{Epoch, Round, View},
 };
-use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::PoolRef};
+use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::{
     archive::{self, Archive as _, Identifier, prunable},
     metadata::{self, Metadata},
@@ -32,7 +32,7 @@ pub(crate) struct Config {
     pub replay_buffer: NonZeroUsize,
     pub key_write_buffer: NonZeroUsize,
     pub value_write_buffer: NonZeroUsize,
-    pub key_buffer_pool: PoolRef,
+    pub key_page_cache: CacheRef,
 }
 
 /// Prunable archives for a single epoch.
@@ -206,7 +206,7 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
         let cfg = prunable::Config {
             translator: TwoCap,
             key_partition: format!("{}-cache-{epoch}-{name}-key", self.cfg.partition_prefix),
-            key_buffer_pool: self.cfg.key_buffer_pool.clone(),
+            key_page_cache: self.cfg.key_page_cache.clone(),
             value_partition: format!("{}-cache-{epoch}-{name}-value", self.cfg.partition_prefix),
             items_per_section: self.cfg.prunable_items_per_section,
             compression: None,

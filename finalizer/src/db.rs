@@ -391,7 +391,7 @@ mod tests {
     use commonware_cryptography::certificate::Signers;
     use commonware_cryptography::certificate::bls12381_multisig::Certificate as BlsCertificate;
     use commonware_math::algebra::Random;
-    use commonware_runtime::buffer::PoolRef;
+    use commonware_runtime::buffer::paged::CacheRef;
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{NZU64, NZUsize, Participant};
     use rand::SeedableRng as _;
@@ -409,7 +409,7 @@ mod tests {
             log_codec_config: (),
             log_items_per_section: NZU64!(4),
             translator: EightCap,
-            buffer_pool: PoolRef::new(std::num::NonZero::new(77u16).unwrap(), NZUsize!(9)),
+            page_cache: CacheRef::new(std::num::NonZero::new(77u16).unwrap(), NZUsize!(9)),
         };
         FinalizerState::<E, V>::new(context, config).await
     }
@@ -511,7 +511,7 @@ mod tests {
                 proposal,
                 certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
-                    signature: create_dummy_signature(), // Valid dummy signature for test
+                    signature: create_dummy_signature().into(), // Valid dummy signature for test
                 },
             };
             let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized, 3);
@@ -558,7 +558,7 @@ mod tests {
                 proposal: proposal2,
                 certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
-                    signature: create_dummy_signature(),
+                    signature: create_dummy_signature().into(),
                 },
             };
             let finalized_header2 =
@@ -621,7 +621,7 @@ mod tests {
                 proposal: proposal1,
                 certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
-                    signature: create_dummy_signature(),
+                    signature: create_dummy_signature().into(),
                 },
             };
             let finalized_header1 =
@@ -651,7 +651,7 @@ mod tests {
                 proposal: proposal3,
                 certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
-                    signature: create_dummy_signature(),
+                    signature: create_dummy_signature().into(),
                 },
             };
             let finalized_header3 =
@@ -681,7 +681,7 @@ mod tests {
                 proposal: proposal2,
                 certificate: BlsCertificate::<MinPk> {
                     signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
-                    signature: create_dummy_signature(),
+                    signature: create_dummy_signature().into(),
                 },
             };
             let finalized_header2 =

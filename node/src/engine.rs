@@ -6,9 +6,9 @@ use commonware_consensus::types::ViewDelta;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
-use commonware_p2p::{Blocker, Manager, Receiver, Sender};
+use commonware_p2p::{Blocker, Provider, Receiver, Sender};
 use commonware_parallel::Sequential;
-use commonware_runtime::buffer::PoolRef;
+use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
 use commonware_storage::archive::immutable;
 use commonware_utils::acknowledgement::Exact;
@@ -70,7 +70,7 @@ const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 pub struct Engine<
     E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
     C: EngineClient,
-    O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Manager<PublicKey = PublicKey>,
+    O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Provider<PublicKey = PublicKey>,
     S: Signer<PublicKey = PublicKey>,
 > {
     context: E,
@@ -113,14 +113,14 @@ pub struct Engine<
 impl<
     E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
     C: EngineClient,
-    O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Manager<PublicKey = PublicKey>,
+    O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Provider<PublicKey = PublicKey>,
     S: Signer<PublicKey = PublicKey>,
 > Engine<E, C, O, S>
 where
     MultisigScheme: Scheme<summit_types::Digest, PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
-        let buffer_pool = PoolRef::new(
+        let page_cache = CacheRef::new(
             NonZero::new(BUFFER_POOL_PAGE_SIZE).unwrap(),
             BUFFER_POOL_CAPACITY,
         );
@@ -179,7 +179,7 @@ where
                     "{}-finalizations-by-height-freezer-key",
                     cfg.partition_prefix
                 ),
-                freezer_key_buffer_pool: buffer_pool.clone(),
+                freezer_key_page_cache: page_cache.clone(),
                 freezer_value_partition: format!(
                     "{}-finalizations-by-height-freezer-value",
                     cfg.partition_prefix
@@ -217,7 +217,7 @@ where
                     "{}-finalized_blocks-freezer-key",
                     cfg.partition_prefix
                 ),
-                freezer_key_buffer_pool: buffer_pool.clone(),
+                freezer_key_page_cache: page_cache.clone(),
                 freezer_value_partition: format!(
                     "{}-finalized_blocks-freezer-value",
                     cfg.partition_prefix
@@ -244,7 +244,7 @@ where
             view_retention_timeout: ViewDelta::new(cfg.activity_timeout),
             namespace: cfg.namespace.as_bytes().to_vec(),
             prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
-            buffer_pool: buffer_pool.clone(),
+            page_cache: page_cache.clone(),
             replay_buffer: REPLAY_BUFFER,
             key_write_buffer: WRITE_BUFFER,
             value_write_buffer: WRITE_BUFFER,
@@ -299,7 +299,7 @@ where
                 validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
                 validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                 validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
-                buffer_pool: buffer_pool.clone(),
+                page_cache: page_cache.clone(),
                 genesis_hash: cfg.genesis_hash,
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
@@ -420,7 +420,7 @@ where
         // Initialize resolver for backfill
         let resolver_config = summit_syncer::resolver::p2p::Config {
             public_key: self.node_public_key.clone(),
-            manager: self.oracle.clone(),
+            provider: self.oracle.clone(),
             blocker: self.oracle.clone(),
             mailbox_size: self.mailbox_size,
             initial: Duration::from_secs(1),
