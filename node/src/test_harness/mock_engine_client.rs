@@ -314,7 +314,7 @@ impl EngineClient for MockEngineClient {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
-        #[cfg(any(feature = "bench", feature = "base-bench"))] height: u64,
+        #[cfg(feature = "bench")] height: u64,
     ) -> Option<PayloadId> {
         let mut state = self.state.lock().unwrap();
 
@@ -674,7 +674,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await
@@ -742,7 +742,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await
@@ -824,7 +824,7 @@ mod tests {
                     fork_choice,
                     (round * 1000) as u64,
                     vec![],
-                    #[cfg(any(feature = "bench", feature = "base-bench"))]
+                    #[cfg(feature = "bench")]
                     round,
                 )
                 .await
@@ -912,7 +912,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![withdrawal.clone()],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await
@@ -997,7 +997,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await
@@ -1011,7 +1011,7 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
-                #[cfg(any(feature = "bench", feature = "base-bench"))]
+                #[cfg(feature = "bench")]
                 0,
             )
             .await

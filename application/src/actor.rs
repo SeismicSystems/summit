@@ -214,7 +214,6 @@ impl<
                             } else {
                                 let parent_round = if parent.0.get() == 0 {
                                     // Parent view is 0, which means that this is the first block of the epoch
-                                    // TODO(matthias): verify that the parent view of the first block is always 0 (nullify)
                                     None
                                 } else {
                                     Some(Round::new(round.epoch(), parent.0))
@@ -332,7 +331,6 @@ impl<
         } else {
             let parent_round = if parent.0.get() == 0 {
                 // Parent view is 0, which means that this is the first block of the epoch
-                // TODO(matthias): verify that the parent view of the first block is always 0 (nullify)
                 None
             } else {
                 Some(Round::new(round.epoch(), parent.0))
@@ -447,7 +445,7 @@ impl<
         // Add pending withdrawals to the block
         let withdrawals = pending_withdrawals.into_iter().map(|w| w.inner).collect();
         let payload_id = {
-            #[cfg(any(feature = "bench", feature = "base-bench"))]
+            #[cfg(feature = "bench")]
             {
                 self.engine_client
                     .start_building_block(
@@ -458,7 +456,7 @@ impl<
                     )
                     .await
             }
-            #[cfg(not(any(feature = "bench", feature = "base-bench")))]
+            #[cfg(not(feature = "bench"))]
             {
                 self.engine_client
                     .start_building_block(aux_data.forkchoice, current, withdrawals)

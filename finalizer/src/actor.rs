@@ -43,7 +43,7 @@ use summit_types::{
 };
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
@@ -111,7 +111,7 @@ impl<
         ConsensusState,
         FinalizerMailbox<bls12381_multisig::Scheme<PublicKey, V>, Block>,
     ) {
-        let (tx, rx) = mpsc::channel(cfg.mailbox_size); // todo(dalton) pull mailbox size from config
+        let (tx, rx) = mpsc::channel(cfg.mailbox_size);
         let state_cfg = StateConfig {
             log_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
             log_write_buffer: WRITE_BUFFER,
@@ -300,13 +300,14 @@ impl<
                             self.handle_aux_data_mailbox(height, parent_digest, response).await;
                         },
                         FinalizerMessage::GetEpochGenesisHash { epoch, response } => {
-                            // TODO(matthias): verify that this can never happen
                             // The finalizer sends a message to the orchestrator to start the new epoch.
                             // The orchestrator will start the new Simplex instance, which will then request
                             // the epoch genesis hash from the finalizer.
                             // Since the finalizer increments `self.canonical_state.epoch` before sending the message to the
                             // orchestrator, the finalizer should never receive a GetEpochGenesisHash request for the wrong epoch.
-                            assert_eq!(epoch, self.canonical_state.epoch);
+                            if epoch != self.canonical_state.epoch {
+                                error!("Finalizer received epoch genesis hash request from a diffent epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.epoch, epoch);
+                            }
                             let _ = response.send(self.canonical_state.epoch_genesis_hash);
                         },
                         FinalizerMessage::QueryState { request, response } => {
@@ -439,7 +440,6 @@ impl<
                 // last block of the epoch arrived out of order.
                 // This is not critical and will likely never happen on all validators
                 // at the same time.
-                // TODO(matthias): figure out a good solution for making checkpoints available
                 debug_assert!(block.header.digest == finalization.proposal.payload);
 
                 // Get participant count from the certificate signers
@@ -486,7 +486,6 @@ impl<
             // The only case where the pending checkpoint doesn't exist here is if the node checkpointed.
             // The checkpoint is created at the penultimate block of the epoch, and finalized at the last
             // block. So if a node checkpoints, it will start at the height of the penultimate block.
-            // TODO(matthias): verify this
             if let Some(checkpoint) = &self.canonical_state.pending_checkpoint.take() {
                 debug!(
                     epoch = self.canonical_state.epoch,
@@ -796,7 +795,6 @@ impl<
                 return;
             };
             let checkpoint_hash = checkpoint.digest;
-            // TODO(matthias): should we verify the ckpt height against the `height` variable?
 
             // This is not the header from the last block, but the header from
             // the block that contains the last checkpoint
@@ -946,7 +944,6 @@ impl<
                     warn!(next_epoch, "this node is being removed from validator set");
                 }
 
-                // TODO(matthias): I think this is not necessary. Inactive accounts will be removed after withdrawing.
                 let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
                 if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key_bytes) {
                     account.status = ValidatorStatus::Inactive;
@@ -1575,7 +1572,7 @@ async fn process_execution_requests<
     for withdrawal in &block.payload.payload_inner.withdrawals {
         let current_epoch = state.epoch;
         let pending_withdrawal = state.pop_withdrawal(current_epoch);
-        // TODO(matthias): these checks should never fail. we have to make sure that these withdrawals are
+        // these checks should never fail. we have to make sure that these withdrawals are
         // verified when the block is verified. it is too late when the block is committed.
         let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
         assert_eq!(pending_withdrawal.inner, *withdrawal);

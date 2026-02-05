@@ -93,7 +93,7 @@ pub fn create_test_finalizer_mailbox(
                         let account = state.validator_accounts.get(&public_key).cloned().flatten();
                         let _ = response.send(ConsensusStateResponse::ValidatorAccount(account));
                     }
-                    ConsensusStateRequest::GetFinalizedHeader(_) => todo!(),
+                    ConsensusStateRequest::GetFinalizedHeader(_) => unimplemented!(),
                     ConsensusStateRequest::GetMinimumStake => {
                         let _ = response
                             .send(ConsensusStateResponse::MinimumStake(state.minimum_stake));

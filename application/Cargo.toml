@@ -32,5 +32,4 @@ prometheus-client = "0.22.3"
 
 [features]
 prom = ["metrics"]
-base-bench = []
 bench = []

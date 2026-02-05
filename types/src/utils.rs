@@ -88,7 +88,7 @@ pub fn parse_withdrawal_credentials(withdrawal_credentials: [u8; 32]) -> Result<
     Ok(Address::from_slice(&withdrawal_credentials[12..32]))
 }
 
-#[cfg(any(feature = "base-bench", feature = "bench"))]
+#[cfg(feature = "bench")]
 pub mod benchmarking {
     use alloy_primitives::B256;
     use anyhow::{anyhow, bail};

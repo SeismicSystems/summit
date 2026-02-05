@@ -4,14 +4,10 @@ use clap::{Arg, Command};
 use commonware_utils::from_hex_formatted;
 use std::path::PathBuf;
 use summit_types::engine_client::EngineClient;
-#[cfg(feature = "base-bench")]
-use summit_types::engine_client::base_benchmarking::HistoricalEngineClient;
 #[cfg(feature = "bench")]
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 use summit_types::{Block, Digest};
 
-#[cfg(all(feature = "base-bench", not(feature = "bench")))]
-const GENESIS_HASH: &str = "0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd";
 #[cfg(feature = "bench")]
 const GENESIS_HASH: &str = "0x655cc1ecc77fe1eab4b1e62a1f461b7fddc9b06109b5ab3e9dc68c144b30c773";
 
@@ -69,9 +65,6 @@ async fn main() -> Result<()> {
     let num_blocks: u64 = matches.get_one::<String>("num-blocks").unwrap().parse()?;
 
     #[allow(unused)]
-    #[cfg(feature = "base-bench")]
-    let client = HistoricalEngineClient::new(engine_ipc_path.clone(), block_dir.clone()).await;
-    #[allow(unused)]
     #[cfg(feature = "bench")]
     let mut client = EthereumHistoricalEngineClient::new(engine_ipc_path, block_dir).await;
 
@@ -89,11 +82,11 @@ async fn main() -> Result<()> {
     let mut block_number = start_block;
     for _ in 0..num_blocks {
         println!("Block number: {}", block_number);
-        #[cfg(any(feature = "bench", feature = "base-bench"))]
+        #[cfg(feature = "bench")]
         let result = client
             .start_building_block(forkchoice, 0, vec![], block_number)
             .await;
-        #[cfg(not(any(feature = "bench", feature = "base-bench")))]
+        #[cfg(not(feature = "bench"))]
         let result = client.start_building_block(forkchoice, 0, vec![]).await;
         match result {
             Some(payload_id) => {
