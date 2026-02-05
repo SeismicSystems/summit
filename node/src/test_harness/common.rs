@@ -247,7 +247,7 @@ pub fn run_until_height(
                 // If ends with contiguous_height, ensure it is at least required_container
                 if metric.ends_with("finalizer_height") {
                     let value = value.parse::<u64>().unwrap();
-                    if value == stop_height {
+                    if value >= stop_height {
                         nodes_finished.insert(metric.to_string());
                         if nodes_finished.len() as u32 == n {
                             success = true;

@@ -89,6 +89,10 @@ pub struct Finalizer<
     cancellation_token: CancellationToken,
     _signer_marker: PhantomData<S>,
     _variant_marker: PhantomData<V>,
+    #[cfg(debug_assertions)]
+    height_gauge: Gauge,
+    #[cfg(debug_assertions)]
+    consensus_state_stored_gauge: Gauge,
 }
 
 impl<
@@ -143,6 +147,24 @@ impl<
             cfg.initial_state
         };
 
+        // Register debug gauges before moving context into ContextCell
+        #[cfg(debug_assertions)]
+        let height_gauge = {
+            let gauge: Gauge = Gauge::default();
+            context.register("height", "chain height", gauge.clone());
+            gauge
+        };
+        #[cfg(debug_assertions)]
+        let consensus_state_stored_gauge = {
+            let gauge: Gauge = Gauge::default();
+            context.register(
+                "consensus_state_stored",
+                "consensus state stored",
+                gauge.clone(),
+            );
+            gauge
+        };
+
         (
             Self {
                 context: ContextCell::new(context),
@@ -166,6 +188,10 @@ impl<
                 cancellation_token: cfg.cancellation_token,
                 _signer_marker: PhantomData,
                 _variant_marker: PhantomData,
+                #[cfg(debug_assertions)]
+                height_gauge,
+                #[cfg(debug_assertions)]
+                consensus_state_stored_gauge,
             },
             state,
             FinalizerMailbox::new(tx),
@@ -353,6 +379,9 @@ impl<
             .await;
         }
 
+        #[cfg(debug_assertions)]
+        self.height_gauge.set(height as i64);
+
         self.canonical_state.forkchoice.safe_block_hash =
             self.canonical_state.forkchoice.head_block_hash;
         self.canonical_state.forkchoice.finalized_block_hash =
@@ -510,6 +539,8 @@ impl<
                 histogram!("finalizer_db_consensus_state_write_micros")
                     .record(consensus_state_duration);
             }
+            #[cfg(debug_assertions)]
+            self.consensus_state_stored_gauge.set(new_height as i64);
 
             // This will commit all changes to the state db
             #[cfg(feature = "prom")]
@@ -559,14 +590,6 @@ impl<
                 }))
                 .await;
             epoch_change = true;
-
-            #[cfg(debug_assertions)]
-            {
-                let gauge: Gauge = Gauge::default();
-                gauge.set(new_height as i64);
-                self.context
-                    .register("consensus_state_stored", "chain height", gauge);
-            }
         }
 
         if epoch_change {
@@ -1134,12 +1157,6 @@ async fn execute_block<
         );
     }
 
-    #[cfg(debug_assertions)]
-    {
-        let gauge: Gauge = Gauge::default();
-        gauge.set(new_height as i64);
-        context.register("height", "chain height", gauge);
-    }
     state.set_latest_height(new_height);
     state.set_view(block.view());
     state.head_digest = block.digest();

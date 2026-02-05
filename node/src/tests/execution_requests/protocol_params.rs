@@ -143,7 +143,7 @@ fn test_protocol_param_max_stake() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -377,7 +377,7 @@ fn test_protocol_param_stake_update_committee() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }

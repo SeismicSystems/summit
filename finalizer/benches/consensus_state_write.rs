@@ -1,6 +1,6 @@
 use alloy_primitives::Address;
 use commonware_cryptography::{Signer, bls12381, ed25519};
-use commonware_runtime::buffer::PoolRef;
+use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::{Runner as _, tokio::Runner};
 use commonware_storage::translator::EightCap;
 use commonware_utils::{NZU64, NZUsize};
@@ -90,7 +90,7 @@ fn main() {
             log_codec_config: (),
             log_items_per_section: NZU64!(4),
             translator: EightCap,
-            buffer_pool: PoolRef::new(std::num::NonZero::new(77u16).unwrap(), NZUsize!(9)),
+            page_cache: CacheRef::new(std::num::NonZero::new(77u16).unwrap(), NZUsize!(9)),
         };
 
         let mut db = FinalizerState::<_, MinPk>::new(context, config).await;

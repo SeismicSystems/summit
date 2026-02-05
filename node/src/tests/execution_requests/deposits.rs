@@ -139,7 +139,7 @@ fn test_deposit_request_single() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -366,7 +366,7 @@ fn test_deposit_request_top_up() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -574,7 +574,7 @@ fn test_deposit_less_than_min_stake_rejected() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -768,7 +768,7 @@ fn test_deposit_greater_than_max_stake_rejected() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -947,7 +947,7 @@ fn test_deposit_request_invalid_node_signature() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -1140,7 +1140,7 @@ fn test_deposit_request_invalid_consensus_signature() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -1349,7 +1349,7 @@ fn test_duplicate_deposit_blocked() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }

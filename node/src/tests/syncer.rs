@@ -203,7 +203,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
 
                 if metric.ends_with("finalizer_height") {
                     let value = value.parse::<u64>().unwrap();
-                    if value == stop_height {
+                    if value >= stop_height {
                         nodes_finished.insert(metric.to_string());
                         if nodes_finished.len() as u32 == n {
                             success = true;
@@ -427,7 +427,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
 
                 if metric.ends_with("finalizer_height") {
                     let value = value.parse::<u64>().unwrap();
-                    if value == stop_height {
+                    if value >= stop_height {
                         nodes_finished.insert(metric.to_string());
                         if nodes_finished.len() as u32 == n {
                             success = true;

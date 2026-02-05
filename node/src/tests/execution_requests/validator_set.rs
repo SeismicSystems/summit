@@ -154,7 +154,7 @@ fn test_added_validators_at_epoch_boundary() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -376,7 +376,7 @@ fn test_removed_validators_at_epoch_boundary() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }

@@ -143,20 +143,24 @@ fn test_checkpoint_created() {
 
                 if metric.ends_with("consensus_state_stored") {
                     let height = value.parse::<u64>().unwrap();
-                    assert_eq!(height, BLOCKS_PER_EPOCH - 1);
+                    // Height should be the last block of an epoch
+                    if height > 0 {
+                        assert_eq!((height + 1) % BLOCKS_PER_EPOCH, 0);
+                    }
                     state_stored.insert(metric.to_string());
                 }
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
 
                 if metric.ends_with("finalized_header_stored") {
                     let height = value.parse::<u64>().unwrap();
-                    assert_eq!(height, BLOCKS_PER_EPOCH - 1);
+                    // Height should be the last block of an epoch
+                    assert_eq!((height + 1) % BLOCKS_PER_EPOCH, 0);
                     header_stored.insert(metric.to_string());
                 }
                 if header_stored.len() as u32 >= n
@@ -333,7 +337,7 @@ fn test_previous_header_hash_matches() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -712,7 +716,7 @@ fn test_node_joins_later_with_checkpoint() {
 
                 if metric.ends_with("finalizer_height") {
                     let value = value.parse::<u64>().unwrap();
-                    if value == stop_height {
+                    if value >= stop_height {
                         nodes_finished.insert(metric.to_string());
                         if nodes_finished.len() as u32 == n {
                             success = true;
@@ -949,7 +953,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
 
                 if metric.ends_with("finalizer_height") {
                     let value = value.parse::<u64>().unwrap();
-                    if value == stop_height {
+                    if value >= stop_height {
                         nodes_finished.insert(metric.to_string());
                         if nodes_finished.len() == n as usize {
                             success = true;

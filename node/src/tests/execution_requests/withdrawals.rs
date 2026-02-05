@@ -168,7 +168,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -369,7 +369,7 @@ fn test_duplicate_withdrawal_blocked() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -543,7 +543,7 @@ fn test_withdrawal_wrong_source_address_rejected() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -718,7 +718,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -911,7 +911,7 @@ fn test_withdrawal_during_onboarding_aborts() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
@@ -1125,7 +1125,7 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
 
                 if metric.ends_with("finalizer_height") {
                     let height = value.parse::<u64>().unwrap();
-                    if height == stop_height {
+                    if height >= stop_height {
                         height_reached.insert(metric.to_string());
                     }
                 }
