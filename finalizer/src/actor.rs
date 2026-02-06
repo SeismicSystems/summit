@@ -767,6 +767,16 @@ impl<
             return;
         };
 
+        let withdrawal_credentials = state
+            .get_account(
+                self.node_public_key
+                    .as_ref()
+                    .try_into()
+                    .expect("Safe: Ed pub key always 32 bytes"),
+            )
+            .map(|account| account.withdrawal_credentials)
+            .unwrap_or_default();
+
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
@@ -815,6 +825,7 @@ impl<
                     .unwrap_or_default(),
                 removed_validators: state.removed_validators.clone(),
                 forkchoice: state.forkchoice,
+                withdrawal_credentials,
             }
         } else {
             BlockAuxData {
@@ -825,6 +836,7 @@ impl<
                 added_validators: vec![],
                 removed_validators: vec![],
                 forkchoice: state.forkchoice,
+                withdrawal_credentials,
             }
         };
         trace!(

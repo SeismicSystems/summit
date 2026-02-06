@@ -19,6 +19,7 @@ pub mod scheme;
 pub mod utils;
 pub mod withdrawal;
 
+use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 pub use block::*;
 pub use engine_client::*;
@@ -44,6 +45,7 @@ pub struct BlockAuxData {
     pub added_validators: Vec<AddedValidator>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
+    pub withdrawal_credentials: Address,
 }
 
 pub use commonware_cryptography::bls12381;
