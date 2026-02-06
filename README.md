@@ -1,4 +1,3 @@
-# WIP
 # Summit
 
 <img alt="Summit consensus client" src="assets/graphic.png" />
