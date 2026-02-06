@@ -66,7 +66,7 @@ pub mod actor;
 pub use actor::Actor;
 pub mod cache;
 pub mod config;
-pub use config::Config;
+pub use config::{Config, SyncCheckpoint, SyncStart};
 pub mod ingress;
 pub use ingress::mailbox::Mailbox;
 pub mod resolver;
@@ -108,7 +108,7 @@ pub mod mocks;
 mod tests {
     use super::{
         actor,
-        config::Config,
+        config::{Config, SyncStart},
         mocks::{application::Application, block::Block},
         resolver::p2p as resolver,
     };
@@ -324,7 +324,17 @@ mod tests {
         let application = Application::<B, S>::default();
 
         // Start the application
-        actor.start(application.clone(), buffer, resolver, 0, 0, 0, None, None);
+        actor.start(
+            application.clone(),
+            buffer,
+            resolver,
+            SyncStart {
+                height: 0,
+                epoch: 0,
+                view: 0,
+            },
+            None,
+        );
 
         (application, mailbox, Height::zero())
     }

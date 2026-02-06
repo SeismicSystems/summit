@@ -1,6 +1,6 @@
 use super::{
     cache,
-    config::Config,
+    config::{Config, SyncCheckpoint, SyncStart},
     ingress::{
         handler::{self, Request},
         mailbox::{Mailbox, Message},
@@ -53,8 +53,8 @@ use std::{
 use tracing::{debug, error, info, warn};
 
 use commonware_cryptography::certificate::Provider;
+use summit_types::Digest;
 use summit_types::utils;
-use summit_types::{Digest, FinalizedHeader};
 
 /// The key used to store the last processed height in the metadata store.
 const LATEST_KEY: U64 = U64::new(0xFF);
@@ -281,17 +281,13 @@ where
     }
 
     /// Start the actor.
-    #[allow(clippy::too_many_arguments)] // todo this can probably be trimmed down
     pub fn start<R, K>(
         mut self,
         application: impl Reporter<Activity = Update<B, P::Scheme, A>>,
         buffer: buffered::Mailbox<K, B>,
         resolver: (mpsc::Receiver<handler::Message<B>>, R),
-        sync_height: u64,
-        sync_epoch: u64,
-        sync_view: u64,
-        checkpoint_last_block: Option<B>,
-        checkpoint_finalized_header: Option<FinalizedHeader<P::Scheme>>,
+        sync_start: SyncStart,
+        checkpoint: Option<SyncCheckpoint<B, P::Scheme>>,
     ) -> Handle<()>
     where
         R: Resolver<
@@ -302,32 +298,19 @@ where
     {
         spawn_cell!(
             self.context,
-            self.run(
-                application,
-                buffer,
-                resolver,
-                sync_height,
-                sync_epoch,
-                sync_view,
-                checkpoint_last_block,
-                checkpoint_finalized_header,
-            )
-            .await
+            self.run(application, buffer, resolver, sync_start, checkpoint,)
+                .await
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // todo this can probably be trimmed down
     /// Run the application actor.
     async fn run<R, K>(
         mut self,
         mut application: impl Reporter<Activity = Update<B, P::Scheme, A>>,
         mut buffer: buffered::Mailbox<K, B>,
         (mut resolver_rx, mut resolver): (mpsc::Receiver<handler::Message<B>>, R),
-        sync_height: u64,
-        sync_epoch: u64,
-        sync_view: u64,
-        checkpoint_last_block: Option<B>,
-        checkpoint_finalized_header: Option<FinalizedHeader<P::Scheme>>,
+        sync_start: SyncStart,
+        checkpoint: Option<SyncCheckpoint<B, P::Scheme>>,
     ) where
         R: Resolver<
                 Key = handler::Request<B>,
@@ -335,19 +318,24 @@ where
             >,
         K: PublicKey,
     {
+        let SyncStart {
+            height: sync_height,
+            epoch: sync_epoch,
+            view: sync_view,
+        } = sync_start;
         self.last_processed_height = Height::new(sync_height);
         self.last_processed_round = Round::new(Epoch::new(sync_epoch), View::new(sync_view));
         self.tip = Height::new(sync_height);
         info!(sync_height, sync_epoch, sync_view, "syncer initialized");
 
-        // If we have a checkpoint last block meaning we loaded from checkpoint, finalize it to complete the checkpoint
-        if let Some(last_block) = checkpoint_last_block {
-            let height = last_block.height();
-            let finalization = checkpoint_finalized_header.map(|h| h.finalization);
+        // If we have a checkpoint, finalize the last block to complete the checkpoint
+        if let Some(checkpoint) = checkpoint {
+            let height = checkpoint.last_block.height();
+            let finalization = checkpoint.finalized_header.map(|h| h.finalization);
             self.finalize(
                 height,
-                last_block.commitment(),
-                last_block,
+                checkpoint.last_block.commitment(),
+                checkpoint.last_block,
                 finalization,
                 &mut application,
                 &mut buffer,

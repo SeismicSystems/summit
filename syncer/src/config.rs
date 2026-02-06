@@ -5,6 +5,20 @@ use commonware_cryptography::certificate::Provider;
 use commonware_parallel::Strategy;
 use commonware_runtime::buffer::paged::CacheRef;
 use std::num::{NonZeroU64, NonZeroUsize};
+use summit_types::FinalizedHeader;
+
+/// The initial sync position for the syncer.
+pub struct SyncStart {
+    pub height: u64,
+    pub epoch: u64,
+    pub view: u64,
+}
+
+/// Checkpoint data to restore from when loading from a checkpoint.
+pub struct SyncCheckpoint<B: Block, S: Scheme<B::Commitment>> {
+    pub last_block: B,
+    pub finalized_header: Option<FinalizedHeader<S>>,
+}
 
 /// Marshal configuration.
 pub struct Config<B, P, T>
