@@ -153,7 +153,7 @@ impl EngineClient for RethEngineClient {
             .new_payload_v4(
                 block.payload.clone(),
                 Vec::new(),
-                [1; 32].into(),
+                block.parent().0.into(),
                 block.execution_requests.clone(),
             )
             .await
