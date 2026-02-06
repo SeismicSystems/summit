@@ -171,10 +171,10 @@ fn test_added_validators_at_epoch_boundary() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        // Get the finalized header for the last block of epoch 1 (block 19)
+        // Get the finalized header for epoch 1
         let mut mailbox = finalizer_mailboxes.get(&0).unwrap().clone();
         let finalized_header = mailbox
-            .get_finalized_header(last_block_epoch_1)
+            .get_finalized_header(1)
             .await
             .expect("Failed to get finalized header for last block of epoch 1");
 
@@ -393,10 +393,10 @@ fn test_removed_validators_at_epoch_boundary() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        // Get the finalized header for the last block of epoch 0 (block 9)
+        // Get the finalized header for epoch 0
         let mut mailbox = finalizer_mailboxes.get(&0).unwrap().clone();
         let finalized_header = mailbox
-            .get_finalized_header(last_block_epoch_0)
+            .get_finalized_header(0)
             .await
             .expect("Failed to get finalized header for last block of epoch 0");
 

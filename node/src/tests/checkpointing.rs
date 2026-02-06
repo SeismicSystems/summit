@@ -190,9 +190,8 @@ fn test_checkpoint_created() {
             ConsensusState::try_from(&checkpoint).expect("failed to parse consensus state");
 
         // Verify the finalized header's checkpoint_hash matches the checkpoint digest
-        let last_block_epoch_0 = utils::last_block_in_epoch(BLOCKS_PER_EPOCH, 0);
         let finalized_header = consensus_state_query
-            .get_finalized_header(last_block_epoch_0)
+            .get_finalized_header(0)
             .await
             .expect("failed to get finalized header");
         assert_eq!(

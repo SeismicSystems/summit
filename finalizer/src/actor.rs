@@ -444,7 +444,7 @@ impl<
                 #[cfg(feature = "prom")]
                 let header_start = Instant::now();
                 self.db
-                    .store_finalized_header(new_height, &finalized_header)
+                    .store_finalized_header(self.canonical_state.epoch, &finalized_header)
                     .await;
                 #[cfg(feature = "prom")]
                 {
@@ -893,8 +893,8 @@ impl<
                     .cloned();
                 let _ = sender.send(ConsensusStateResponse::ValidatorAccount(account));
             }
-            ConsensusStateRequest::GetFinalizedHeader(height) => {
-                let header = self.db.get_finalized_header(height).await;
+            ConsensusStateRequest::GetFinalizedHeader(epoch) => {
+                let header = self.db.get_finalized_header(epoch).await;
                 let _ = sender.send(ConsensusStateResponse::FinalizedHeader(header));
             }
             ConsensusStateRequest::GetMinimumStake => {

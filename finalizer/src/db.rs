@@ -22,7 +22,7 @@ const FINALIZED_HEADER_PREFIX: u8 = 0x07;
 
 // State variable keys
 const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
-const LATEST_FINALIZED_HEADER_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 1];
+const LATEST_FINALIZED_HEADER_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const LATEST_CHECKPOINT_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 2];
 
 pub struct FinalizerState<E: Clock + Storage + Metrics, V: Variant> {
@@ -62,11 +62,11 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         FixedBytes::new(key)
     }
 
-    fn make_finalized_header_key(height: u64) -> FixedBytes<64> {
+    fn make_finalized_header_key(epoch: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = FINALIZED_HEADER_PREFIX;
         // Use little-endian so varying bytes come first (for EightCap translator)
-        key[1..9].copy_from_slice(&height.to_le_bytes());
+        key[1..9].copy_from_slice(&epoch.to_le_bytes());
         FixedBytes::new(key)
     }
 
@@ -101,27 +101,27 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
             .expect("failed to set latest consensus state height");
     }
 
-    // FinalizedHeader height tracking operations
-    async fn get_latest_finalized_header_height(&self) -> u64 {
-        let key = Self::pad_key(&LATEST_FINALIZED_HEADER_HEIGHT_KEY);
-        if let Some(Value::U64(height)) = self
+    // FinalizedHeader epoch tracking operations
+    async fn get_latest_finalized_header_epoch(&self) -> u64 {
+        let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
+        if let Some(Value::U64(epoch)) = self
             .store()
             .get(&key)
             .await
-            .expect("failed to get latest finalized header height")
+            .expect("failed to get latest finalized header epoch")
         {
-            height
+            epoch
         } else {
             0
         }
     }
 
-    async fn set_latest_finalized_header_height(&mut self, height: u64) {
-        let key = Self::pad_key(&LATEST_FINALIZED_HEADER_HEIGHT_KEY);
+    async fn set_latest_finalized_header_epoch(&mut self, epoch: u64) {
+        let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
         self.store_mut()
-            .update(key, Value::U64(height))
+            .update(key, Value::U64(epoch))
             .await
-            .expect("failed to set latest finalized header height");
+            .expect("failed to set latest finalized header epoch");
     }
 
     // Checkpoint epoch tracking operations
@@ -250,28 +250,28 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     // FinalizedHeader operations
     pub async fn store_finalized_header(
         &mut self,
-        height: u64,
+        epoch: u64,
         header: &FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>,
     ) {
-        let key = Self::make_finalized_header_key(height);
+        let key = Self::make_finalized_header_key(epoch);
         self.store_mut()
             .update(key, Value::FinalizedHeader(Box::new(header.clone())))
             .await
             .expect("failed to store finalized header");
 
-        // Update the latest finalized header height tracker
-        let current_latest = self.get_latest_finalized_header_height().await;
-        if height > current_latest {
-            self.set_latest_finalized_header_height(height).await;
+        // Update the latest finalized header epoch tracker
+        let current_latest = self.get_latest_finalized_header_epoch().await;
+        if epoch >= current_latest {
+            self.set_latest_finalized_header_epoch(epoch).await;
         }
     }
 
     #[allow(unused)]
     pub async fn get_finalized_header(
         &self,
-        height: u64,
+        epoch: u64,
     ) -> Option<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>> {
-        let key = Self::make_finalized_header_key(height);
+        let key = Self::make_finalized_header_key(epoch);
         if let Some(Value::FinalizedHeader(header)) = self
             .store()
             .get(&key)
@@ -287,12 +287,8 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn get_most_recent_finalized_header(
         &self,
     ) -> Option<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>> {
-        let latest_height = self.get_latest_finalized_header_height().await;
-        if latest_height > 0 {
-            self.get_finalized_header(latest_height).await
-        } else {
-            None
-        }
+        let latest_epoch = self.get_latest_finalized_header_epoch().await;
+        self.get_finalized_header(latest_epoch).await
     }
 
     // Commit all pending changes to the database
