@@ -21,7 +21,7 @@ const CHECKPOINT_PREFIX: u8 = 0x06;
 const FINALIZED_HEADER_PREFIX: u8 = 0x07;
 
 // State variable keys
-const LATEST_CONSENSUS_STATE_HEIGHT_KEY: [u8; 2] = [STATE_PREFIX, 0];
+const LATEST_CONSENSUS_STATE_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 0];
 const LATEST_FINALIZED_HEADER_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const LATEST_CHECKPOINT_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 2];
 
@@ -54,11 +54,11 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         FixedBytes::new(padded)
     }
 
-    fn make_consensus_state_key(height: u64) -> FixedBytes<64> {
+    fn make_consensus_state_key(epoch: u64) -> FixedBytes<64> {
         let mut key = [0u8; 64];
         key[0] = CONSENSUS_STATE_PREFIX;
         // Use little-endian so varying bytes come first (for EightCap translator)
-        key[1..9].copy_from_slice(&height.to_le_bytes());
+        key[1..9].copy_from_slice(&epoch.to_le_bytes());
         FixedBytes::new(key)
     }
 
@@ -79,26 +79,26 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     }
 
     // State variable operations
-    async fn get_latest_consensus_state_height(&self) -> u64 {
-        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
-        if let Some(Value::U64(height)) = self
+    async fn get_latest_consensus_state_epoch(&self) -> u64 {
+        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
+        if let Some(Value::U64(epoch)) = self
             .store()
             .get(&key)
             .await
-            .expect("failed to get latest consensus state height")
+            .expect("failed to get latest consensus state epoch")
         {
-            height
+            epoch
         } else {
             0
         }
     }
 
-    async fn set_latest_consensus_state_height(&mut self, height: u64) {
-        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
+    async fn set_latest_consensus_state_epoch(&mut self, epoch: u64) {
+        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
         self.store_mut()
-            .update(key, Value::U64(height))
+            .update(key, Value::U64(epoch))
             .await
-            .expect("failed to set latest consensus state height");
+            .expect("failed to set latest consensus state epoch");
     }
 
     // FinalizedHeader epoch tracking operations
@@ -148,22 +148,22 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     }
 
     // ConsensusState blob operations
-    pub async fn store_consensus_state(&mut self, height: u64, state: &ConsensusState) {
-        let key = Self::make_consensus_state_key(height);
+    pub async fn store_consensus_state(&mut self, epoch: u64, state: &ConsensusState) {
+        let key = Self::make_consensus_state_key(epoch);
         self.store_mut()
             .update(key, Value::ConsensusState(Box::new(state.clone())))
             .await
             .expect("failed to store consensus state");
 
-        // Update the latest height tracker
-        let current_latest = self.get_latest_consensus_state_height().await;
-        if height > current_latest {
-            self.set_latest_consensus_state_height(height).await;
+        // Update the latest epoch tracker
+        let current_latest = self.get_latest_consensus_state_epoch().await;
+        if epoch >= current_latest {
+            self.set_latest_consensus_state_epoch(epoch).await;
         }
     }
 
-    pub async fn get_consensus_state(&self, height: u64) -> Option<ConsensusState> {
-        let key = Self::make_consensus_state_key(height);
+    pub async fn get_consensus_state(&self, epoch: u64) -> Option<ConsensusState> {
+        let key = Self::make_consensus_state_key(epoch);
         if let Some(Value::ConsensusState(state)) = self
             .store()
             .get(&key)
@@ -177,22 +177,21 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     }
 
     pub async fn get_latest_consensus_state(&self) -> Option<ConsensusState> {
-        // Check if we have a latest height tracker
-        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_HEIGHT_KEY);
-        if let Some(Value::U64(latest_height)) = self
+        let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
+        if let Some(Value::U64(latest_epoch)) = self
             .store()
             .get(&key)
             .await
-            .expect("failed to get latest consensus state height")
+            .expect("failed to get latest consensus state epoch")
         {
-            self.get_consensus_state(latest_height).await
+            self.get_consensus_state(latest_epoch).await
         } else {
             None
         }
     }
 
-    pub async fn delete_consensus_state(&mut self, height: u64) -> bool {
-        let key = Self::make_consensus_state_key(height);
+    pub async fn delete_consensus_state(&mut self, epoch: u64) -> bool {
+        let key = Self::make_consensus_state_key(epoch);
         self.store_mut()
             .delete(key)
             .await

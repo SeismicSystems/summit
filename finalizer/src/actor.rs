@@ -522,7 +522,7 @@ impl<
             #[cfg(feature = "prom")]
             let consensus_state_start = Instant::now();
             self.db
-                .store_consensus_state(new_height, &self.canonical_state)
+                .store_consensus_state(self.canonical_state.epoch, &self.canonical_state)
                 .await;
             #[cfg(feature = "prom")]
             {
