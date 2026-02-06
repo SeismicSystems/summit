@@ -22,7 +22,7 @@ use std::num::NonZero;
 use std::time::Duration;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
-use summit_finalizer::{FinalizerConfig, FinalizerMailbox};
+use summit_finalizer::{FinalizerConfig, FinalizerMailbox, ProtocolConsts};
 use summit_syncer::{SyncCheckpoint, SyncStart};
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
@@ -292,11 +292,13 @@ where
                 engine_client: cfg.engine_client,
                 oracle: cfg.oracle.clone(),
                 orchestrator_mailbox,
-                epoch_num_of_blocks: BLOCKS_PER_EPOCH,
+                protocol_consts: ProtocolConsts {
+                    epoch_num_of_blocks: BLOCKS_PER_EPOCH,
+                    validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
+                    validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
+                    validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
+                },
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
-                validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
-                validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
-                validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
                 page_cache: page_cache.clone(),
                 genesis_hash: cfg.genesis_hash,
                 initial_state: cfg.initial_state,

@@ -2,7 +2,7 @@
 
 use super::mocks::{MockEngineClient, MockNetworkOracle};
 use crate::actor::Finalizer;
-use crate::config::FinalizerConfig;
+use crate::config::{FinalizerConfig, ProtocolConsts};
 use alloy_primitives::{Address, U256};
 use alloy_rpc_types_engine::{
     ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
@@ -166,11 +166,13 @@ fn test_get_latest_epoch() {
             engine_client: MockEngineClient,
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
-            epoch_num_of_blocks,
+            protocol_consts: ProtocolConsts {
+                epoch_num_of_blocks,
+                validator_onboarding_limit_per_block: 10,
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
             validator_max_withdrawals_per_block: 16,
-            validator_withdrawal_num_epochs: 2,
-            validator_onboarding_limit_per_block: 10,
-            validator_num_warm_up_epochs: 2,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
             initial_state,
@@ -268,11 +270,13 @@ fn test_get_epoch_genesis_hash() {
             engine_client: MockEngineClient,
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
-            epoch_num_of_blocks,
+            protocol_consts: ProtocolConsts {
+                epoch_num_of_blocks,
+                validator_onboarding_limit_per_block: 10,
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
             validator_max_withdrawals_per_block: 16,
-            validator_withdrawal_num_epochs: 2,
-            validator_onboarding_limit_per_block: 10,
-            validator_num_warm_up_epochs: 2,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
             initial_state,
@@ -357,11 +361,13 @@ fn test_get_aux_data_from_canonical_chain() {
             engine_client: MockEngineClient,
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
-            epoch_num_of_blocks: 10,
+            protocol_consts: ProtocolConsts {
+                epoch_num_of_blocks: 10,
+                validator_onboarding_limit_per_block: 10,
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
             validator_max_withdrawals_per_block: 16,
-            validator_withdrawal_num_epochs: 2,
-            validator_onboarding_limit_per_block: 10,
-            validator_num_warm_up_epochs: 2,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
             initial_state,
@@ -426,11 +432,13 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             engine_client: MockEngineClient,
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
-            epoch_num_of_blocks: 10,
+            protocol_consts: ProtocolConsts {
+                epoch_num_of_blocks: 10,
+                validator_onboarding_limit_per_block: 10,
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
             validator_max_withdrawals_per_block: 16,
-            validator_withdrawal_num_epochs: 2,
-            validator_onboarding_limit_per_block: 10,
-            validator_num_warm_up_epochs: 2,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
             initial_state,

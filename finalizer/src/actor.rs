@@ -1,3 +1,4 @@
+use crate::config::ProtocolConsts;
 use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_primitives::Address;
@@ -77,11 +78,8 @@ pub struct Finalizer<
     orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block>>>,
 
     genesis_hash: [u8; 32],
-    epoch_num_of_blocks: u64,
+    protocol_consts: ProtocolConsts,
     protocol_version_digest: Digest,
-    validator_withdrawal_num_epochs: u64, // in epochs
-    validator_onboarding_limit_per_block: usize,
-    validator_num_warm_up_epochs: u64,
     oracle: O,
     orchestrator_mailbox: summit_orchestrator::Mailbox,
     node_public_key: PublicKey,
@@ -141,7 +139,7 @@ impl<
                 epoch = cfg.initial_state.epoch,
                 height = cfg.initial_state.latest_height,
                 num_validators = cfg.initial_state.validator_accounts.len(),
-                epoch_num_of_blocks = cfg.epoch_num_of_blocks,
+                epoch_num_of_blocks = cfg.protocol_consts.epoch_num_of_blocks,
                 "using provided initial state (no state found in database)"
             );
             cfg.initial_state
@@ -173,16 +171,13 @@ impl<
                 oracle: cfg.oracle,
                 orchestrator_mailbox: cfg.orchestrator_mailbox,
                 pending_height_notifys: BTreeMap::new(),
-                epoch_num_of_blocks: cfg.epoch_num_of_blocks,
                 db,
                 canonical_state: state.clone(),
                 fork_states: BTreeMap::new(),
                 orphaned_blocks: BTreeMap::new(),
                 genesis_hash: cfg.genesis_hash,
+                protocol_consts: cfg.protocol_consts,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
-                validator_withdrawal_num_epochs: cfg.validator_withdrawal_num_epochs,
-                validator_onboarding_limit_per_block: cfg.validator_onboarding_limit_per_block,
-                validator_num_warm_up_epochs: cfg.validator_num_warm_up_epochs,
                 node_public_key: cfg.node_public_key,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,
@@ -228,7 +223,7 @@ impl<
         loop {
             if self.validator_exit
                 && is_first_block_of_epoch(
-                    self.epoch_num_of_blocks,
+                    self.protocol_consts.epoch_num_of_blocks,
                     self.canonical_state.get_latest_height(),
                 )
             {
@@ -371,11 +366,8 @@ impl<
                 &self.context,
                 &block,
                 &mut self.canonical_state,
-                self.epoch_num_of_blocks,
+                &self.protocol_consts,
                 self.protocol_version_digest,
-                self.validator_onboarding_limit_per_block,
-                self.validator_num_warm_up_epochs,
-                self.validator_withdrawal_num_epochs,
             )
             .await;
         }
@@ -433,7 +425,7 @@ impl<
 
         let new_height = block.height();
         let mut epoch_change = false; // Store finalizes checkpoint to database
-        if is_last_block_of_epoch(self.epoch_num_of_blocks, new_height) {
+        if is_last_block_of_epoch(self.protocol_consts.epoch_num_of_blocks, new_height) {
             if let Some(finalization) = finalization {
                 // The finalized signatures should always be included on the last block
                 // of the epoch. However, there is an edge case, where the block after
@@ -684,11 +676,8 @@ impl<
                 &self.context,
                 &block,
                 &mut fork_state,
-                self.epoch_num_of_blocks,
+                &self.protocol_consts,
                 self.protocol_version_digest,
-                self.validator_onboarding_limit_per_block,
-                self.validator_num_warm_up_epochs,
-                self.validator_withdrawal_num_epochs,
             )
             .await;
 
@@ -781,7 +770,7 @@ impl<
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
-        let is_last = is_last_block_of_epoch(self.epoch_num_of_blocks, height);
+        let is_last = is_last_block_of_epoch(self.protocol_consts.epoch_num_of_blocks, height);
         let aux_data = if is_last {
             // The pending_checkpoint should have been set when processing the penultimate block.
             // If it's None, we can't propose the last block (e.g., node restarted from checkpoint).
@@ -1054,7 +1043,6 @@ impl<
 /// This does NOT handle epoch transitions (activate validators, increment epoch).
 /// Epoch transitions only happen at finalization since the last block of an epoch
 /// is always finalized (never notarized+nullified).
-#[allow(clippy::too_many_arguments)]
 async fn execute_block<
     C: EngineClient,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -1063,11 +1051,8 @@ async fn execute_block<
     context: &ContextCell<R>,
     block: &Block,
     state: &mut ConsensusState,
-    epoch_num_of_blocks: u64,
+    consts: &ProtocolConsts,
     protocol_version_digest: Digest,
-    validator_onboarding_limit_per_block: usize,
-    validator_num_warm_up_epochs: u64,
-    validator_withdrawal_num_epochs: u64,
 ) {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
@@ -1108,10 +1093,7 @@ async fn execute_block<
             new_height,
             state,
             protocol_version_digest,
-            validator_withdrawal_num_epochs,
-            state.validator_minimum_stake,
-            state.validator_maximum_stake,
-            epoch_num_of_blocks,
+            consts,
         )
         .await;
 
@@ -1124,19 +1106,7 @@ async fn execute_block<
         // Add validators that deposited to the validator set
         #[cfg(feature = "prom")]
         let process_requests_start = Instant::now();
-        process_execution_requests(
-            context,
-            block,
-            new_height,
-            state,
-            epoch_num_of_blocks,
-            validator_onboarding_limit_per_block,
-            validator_num_warm_up_epochs,
-            validator_withdrawal_num_epochs,
-            state.validator_minimum_stake,
-            state.validator_maximum_stake,
-        )
-        .await;
+        process_execution_requests(context, block, new_height, state, consts).await;
         #[cfg(feature = "prom")]
         {
             let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
@@ -1163,7 +1133,7 @@ async fn execute_block<
     // We build the checkpoint one height before the epoch end which
     // allows the validators to sign the checkpoint hash in the last block
     // of the epoch
-    if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
+    if is_penultimate_block_of_epoch(consts.epoch_num_of_blocks, new_height) {
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
         let checkpoint = Checkpoint::new(state);
@@ -1192,7 +1162,6 @@ async fn execute_block<
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn parse_execution_requests<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
@@ -1201,10 +1170,7 @@ async fn parse_execution_requests<
     new_height: u64,
     state: &mut ConsensusState,
     protocol_version_digest: Digest,
-    validator_withdrawal_num_epochs: u64,
-    validator_minimum_stake: u64,
-    validator_maximum_stake: u64,
-    epoch_num_of_blocks: u64,
+    consts: &ProtocolConsts,
 ) {
     // Combine any pending execution requests with the current block's requests
     let mut all_requests = std::mem::take(&mut state.pending_execution_requests);
@@ -1221,8 +1187,8 @@ async fn parse_execution_requests<
                             state,
                             protocol_version_digest,
                             new_height,
-                            validator_minimum_stake,
-                            validator_maximum_stake,
+                            state.validator_minimum_stake,
+                            state.validator_maximum_stake,
                         ) {
                             // Mark account as having a pending deposit
                             let validator_pubkey: [u8; 32] =
@@ -1283,7 +1249,8 @@ async fn parse_execution_requests<
                                 validator_pubkey,
                                 amount: deposit_request.amount,
                             };
-                            let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
+                            let withdrawal_epoch =
+                                state.epoch + consts.validator_withdrawal_num_epochs;
 
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
@@ -1362,7 +1329,8 @@ async fn parse_execution_requests<
                                         "cancelled pending validator activation due to withdrawal request"
                                     );
                                 }
-                            } else if is_last_block_of_epoch(epoch_num_of_blocks, new_height) {
+                            } else if is_last_block_of_epoch(consts.epoch_num_of_blocks, new_height)
+                            {
                                 // On the last block of an epoch, buffer the withdrawal request
                                 // to be processed at the penultimate block of the next epoch.
                                 // This ensures the validator is included in removed_validators
@@ -1387,7 +1355,8 @@ async fn parse_execution_requests<
                             state.set_account(withdrawal_request.validator_pubkey, account);
 
                             // The withdrawal will be completed in `validator_withdrawal_num_epochs` epochs
-                            let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
+                            let withdrawal_epoch =
+                                state.epoch + consts.validator_withdrawal_num_epochs;
                             info!(
                                 validator = hex::encode(withdrawal_request.validator_pubkey),
                                 amount = remaining_balance,
@@ -1424,7 +1393,6 @@ async fn parse_execution_requests<
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn process_execution_requests<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
@@ -1432,15 +1400,10 @@ async fn process_execution_requests<
     block: &Block,
     new_height: u64,
     state: &mut ConsensusState,
-    epoch_num_of_blocks: u64,
-    validator_onboarding_limit_per_block: usize,
-    validator_num_warm_up_epochs: u64,
-    validator_withdrawal_num_epochs: u64,
-    validator_minimum_stake: u64,
-    validator_maximum_stake: u64,
+    consts: &ProtocolConsts,
 ) {
-    if is_penultimate_block_of_epoch(epoch_num_of_blocks, new_height) {
-        for _ in 0..validator_onboarding_limit_per_block {
+    if is_penultimate_block_of_epoch(consts.epoch_num_of_blocks, new_height) {
+        for _ in 0..consts.validator_onboarding_limit_per_block {
             if let Some(request) = state.pop_deposit() {
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
 
@@ -1458,19 +1421,21 @@ async fn process_execution_requests<
                     let new_balance = request.amount;
 
                     // Revalidate in case stake bounds changed since deposit was parsed
-                    if new_balance < validator_minimum_stake
-                        || new_balance > validator_maximum_stake
+                    if new_balance < state.validator_minimum_stake
+                        || new_balance > state.validator_maximum_stake
                     {
                         info!(
                             "New validator deposit {} outside valid range [{}, {}], initiating refund: {request:?}",
-                            new_balance, validator_minimum_stake, validator_maximum_stake
+                            new_balance,
+                            state.validator_minimum_stake,
+                            state.validator_maximum_stake
                         );
                         let withdrawal_request = WithdrawalRequest {
                             source_address: account.withdrawal_credentials,
                             validator_pubkey: node_pubkey_bytes,
                             amount: request.amount,
                         };
-                        let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
+                        let withdrawal_epoch = state.epoch + consts.validator_withdrawal_num_epochs;
                         state.push_withdrawal_request(
                             withdrawal_request,
                             withdrawal_epoch,
@@ -1482,7 +1447,7 @@ async fn process_execution_requests<
                     }
 
                     // Activate the new validator
-                    let activation_epoch = state.epoch + validator_num_warm_up_epochs;
+                    let activation_epoch = state.epoch + consts.validator_num_warm_up_epochs;
                     // Clone the consensus key before add_validator since it needs &mut state
                     let consensus_key = account.consensus_public_key.clone();
                     account.balance = new_balance;
@@ -1526,8 +1491,8 @@ async fn process_execution_requests<
                     let new_balance = account.balance + request.amount;
 
                     // Check if new balance would be within valid range
-                    if new_balance >= validator_minimum_stake
-                        && new_balance <= validator_maximum_stake
+                    if new_balance >= state.validator_minimum_stake
+                        && new_balance <= state.validator_maximum_stake
                     {
                         info!(
                             validator = hex::encode(node_pubkey_bytes),
@@ -1541,14 +1506,16 @@ async fn process_execution_requests<
                         // Invalid: new balance outside range, initiate immediate withdrawal
                         info!(
                             "Top-up deposit would result in balance {} outside valid range [{}, {}], initiating immediate withdrawal: {request:?}",
-                            new_balance, validator_minimum_stake, validator_maximum_stake
+                            new_balance,
+                            state.validator_minimum_stake,
+                            state.validator_maximum_stake
                         );
                         let withdrawal_request = WithdrawalRequest {
                             source_address: account.withdrawal_credentials,
                             validator_pubkey: node_pubkey_bytes,
                             amount: request.amount,
                         };
-                        let withdrawal_epoch = state.epoch + validator_withdrawal_num_epochs;
+                        let withdrawal_epoch = state.epoch + consts.validator_withdrawal_num_epochs;
 
                         state.push_withdrawal_request(
                             withdrawal_request,

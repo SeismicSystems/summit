@@ -6,6 +6,18 @@ use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 
+/// Fixed protocol-level constants governing epochs and validator lifecycle.
+pub struct ProtocolConsts {
+    /// The length of an epoch in number of blocks.
+    pub epoch_num_of_blocks: u64,
+    /// The maximum number of validators that will be onboarded at the same time.
+    pub validator_onboarding_limit_per_block: usize,
+    /// Number of epochs to wait before activating validators after deposit.
+    pub validator_num_warm_up_epochs: u64,
+    /// Number of epochs after a withdrawal request until the payout.
+    pub validator_withdrawal_num_epochs: u64,
+}
+
 pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Variant> {
     pub archive_mode: bool,
     pub mailbox_size: usize,
@@ -13,13 +25,8 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub engine_client: C,
     pub oracle: O,
     pub orchestrator_mailbox: OrchestratorMailbox,
-    pub epoch_num_of_blocks: u64,
+    pub protocol_consts: ProtocolConsts,
     pub validator_max_withdrawals_per_block: usize,
-    pub validator_withdrawal_num_epochs: u64,
-    /// The maximum number of validators that will be onboarded at the same time
-    pub validator_onboarding_limit_per_block: usize,
-    /// Number of epochs to wait before activating validators after deposit
-    pub validator_num_warm_up_epochs: u64,
     pub page_cache: CacheRef,
     pub genesis_hash: [u8; 32],
     /// Optional initial state to initialize the finalizer with
