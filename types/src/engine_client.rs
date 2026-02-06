@@ -18,6 +18,7 @@ engine_newPayloadV3 : This is called to store(not commit) and validate blocks re
 
 */
 use alloy_eips::eip4895::Withdrawal;
+use alloy_primitives::{Address, FixedBytes};
 use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV4, ForkchoiceState, PayloadAttributes, PayloadId, PayloadStatus,
@@ -34,6 +35,8 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
+        suggested_fee_recipient: Address,
+        parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] height: u64,
     ) -> impl Future<Output = Option<PayloadId>> + Send;
 
@@ -90,16 +93,18 @@ impl EngineClient for RethEngineClient {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
+        suggested_fee_recipient: Address,
+        parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] _height: u64,
     ) -> Option<PayloadId> {
         let payload_attributes = PayloadAttributes {
             timestamp,
             prev_randao: [0; 32].into(),
             // todo(dalton): this should be the validators public key
-            suggested_fee_recipient: [1; 20].into(),
+            suggested_fee_recipient,
             withdrawals: Some(withdrawals),
             // todo(dalton): we should make this something that we can associate with the simplex height
-            parent_beacon_block_root: Some([1; 32].into()),
+            parent_beacon_block_root,
         };
 
         let res = match self
@@ -195,7 +200,7 @@ pub mod benchmarking {
     use crate::{Block, Digest};
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
-    use alloy_primitives::{B256, FixedBytes, U256};
+    use alloy_primitives::{Address, B256, FixedBytes, U256};
     use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
     use alloy_rpc_types_engine::{
         ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3,
@@ -230,6 +235,8 @@ pub mod benchmarking {
             _fork_choice_state: ForkchoiceState,
             _timestamp: u64,
             _withdrawals: Vec<Withdrawal>,
+            _suggested_fee_recipient: Address,
+            _parent_beacon_block_hash: Option<FixedBytes<32>>,
             #[cfg(feature = "bench")] height: u64,
         ) -> Option<PayloadId> {
             let next_block_num = height + 1;

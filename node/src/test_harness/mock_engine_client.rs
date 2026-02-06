@@ -314,6 +314,8 @@ impl EngineClient for MockEngineClient {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
+        _suggested_fee_recipient: Address,
+        _parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] height: u64,
     ) -> Option<PayloadId> {
         let mut state = self.state.lock().unwrap();
@@ -674,6 +676,8 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
+                Default::default(),
+                None,
                 #[cfg(feature = "bench")]
                 0,
             )
@@ -742,6 +746,8 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
+                Default::default(),
+                None,
                 #[cfg(feature = "bench")]
                 0,
             )
@@ -824,6 +830,8 @@ mod tests {
                     fork_choice,
                     (round * 1000) as u64,
                     vec![],
+                    Default::default(),
+                    None,
                     #[cfg(feature = "bench")]
                     round,
                 )
@@ -912,6 +920,8 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![withdrawal.clone()],
+                Default::default(),
+                None,
                 #[cfg(feature = "bench")]
                 0,
             )
@@ -997,6 +1007,8 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
+                Default::default(),
+                None,
                 #[cfg(feature = "bench")]
                 0,
             )
@@ -1011,6 +1023,8 @@ mod tests {
                 genesis_state,
                 1000,
                 vec![],
+                Default::default(),
+                None,
                 #[cfg(feature = "bench")]
                 0,
             )

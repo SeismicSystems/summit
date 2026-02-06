@@ -1,6 +1,6 @@
 //! Mock implementations for finalizer tests.
 
-use alloy_primitives::U256;
+use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV1, ExecutionPayloadV2,
     ExecutionPayloadV3, ForkchoiceState, PayloadId, PayloadStatus, PayloadStatusEnum,
@@ -19,6 +19,8 @@ impl EngineClient for MockEngineClient {
         _fork_choice_state: ForkchoiceState,
         _timestamp: u64,
         _withdrawals: Vec<alloy_eips::eip4895::Withdrawal>,
+        _suggested_fee_recipient: Address,
+        _parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] height: u64,
     ) -> Option<PayloadId> {
         Some(PayloadId::new([0u8; 8]))

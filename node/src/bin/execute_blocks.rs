@@ -84,10 +84,19 @@ async fn main() -> Result<()> {
         println!("Block number: {}", block_number);
         #[cfg(feature = "bench")]
         let result = client
-            .start_building_block(forkchoice, 0, vec![], block_number)
+            .start_building_block(
+                forkchoice,
+                0,
+                vec![],
+                Default::default(),
+                None,
+                block_number,
+            )
             .await;
         #[cfg(not(feature = "bench"))]
-        let result = client.start_building_block(forkchoice, 0, vec![]).await;
+        let result = client
+            .start_building_block(forkchoice, 0, vec![], Default::default(), None)
+            .await;
         match result {
             Some(payload_id) => {
                 let payload = client.get_payload(payload_id).await;

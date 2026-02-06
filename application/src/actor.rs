@@ -452,6 +452,8 @@ impl<
                         aux_data.forkchoice,
                         current,
                         withdrawals,
+                        Default::default(),
+                        None,
                         parent_block.height(),
                     )
                     .await
@@ -459,7 +461,13 @@ impl<
             #[cfg(not(feature = "bench"))]
             {
                 self.engine_client
-                    .start_building_block(aux_data.forkchoice, current, withdrawals)
+                    .start_building_block(
+                        aux_data.forkchoice,
+                        current,
+                        withdrawals,
+                        aux_data.withdrawal_credentials,
+                        Some(parent.1.0.into()),
+                    )
                     .await
             }
         }
