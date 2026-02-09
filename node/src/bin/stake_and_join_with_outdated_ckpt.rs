@@ -623,9 +623,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("All nodes shut down cleanly");
-            Ok(())
+            Ok::<(), Box<dyn std::error::Error>>(())
         }
-    })
+    })?;
+    std::process::exit(0);
 }
 
 fn copy_dir_all(src: &str, dst: &str) -> std::io::Result<()> {

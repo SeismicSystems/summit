@@ -278,9 +278,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("Protocol parameter change test completed successfully!");
 
-            Ok(())
+            Ok::<(), Box<dyn std::error::Error>>(())
         }
-    })
+    })?;
+    std::process::exit(0);
 }
 
 async fn send_protocol_params_transaction<P>(

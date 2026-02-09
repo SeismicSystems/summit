@@ -587,9 +587,10 @@ address = "{}"
             }
 
 
-            Ok(())
+            Ok::<(), Box<dyn std::error::Error>>(())
         }
-    })
+    })?;
+    std::process::exit(0);
 }
 
 async fn send_withdrawal_transaction<P>(

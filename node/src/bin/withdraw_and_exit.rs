@@ -311,9 +311,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 panic!("Validator should not be on the consensus state anymore");
             }
 
-            Ok(())
+            Ok::<(), Box<dyn std::error::Error>>(())
         }
-    })
+    })?;
+    std::process::exit(0);
 }
 
 async fn send_withdrawal_transaction<P>(
