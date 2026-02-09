@@ -858,7 +858,7 @@ where
         let (height, commitment) = (block.height(), block.commitment());
         let (ack, ack_waiter) = A::handle();
 
-        if utils::is_last_block_in_epoch(self.epoch_length, next_height.get()).is_some() {
+        if utils::is_last_block_of_epoch(self.epoch_length, next_height.get()) {
             let Some(finalization) = self.get_finalization_by_height(next_height).await else {
                 // The last block of an epoch will always have an explicit finalization certificate
                 // The finalizer requires it for storing the finalized header.

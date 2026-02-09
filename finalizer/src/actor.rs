@@ -426,44 +426,42 @@ impl<
         let new_height = block.height();
         let mut epoch_change = false; // Store finalizes checkpoint to database
         if is_last_block_of_epoch(self.protocol_consts.epoch_num_of_blocks, new_height) {
-            if let Some(finalization) = finalization {
-                // The finalized signatures should always be included on the last block
-                // of the epoch. However, there is an edge case, where the block after
-                // last block of the epoch arrived out of order.
-                // This is not critical and will likely never happen on all validators
-                // at the same time.
-                debug_assert!(block.header.digest == finalization.proposal.payload);
+            // The syncer will always send the last block of an epoch together with
+            // the finalization.
+            let finalization = finalization
+                .expect("finalization is always included for the last block of an epoch");
+            debug_assert!(block.header.digest == finalization.proposal.payload);
+            // Get participant count from the certificate signers
+            let participant_count = finalization.certificate.signers.len();
 
-                // Get participant count from the certificate signers
-                let participant_count = finalization.certificate.signers.len();
+            // Store the finalized block header in the database
+            let finalized_header =
+                FinalizedHeader::new(block.header.clone(), finalization, participant_count);
 
-                // Store the finalized block header in the database
-                let finalized_header =
-                    FinalizedHeader::new(block.header.clone(), finalization, participant_count);
+            #[cfg(feature = "prom")]
+            let header_start = Instant::now();
+            self.db
+                .store_finalized_header(self.canonical_state.epoch, &finalized_header)
+                .await;
+            #[cfg(feature = "prom")]
+            {
+                let header_duration = header_start.elapsed().as_micros() as f64;
+                histogram!("finalizer_db_finalized_header_write_micros").record(header_duration);
+            }
 
-                #[cfg(feature = "prom")]
-                let header_start = Instant::now();
-                self.db
-                    .store_finalized_header(self.canonical_state.epoch, &finalized_header)
-                    .await;
-                #[cfg(feature = "prom")]
-                {
-                    let header_duration = header_start.elapsed().as_micros() as f64;
-                    histogram!("finalizer_db_finalized_header_write_micros")
-                        .record(header_duration);
-                }
-
-                #[cfg(debug_assertions)]
-                {
-                    let gauge: Gauge = Gauge::default();
-                    gauge.set(new_height as i64);
-                    self.context.register(
-                        format!("<header>{}</header><prev_header>{}</prev_header>_finalized_header_stored",
-                                hex::encode(finalized_header.header.digest), hex::encode(finalized_header.header.prev_epoch_header_hash)),
-                        "chain height",
-                        gauge
-                    );
-                }
+            #[cfg(debug_assertions)]
+            {
+                let gauge: Gauge = Gauge::default();
+                gauge.set(new_height as i64);
+                self.context.register(
+                    format!(
+                        "<header>{}</header><prev_header>{}</prev_header>_finalized_header_stored",
+                        hex::encode(finalized_header.header.digest),
+                        hex::encode(finalized_header.header.prev_epoch_header_hash)
+                    ),
+                    "chain height",
+                    gauge,
+                );
             }
 
             // Apply protocol parameter changes
