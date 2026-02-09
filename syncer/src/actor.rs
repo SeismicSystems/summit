@@ -365,7 +365,8 @@ where
         }
 
         // Attempt to dispatch the next finalized block to the application, if it is ready.
-        self.try_dispatch_block(&mut application).await;
+        self.try_dispatch_block(&mut application, &mut resolver)
+            .await;
 
         // Attempt to repair any gaps in the finalized blocks archive, if there are any.
         self.try_repair_gaps(&mut buffer, &mut resolver, &mut application)
@@ -400,7 +401,7 @@ where
                                 error!(?e, %height, "failed to update application progress");
                                 return;
                             }
-                            self.try_dispatch_block(&mut application).await;
+                            self.try_dispatch_block(&mut application, &mut resolver).await;
                         }
                         Err(e) => {
                             error!(?e, %height, "application did not acknowledge block");
@@ -838,6 +839,7 @@ where
     async fn try_dispatch_block(
         &mut self,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+        resolver: &mut impl Resolver<Key = Request<B>>,
     ) {
         if self.pending_ack.is_some() {
             return;
@@ -857,9 +859,18 @@ where
         let (ack, ack_waiter) = A::handle();
 
         if utils::is_last_block_in_epoch(self.epoch_length, next_height.get()).is_some() {
-            let finalize = self.get_finalization_by_height(next_height).await;
+            let Some(finalization) = self.get_finalization_by_height(next_height).await else {
+                // The last block of an epoch will always have an explicit finalization certificate
+                // The finalizer requires it for storing the finalized header.
+                let request = Request::<B>::Finalized {
+                    height: height.get(),
+                };
+                resolver.fetch(request).await;
+                return;
+            };
+
             application
-                .report(Update::FinalizedBlock((block, finalize), ack))
+                .report(Update::FinalizedBlock((block, Some(finalization)), ack))
                 .await;
         } else {
             application
@@ -967,8 +978,15 @@ where
         buffer: &mut buffered::Mailbox<impl PublicKey, B>,
         resolver: &mut impl Resolver<Key = Request<B>>,
     ) {
-        self.store_finalization(height, commitment, block, finalization, application)
-            .await;
+        self.store_finalization(
+            height,
+            commitment,
+            block,
+            finalization,
+            application,
+            resolver,
+        )
+        .await;
 
         self.try_repair_gaps(buffer, resolver, application).await;
     }
@@ -984,6 +1002,7 @@ where
         block: B,
         finalization: Option<Finalization<P::Scheme, B::Commitment>>,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+        resolver: &mut impl Resolver<Key = Request<B>>,
     ) {
         self.notify_subscribers(commitment, &block).await;
 
@@ -1039,7 +1058,7 @@ where
             }
         }
 
-        self.try_dispatch_block(application).await;
+        self.try_dispatch_block(application, resolver).await;
     }
 
     /// Get the latest finalized block information (height and commitment tuple).
@@ -1124,6 +1143,7 @@ where
                         block.clone(),
                         finalization,
                         application,
+                        resolver,
                     )
                     .await;
                     debug!(
