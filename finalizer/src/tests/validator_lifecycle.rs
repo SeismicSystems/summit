@@ -1,6 +1,6 @@
 //! Tests for validator lifecycle: exit, removal from committee, etc.
 
-use super::mocks::{MockEngineClient, MockNetworkOracle};
+use super::mocks::{MockEngineClient, MockNetworkOracle, create_test_schemes, make_finalization};
 use crate::actor::Finalizer;
 use crate::config::{FinalizerConfig, ProtocolConsts};
 use alloy_primitives::{Address, U256};
@@ -208,6 +208,10 @@ fn test_validator_exit_triggers_cancellation() {
         let genesis_block = Block::genesis(genesis_hash);
         let mut parent_digest = genesis_block.digest();
 
+        // Create BLS signing schemes for finalization certificates
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+
         // Finalize blocks 1-3 (epoch 0 with epoch_num_of_blocks = 5)
         for height in 1..4 {
             let block =
@@ -229,11 +233,14 @@ fn test_validator_exit_triggers_cancellation() {
 
         // Finalize block 4 (last block of epoch 0)
         // This triggers update_validator_committee which sets validator_exit = true
+        // The last block of an epoch requires a finalization certificate
         let block4 = create_test_block_with_epoch(parent_digest, 4, 5, 13004, 0);
-        parent_digest = block4.digest();
+        let block4_digest = block4.digest();
+        parent_digest = block4_digest;
+        let finalization4 = make_finalization(block4_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
         mailbox
-            .report(Update::FinalizedBlock((block4, None), ack))
+            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
             .await;
         context.sleep(Duration::from_millis(100)).await;
 

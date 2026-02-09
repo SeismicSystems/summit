@@ -1,6 +1,6 @@
 //! Tests for finalizer state query methods.
 
-use super::mocks::{MockEngineClient, MockNetworkOracle};
+use super::mocks::{MockEngineClient, MockNetworkOracle, create_test_schemes, make_finalization};
 use crate::actor::Finalizer;
 use crate::config::{FinalizerConfig, ProtocolConsts};
 use alloy_primitives::{Address, U256};
@@ -223,11 +223,18 @@ fn test_get_latest_epoch() {
             "Should still be epoch 0 before block 4"
         );
 
+        // Create BLS signing schemes for finalization certificates
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+
         // Finalize block 4 (last block of epoch 0, triggers epoch change to 1)
+        // The last block of an epoch requires a finalization certificate
         let block4 = create_test_block_with_epoch(parent_digest, 4, 5, 10004, 0);
+        let block4_digest = block4.digest();
+        let finalization4 = make_finalization(block4_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
         mailbox
-            .report(Update::FinalizedBlock((block4, None), ack))
+            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
             .await;
         context.sleep(Duration::from_millis(100)).await;
 
@@ -319,12 +326,18 @@ fn test_get_epoch_genesis_hash() {
             context.sleep(Duration::from_millis(50)).await;
         }
 
+        // Create BLS signing schemes for finalization certificates
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+
         // Finalize block 4 (last block of epoch 0, triggers epoch change)
+        // The last block of an epoch requires a finalization certificate
         let block4 = create_test_block_with_epoch(parent_digest, 4, 5, 12004, 0);
         let block4_digest = block4.digest();
+        let finalization4 = make_finalization(block4_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
         mailbox
-            .report(Update::FinalizedBlock((block4, None), ack))
+            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
             .await;
         context.sleep(Duration::from_millis(100)).await;
 
