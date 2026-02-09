@@ -62,11 +62,11 @@ impl SummitApiServer for SummitRpcServer {
             return Err(RpcError::CheckpointNotFound.into());
         };
 
-        // try to get the finalized header for the last block
+        // try to get the finalized header for this epoch
         let maybe_header = self
             .finalizer_mailbox
             .clone()
-            .get_finalized_header(last_block.height())
+            .get_finalized_header(epoch)
             .await;
 
         let Some(header) = maybe_header else {
@@ -89,11 +89,11 @@ impl SummitApiServer for SummitRpcServer {
             return Err(RpcError::CheckpointNotFound.into());
         };
 
-        // try to get the finalized header for the last block
+        // try to get the finalized header for this epoch
         let maybe_header = self
             .finalizer_mailbox
             .clone()
-            .get_finalized_header(last_block.height())
+            .get_finalized_header(epoch)
             .await;
 
         let Some(header) = maybe_header else {

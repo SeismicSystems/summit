@@ -138,9 +138,9 @@ impl<S: Scheme> ConsensusStateQuery<S> {
         balance
     }
 
-    pub async fn get_finalized_header(&self, height: u64) -> Option<FinalizedHeader<S>> {
+    pub async fn get_finalized_header(&self, epoch: u64) -> Option<FinalizedHeader<S>> {
         let (tx, rx) = oneshot::channel();
-        let req = ConsensusStateRequest::GetFinalizedHeader(height);
+        let req = ConsensusStateRequest::GetFinalizedHeader(epoch);
         let _ = self.sender.clone().send((req, tx)).await;
 
         let res = rx

@@ -133,9 +133,9 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         maybe_checkpoint
     }
 
-    pub async fn get_finalized_header(&mut self, height: u64) -> Option<FinalizedHeader<S>> {
+    pub async fn get_finalized_header(&mut self, epoch: u64) -> Option<FinalizedHeader<S>> {
         let (response, rx) = oneshot::channel();
-        let request = ConsensusStateRequest::GetFinalizedHeader(height);
+        let request = ConsensusStateRequest::GetFinalizedHeader(epoch);
 
         let _ = self
             .sender
