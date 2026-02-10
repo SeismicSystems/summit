@@ -6208,6 +6208,7 @@ dependencies = [
  "commonware-cryptography",
  "commonware-math",
  "commonware-p2p",
+ "commonware-parallel",
  "commonware-resolver",
  "commonware-runtime",
  "commonware-utils",

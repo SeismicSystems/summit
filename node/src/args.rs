@@ -31,19 +31,20 @@ use std::{
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
 
 use crate::config::MAILBOX_SIZE;
+use summit_types::FinalizedHeader;
 #[cfg(not(feature = "bench"))]
 use summit_types::RethEngineClient;
 use summit_types::bootstrap::Bootstrappers;
+use summit_types::checkpoint::{self, Checkpoint};
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{
     Block,
     account::{ValidatorAccount, ValidatorStatus},
 };
-use summit_types::{FinalizedHeader, checkpoint::Checkpoint};
 use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use summit_types::{consensus_state::ConsensusState, scheme::MultisigScheme};
-use tracing::{Level, error, info};
+use tracing::{Level, error, info, warn};
 
 pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
@@ -127,7 +128,7 @@ pub struct RunFlags {
     #[arg(long)]
     pub checkpoint_path: Option<String>,
 
-    /// Path to a checkpoint file. If not there summit will start normally
+    /// If set, fall back to genesis when the checkpoint path doesn't exist instead of panicking
     #[arg(long)]
     pub checkpoint_or_default: bool,
 
@@ -180,14 +181,20 @@ impl Command {
             console_subscriber::init();
         }
 
-        let (maybe_checkpoint, maybe_last_block, maybe_finalized_header) = {
-            if let Some(checkpoint_path) = &flags.checkpoint_path {
-                // Todo(dalton): Verify finalized header
-                read_checkpoint::<MultisigScheme>(checkpoint_path, flags.checkpoint_or_default)
-            } else {
-                (None, None, None)
+        let loaded = if let Some(checkpoint_path) = &flags.checkpoint_path {
+            read_checkpoint::<MultisigScheme>(checkpoint_path, flags.checkpoint_or_default)
+        } else {
+            LoadedCheckpoint {
+                consensus_state: None,
+                last_block: None,
+                finalized_header: None,
+                raw_checkpoint: None,
+                finalized_headers_chain: None,
             }
         };
+        let maybe_checkpoint = loaded.consensus_state;
+        let maybe_last_block = loaded.last_block;
+        let maybe_finalized_header = loaded.finalized_header;
 
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
         let key_store = expect_key_store(&flags.key_store_path);
@@ -246,6 +253,20 @@ impl Command {
                 max_stake = genesis.validator_maximum_stake,
                 "loaded genesis configuration"
             );
+
+            // Verify checkpoint if finalized headers chain was provided
+            if let (Some(raw_checkpoint), Some(headers_chain)) =
+                (&loaded.raw_checkpoint, &loaded.finalized_headers_chain)
+            {
+                checkpoint::verify_checkpoint_chain(&genesis, headers_chain, raw_checkpoint)
+                    .expect("checkpoint verification failed");
+                info!(
+                    epochs_verified = headers_chain.len(),
+                    "checkpoint verified successfully"
+                );
+            } else if loaded.raw_checkpoint.is_some() {
+                warn!("checkpoint loaded without finalized headers chain - skipping verification");
+            }
 
             let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
                 .map(|hash_bytes| hash_bytes.try_into())
@@ -695,14 +716,18 @@ fn get_node_ip(
     }
 }
 
+struct LoadedCheckpoint<S: Scheme> {
+    consensus_state: Option<ConsensusState>,
+    last_block: Option<Block>,
+    finalized_header: Option<FinalizedHeader<S>>,
+    raw_checkpoint: Option<Checkpoint>,
+    finalized_headers_chain: Option<Vec<FinalizedHeader<S>>>,
+}
+
 fn read_checkpoint<S: Scheme>(
     checkpoint_path: &String,
     checkpoint_or_default: bool,
-) -> (
-    Option<ConsensusState>,
-    Option<Block>,
-    Option<FinalizedHeader<S>>,
-)
+) -> LoadedCheckpoint<S>
 where
     <S::Certificate as Read>::Cfg: From<usize>,
 {
@@ -714,7 +739,7 @@ where
         let checkpoint =
             Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
 
-        let consensus_state = ConsensusState::try_from(checkpoint)
+        let consensus_state = ConsensusState::try_from(&checkpoint)
             .expect("failed to create consensus state from checkpoint");
 
         info!(
@@ -725,23 +750,29 @@ where
             "loaded checkpoint from file"
         );
 
-        (Some(consensus_state), None, None)
+        LoadedCheckpoint {
+            consensus_state: Some(consensus_state),
+            last_block: None,
+            finalized_header: None,
+            raw_checkpoint: Some(checkpoint),
+            finalized_headers_chain: None,
+        }
     } else if path.is_dir() {
-        let checkpoint_path = path.join("checkpoint");
+        let checkpoint_file_path = path.join("checkpoint");
         let last_block_path = path.join("last_block");
         let header_path = path.join("finalized_header");
 
-        let consensus_state = {
+        let (consensus_state, raw_checkpoint) = {
             let checkpoint_bytes =
-                std::fs::read(checkpoint_path).expect("failed to read checkpoint from disk");
+                std::fs::read(checkpoint_file_path).expect("failed to read checkpoint from disk");
 
             let checkpoint =
                 Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
 
-            let consensus_state = ConsensusState::try_from(checkpoint)
+            let consensus_state = ConsensusState::try_from(&checkpoint)
                 .expect("failed to create consensus state from checkpoint");
 
-            Some(consensus_state)
+            (Some(consensus_state), Some(checkpoint))
         };
 
         let last_block = std::fs::read(last_block_path)
@@ -754,6 +785,38 @@ where
             .ok()
             .flatten();
 
+        // Load finalized headers chain for verification if present
+        let finalized_headers_dir = path.join("finalized_headers");
+        let finalized_headers_chain = if finalized_headers_dir.is_dir() {
+            let mut headers = Vec::new();
+            let mut epoch = 0u64;
+            loop {
+                let header_file = finalized_headers_dir.join(epoch.to_string());
+                if !header_file.exists() {
+                    break;
+                }
+                let header_bytes = std::fs::read(&header_file).unwrap_or_else(|e| {
+                    panic!("failed to read finalized header for epoch {epoch}: {e}")
+                });
+                let h = FinalizedHeader::<S>::from_ssz_bytes(&header_bytes).unwrap_or_else(|e| {
+                    panic!("failed to parse finalized header for epoch {epoch}: {e:?}")
+                });
+                headers.push(h);
+                epoch += 1;
+            }
+            if headers.is_empty() {
+                None
+            } else {
+                info!(
+                    num_headers = headers.len(),
+                    "loaded finalized headers chain for checkpoint verification"
+                );
+                Some(headers)
+            }
+        } else {
+            None
+        };
+
         if let Some(ref state) = consensus_state {
             info!(
                 epoch = state.epoch,
@@ -761,14 +824,27 @@ where
                 num_validators = state.validator_accounts.len(),
                 has_last_block = last_block.is_some(),
                 has_finalized_header = header.is_some(),
+                has_verification_headers = finalized_headers_chain.is_some(),
                 checkpoint_dir = %path.display(),
                 "loaded checkpoint from directory"
             );
         }
 
-        (consensus_state, last_block, header)
+        LoadedCheckpoint {
+            consensus_state,
+            last_block,
+            finalized_header: header,
+            raw_checkpoint,
+            finalized_headers_chain,
+        }
     } else if checkpoint_or_default {
-        (None, None, None)
+        LoadedCheckpoint {
+            consensus_state: None,
+            last_block: None,
+            finalized_header: None,
+            raw_checkpoint: None,
+            finalized_headers_chain: None,
+        }
     } else {
         panic!("Could not find checkpoint");
     }
