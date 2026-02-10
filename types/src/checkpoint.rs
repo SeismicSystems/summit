@@ -210,8 +210,11 @@ pub fn verify_checkpoint_chain(
     participants.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut rng = OsRng;
+    let mut signing_set = participants.clone();
 
     for (i, finalized_header) in finalized_headers.iter().enumerate() {
+        // Save the current participants — this is the signing set for this epoch
+        signing_set = participants.clone();
         let expected_epoch = i as u64;
         if finalized_header.header.epoch != expected_epoch {
             return Err(CheckpointVerificationError::NonContiguousEpochs {
@@ -264,50 +267,16 @@ pub fn verify_checkpoint_chain(
     }
 
     // Step 3: Verify validator set consistency.
-    // After the loop, `participants` is the validator set for epoch n+1.
-    // The checkpoint's validator_accounts should be consistent with the
-    // accumulated validator set changes from the headers.
+    // `signing_set` is the validator set that signed epoch n's header — this was
+    // independently accumulated by walking headers from genesis. The checkpoint's
+    // validator_accounts should contain exactly these validators as active.
     let checkpoint_state = ConsensusState::try_from(checkpoint).map_err(|e| {
         CheckpointVerificationError::ValidatorSetError(format!(
             "failed to deserialize checkpoint: {e}"
         ))
     })?;
 
-    // The accumulated participants (epoch n+1 set) should match the checkpoint's
-    // view of who will be active next epoch: Active validators minus those in
-    // removed_validators, plus those in added_validators for epoch n+1.
-    let checkpoint_epoch = checkpoint_state.epoch;
-    let next_epoch = checkpoint_epoch + 1;
-
-    let mut checkpoint_keys: BTreeSet<[u8; 32]> = checkpoint_state
-        .validator_accounts
-        .iter()
-        .filter(|(_, account)| account.status == ValidatorStatus::Active)
-        .map(|(pk, _)| *pk)
-        .collect();
-
-    // Remove validators that are pending removal
-    for removed in &checkpoint_state.removed_validators {
-        let key: [u8; 32] = removed
-            .as_ref()
-            .try_into()
-            .expect("ed25519 public key should be 32 bytes");
-        checkpoint_keys.remove(&key);
-    }
-
-    // Add validators scheduled to join at epoch n+1
-    if let Some(added) = checkpoint_state.added_validators.get(&next_epoch) {
-        for v in added {
-            let key: [u8; 32] = v
-                .node_key
-                .as_ref()
-                .try_into()
-                .expect("ed25519 public key should be 32 bytes");
-            checkpoint_keys.insert(key);
-        }
-    }
-
-    let accumulated_keys: BTreeSet<[u8; 32]> = participants
+    let accumulated_keys: BTreeSet<[u8; 32]> = signing_set
         .iter()
         .map(|(pk, _)| {
             pk.as_ref()
@@ -316,15 +285,38 @@ pub fn verify_checkpoint_chain(
         })
         .collect();
 
-    if accumulated_keys != checkpoint_keys {
-        let in_accumulated_not_checkpoint: Vec<_> =
-            accumulated_keys.difference(&checkpoint_keys).collect();
-        let in_checkpoint_not_accumulated: Vec<_> =
-            checkpoint_keys.difference(&accumulated_keys).collect();
-        return Err(CheckpointVerificationError::ValidatorSetMismatch(format!(
-            "in headers but not checkpoint: {:?}, in checkpoint but not headers: {:?}",
-            in_accumulated_not_checkpoint, in_checkpoint_not_accumulated,
-        )));
+    // Every validator in the accumulated signing set must have an account in the
+    // checkpoint, and vice versa for active accounts.
+    for key in &accumulated_keys {
+        match checkpoint_state.validator_accounts.get(key) {
+            None => {
+                return Err(CheckpointVerificationError::ValidatorSetMismatch(format!(
+                    "validator {key:?} accumulated from headers but missing from checkpoint accounts"
+                )));
+            }
+            Some(account) => {
+                // The validator should be active or have submitted an exit request
+                // (exit requests during the epoch don't take effect until the boundary)
+                if account.status != ValidatorStatus::Active
+                    && account.status != ValidatorStatus::SubmittedExitRequest
+                {
+                    return Err(CheckpointVerificationError::ValidatorSetMismatch(format!(
+                        "validator {key:?} is in signing set but has status {:?} in checkpoint",
+                        account.status
+                    )));
+                }
+            }
+        }
+    }
+
+    // Reverse check: every active validator in the checkpoint must be in the
+    // accumulated signing set.
+    for (key, account) in &checkpoint_state.validator_accounts {
+        if account.status == ValidatorStatus::Active && !accumulated_keys.contains(key) {
+            return Err(CheckpointVerificationError::ValidatorSetMismatch(format!(
+                "validator {key:?} is active in checkpoint but not in accumulated signing set"
+            )));
+        }
     }
 
     Ok(())
