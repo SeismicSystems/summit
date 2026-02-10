@@ -254,21 +254,58 @@ pub fn verify_checkpoint_chain(
         participants.sort_by(|a, b| a.0.cmp(&b.0));
     }
 
-    // Verify the checkpoint hash matches the last header's checkpoint_hash field
+    // Step 2: Compute the checkpoint digest and verify it matches the last header
     let last_header = finalized_headers.last().unwrap();
-    if last_header.header.checkpoint_hash != checkpoint.digest {
+    let mut hasher = Sha256::new();
+    hasher.update(&checkpoint.data);
+    let computed_digest = hasher.finalize();
+    if last_header.header.checkpoint_hash != computed_digest {
         return Err(CheckpointVerificationError::CheckpointHashMismatch);
     }
 
-    // Verify validator set consistency: the accumulated validator set should
-    // match the active validators in the checkpoint.
+    // Step 3: Verify validator set consistency.
     // After the loop, `participants` is the validator set for epoch n+1.
-    // The checkpoint's active validators should match this set.
+    // The checkpoint's validator_accounts should be consistent with the
+    // accumulated validator set changes from the headers.
     let checkpoint_state = ConsensusState::try_from(checkpoint).map_err(|e| {
         CheckpointVerificationError::ValidatorSetError(format!(
             "failed to deserialize checkpoint: {e}"
         ))
     })?;
+
+    // The accumulated participants (epoch n+1 set) should match the checkpoint's
+    // view of who will be active next epoch: Active validators minus those in
+    // removed_validators, plus those in added_validators for epoch n+1.
+    let checkpoint_epoch = checkpoint_state.epoch;
+    let next_epoch = checkpoint_epoch + 1;
+
+    let mut checkpoint_keys: BTreeSet<[u8; 32]> = checkpoint_state
+        .validator_accounts
+        .iter()
+        .filter(|(_, account)| account.status == ValidatorStatus::Active)
+        .map(|(pk, _)| *pk)
+        .collect();
+
+    // Remove validators that are pending removal
+    for removed in &checkpoint_state.removed_validators {
+        let key: [u8; 32] = removed
+            .as_ref()
+            .try_into()
+            .expect("ed25519 public key should be 32 bytes");
+        checkpoint_keys.remove(&key);
+    }
+
+    // Add validators scheduled to join at epoch n+1
+    if let Some(added) = checkpoint_state.added_validators.get(&next_epoch) {
+        for v in added {
+            let key: [u8; 32] = v
+                .node_key
+                .as_ref()
+                .try_into()
+                .expect("ed25519 public key should be 32 bytes");
+            checkpoint_keys.insert(key);
+        }
+    }
 
     let accumulated_keys: BTreeSet<[u8; 32]> = participants
         .iter()
@@ -277,13 +314,6 @@ pub fn verify_checkpoint_chain(
                 .try_into()
                 .expect("ed25519 public key should be 32 bytes")
         })
-        .collect();
-
-    let checkpoint_keys: BTreeSet<[u8; 32]> = checkpoint_state
-        .validator_accounts
-        .iter()
-        .filter(|(_, account)| account.status == ValidatorStatus::Active)
-        .map(|(pk, _)| *pk)
         .collect();
 
     if accumulated_keys != checkpoint_keys {
