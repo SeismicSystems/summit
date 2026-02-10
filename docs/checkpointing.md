@@ -146,11 +146,52 @@ Each header contains the validator set changes that take effect at the epoch bou
 
 The `consensus_key` (BLS public key) in `added_validators` allows verifiers to update their known validator set without needing the full checkpoint data for intermediate epochs.
 
-### Withdrawal Deferral
+> **Note:** Withdrawal requests received on the last block of an epoch are deferred to the next epoch to ensure `removed_validators` is accurate. See [Withdrawal Deferral at Epoch Boundaries](deposits-and-withdrawals.md#withdrawal-deferral-at-epoch-boundaries).
 
-Withdrawal requests for active validators received on the **last block of an epoch** are deferred to the next epoch. This ensures that `removed_validators` in the header accurately reflects all validator exits, since the header is created at the penultimate block.
+## Checkpoint Path (`--checkpoint-path`)
 
-Deferred requests are stored in `pending_execution_requests` and processed at the start of the next epoch.
+The `--checkpoint-path` flag specifies a path to load a checkpoint from when starting a node. It accepts either a single file or a directory.
+
+### Single File
+
+When the path points to a file, it is treated as an SSZ-encoded `Checkpoint`. The node loads the consensus state from it but cannot verify the checkpoint (no finalized headers are available). This mode requires trusting the checkpoint source.
+
+```
+--checkpoint-path ./checkpoint
+```
+
+### Directory
+
+When the path points to a directory, the node expects the following structure:
+
+```
+checkpoint_dir/
+├── checkpoint              # Required: SSZ-encoded Checkpoint
+├── last_block              # Optional: SSZ-encoded last Block
+├── finalized_header        # Optional: SSZ-encoded FinalizedHeader for the checkpoint epoch
+└── finalized_headers/      # Optional: directory of epoch-indexed headers for verification
+    ├── 0                   # SSZ-encoded FinalizedHeader for epoch 0
+    ├── 1                   # SSZ-encoded FinalizedHeader for epoch 1
+    ├── 2                   # ...
+    └── n                   # SSZ-encoded FinalizedHeader for epoch n (the checkpoint epoch)
+```
+
+| File | Required | Description |
+|------|----------|-------------|
+| `checkpoint` | Yes | The SSZ-encoded checkpoint containing the serialized `ConsensusState` |
+| `last_block` | No | The last finalized block, used to resume block processing |
+| `finalized_header` | No | The finalized header for the checkpoint epoch |
+| `finalized_headers/` | No | A directory of finalized headers indexed by epoch number (starting from `0`), used for trustless checkpoint verification |
+
+### Checkpoint Verification on Startup
+
+When the `finalized_headers/` directory is present, the node automatically verifies the checkpoint on startup by calling `verify_checkpoint_chain` with the genesis state, the loaded headers, and the checkpoint. This allows the node to trustlessly validate a checkpoint received from an untrusted source.
+
+If the `finalized_headers/` directory is absent, verification is skipped and the node trusts the checkpoint as-is.
+
+### `--checkpoint-or-default`
+
+When set, the node falls back to starting from genesis if the checkpoint path does not exist, instead of panicking.
 
 ## Related Configuration
 

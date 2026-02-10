@@ -80,6 +80,12 @@ If withdrawal credentials cannot be parsed:
 - **New validator deposit**: Deposit is ignored, funds are lost
 - **Refund withdrawal**: Refund cannot be created, funds are lost
 
+## Withdrawal Deferral at Epoch Boundaries
+
+Withdrawal requests for active validators received on the **last block of an epoch** are deferred to the next epoch. This ensures that `removed_validators` in the finalized header accurately reflects all validator exits, since the header is created at the penultimate block.
+
+Deferred requests are stored in `pending_execution_requests` and processed at the start of the next epoch.
+
 ## Invariants
 
 - A validator will join the committee `VALIDATOR_NUM_WARM_UP_EPOCHS` epochs after submitting a valid deposit request. The phase after submitting the deposit request, and before joining the committee is called the `onboarding phase`.
