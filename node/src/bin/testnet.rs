@@ -85,11 +85,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut consensus_handles = Vec::new();
             // let mut read_threads = Vec::new();
 
+            // Enode URL of node 0, used as bootnode for other nodes
+            let mut bootnode_enode = String::new();
+
             for x in 0..args.nodes {
                 // Start Reth
                 println!("******* STARTING RETH FOR NODE {x}");
                 // Build and spawn reth instance
-                let reth_builder = Reth::new()
+                let mut reth_builder = Reth::new()
                     .instance(x + 1)
                     .keep_stdout()
                     //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
@@ -101,7 +104,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .arg("--auth-ipc.path")
                     .arg(format!("/tmp/reth_engine_api{x}.ipc"))
                     .arg("--metrics")
-                    .arg(format!("0.0.0.0:{}", 9001 + x));
+                    .arg(format!("0.0.0.0:{}", 9001 + x))
+                    .arg("--nat")
+                    .arg("extip:127.0.0.1");
+
+                // Point nodes 1+ at node 0 for peer discovery
+                if x > 0 && !bootnode_enode.is_empty() {
+                    reth_builder = reth_builder
+                        .arg("--bootnodes")
+                        .arg(&bootnode_enode);
+                }
 
                 let mut reth = reth_builder.spawn();
 
@@ -148,6 +160,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _auth_port = reth.auth_port().unwrap();
 
                 println!("Node {} rpc address: {}", x, reth.http_port());
+
+                // After node 0 starts, fetch its enode URL to use as bootnode for other nodes
+                if x == 0 {
+                    let client = reqwest::Client::new();
+                    let resp = client
+                        .post(format!("http://localhost:{}", reth.http_port()))
+                        .json(&serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "admin_nodeInfo",
+                            "params": [],
+                            "id": 1
+                        }))
+                        .send()
+                        .await
+                        .expect("Failed to query admin_nodeInfo on node 0");
+                    let body: serde_json::Value = resp
+                        .json()
+                        .await
+                        .expect("Failed to parse admin_nodeInfo response");
+                    bootnode_enode = body["result"]["enode"]
+                        .as_str()
+                        .expect("No enode in admin_nodeInfo response")
+                        .to_string();
+                    println!("Node 0 enode: {bootnode_enode}");
+                }
 
                 // read_threads.push(reader_thread);
                 handles.push(reth);
