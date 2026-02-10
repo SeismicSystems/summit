@@ -152,13 +152,6 @@ Withdrawal requests for active validators received on the **last block of an epo
 
 Deferred requests are stored in `pending_execution_requests` and processed at the start of the next epoch.
 
-### Future Work
-
-Checkpoint verification is not yet implemented. Currently, nodes must either:
-
-- Sync from genesis, or
-- Trust the checkpoint source
-
 ## Related Configuration
 
 | Parameter | Description |
