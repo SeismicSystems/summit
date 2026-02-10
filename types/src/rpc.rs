@@ -14,3 +14,9 @@ pub struct CheckpointInfoRes {
     pub epoch: u64,
     pub digest: [u8; 32],
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FinalizedHeaderRes {
+    pub epoch: u64,
+    pub finalized_header: Vec<u8>,
+}

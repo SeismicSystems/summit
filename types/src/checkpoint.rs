@@ -1,9 +1,18 @@
 use crate::Digest;
 use crate::consensus_state::ConsensusState;
+use crate::genesis::Genesis;
+use crate::header::FinalizedHeader;
+use crate::scheme::MultisigScheme;
 use bytes::{Buf, BufMut, Bytes};
-use commonware_codec::{Encode, EncodeSize, Error, Read, ReadExt, Write};
-use commonware_cryptography::{Hasher, Sha256};
+use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Write};
+use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+use commonware_cryptography::{Hasher, Sha256, ed25519};
+use commonware_parallel::Sequential;
+use commonware_utils::TryCollect;
+use commonware_utils::ordered::BiMap;
+use rand::rngs::OsRng;
 use ssz::{Decode, Encode as SszEncode};
+use std::{error, fmt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Checkpoint {
@@ -125,17 +134,140 @@ impl TryFrom<&Checkpoint> for ConsensusState {
     }
 }
 
+#[derive(Debug)]
+pub enum CheckpointVerificationError {
+    NoHeaders,
+    NonContiguousEpochs { expected: u64, found: u64 },
+    SignatureVerificationFailed { epoch: u64 },
+    CheckpointHashMismatch,
+    ValidatorSetError(String),
+}
+
+impl fmt::Display for CheckpointVerificationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoHeaders => write!(f, "no finalized headers provided"),
+            Self::NonContiguousEpochs { expected, found } => {
+                write!(f, "expected epoch {expected}, found {found}")
+            }
+            Self::SignatureVerificationFailed { epoch } => {
+                write!(f, "BLS signature verification failed for epoch {epoch}")
+            }
+            Self::CheckpointHashMismatch => {
+                write!(
+                    f,
+                    "checkpoint hash in final header does not match checkpoint digest"
+                )
+            }
+            Self::ValidatorSetError(reason) => {
+                write!(f, "failed to construct validator set: {reason}")
+            }
+        }
+    }
+}
+
+impl error::Error for CheckpointVerificationError {}
+
+/// Verifies a checkpoint by walking the chain of finalized headers from genesis.
+///
+/// For each epoch, the BLS aggregate signature is verified against the known
+/// validator set, and validator set changes (added/removed) are applied.
+/// Finally, the checkpoint hash in the last header is compared to the checkpoint digest.
+pub fn verify_checkpoint_chain(
+    genesis: &Genesis,
+    finalized_headers: &[FinalizedHeader<MultisigScheme>],
+    checkpoint: &Checkpoint,
+) -> Result<(), CheckpointVerificationError> {
+    if finalized_headers.is_empty() {
+        return Err(CheckpointVerificationError::NoHeaders);
+    }
+
+    // Build initial validator set from genesis
+    let validators = genesis
+        .get_validators()
+        .map_err(|e| CheckpointVerificationError::ValidatorSetError(e.to_string()))?;
+
+    let namespace = genesis.namespace.as_bytes().to_vec();
+
+    // Build the participant set as Vec<(ed25519::PublicKey, MinPk::Public)>
+    // so we can mutate it across epochs
+    let mut participants: Vec<(ed25519::PublicKey, <MinPk as Variant>::Public)> = validators
+        .iter()
+        .map(|v| {
+            let minpk_public: &<MinPk as Variant>::Public = v.consensus_public_key.as_ref();
+            let encoded = minpk_public.encode();
+            let variant_pk = <MinPk as Variant>::Public::decode(&mut encoded.as_ref())
+                .expect("failed to decode BLS public key");
+            (v.node_public_key.clone(), variant_pk)
+        })
+        .collect();
+    participants.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut rng = OsRng;
+
+    for (i, finalized_header) in finalized_headers.iter().enumerate() {
+        let expected_epoch = i as u64;
+        if finalized_header.header.epoch != expected_epoch {
+            return Err(CheckpointVerificationError::NonContiguousEpochs {
+                expected: expected_epoch,
+                found: finalized_header.header.epoch,
+            });
+        }
+
+        // Build a verifier scheme for this epoch's validator set
+        let bimap: BiMap<ed25519::PublicKey, <MinPk as Variant>::Public> =
+            participants.iter().cloned().try_collect().map_err(|e| {
+                CheckpointVerificationError::ValidatorSetError(format!(
+                    "epoch {expected_epoch}: {e:?}"
+                ))
+            })?;
+
+        let scheme = MultisigScheme::verifier(&namespace, bimap);
+
+        // Verify the BLS aggregate signature
+        if !finalized_header
+            .finalization
+            .verify(&mut rng, &scheme, &Sequential)
+        {
+            return Err(CheckpointVerificationError::SignatureVerificationFailed {
+                epoch: expected_epoch,
+            });
+        }
+
+        // Update validator set for the next epoch
+        for added in &finalized_header.header.added_validators {
+            let minpk_public: &<MinPk as Variant>::Public = added.consensus_key.as_ref();
+            let encoded = minpk_public.encode();
+            let variant_pk = <MinPk as Variant>::Public::decode(&mut encoded.as_ref())
+                .expect("failed to decode BLS public key");
+            participants.push((added.node_key.clone(), variant_pk));
+        }
+        for removed in &finalized_header.header.removed_validators {
+            participants.retain(|(pk, _)| pk != removed);
+        }
+        participants.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    // Verify the checkpoint hash matches the last header's checkpoint_hash field
+    let last_header = finalized_headers.last().unwrap();
+    if last_header.header.checkpoint_hash != checkpoint.digest {
+        return Err(CheckpointVerificationError::CheckpointHashMismatch);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use commonware_codec::DecodeExt;
-    use commonware_cryptography::{Signer, bls12381, sha256};
+    use commonware_cryptography::{Signer, bls12381, ed25519, sha256};
     use ssz::{Decode, Encode};
     use std::collections::{BTreeMap, VecDeque};
 
-    fn parse_public_key(public_key: &str) -> commonware_cryptography::ed25519::PublicKey {
-        commonware_cryptography::ed25519::PublicKey::decode(
+    fn parse_public_key(public_key: &str) -> ed25519::PublicKey {
+        ed25519::PublicKey::decode(
             commonware_utils::from_hex_formatted(public_key)
                 .unwrap()
                 .as_ref(),

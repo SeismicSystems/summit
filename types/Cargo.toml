@@ -12,6 +12,7 @@ commonware-utils.workspace = true
 commonware-resolver.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime.workspace = true
+commonware-parallel.workspace = true
 
 alloy-rpc-types-engine.workspace = true
 alloy-eips.workspace = true
@@ -23,7 +24,7 @@ alloy-transport-ipc.workspace = true
 futures.workspace = true
 # for reth.rs module (e2e feature only)
 alloy-genesis = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
+rand.workspace = true
 url = { workspace = true, optional = true }
 anyhow.workspace = true
 dirs.workspace = true
@@ -39,9 +40,6 @@ serde_json = { workspace = true, optional = true }
 # for benchmarking
 libc = { version = "0.2.174", optional = true}
 
-[dev-dependencies]
-rand.workspace = true
-
 [features]
 bench = ["serde_json"]
-e2e = ["libc", "alloy-genesis", "rand", "url"]
+e2e = ["libc", "alloy-genesis", "url"]
