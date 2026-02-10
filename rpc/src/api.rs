@@ -1,5 +1,6 @@
 use crate::types::{
-    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, PublicKeysResponse,
+    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, FinalizedHeaderRes,
+    PublicKeysResponse,
 };
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
@@ -20,6 +21,9 @@ pub trait SummitApi {
 
     #[method(name = "getLatestCheckpointInfo")]
     async fn get_latest_checkpoint_info(&self) -> RpcResult<CheckpointInfoRes>;
+
+    #[method(name = "getFinalizedHeader")]
+    async fn get_finalized_header(&self, epoch: u64) -> RpcResult<FinalizedHeaderRes>;
 
     #[method(name = "getLatestHeight")]
     async fn get_latest_height(&self) -> RpcResult<u64>;

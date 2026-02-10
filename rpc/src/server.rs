@@ -1,7 +1,8 @@
 use crate::api::SummitApiServer;
 use crate::error::RpcError;
 use crate::types::{
-    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, PublicKeysResponse,
+    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, FinalizedHeaderRes,
+    PublicKeysResponse,
 };
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
@@ -119,6 +120,23 @@ impl SummitApiServer for SummitRpcServer {
         Ok(CheckpointInfoRes {
             epoch,
             digest: checkpoint.digest.0,
+        })
+    }
+
+    async fn get_finalized_header(&self, epoch: u64) -> RpcResult<FinalizedHeaderRes> {
+        let maybe_header = self
+            .finalizer_mailbox
+            .clone()
+            .get_finalized_header(epoch)
+            .await;
+
+        let Some(header) = maybe_header else {
+            return Err(RpcError::FinalizedHeaderNotFound.into());
+        };
+
+        Ok(FinalizedHeaderRes {
+            epoch,
+            finalized_header: header.as_ssz_bytes(),
         })
     }
 
