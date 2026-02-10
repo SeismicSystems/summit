@@ -1,4 +1,5 @@
 use crate::Digest;
+use crate::account::ValidatorStatus;
 use crate::consensus_state::ConsensusState;
 use crate::genesis::Genesis;
 use crate::header::FinalizedHeader;
@@ -12,6 +13,7 @@ use commonware_utils::TryCollect;
 use commonware_utils::ordered::BiMap;
 use rand::rngs::OsRng;
 use ssz::{Decode, Encode as SszEncode};
+use std::collections::BTreeSet;
 use std::{error, fmt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +142,7 @@ pub enum CheckpointVerificationError {
     NonContiguousEpochs { expected: u64, found: u64 },
     SignatureVerificationFailed { epoch: u64 },
     CheckpointHashMismatch,
+    ValidatorSetMismatch(String),
     ValidatorSetError(String),
 }
 
@@ -158,6 +161,9 @@ impl fmt::Display for CheckpointVerificationError {
                     f,
                     "checkpoint hash in final header does not match checkpoint digest"
                 )
+            }
+            Self::ValidatorSetMismatch(reason) => {
+                write!(f, "validator set mismatch: {reason}")
             }
             Self::ValidatorSetError(reason) => {
                 write!(f, "failed to construct validator set: {reason}")
@@ -252,6 +258,43 @@ pub fn verify_checkpoint_chain(
     let last_header = finalized_headers.last().unwrap();
     if last_header.header.checkpoint_hash != checkpoint.digest {
         return Err(CheckpointVerificationError::CheckpointHashMismatch);
+    }
+
+    // Verify validator set consistency: the accumulated validator set should
+    // match the active validators in the checkpoint.
+    // After the loop, `participants` is the validator set for epoch n+1.
+    // The checkpoint's active validators should match this set.
+    let checkpoint_state = ConsensusState::try_from(checkpoint).map_err(|e| {
+        CheckpointVerificationError::ValidatorSetError(format!(
+            "failed to deserialize checkpoint: {e}"
+        ))
+    })?;
+
+    let accumulated_keys: BTreeSet<[u8; 32]> = participants
+        .iter()
+        .map(|(pk, _)| {
+            pk.as_ref()
+                .try_into()
+                .expect("ed25519 public key should be 32 bytes")
+        })
+        .collect();
+
+    let checkpoint_keys: BTreeSet<[u8; 32]> = checkpoint_state
+        .validator_accounts
+        .iter()
+        .filter(|(_, account)| account.status == ValidatorStatus::Active)
+        .map(|(pk, _)| *pk)
+        .collect();
+
+    if accumulated_keys != checkpoint_keys {
+        let in_accumulated_not_checkpoint: Vec<_> =
+            accumulated_keys.difference(&checkpoint_keys).collect();
+        let in_checkpoint_not_accumulated: Vec<_> =
+            checkpoint_keys.difference(&accumulated_keys).collect();
+        return Err(CheckpointVerificationError::ValidatorSetMismatch(format!(
+            "in headers but not checkpoint: {:?}, in checkpoint but not headers: {:?}",
+            in_accumulated_not_checkpoint, in_checkpoint_not_accumulated,
+        )));
     }
 
     Ok(())
