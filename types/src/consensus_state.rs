@@ -22,7 +22,7 @@ pub struct ConsensusState {
     pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
     pub withdrawal_queue: BTreeMap<u64, VecDeque<PendingWithdrawal>>, // epoch -> withdrawals
-    pub validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
+    pub(crate) validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
     pub protocol_param_changes: Vec<ProtocolParam>,
     pub pending_checkpoint: Option<Checkpoint>,
     pub added_validators: BTreeMap<u64, Vec<AddedValidator>>,
@@ -37,7 +37,7 @@ pub struct ConsensusState {
 
     /// In-memory Merkle Patricia Trie over validator_accounts.
     /// Not serialized — rebuilt from validator_accounts on deserialization.
-    pub state_trie: StateTrie,
+    pub(crate) state_trie: StateTrie,
 }
 
 impl Default for ConsensusState {
@@ -188,6 +188,23 @@ impl ConsensusState {
     pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
         self.state_trie.remove(pubkey);
         self.validator_accounts.remove(pubkey)
+    }
+
+    pub fn num_validators(&self) -> usize {
+        self.validator_accounts.len()
+    }
+
+    pub fn validator_accounts_iter(&self) -> impl Iterator<Item = (&[u8; 32], &ValidatorAccount)> {
+        self.validator_accounts.iter()
+    }
+
+    pub fn set_validator_accounts(&mut self, accounts: BTreeMap<[u8; 32], ValidatorAccount>) {
+        self.state_trie = StateTrie::build(&accounts);
+        self.validator_accounts = accounts;
+    }
+
+    pub fn state_trie(&self) -> &StateTrie {
+        &self.state_trie
     }
 
     // Deposit queue operations

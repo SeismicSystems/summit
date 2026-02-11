@@ -319,7 +319,7 @@ pub fn get_initial_state(
                 // index 0 as well.
                 last_deposit_index: 0,
             };
-            state.validator_accounts.insert(pubkey_bytes, account);
+            state.set_account(pubkey_bytes, account);
         }
         state
     })

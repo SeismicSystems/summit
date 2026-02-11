@@ -130,7 +130,7 @@ impl<
             info!(
                 epoch = state.epoch,
                 height = state.latest_height,
-                num_validators = state.validator_accounts.len(),
+                num_validators = state.num_validators(),
                 "loaded consensus state from database"
             );
             state
@@ -138,7 +138,7 @@ impl<
             info!(
                 epoch = cfg.initial_state.epoch,
                 height = cfg.initial_state.latest_height,
-                num_validators = cfg.initial_state.validator_accounts.len(),
+                num_validators = cfg.initial_state.num_validators(),
                 epoch_num_of_blocks = cfg.protocol_consts.epoch_num_of_blocks,
                 "using provided initial state (no state found in database)"
             );
@@ -506,9 +506,8 @@ impl<
             let active_count = self.canonical_state.get_active_validators().len();
             let joining_count = self
                 .canonical_state
-                .validator_accounts
-                .values()
-                .filter(|a| a.status == ValidatorStatus::Joining)
+                .validator_accounts_iter()
+                .filter(|(_, a)| a.status == ValidatorStatus::Joining)
                 .count();
             info!(
                 epoch = self.canonical_state.epoch,
@@ -875,8 +874,7 @@ impl<
 
                 let balance = self
                     .canonical_state
-                    .validator_accounts
-                    .get(&key_bytes)
+                    .get_account(&key_bytes)
                     .map(|account| account.balance + account.pending_withdrawal_amount);
                 let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
             }
@@ -884,11 +882,7 @@ impl<
                 let mut key_bytes = [0u8; 32];
                 key_bytes.copy_from_slice(&public_key);
 
-                let account = self
-                    .canonical_state
-                    .validator_accounts
-                    .get(&key_bytes)
-                    .cloned();
+                let account = self.canonical_state.get_account(&key_bytes).cloned();
                 let _ = sender.send(ConsensusStateResponse::ValidatorAccount(account));
             }
             ConsensusStateRequest::GetFinalizedHeader(epoch) => {
@@ -973,8 +967,7 @@ impl<
 
             let validators_to_process: Vec<([u8; 32], u64, Address)> = self
                 .canonical_state
-                .validator_accounts
-                .iter()
+                .validator_accounts_iter()
                 .filter_map(|(key, acc)| {
                     if acc.balance < self.canonical_state.validator_minimum_stake
                         || acc.balance > self.canonical_state.validator_maximum_stake
@@ -1626,7 +1619,7 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
 ) -> bool {
     // Check if validator already exists
     let validator_pubkey: [u8; 32] = deposit_request.node_pubkey.as_ref().try_into().unwrap();
-    let account = state.validator_accounts.get(&validator_pubkey);
+    let account = state.get_account(&validator_pubkey);
     let existing_balance = account.map(|acc| acc.balance).unwrap_or(0);
 
     // Check for pending deposit or withdrawal (only if account exists)

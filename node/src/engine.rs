@@ -316,7 +316,7 @@ where
             epoch: initial_state.epoch,
             view: initial_state.view,
         };
-        let num_validators = initial_state.validator_accounts.len();
+        let num_validators = initial_state.num_validators();
 
         info!(
             sync_height = sync_start.height,

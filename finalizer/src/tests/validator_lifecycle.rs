@@ -17,13 +17,12 @@ use commonware_runtime::{Clock, Metrics, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::channel::mpsc as futures_mpsc;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::time::Duration;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
-use summit_types::state_trie::StateTrie;
 use summit_types::{Block, Digest};
 use tokio_util::sync::CancellationToken;
 
@@ -114,31 +113,14 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
         validator_accounts.insert(key_bytes, account);
     }
 
-    let state_trie = StateTrie::build(&validator_accounts);
-    ConsensusState {
-        epoch: 0,
-        view: 0,
-        latest_height: 0,
-        head_digest: genesis_hash.into(),
-        next_withdrawal_index: 0,
-        deposit_queue: VecDeque::new(),
-        withdrawal_queue: BTreeMap::new(),
-        validator_accounts,
-        protocol_param_changes: Vec::new(),
-        pending_checkpoint: None,
-        added_validators: BTreeMap::new(),
-        removed_validators: Vec::new(),
-        pending_execution_requests: Vec::new(),
-        forkchoice: ForkchoiceState {
-            head_block_hash: genesis_hash.into(),
-            safe_block_hash: genesis_hash.into(),
-            finalized_block_hash: genesis_hash.into(),
-        },
-        epoch_genesis_hash: genesis_hash,
-        validator_minimum_stake: 32_000_000_000,
-        validator_maximum_stake: 64_000_000_000,
-        state_trie,
-    }
+    let forkchoice = ForkchoiceState {
+        head_block_hash: genesis_hash.into(),
+        safe_block_hash: genesis_hash.into(),
+        finalized_block_hash: genesis_hash.into(),
+    };
+    let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 64_000_000_000);
+    state.set_validator_accounts(validator_accounts);
+    state
 }
 
 #[test]

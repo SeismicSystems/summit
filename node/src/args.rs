@@ -694,7 +694,7 @@ fn get_initial_state(
                 // index 0 as well.
                 last_deposit_index: 0,
             };
-            state.validator_accounts.insert(pubkey_bytes, account);
+            state.set_account(pubkey_bytes, account);
         }
         state
     })
@@ -752,7 +752,7 @@ where
         info!(
             epoch = consensus_state.epoch,
             height = consensus_state.latest_height,
-            num_validators = consensus_state.validator_accounts.len(),
+            num_validators = consensus_state.num_validators(),
             checkpoint_path = %path.display(),
             "loaded checkpoint from file"
         );
@@ -828,7 +828,7 @@ where
             info!(
                 epoch = state.epoch,
                 height = state.latest_height,
-                num_validators = state.validator_accounts.len(),
+                num_validators = state.num_validators(),
                 has_last_block = last_block.is_some(),
                 has_finalized_header = header.is_some(),
                 has_verification_headers = finalized_headers_chain.is_some(),
