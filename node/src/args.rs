@@ -526,8 +526,8 @@ pub fn run_node_local(
 
         #[cfg(feature = "bad-blocks")]
         let engine_client =
-            BadBlockEngineClient::new(engine_ipc_path.to_string_lossy().to_string(),4 ).await; // make every 4th block a bad eth payload
-            
+            BadBlockEngineClient::new(engine_ipc_path.to_string_lossy().to_string(), 4).await; // make every 4th block a bad eth payload
+
         #[cfg(all(not(feature = "bench"), not(feature = "bad-blocks")))]
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;

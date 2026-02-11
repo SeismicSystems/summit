@@ -194,7 +194,6 @@ impl EngineClient for RethEngineClient {
     }
 }
 
-
 #[cfg(feature = "bad-blocks")]
 #[derive(Clone)]
 pub struct BadBlockEngineClient {
