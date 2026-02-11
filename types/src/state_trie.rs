@@ -229,4 +229,312 @@ mod tests {
         let cloned = trie.clone();
         assert_eq!(trie.root(), cloned.root());
     }
+
+    #[test]
+    fn clone_is_independent() {
+        let mut accounts = BTreeMap::new();
+        for i in 0..3u64 {
+            accounts.insert([i as u8; 32], test_account(i, 32_000_000_000));
+        }
+        let mut trie = StateTrie::build(&accounts);
+        let cloned = trie.clone();
+
+        // Mutate original — clone should be unaffected
+        trie.insert(&[99u8; 32], &test_account(99, 1_000_000_000));
+        assert_ne!(trie.root(), cloned.root());
+
+        // Clone still matches a fresh build from the original accounts
+        let fresh = StateTrie::build(&accounts);
+        assert_eq!(cloned.root(), fresh.root());
+    }
+
+    #[test]
+    fn empty_trie_root_is_consistent() {
+        let t1 = StateTrie::default();
+        let t2 = StateTrie::default();
+        assert_eq!(t1.root(), t2.root());
+
+        let empty_accounts = BTreeMap::new();
+        let t3 = StateTrie::build(&empty_accounts);
+        assert_eq!(t1.root(), t3.root());
+    }
+
+    #[test]
+    fn single_account_trie() {
+        let mut accounts = BTreeMap::new();
+        let pubkey = [42u8; 32];
+        let account = test_account(42, 32_000_000_000);
+        accounts.insert(pubkey, account.clone());
+
+        let trie = StateTrie::build(&accounts);
+        assert_ne!(trie.root(), StateTrie::default().root());
+
+        // Proof works for the single entry
+        let proof = trie.generate_proof(&[pubkey]);
+        assert!(StateTrie::verify_proof(
+            &trie.root(),
+            &proof,
+            &[(pubkey, Some(&account))],
+        ));
+    }
+
+    #[test]
+    fn remove_nonexistent_key_is_noop() {
+        let mut accounts = BTreeMap::new();
+        accounts.insert([1u8; 32], test_account(1, 32_000_000_000));
+        let mut trie = StateTrie::build(&accounts);
+        let root_before = trie.root();
+
+        // Removing a key that doesn't exist should not change the root
+        trie.remove(&[99u8; 32]);
+        assert_eq!(trie.root(), root_before);
+    }
+
+    #[test]
+    fn insert_order_does_not_affect_root() {
+        let accounts: Vec<([u8; 32], ValidatorAccount)> = (0..5u64)
+            .map(|i| ([i as u8; 32], test_account(i, 32_000_000_000)))
+            .collect();
+
+        // Forward order
+        let mut t1 = StateTrie::default();
+        for (pk, acc) in accounts.iter() {
+            t1.insert(pk, acc);
+        }
+
+        // Reverse order
+        let mut t2 = StateTrie::default();
+        for (pk, acc) in accounts.iter().rev() {
+            t2.insert(pk, acc);
+        }
+
+        assert_eq!(t1.root(), t2.root());
+    }
+
+    #[test]
+    fn different_accounts_produce_different_roots() {
+        let mut accounts_a = BTreeMap::new();
+        accounts_a.insert([1u8; 32], test_account(1, 32_000_000_000));
+
+        let mut accounts_b = BTreeMap::new();
+        accounts_b.insert([1u8; 32], test_account(1, 64_000_000_000));
+
+        let trie_a = StateTrie::build(&accounts_a);
+        let trie_b = StateTrie::build(&accounts_b);
+        assert_ne!(trie_a.root(), trie_b.root());
+    }
+
+    #[test]
+    fn different_keys_same_account_produce_different_roots() {
+        let account = test_account(1, 32_000_000_000);
+
+        let mut accounts_a = BTreeMap::new();
+        accounts_a.insert([1u8; 32], account.clone());
+
+        let mut accounts_b = BTreeMap::new();
+        accounts_b.insert([2u8; 32], account);
+
+        let trie_a = StateTrie::build(&accounts_a);
+        let trie_b = StateTrie::build(&accounts_b);
+        assert_ne!(trie_a.root(), trie_b.root());
+    }
+
+    #[test]
+    fn proof_for_multiple_keys() {
+        let mut accounts = BTreeMap::new();
+        for i in 0..10u64 {
+            accounts.insert([i as u8; 32], test_account(i, 32_000_000_000));
+        }
+        let trie = StateTrie::build(&accounts);
+
+        let keys = [[2u8; 32], [5u8; 32], [8u8; 32]];
+        let proof = trie.generate_proof(&keys);
+        let root = trie.root();
+
+        let items: Vec<([u8; 32], Option<&ValidatorAccount>)> = keys
+            .iter()
+            .map(|k| (*k, accounts.get(k).map(|a| a)))
+            .collect();
+        assert!(StateTrie::verify_proof(&root, &proof, &items));
+    }
+
+    #[test]
+    fn exclusion_proof_for_absent_key() {
+        let mut accounts = BTreeMap::new();
+        for i in 0..5u64 {
+            accounts.insert([i as u8; 32], test_account(i, 32_000_000_000));
+        }
+        let trie = StateTrie::build(&accounts);
+
+        let absent_key = [99u8; 32];
+        let proof = trie.generate_proof(&[absent_key]);
+        let root = trie.root();
+
+        // Verify exclusion (None value)
+        assert!(StateTrie::verify_proof(
+            &root,
+            &proof,
+            &[(absent_key, None)],
+        ));
+
+        // Claiming it exists with some account should fail
+        let fake_account = test_account(99, 32_000_000_000);
+        assert!(!StateTrie::verify_proof(
+            &root,
+            &proof,
+            &[(absent_key, Some(&fake_account))],
+        ));
+    }
+
+    #[test]
+    fn proof_invalid_against_wrong_root() {
+        let mut accounts = BTreeMap::new();
+        for i in 0..5u64 {
+            accounts.insert([i as u8; 32], test_account(i, 32_000_000_000));
+        }
+        let trie = StateTrie::build(&accounts);
+
+        let target = [3u8; 32];
+        let proof = trie.generate_proof(&[target]);
+
+        let wrong_root = [0xFFu8; 32];
+        assert!(!StateTrie::verify_proof(
+            &wrong_root,
+            &proof,
+            &[(target, accounts.get(&target).map(|a| a))],
+        ));
+    }
+
+    #[test]
+    fn proof_valid_after_update() {
+        let mut accounts = BTreeMap::new();
+        for i in 0..5u64 {
+            accounts.insert([i as u8; 32], test_account(i, 32_000_000_000));
+        }
+        let mut trie = StateTrie::build(&accounts);
+
+        // Update an account
+        let updated = test_account(2, 50_000_000_000);
+        trie.insert(&[2u8; 32], &updated);
+
+        // Old proof against new root should fail
+        let old_root = StateTrie::build(&accounts).root();
+        assert_ne!(trie.root(), old_root);
+
+        // New proof against new root should succeed
+        let proof = trie.generate_proof(&[[2u8; 32]]);
+        assert!(StateTrie::verify_proof(
+            &trie.root(),
+            &proof,
+            &[([2u8; 32], Some(&updated))],
+        ));
+    }
+
+    #[test]
+    fn rebuild_after_many_mutations_matches_full_build() {
+        let mut trie = StateTrie::default();
+
+        // Insert 20 accounts
+        let mut accounts = BTreeMap::new();
+        for i in 0..20u64 {
+            let acc = test_account(i, 32_000_000_000 + i);
+            accounts.insert([i as u8; 32], acc.clone());
+            trie.insert(&[i as u8; 32], &acc);
+        }
+
+        // Remove some
+        for i in [3u64, 7, 12, 18] {
+            accounts.remove(&[i as u8; 32]);
+            trie.remove(&[i as u8; 32]);
+        }
+
+        // Update some
+        for i in [0u64, 5, 15] {
+            let updated = test_account(i, 99_000_000_000);
+            accounts.insert([i as u8; 32], updated.clone());
+            trie.insert(&[i as u8; 32], &updated);
+        }
+
+        let fresh = StateTrie::build(&accounts);
+        assert_eq!(trie.root(), fresh.root());
+    }
+
+    #[test]
+    fn insert_remove_reinsert_same_key() {
+        let mut trie = StateTrie::default();
+        let pubkey = [7u8; 32];
+
+        let acc1 = test_account(7, 32_000_000_000);
+        trie.insert(&pubkey, &acc1);
+        let root1 = trie.root();
+
+        trie.remove(&pubkey);
+        assert_eq!(trie.root(), StateTrie::default().root());
+
+        // Reinsert same account — should get same root
+        trie.insert(&pubkey, &acc1);
+        assert_eq!(trie.root(), root1);
+
+        // Reinsert with different value — should get different root
+        trie.remove(&pubkey);
+        let acc2 = test_account(7, 64_000_000_000);
+        trie.insert(&pubkey, &acc2);
+        assert_ne!(trie.root(), root1);
+    }
+
+    #[test]
+    fn large_trie_proof() {
+        let mut accounts = BTreeMap::new();
+        for i in 0..200u64 {
+            let mut pubkey = [0u8; 32];
+            pubkey[0..8].copy_from_slice(&i.to_le_bytes());
+            accounts.insert(pubkey, test_account(i, 32_000_000_000 + i));
+        }
+        let trie = StateTrie::build(&accounts);
+
+        // Prove a subset
+        let keys_to_prove: Vec<[u8; 32]> = (0..200u64)
+            .step_by(17)
+            .map(|i| {
+                let mut k = [0u8; 32];
+                k[0..8].copy_from_slice(&i.to_le_bytes());
+                k
+            })
+            .collect();
+
+        let proof = trie.generate_proof(&keys_to_prove);
+
+        let items: Vec<([u8; 32], Option<&ValidatorAccount>)> = keys_to_prove
+            .iter()
+            .map(|k| (*k, accounts.get(k).map(|a| a)))
+            .collect();
+        assert!(StateTrie::verify_proof(&trie.root(), &proof, &items));
+    }
+
+    #[test]
+    fn account_status_change_updates_root() {
+        let pubkey = [1u8; 32];
+        let mut acc = test_account(1, 32_000_000_000);
+        let mut trie = StateTrie::default();
+        trie.insert(&pubkey, &acc);
+        let root_active = trie.root();
+
+        acc.status = ValidatorStatus::Inactive;
+        trie.insert(&pubkey, &acc);
+        assert_ne!(trie.root(), root_active);
+
+        acc.status = ValidatorStatus::Joining;
+        trie.insert(&pubkey, &acc);
+        assert_ne!(trie.root(), root_active);
+    }
+
+    #[test]
+    fn debug_shows_root_hash() {
+        let trie = StateTrie::default();
+        let debug_str = format!("{:?}", trie);
+        assert!(debug_str.contains("StateTrie"));
+        assert!(debug_str.contains("root"));
+        // Root hash should be a hex string (64 hex chars for 32 bytes)
+        assert!(debug_str.len() > 64);
+    }
 }
