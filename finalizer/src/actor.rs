@@ -917,17 +917,24 @@ impl<
             || !self.canonical_state.removed_validators.is_empty()
         {
             // Activate validators for the coming epoch.
-            if let Some(added_validators) = self.canonical_state.added_validators.get(&next_epoch) {
-                for validator in added_validators {
+            // Clone to release the immutable borrow on canonical_state so we can call set_account.
+            if let Some(added_validators) = self
+                .canonical_state
+                .added_validators
+                .get(&next_epoch)
+                .cloned()
+            {
+                for validator in &added_validators {
                     let key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
-                    let account = self
+                    let mut account = self
                         .canonical_state
-                        .validator_accounts
-                        .get_mut(&key_bytes)
+                        .get_account(&key_bytes)
                         .expect(
                             "only validators with accounts are added to the added_validators queue",
-                        );
+                        )
+                        .clone();
                     account.status = ValidatorStatus::Active;
+                    self.canonical_state.set_account(key_bytes, account);
                     info!(
                         next_epoch,
                         validator = hex::encode(key_bytes),
@@ -936,7 +943,8 @@ impl<
                 }
             }
 
-            for key in self.canonical_state.removed_validators.iter() {
+            let removed_validators = self.canonical_state.removed_validators.clone();
+            for key in &removed_validators {
                 // Check if this node exits the validator set
                 if key == &self.node_public_key {
                     validator_exit = true;
@@ -944,8 +952,9 @@ impl<
                 }
 
                 let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key_bytes) {
+                if let Some(mut account) = self.canonical_state.get_account(&key_bytes).cloned() {
                     account.status = ValidatorStatus::Inactive;
+                    self.canonical_state.set_account(key_bytes, account);
                     info!(
                         next_epoch,
                         validator = hex::encode(key_bytes),
@@ -981,11 +990,12 @@ impl<
                 if balance < self.canonical_state.validator_minimum_stake {
                     // Remove the validator from the committee and withdraw the full balance
                     // Update account first: move balance to pending_withdrawal_amount
-                    if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
+                    if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
                         account.status = ValidatorStatus::Inactive;
                         account.balance = 0;
                         account.pending_withdrawal_amount += balance;
                         account.has_pending_withdrawal = true;
+                        self.canonical_state.set_account(key, account);
                     }
 
                     info!(
@@ -1010,10 +1020,11 @@ impl<
                     let excess_amount = balance - self.canonical_state.validator_maximum_stake;
 
                     // Move excess from balance to pending_withdrawal_amount
-                    if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
+                    if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
                         account.balance -= excess_amount;
                         account.pending_withdrawal_amount += excess_amount;
                         account.has_pending_withdrawal = true;
+                        self.canonical_state.set_account(key, account);
                     }
 
                     info!(
@@ -1203,10 +1214,10 @@ async fn parse_execution_requests<
                             // Mark account as having a pending deposit
                             let validator_pubkey: [u8; 32] =
                                 deposit_request.node_pubkey.as_ref().try_into().unwrap();
-                            if let Some(account) =
-                                state.validator_accounts.get_mut(&validator_pubkey)
+                            if let Some(mut account) = state.get_account(&validator_pubkey).cloned()
                             {
                                 account.has_pending_deposit = true;
+                                state.set_account(validator_pubkey, account);
                             } else {
                                 // Create account early with Inactive status for new validators
                                 let withdrawal_credentials = match parse_withdrawal_credentials(
@@ -1418,7 +1429,7 @@ async fn process_execution_requests<
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
 
                 // Account should always exist (created early in parse_execution_requests)
-                let Some(account) = state.validator_accounts.get_mut(&node_pubkey_bytes) else {
+                let Some(mut account) = state.get_account(&node_pubkey_bytes).cloned() else {
                     warn!("Deposit request has no corresponding account, skipping: {request:?}");
                     continue;
                 };
@@ -1458,12 +1469,12 @@ async fn process_execution_requests<
 
                     // Activate the new validator
                     let activation_epoch = state.epoch + consts.validator_num_warm_up_epochs;
-                    // Clone the consensus key before add_validator since it needs &mut state
                     let consensus_key = account.consensus_public_key.clone();
                     account.balance = new_balance;
                     account.status = ValidatorStatus::Joining;
                     account.joining_epoch = activation_epoch;
                     account.last_deposit_index = request.index;
+                    state.set_account(node_pubkey_bytes, account);
 
                     state.add_validator(
                         activation_epoch,
@@ -1512,6 +1523,7 @@ async fn process_execution_requests<
                             "processing top-up deposit for existing validator"
                         );
                         account.balance = new_balance;
+                        state.set_account(node_pubkey_bytes, account);
                     } else {
                         // Invalid: new balance outside range, initiate immediate withdrawal
                         info!(
@@ -1532,6 +1544,8 @@ async fn process_execution_requests<
                             withdrawal_epoch,
                             false, // subtract_balance: top-up deposit was never credited to balance
                         );
+                        // Persist the has_pending_deposit = false change
+                        state.set_account(node_pubkey_bytes, account);
                     }
                 }
             }

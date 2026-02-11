@@ -326,6 +326,7 @@ pub fn verify_checkpoint_chain(
 mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
+    use crate::state_trie::StateTrie;
     use commonware_codec::DecodeExt;
     use commonware_cryptography::{Signer, bls12381, ed25519, sha256};
     use ssz::{Decode, Encode};
@@ -360,6 +361,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -478,6 +480,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -518,6 +521,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -643,6 +647,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -688,6 +693,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -739,6 +745,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         };
 
         let checkpoint = Checkpoint::new(&original_state);
@@ -786,6 +793,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         };
 
         let mut checkpoint = Checkpoint::new(&original_state);
@@ -879,6 +887,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         };
 
         let checkpoint = Checkpoint::new(&original_state);

@@ -23,6 +23,7 @@ use std::time::Duration;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
+use summit_types::state_trie::StateTrie;
 use summit_types::{Block, Digest};
 use tokio_util::sync::CancellationToken;
 
@@ -107,6 +108,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
         validator_accounts.insert(key_bytes, account);
     }
 
+    let state_trie = StateTrie::build(&validator_accounts);
     ConsensusState {
         epoch: 0,
         view: 0,
@@ -129,6 +131,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
         epoch_genesis_hash: genesis_hash,
         validator_minimum_stake: 32_000_000_000,
         validator_maximum_stake: 64_000_000_000,
+        state_trie,
     }
 }
 
