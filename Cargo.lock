@@ -2959,6 +2959,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash-db"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e7d7786361d7425ae2fe4f9e407eb0efaa0840f5212d109cc018c40c35c6ab4"
+
+[[package]]
+name = "hash256-std-hasher"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92c171d55b98633f4ed3860808f004099b36c1cc29c42cfc53aa8591b21efcf2"
+dependencies = [
+ "crunchy",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2969,6 +2984,9 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+]
 
 [[package]]
 name = "hashbrown"
@@ -3794,6 +3812,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "keccak-hasher"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19ea4653859ca2266a86419d3f592d3f22e7a854b482f99180d2498507902048"
+dependencies = [
+ "hash-db",
+ "hash256-std-hasher",
+ "tiny-keccak",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3937,6 +3966,17 @@ name = "memchr"
 version = "2.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
+
+[[package]]
+name = "memory-db"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e300c54e3239a86f9c61cc63ab0f03862eb40b1c6e065dc6fd6ceaeff6da93d"
+dependencies = [
+ "foldhash 0.1.5",
+ "hash-db",
+ "hashbrown 0.15.4",
+]
 
 [[package]]
 name = "metrics"
@@ -5114,6 +5154,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "reference-trie"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "693da3c9d23a53bd6b35e36bcb70f584ee58eba8673edc3130ac69ba42ed9822"
+dependencies = [
+ "hash-db",
+ "hashbrown 0.14.5",
+ "keccak-hasher",
+ "parity-scale-codec",
+ "paste",
+ "trie-db",
+ "trie-root",
+]
+
+[[package]]
 name = "regex"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6215,13 +6270,18 @@ dependencies = [
  "dirs 6.0.0",
  "ethereum_ssz",
  "futures",
+ "hash-db",
+ "keccak-hasher",
  "libc",
+ "memory-db",
  "rand 0.8.5",
+ "reference-trie",
  "serde",
  "serde_json",
  "tokio",
  "toml",
  "tracing",
+ "trie-db",
  "url",
 ]
 
@@ -6846,6 +6906,27 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+]
+
+[[package]]
+name = "trie-db"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7795f2df2ef744e4ffb2125f09325e60a21d305cc3ecece0adeef03f7a9e560"
+dependencies = [
+ "hash-db",
+ "log",
+ "rustc-hex",
+ "smallvec",
+]
+
+[[package]]
+name = "trie-root"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4ed310ef5ab98f5fa467900ed906cb9232dd5376597e00fd4cba2a449d06c0b"
+dependencies = [
+ "hash-db",
 ]
 
 [[package]]

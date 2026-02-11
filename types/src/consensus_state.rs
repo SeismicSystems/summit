@@ -3,6 +3,7 @@ use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
+use crate::state_trie::StateTrie;
 use crate::withdrawal::PendingWithdrawal;
 use crate::{Digest, PublicKey};
 use alloy_eips::eip4895::Withdrawal;
@@ -33,6 +34,10 @@ pub struct ConsensusState {
     pub epoch_genesis_hash: [u8; 32],
     pub validator_minimum_stake: u64, // in gwei
     pub validator_maximum_stake: u64, // in gwei
+
+    /// In-memory Merkle Patricia Trie over validator_accounts.
+    /// Not serialized — rebuilt from validator_accounts on deserialization.
+    pub state_trie: StateTrie,
 }
 
 impl Default for ConsensusState {
@@ -55,6 +60,7 @@ impl Default for ConsensusState {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            state_trie: StateTrie::default(),
         }
     }
 }
@@ -175,10 +181,12 @@ impl ConsensusState {
     }
 
     pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
+        self.state_trie.insert(&pubkey, &account);
         self.validator_accounts.insert(pubkey, account);
     }
 
     pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
+        self.state_trie.remove(pubkey);
         self.validator_accounts.remove(pubkey)
     }
 
@@ -496,6 +504,8 @@ impl Read for ConsensusState {
         let validator_minimum_stake = buf.get_u64();
         let validator_maximum_stake = buf.get_u64();
 
+        let state_trie = StateTrie::build(&validator_accounts);
+
         Ok(Self {
             epoch,
             view,
@@ -514,6 +524,7 @@ impl Read for ConsensusState {
             epoch_genesis_hash,
             validator_minimum_stake,
             validator_maximum_stake,
+            state_trie,
         })
     }
 }

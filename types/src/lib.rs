@@ -16,6 +16,7 @@ pub mod protocol_params;
 pub mod reth;
 pub mod rpc;
 pub mod scheme;
+pub mod state_trie;
 pub mod utils;
 pub mod withdrawal;
 
