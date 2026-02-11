@@ -544,9 +544,7 @@ impl<
 fn handle_verify(block: &Block, parent: Block, epoch_length: u64, aux_data: &BlockAuxData) -> bool {
     // You can only re-propose the same block if it's the last height in the epoch.
     if parent.digest() == block.digest() {
-        tracing::error!("1");
         let last_in_epoch = utils::last_block_in_epoch(epoch_length, aux_data.epoch);
-        tracing::error!("adddfff: BLOCK HEIGHT: {}, last in epoch: {}", block.height(), last_in_epoch);
         return block.height() == last_in_epoch;
     }
 
