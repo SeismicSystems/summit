@@ -43,3 +43,4 @@ libc = { version = "0.2.174", optional = true}
 [features]
 bench = ["serde_json"]
 e2e = ["libc", "alloy-genesis", "url"]
+bad-blocks = []
