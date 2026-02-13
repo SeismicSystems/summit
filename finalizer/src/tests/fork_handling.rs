@@ -95,7 +95,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
             consensus_public_key: consensus_pubkey,
             withdrawal_credentials: Address::from([i as u8; 20]),
             balance: 32_000_000_000,
-            pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
             has_pending_deposit: false,
             has_pending_withdrawal: false,

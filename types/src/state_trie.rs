@@ -135,7 +135,6 @@ mod tests {
             consensus_public_key: consensus_key.public_key(),
             withdrawal_credentials: Address::from([index as u8; 20]),
             balance,
-            pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
             has_pending_deposit: false,
             has_pending_withdrawal: false,

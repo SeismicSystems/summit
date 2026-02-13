@@ -272,6 +272,14 @@ impl WithdrawalQueue {
     pub fn num_epochs(&self) -> usize {
         self.schedule.len()
     }
+
+    /// Get the `balance_deduction` for a specific validator, or 0 if not in the queue.
+    pub fn balance_deduction_for(&self, pubkey: &[u8; 32]) -> u64 {
+        self.withdrawals
+            .get(pubkey)
+            .map(|w| w.balance_deduction)
+            .unwrap_or(0)
+    }
 }
 
 impl EncodeSize for WithdrawalQueue {

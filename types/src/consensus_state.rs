@@ -249,6 +249,11 @@ impl ConsensusState {
         self.withdrawal_queue.epochs_with_withdrawals()
     }
 
+    /// Get the pending withdrawal amount (balance_deduction) for a specific validator.
+    pub fn get_pending_withdrawal_amount(&self, pubkey: &[u8; 32]) -> u64 {
+        self.withdrawal_queue.balance_deduction_for(pubkey)
+    }
+
     pub fn get_validator_keys(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
         let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
             .validator_accounts
@@ -623,7 +628,6 @@ mod tests {
             consensus_public_key: consensus_key.public_key(),
             withdrawal_credentials: Address::from([index as u8; 20]),
             balance,
-            pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
             has_pending_deposit: false,
             has_pending_withdrawal: false,
