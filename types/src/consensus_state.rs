@@ -4,34 +4,35 @@ use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
 use crate::state_trie::StateTrie;
+use crate::state_trie_key;
 use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use crate::{Digest, PublicKey};
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
+use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{bls12381, sha256};
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Debug)]
 pub struct ConsensusState {
-    pub epoch: u64,
-    pub view: u64,
-    pub latest_height: u64,
-    pub head_digest: Digest,
-    pub deposit_queue: VecDeque<DepositRequest>,
-    pub withdrawal_queue: WithdrawalQueue,
+    pub(crate) epoch: u64,
+    pub(crate) view: u64,
+    pub(crate) latest_height: u64,
+    pub(crate) head_digest: Digest,
+    pub(crate) deposit_queue: VecDeque<DepositRequest>,
+    pub(crate) withdrawal_queue: WithdrawalQueue,
     pub(crate) validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
-    pub protocol_param_changes: Vec<ProtocolParam>,
-    pub pending_checkpoint: Option<Checkpoint>,
-    pub added_validators: BTreeMap<u64, Vec<AddedValidator>>,
-    pub removed_validators: Vec<PublicKey>,
+    pub(crate) protocol_param_changes: Vec<ProtocolParam>,
+    pub(crate) pending_checkpoint: Option<Checkpoint>,
+    pub(crate) added_validators: BTreeMap<u64, Vec<AddedValidator>>,
+    pub(crate) removed_validators: Vec<PublicKey>,
     /// Execution requests that need to be deferred. Currently this only applies to
     /// withdrawal requests received in the last block of an epoch.
-    pub pending_execution_requests: Vec<alloy_primitives::Bytes>,
-    pub forkchoice: ForkchoiceState,
-    pub epoch_genesis_hash: [u8; 32],
-    pub validator_minimum_stake: u64, // in gwei
-    pub validator_maximum_stake: u64, // in gwei
+    pub(crate) pending_execution_requests: Vec<alloy_primitives::Bytes>,
+    pub(crate) forkchoice: ForkchoiceState,
+    pub(crate) epoch_genesis_hash: [u8; 32],
+    pub(crate) validator_minimum_stake: u64, // in gwei
+    pub(crate) validator_maximum_stake: u64, // in gwei
 
     /// In-memory Merkle Patricia Trie over validator_accounts.
     /// Not serialized — rebuilt from validator_accounts on deserialization.
@@ -40,7 +41,7 @@ pub struct ConsensusState {
 
 impl Default for ConsensusState {
     fn default() -> Self {
-        Self {
+        let mut s = Self {
             epoch: 0,
             view: 0,
             latest_height: 0,
@@ -58,7 +59,9 @@ impl Default for ConsensusState {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             state_trie: StateTrie::default(),
-        }
+        };
+        s.rebuild_state_trie();
+        s
     }
 }
 
@@ -68,14 +71,27 @@ impl ConsensusState {
         validator_minimum_stake: u64,
         validator_maximum_stake: u64,
     ) -> Self {
-        Self {
+        let mut s = Self {
+            epoch: 0,
+            view: 0,
+            latest_height: 0,
+            head_digest: (*forkchoice.head_block_hash).into(),
+            deposit_queue: Default::default(),
+            withdrawal_queue: Default::default(),
+            protocol_param_changes: Default::default(),
+            validator_accounts: Default::default(),
+            pending_checkpoint: None,
+            added_validators: Default::default(),
+            removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice,
             epoch_genesis_hash: forkchoice.head_block_hash.into(),
-            head_digest: (*forkchoice.head_block_hash).into(),
             validator_minimum_stake,
             validator_maximum_stake,
-            ..Default::default()
-        }
+            state_trie: StateTrie::default(),
+        };
+        s.rebuild_state_trie();
+        s
     }
 
     // State variable operations
@@ -85,6 +101,7 @@ impl ConsensusState {
 
     pub fn set_epoch(&mut self, epoch: u64) {
         self.epoch = epoch;
+        self.state_trie.insert_u64(state_trie_key::EPOCH, epoch);
     }
 
     pub fn get_view(&self) -> u64 {
@@ -93,6 +110,7 @@ impl ConsensusState {
 
     pub fn set_view(&mut self, view: u64) {
         self.view = view;
+        self.state_trie.insert_u64(state_trie_key::VIEW, view);
     }
 
     pub fn get_latest_height(&self) -> u64 {
@@ -101,6 +119,8 @@ impl ConsensusState {
 
     pub fn set_latest_height(&mut self, height: u64) {
         self.latest_height = height;
+        self.state_trie
+            .insert_u64(state_trie_key::LATEST_HEIGHT, height);
     }
 
     pub fn get_next_withdrawal_index(&self) -> u64 {
@@ -119,12 +139,26 @@ impl ConsensusState {
         self.validator_maximum_stake
     }
 
+    pub fn set_minimum_stake(&mut self, stake: u64) {
+        self.validator_minimum_stake = stake;
+        self.state_trie
+            .insert_u64(state_trie_key::VALIDATOR_MINIMUM_STAKE, stake);
+    }
+
+    pub fn set_maximum_stake(&mut self, stake: u64) {
+        self.validator_maximum_stake = stake;
+        self.state_trie
+            .insert_u64(state_trie_key::VALIDATOR_MAXIMUM_STAKE, stake);
+    }
+
     pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
         self.pending_checkpoint.as_ref()
     }
 
     pub fn set_next_withdrawal_index(&mut self, index: u64) {
         self.withdrawal_queue.set_next_index(index);
+        self.state_trie
+            .insert_u64(state_trie_key::NEXT_WITHDRAWAL_INDEX, index);
     }
 
     pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
@@ -136,6 +170,12 @@ impl ConsensusState {
     }
 
     pub fn add_validator(&mut self, epoch: u64, validator: AddedValidator) {
+        let node_key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
+        let encoded = validator.consensus_key.encode();
+        self.state_trie.insert_raw(
+            &state_trie_key::added_validators_consensus_key(&node_key_bytes),
+            &encoded,
+        );
         self.added_validators
             .entry(epoch)
             .or_default()
@@ -147,6 +187,18 @@ impl ConsensusState {
     }
 
     pub fn set_removed_validators(&mut self, validators: Vec<PublicKey>) {
+        // Remove old trie entries
+        for pubkey in &self.removed_validators {
+            let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
+            self.state_trie
+                .remove_raw(&state_trie_key::removed_validators(&pubkey_bytes));
+        }
+        // Insert new trie entries
+        for pubkey in &validators {
+            let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
+            self.state_trie
+                .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[]);
+        }
         self.removed_validators = validators;
     }
 
@@ -156,6 +208,18 @@ impl ConsensusState {
 
     pub fn set_forkchoice(&mut self, forkchoice: ForkchoiceState) {
         self.forkchoice = forkchoice;
+        self.state_trie.insert_hash(
+            state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH,
+            &forkchoice.head_block_hash.0,
+        );
+        self.state_trie.insert_hash(
+            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
+            &forkchoice.safe_block_hash.0,
+        );
+        self.state_trie.insert_hash(
+            state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH,
+            &forkchoice.finalized_block_hash.0,
+        );
     }
 
     pub fn get_epoch_genesis_hash(&self) -> [u8; 32] {
@@ -164,6 +228,108 @@ impl ConsensusState {
 
     pub fn set_epoch_genesis_hash(&mut self, hash: [u8; 32]) {
         self.epoch_genesis_hash = hash;
+        self.state_trie
+            .insert_hash(state_trie_key::EPOCH_GENESIS_HASH, &hash);
+    }
+
+    pub fn get_head_digest_ref(&self) -> &Digest {
+        &self.head_digest
+    }
+
+    pub fn set_head_digest(&mut self, digest: Digest) {
+        self.head_digest = digest;
+        self.state_trie
+            .insert_hash(state_trie_key::HEAD_DIGEST, &digest.0);
+    }
+
+    pub fn set_forkchoice_head(&mut self, hash: alloy_primitives::B256) {
+        self.forkchoice.head_block_hash = hash;
+        self.state_trie
+            .insert_hash(state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH, &hash.0);
+    }
+
+    pub fn set_forkchoice_safe_and_finalized(&mut self, hash: alloy_primitives::B256) {
+        self.forkchoice.safe_block_hash = hash;
+        self.forkchoice.finalized_block_hash = hash;
+        self.state_trie
+            .insert_hash(state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH, &hash.0);
+        self.state_trie
+            .insert_hash(state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH, &hash.0);
+    }
+
+    pub fn take_pending_checkpoint(&mut self) -> Option<Checkpoint> {
+        self.pending_checkpoint.take()
+    }
+
+    pub fn push_protocol_param_change(&mut self, param: ProtocolParam) {
+        let (variant_name, value) = match &param {
+            ProtocolParam::MinimumStake(v) => (b"minimum_stake" as &[u8], *v),
+            ProtocolParam::MaximumStake(v) => (b"maximum_stake" as &[u8], *v),
+        };
+        self.state_trie.insert_u64(
+            &state_trie_key::protocol_param_changes_param(variant_name),
+            value,
+        );
+        self.protocol_param_changes.push(param);
+    }
+
+    pub fn push_removed_validator(&mut self, pubkey: PublicKey) {
+        let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
+        self.state_trie
+            .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[]);
+        self.removed_validators.push(pubkey);
+    }
+
+    pub fn clear_removed_validators(&mut self) {
+        for pubkey in &self.removed_validators {
+            let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
+            self.state_trie
+                .remove_raw(&state_trie_key::removed_validators(&pubkey_bytes));
+        }
+        self.removed_validators.clear();
+    }
+
+    pub fn has_removed_validators(&self) -> bool {
+        !self.removed_validators.is_empty()
+    }
+
+    pub fn has_added_validators(&self, epoch: u64) -> bool {
+        self.added_validators.contains_key(&epoch)
+    }
+
+    pub fn remove_added_validators_for_epoch(&mut self, epoch: u64) -> Option<Vec<AddedValidator>> {
+        let validators = self.added_validators.remove(&epoch)?;
+        for v in &validators {
+            let node_key_bytes: [u8; 32] = v.node_key.as_ref().try_into().unwrap();
+            self.state_trie
+                .remove_raw(&state_trie_key::added_validators_consensus_key(
+                    &node_key_bytes,
+                ));
+        }
+        Some(validators)
+    }
+
+    pub fn remove_added_validator(&mut self, epoch: u64, pubkey: &PublicKey) -> bool {
+        if let Some(validators) = self.added_validators.get_mut(&epoch)
+            && let Some(pos) = validators.iter().position(|v| v.node_key == *pubkey)
+        {
+            let removed = validators.remove(pos);
+            let node_key_bytes: [u8; 32] = removed.node_key.as_ref().try_into().unwrap();
+            self.state_trie
+                .remove_raw(&state_trie_key::added_validators_consensus_key(
+                    &node_key_bytes,
+                ));
+            return true;
+        }
+        false
+    }
+
+    pub fn take_pending_execution_requests(&mut self) -> Vec<alloy_primitives::Bytes> {
+        std::mem::take(&mut self.pending_execution_requests)
+    }
+
+    pub fn push_pending_execution_request(&mut self, request: alloy_primitives::Bytes) {
+        self.pending_execution_requests.push(request);
     }
 
     // Account operations
@@ -172,12 +338,12 @@ impl ConsensusState {
     }
 
     pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
-        self.state_trie.insert(&pubkey, &account);
+        self.insert_validator_trie_entries(&pubkey, &account);
         self.validator_accounts.insert(pubkey, account);
     }
 
     pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
-        self.state_trie.remove(pubkey);
+        self.remove_validator_trie_entries(pubkey);
         self.validator_accounts.remove(pubkey)
     }
 
@@ -190,8 +356,8 @@ impl ConsensusState {
     }
 
     pub fn set_validator_accounts(&mut self, accounts: BTreeMap<[u8; 32], ValidatorAccount>) {
-        self.state_trie = StateTrie::build(&accounts);
         self.validator_accounts = accounts;
+        self.rebuild_state_trie();
     }
 
     pub fn state_trie(&self) -> &StateTrie {
@@ -200,6 +366,7 @@ impl ConsensusState {
 
     // Deposit queue operations
     pub fn push_deposit(&mut self, request: DepositRequest) {
+        self.insert_deposit_trie_entries(&request);
         self.deposit_queue.push_back(request);
     }
 
@@ -208,7 +375,9 @@ impl ConsensusState {
     }
 
     pub fn pop_deposit(&mut self) -> Option<DepositRequest> {
-        self.deposit_queue.pop_front()
+        let request = self.deposit_queue.pop_front()?;
+        self.remove_deposit_trie_entries(&request);
+        Some(request)
     }
 
     // Withdrawal queue operations
@@ -218,12 +387,23 @@ impl ConsensusState {
         withdrawal_epoch: u64,
         balance_deduction: u64,
     ) {
+        let pubkey = request.validator_pubkey;
         self.withdrawal_queue
             .push_request(request, withdrawal_epoch, balance_deduction);
+        // After push (which may merge), clone the current state and update trie
+        let w = self.withdrawal_queue.get_withdrawal(&pubkey).cloned();
+        if let Some(w) = &w {
+            self.insert_withdrawal_trie_entries(&pubkey, w);
+        }
     }
 
     pub fn push_withdrawal(&mut self, request: PendingWithdrawal) {
+        let pubkey = request.pubkey;
         self.withdrawal_queue.push(request);
+        let w = self.withdrawal_queue.get_withdrawal(&pubkey).cloned();
+        if let Some(w) = &w {
+            self.insert_withdrawal_trie_entries(&pubkey, w);
+        }
     }
 
     pub fn peek_withdrawal(&self, withdrawal_epoch: u64) -> Option<&PendingWithdrawal> {
@@ -231,7 +411,9 @@ impl ConsensusState {
     }
 
     pub fn pop_withdrawal(&mut self, withdrawal_epoch: u64) -> Option<PendingWithdrawal> {
-        self.withdrawal_queue.pop(withdrawal_epoch)
+        let w = self.withdrawal_queue.pop(withdrawal_epoch)?;
+        self.remove_withdrawal_trie_entries(&w.pubkey);
+        Some(w)
     }
 
     /// Get all pending withdrawals for a specific epoch
@@ -323,15 +505,309 @@ impl ConsensusState {
             match param {
                 ProtocolParam::MinimumStake(min_stake) => {
                     self.validator_minimum_stake = min_stake;
+                    self.state_trie
+                        .insert_u64(state_trie_key::VALIDATOR_MINIMUM_STAKE, min_stake);
                     min_or_max_stake_changed = true;
                 }
                 ProtocolParam::MaximumStake(max_stake) => {
                     self.validator_maximum_stake = max_stake;
+                    self.state_trie
+                        .insert_u64(state_trie_key::VALIDATOR_MAXIMUM_STAKE, max_stake);
                     min_or_max_stake_changed = true;
                 }
             }
         }
+        // Protocol param changes have been consumed, remove their trie entries
+        self.state_trie
+            .remove_raw(&state_trie_key::protocol_param_changes_param(
+                b"minimum_stake",
+            ));
+        self.state_trie
+            .remove_raw(&state_trie_key::protocol_param_changes_param(
+                b"maximum_stake",
+            ));
         min_or_max_stake_changed
+    }
+
+    // --- Trie helper methods ---
+
+    fn insert_validator_trie_entries(&mut self, pubkey: &[u8; 32], account: &ValidatorAccount) {
+        let consensus_encoded = account.consensus_public_key.encode();
+        self.state_trie.insert_raw(
+            &state_trie_key::validator_account_consensus_public_key(pubkey),
+            &consensus_encoded,
+        );
+        self.state_trie.insert_raw(
+            &state_trie_key::validator_account_withdrawal_credentials(pubkey),
+            account.withdrawal_credentials.as_slice(),
+        );
+        self.state_trie.insert_u64(
+            &state_trie_key::validator_account_balance(pubkey),
+            account.balance,
+        );
+        let status_byte = match &account.status {
+            ValidatorStatus::Active => 0u8,
+            ValidatorStatus::Inactive => 1,
+            ValidatorStatus::SubmittedExitRequest => 2,
+            ValidatorStatus::Joining => 3,
+        };
+        self.state_trie.insert_raw(
+            &state_trie_key::validator_account_status(pubkey),
+            &[status_byte],
+        );
+        self.state_trie.insert_bool(
+            &state_trie_key::validator_account_has_pending_deposit(pubkey),
+            account.has_pending_deposit,
+        );
+        self.state_trie.insert_bool(
+            &state_trie_key::validator_account_has_pending_withdrawal(pubkey),
+            account.has_pending_withdrawal,
+        );
+        self.state_trie.insert_u64(
+            &state_trie_key::validator_account_joining_epoch(pubkey),
+            account.joining_epoch,
+        );
+    }
+
+    fn remove_validator_trie_entries(&mut self, pubkey: &[u8; 32]) {
+        self.state_trie
+            .remove_raw(&state_trie_key::validator_account_consensus_public_key(
+                pubkey,
+            ));
+        self.state_trie
+            .remove_raw(&state_trie_key::validator_account_withdrawal_credentials(
+                pubkey,
+            ));
+        self.state_trie
+            .remove_raw(&state_trie_key::validator_account_balance(pubkey));
+        self.state_trie
+            .remove_raw(&state_trie_key::validator_account_status(pubkey));
+        self.state_trie
+            .remove_raw(&state_trie_key::validator_account_has_pending_deposit(
+                pubkey,
+            ));
+        self.state_trie
+            .remove_raw(&state_trie_key::validator_account_has_pending_withdrawal(
+                pubkey,
+            ));
+        self.state_trie
+            .remove_raw(&state_trie_key::validator_account_joining_epoch(pubkey));
+    }
+
+    fn insert_deposit_trie_entries(&mut self, deposit: &DepositRequest) {
+        let node_pubkey_bytes: [u8; 32] = deposit.node_pubkey.as_ref().try_into().unwrap();
+        let consensus_encoded = deposit.consensus_pubkey.encode();
+        self.state_trie.insert_raw(
+            &state_trie_key::deposit_queue_request_consensus_pubkey(&node_pubkey_bytes),
+            &consensus_encoded,
+        );
+        self.state_trie.insert_raw(
+            &state_trie_key::deposit_queue_request_withdrawal_credentials(&node_pubkey_bytes),
+            &deposit.withdrawal_credentials,
+        );
+        self.state_trie.insert_u64(
+            &state_trie_key::deposit_queue_request_amount(&node_pubkey_bytes),
+            deposit.amount,
+        );
+        self.state_trie.insert_raw(
+            &state_trie_key::deposit_queue_request_node_signature(&node_pubkey_bytes),
+            &deposit.node_signature,
+        );
+        self.state_trie.insert_raw(
+            &state_trie_key::deposit_queue_request_consensus_signature(&node_pubkey_bytes),
+            &deposit.consensus_signature,
+        );
+    }
+
+    fn remove_deposit_trie_entries(&mut self, deposit: &DepositRequest) {
+        let node_pubkey_bytes: [u8; 32] = deposit.node_pubkey.as_ref().try_into().unwrap();
+        self.state_trie
+            .remove_raw(&state_trie_key::deposit_queue_request_consensus_pubkey(
+                &node_pubkey_bytes,
+            ));
+        self.state_trie.remove_raw(
+            &state_trie_key::deposit_queue_request_withdrawal_credentials(&node_pubkey_bytes),
+        );
+        self.state_trie
+            .remove_raw(&state_trie_key::deposit_queue_request_amount(
+                &node_pubkey_bytes,
+            ));
+        self.state_trie
+            .remove_raw(&state_trie_key::deposit_queue_request_node_signature(
+                &node_pubkey_bytes,
+            ));
+        self.state_trie
+            .remove_raw(&state_trie_key::deposit_queue_request_consensus_signature(
+                &node_pubkey_bytes,
+            ));
+    }
+
+    fn insert_withdrawal_trie_entries(&mut self, pubkey: &[u8; 32], w: &PendingWithdrawal) {
+        self.state_trie.insert_u64(
+            &state_trie_key::withdrawal_queue_request_balance_deduction(pubkey),
+            w.balance_deduction,
+        );
+        self.state_trie.insert_raw(
+            &state_trie_key::withdrawal_queue_request_address(pubkey),
+            w.inner.address.as_slice(),
+        );
+        self.state_trie.insert_u64(
+            &state_trie_key::withdrawal_queue_request_amount(pubkey),
+            w.inner.amount,
+        );
+        self.state_trie.insert_u64(
+            &state_trie_key::withdrawal_queue_request_epoch(pubkey),
+            w.epoch,
+        );
+    }
+
+    fn remove_withdrawal_trie_entries(&mut self, pubkey: &[u8; 32]) {
+        self.state_trie
+            .remove_raw(&state_trie_key::withdrawal_queue_request_balance_deduction(
+                pubkey,
+            ));
+        self.state_trie
+            .remove_raw(&state_trie_key::withdrawal_queue_request_address(pubkey));
+        self.state_trie
+            .remove_raw(&state_trie_key::withdrawal_queue_request_amount(pubkey));
+        self.state_trie
+            .remove_raw(&state_trie_key::withdrawal_queue_request_epoch(pubkey));
+    }
+
+    /// Rebuild the entire state trie from scratch.
+    ///
+    /// Called on deserialization and when bulk-replacing state (e.g. `set_validator_accounts`).
+    pub fn rebuild_state_trie(&mut self) {
+        self.state_trie = StateTrie::default();
+
+        // Scalar fields
+        self.state_trie
+            .insert_u64(state_trie_key::EPOCH, self.epoch);
+        self.state_trie.insert_u64(state_trie_key::VIEW, self.view);
+        self.state_trie
+            .insert_u64(state_trie_key::LATEST_HEIGHT, self.latest_height);
+        self.state_trie
+            .insert_hash(state_trie_key::HEAD_DIGEST, &self.head_digest.0);
+        self.state_trie
+            .insert_hash(state_trie_key::EPOCH_GENESIS_HASH, &self.epoch_genesis_hash);
+        self.state_trie.insert_u64(
+            state_trie_key::VALIDATOR_MINIMUM_STAKE,
+            self.validator_minimum_stake,
+        );
+        self.state_trie.insert_u64(
+            state_trie_key::VALIDATOR_MAXIMUM_STAKE,
+            self.validator_maximum_stake,
+        );
+        self.state_trie.insert_u64(
+            state_trie_key::NEXT_WITHDRAWAL_INDEX,
+            self.withdrawal_queue.next_index(),
+        );
+
+        // Forkchoice
+        self.state_trie.insert_hash(
+            state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH,
+            &self.forkchoice.head_block_hash.0,
+        );
+        self.state_trie.insert_hash(
+            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
+            &self.forkchoice.safe_block_hash.0,
+        );
+        self.state_trie.insert_hash(
+            state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH,
+            &self.forkchoice.finalized_block_hash.0,
+        );
+
+        // Deposit queue
+        for deposit in &self.deposit_queue {
+            let node_pubkey_bytes: [u8; 32] = deposit.node_pubkey.as_ref().try_into().unwrap();
+            let consensus_encoded = deposit.consensus_pubkey.encode();
+            self.state_trie.insert_raw(
+                &state_trie_key::deposit_queue_request_consensus_pubkey(&node_pubkey_bytes),
+                &consensus_encoded,
+            );
+            self.state_trie.insert_raw(
+                &state_trie_key::deposit_queue_request_withdrawal_credentials(&node_pubkey_bytes),
+                &deposit.withdrawal_credentials,
+            );
+            self.state_trie.insert_u64(
+                &state_trie_key::deposit_queue_request_amount(&node_pubkey_bytes),
+                deposit.amount,
+            );
+            self.state_trie.insert_raw(
+                &state_trie_key::deposit_queue_request_node_signature(&node_pubkey_bytes),
+                &deposit.node_signature,
+            );
+            self.state_trie.insert_raw(
+                &state_trie_key::deposit_queue_request_consensus_signature(&node_pubkey_bytes),
+                &deposit.consensus_signature,
+            );
+        }
+
+        // Withdrawal queue
+        let withdrawals: Vec<([u8; 32], PendingWithdrawal)> = self
+            .withdrawal_queue
+            .withdrawals_iter()
+            .map(|(pk, w)| (*pk, w.clone()))
+            .collect();
+        for (pubkey, w) in &withdrawals {
+            self.state_trie.insert_u64(
+                &state_trie_key::withdrawal_queue_request_balance_deduction(pubkey),
+                w.balance_deduction,
+            );
+            self.state_trie.insert_raw(
+                &state_trie_key::withdrawal_queue_request_address(pubkey),
+                w.inner.address.as_slice(),
+            );
+            self.state_trie.insert_u64(
+                &state_trie_key::withdrawal_queue_request_amount(pubkey),
+                w.inner.amount,
+            );
+            self.state_trie.insert_u64(
+                &state_trie_key::withdrawal_queue_request_epoch(pubkey),
+                w.epoch,
+            );
+        }
+
+        // Validator accounts
+        let accounts: Vec<([u8; 32], ValidatorAccount)> = self
+            .validator_accounts
+            .iter()
+            .map(|(pk, acc)| (*pk, acc.clone()))
+            .collect();
+        for (pubkey, account) in &accounts {
+            self.insert_validator_trie_entries(pubkey, account);
+        }
+
+        // Protocol param changes
+        for param in &self.protocol_param_changes {
+            let (variant_name, value) = match param {
+                ProtocolParam::MinimumStake(v) => (b"minimum_stake" as &[u8], *v),
+                ProtocolParam::MaximumStake(v) => (b"maximum_stake" as &[u8], *v),
+            };
+            self.state_trie.insert_u64(
+                &state_trie_key::protocol_param_changes_param(variant_name),
+                value,
+            );
+        }
+
+        // Added validators
+        for validators in self.added_validators.values() {
+            for v in validators {
+                let node_key_bytes: [u8; 32] = v.node_key.as_ref().try_into().unwrap();
+                let encoded = v.consensus_key.encode();
+                self.state_trie.insert_raw(
+                    &state_trie_key::added_validators_consensus_key(&node_key_bytes),
+                    &encoded,
+                );
+            }
+        }
+
+        // Removed validators
+        for pubkey in &self.removed_validators {
+            let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
+            self.state_trie
+                .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[]);
+        }
     }
 
     pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
@@ -471,9 +947,7 @@ impl Read for ConsensusState {
         let validator_minimum_stake = buf.get_u64();
         let validator_maximum_stake = buf.get_u64();
 
-        let state_trie = StateTrie::build(&validator_accounts);
-
-        Ok(Self {
+        let mut state = Self {
             epoch,
             view,
             latest_height,
@@ -490,8 +964,10 @@ impl Read for ConsensusState {
             epoch_genesis_hash,
             validator_minimum_stake,
             validator_maximum_stake,
-            state_trie,
-        })
+            state_trie: StateTrie::default(),
+        };
+        state.rebuild_state_trie();
+        Ok(state)
     }
 }
 
@@ -672,11 +1148,11 @@ mod tests {
     fn test_serialization_deserialization_populated() {
         let mut original_state = ConsensusState::default();
 
-        original_state.epoch = 7;
-        original_state.view = 123;
+        original_state.set_epoch(7);
+        original_state.set_view(123);
         original_state.set_latest_height(42);
         original_state.set_next_withdrawal_index(5);
-        original_state.epoch_genesis_hash = [42u8; 32];
+        original_state.set_epoch_genesis_hash([42u8; 32]);
 
         let deposit1 = create_test_deposit_request(1, 32000000000);
         let deposit2 = create_test_deposit_request(2, 16000000000);
@@ -689,10 +1165,10 @@ mod tests {
         original_state.push_withdrawal(withdrawal2);
 
         // Add protocol param changes
-        original_state.protocol_param_changes.push(
+        original_state.push_protocol_param_change(
             crate::protocol_params::ProtocolParam::MinimumStake(40_000_000_000),
         );
-        original_state.protocol_param_changes.push(
+        original_state.push_protocol_param_change(
             crate::protocol_params::ProtocolParam::MaximumStake(80_000_000_000),
         );
 
@@ -811,8 +1287,8 @@ mod tests {
     fn test_encode_size_accuracy() {
         let mut state = ConsensusState::default();
 
-        state.epoch = 3;
-        state.view = 456;
+        state.set_epoch(3);
+        state.set_view(456);
         state.set_latest_height(42);
         state.set_next_withdrawal_index(5);
 
@@ -823,16 +1299,12 @@ mod tests {
         state.push_withdrawal(withdrawal);
 
         // Add protocol param changes
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MinimumStake(
-                50_000_000_000,
-            ));
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MaximumStake(
-                100_000_000_000,
-            ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
+            50_000_000_000,
+        ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MaximumStake(
+            100_000_000_000,
+        ));
 
         let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
@@ -868,21 +1340,15 @@ mod tests {
         let mut state = ConsensusState::default();
 
         // Add various protocol param changes
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MinimumStake(
-                32_000_000_000,
-            ));
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MaximumStake(
-                64_000_000_000,
-            ));
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MinimumStake(
-                40_000_000_000,
-            ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
+            32_000_000_000,
+        ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MaximumStake(
+            64_000_000_000,
+        ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
+            40_000_000_000,
+        ));
 
         let mut encoded = state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
@@ -952,11 +1418,11 @@ mod tests {
     fn test_try_from_checkpoint() {
         // Create a populated ConsensusState
         let mut original_state = ConsensusState::default();
-        original_state.epoch = 5;
-        original_state.view = 789;
+        original_state.set_epoch(5);
+        original_state.set_view(789);
         original_state.set_latest_height(100);
         original_state.set_next_withdrawal_index(42);
-        original_state.epoch_genesis_hash = [99u8; 32];
+        original_state.set_epoch_genesis_hash([99u8; 32]);
 
         // Add some data
         let deposit = create_test_deposit_request(1, 32000000000);

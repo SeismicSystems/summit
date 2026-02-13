@@ -30,11 +30,11 @@ fn create_validator_account(index: u64, balance: u64) -> ValidatorAccount {
 fn create_populated_state(num_validators: usize, epoch: u64, height: u64) -> ConsensusState {
     let mut state = ConsensusState::default();
 
-    state.epoch = epoch;
-    state.view = height;
+    state.set_epoch(epoch);
+    state.set_view(height);
     state.set_latest_height(height);
     state.set_next_withdrawal_index(epoch * 10);
-    state.epoch_genesis_hash = [42u8; 32];
+    state.set_epoch_genesis_hash([42u8; 32]);
 
     // Add validators
     for i in 0..num_validators {

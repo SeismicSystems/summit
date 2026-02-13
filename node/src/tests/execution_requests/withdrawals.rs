@@ -1306,8 +1306,8 @@ fn test_stake_bounds_skips_zero_balance_validator() {
             .build();
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, balance);
-        initial_state.validator_minimum_stake = min_stake;
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_minimum_stake(min_stake);
+        initial_state.set_maximum_stake(max_stake);
 
         let validator0_uid = format!("validator_{}", validators[0].0);
         let mut public_keys = HashSet::new();

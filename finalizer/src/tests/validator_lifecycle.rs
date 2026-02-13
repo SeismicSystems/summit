@@ -141,7 +141,7 @@ fn test_validator_exit_triggers_cancellation() {
 
         // Create initial state with the node marked for removal
         let mut initial_state = create_test_initial_state(genesis_hash);
-        initial_state.removed_validators.push(node_pubkey.clone());
+        initial_state.push_removed_validator(node_pubkey.clone());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
