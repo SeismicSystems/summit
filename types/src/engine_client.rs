@@ -194,6 +194,159 @@ impl EngineClient for RethEngineClient {
     }
 }
 
+#[cfg(feature = "bad-blocks")]
+#[derive(Clone)]
+pub struct BadBlockEngineClient {
+    engine_ipc_path: String,
+    provider: RootProvider,
+    /// How often a bad block should happen
+    bad_block_timing: u64,
+}
+
+#[cfg(feature = "bad-blocks")]
+impl BadBlockEngineClient {
+    pub async fn new(engine_ipc_path: String, bad_block_timing: u64) -> Self {
+        let ipc = IpcConnect::new(engine_ipc_path.clone());
+        let provider = ProviderBuilder::default().connect_ipc(ipc).await.unwrap();
+        Self {
+            provider,
+            engine_ipc_path,
+            bad_block_timing,
+        }
+    }
+
+    pub async fn wait_until_reconnect_available(&mut self) {
+        loop {
+            let ipc = IpcConnect::new(self.engine_ipc_path.clone());
+
+            match ProviderBuilder::default().connect_ipc(ipc).await {
+                Ok(provider) => {
+                    self.provider = provider;
+                    break;
+                }
+                Err(e) => {
+                    error!("Failed to connect to IPC, retrying: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "bad-blocks")]
+impl EngineClient for BadBlockEngineClient {
+    async fn start_building_block(
+        &mut self,
+        fork_choice_state: ForkchoiceState,
+        timestamp: u64,
+        withdrawals: Vec<Withdrawal>,
+        suggested_fee_recipient: Address,
+        parent_beacon_block_root: Option<FixedBytes<32>>,
+        #[cfg(feature = "bench")] _height: u64,
+    ) -> Option<PayloadId> {
+        let payload_attributes = PayloadAttributes {
+            timestamp,
+            prev_randao: [0; 32].into(),
+            // todo(dalton): this should be the validators public key
+            suggested_fee_recipient,
+            withdrawals: Some(withdrawals),
+            // todo(dalton): we should make this something that we can associate with the simplex height
+            parent_beacon_block_root,
+        };
+
+        let res = match self
+            .provider
+            .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes.clone()))
+            .await
+        {
+            Ok(res) => res,
+            Err(e) if e.is_transport_error() => {
+                self.wait_until_reconnect_available().await;
+                self.provider
+                    .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
+                    .await
+                    .expect("Failed to update fork choice after reconnect")
+            }
+            Err(_) => panic!("Unable to get a response"),
+        };
+
+        if res.is_invalid() {
+            error!("invalid returned for forkchoice state {fork_choice_state:?}: {res:?}");
+        }
+        if res.is_syncing() {
+            warn!("syncing returned for forkchoice state {fork_choice_state:?}: {res:?}");
+        }
+
+        res.payload_id
+    }
+
+    async fn get_payload(&mut self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+        match self.provider.get_payload_v4(payload_id).await {
+            Ok(res) => res,
+            Err(e) if e.is_transport_error() => {
+                self.wait_until_reconnect_available().await;
+                self.provider
+                    .get_payload_v4(payload_id)
+                    .await
+                    .expect("Failed to get payload after reconnect")
+            }
+            Err(_) => panic!("Unable to get a response"),
+        }
+    }
+
+    async fn check_payload(&mut self, block: &Block) -> PayloadStatus {
+        let parent_beacon_block_root = if block.height().is_multiple_of(self.bad_block_timing) {
+            [1; 32].into()
+        } else {
+            block.parent().0.into()
+        };
+
+        match self
+            .provider
+            .new_payload_v4(
+                block.payload.clone(),
+                Vec::new(),
+                parent_beacon_block_root,
+                block.execution_requests.clone(),
+            )
+            .await
+        {
+            Ok(res) => res,
+            Err(e) if e.is_transport_error() => {
+                self.wait_until_reconnect_available().await;
+                self.provider
+                    .new_payload_v4(
+                        block.payload.clone(),
+                        Vec::new(),
+                        [1; 32].into(),
+                        block.execution_requests.clone(),
+                    )
+                    .await
+                    .expect("Failed to check payload after reconnect")
+            }
+            Err(_) => panic!("Unable to get a response"),
+        }
+    }
+
+    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
+        let _ = match self
+            .provider
+            .fork_choice_updated_v3(fork_choice_state, None)
+            .await
+        {
+            Ok(res) => res,
+            Err(e) if e.is_transport_error() => {
+                self.wait_until_reconnect_available().await;
+                self.provider
+                    .fork_choice_updated_v3(fork_choice_state, None)
+                    .await
+                    .expect("Failed to get payload after reconnect")
+            }
+            Err(_) => panic!("Unable to get a response"),
+        };
+    }
+}
+
 #[cfg(feature = "bench")]
 pub mod benchmarking {
     use crate::engine_client::EngineClient;

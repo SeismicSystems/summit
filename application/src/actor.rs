@@ -389,7 +389,7 @@ impl<
             .await
             .expect("Finalizer dropped");
 
-        let Some(mut aux_data) = maybe_aux_data else {
+        let Some(aux_data) = maybe_aux_data else {
             debug!(
                 "Aborting block proposal for epoch {} and height {} because of an outdated aux data request",
                 round.epoch().get(),
@@ -440,7 +440,7 @@ impl<
         #[cfg(feature = "prom")]
         let start_building_start = std::time::Instant::now();
 
-        aux_data.forkchoice.head_block_hash = parent_block.eth_block_hash().into();
+        //  aux_data.forkchoice.head_block_hash = parent_block.eth_block_hash().into();
 
         // Add pending withdrawals to the block
         let withdrawals = pending_withdrawals.into_iter().map(|w| w.inner).collect();
