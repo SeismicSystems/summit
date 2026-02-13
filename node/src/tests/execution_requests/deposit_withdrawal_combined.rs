@@ -476,6 +476,8 @@ fn test_deposit_blocked_by_pending_withdrawal() {
     // - Genesis validators start with 32 ETH each
     // - Submit withdrawal at block 3, then deposit at block 4
     // - Withdrawal should be processed, deposit should be rejected and refunded
+    // - Because both target the same validator, the refund is merged into the
+    //   existing pending withdrawal (32 + 5 = 37 ETH), producing a single withdrawal
     let n = 5;
     let min_stake = 32_000_000_000;
     let max_stake = 100_000_000_000;
@@ -639,17 +641,15 @@ fn test_deposit_blocked_by_pending_withdrawal() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        // Verify withdrawal occurred and rejected deposit was refunded
-        // Two withdrawals expected:
-        // 1. Original withdrawal of 32 ETH (min_stake)
-        // 2. Refund of rejected deposit of 5 ETH (deposit_amount)
+        // Verify withdrawal occurred and rejected deposit was refunded.
+        // The refund is merged into the existing withdrawal for the same validator,
+        // producing a single withdrawal of 32 + 5 = 37 ETH.
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
 
         let epoch_withdrawals = withdrawals.get(&withdrawal_height).unwrap();
-        assert_eq!(epoch_withdrawals.len(), 2);
-        assert_eq!(epoch_withdrawals[0].amount, min_stake);
-        assert_eq!(epoch_withdrawals[1].amount, deposit_amount);
+        assert_eq!(epoch_withdrawals.len(), 1);
+        assert_eq!(epoch_withdrawals[0].amount, min_stake + deposit_amount);
 
         let validator0_client_id = format!("validator_{}", validators[0].0);
         assert!(
