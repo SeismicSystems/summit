@@ -431,7 +431,7 @@ mod tests {
             consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
-            pending_withdrawal_amount: 0,
+
             status: ValidatorStatus::Active,
             has_pending_deposit: false,
             has_pending_withdrawal: false,
@@ -443,8 +443,8 @@ mod tests {
         let validator_account2 = ValidatorAccount {
             consensus_public_key: consensus_key2.public_key(),
             withdrawal_credentials: Address::from([8u8; 20]),
-            balance: 16_000_000_000,                  // 16 ETH
-            pending_withdrawal_amount: 8_000_000_000, // 8 ETH pending
+            balance: 16_000_000_000, // 16 ETH
+
             status: ValidatorStatus::SubmittedExitRequest,
             has_pending_deposit: false,
             has_pending_withdrawal: true,
@@ -598,7 +598,7 @@ mod tests {
             consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
-            pending_withdrawal_amount: 0,
+
             status: ValidatorStatus::Active,
             has_pending_deposit: false,
             has_pending_withdrawal: false,
@@ -610,8 +610,8 @@ mod tests {
         let validator_account2 = ValidatorAccount {
             consensus_public_key: consensus_key2.public_key(),
             withdrawal_credentials: Address::from([8u8; 20]),
-            balance: 16_000_000_000,                  // 16 ETH
-            pending_withdrawal_amount: 8_000_000_000, // 8 ETH pending
+            balance: 16_000_000_000, // 16 ETH
+
             status: ValidatorStatus::SubmittedExitRequest,
             has_pending_deposit: false,
             has_pending_withdrawal: true,
@@ -853,7 +853,7 @@ mod tests {
             consensus_public_key: consensus_key1.public_key(),
             withdrawal_credentials: Address::from([7u8; 20]),
             balance: 32_000_000_000, // 32 ETH
-            pending_withdrawal_amount: 0,
+
             status: ValidatorStatus::Active,
             has_pending_deposit: false,
             has_pending_withdrawal: false,

@@ -873,10 +873,12 @@ impl<
                 let mut key_bytes = [0u8; 32];
                 key_bytes.copy_from_slice(&public_key);
 
-                let balance = self
-                    .canonical_state
-                    .get_account(&key_bytes)
-                    .map(|account| account.balance + account.pending_withdrawal_amount);
+                let balance = self.canonical_state.get_account(&key_bytes).map(|account| {
+                    account.balance
+                        + self
+                            .canonical_state
+                            .get_pending_withdrawal_amount(&key_bytes)
+                });
                 let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
             }
             ConsensusStateRequest::GetValidatorAccount(public_key) => {
@@ -987,7 +989,6 @@ impl<
                     if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
                         account.status = ValidatorStatus::Inactive;
                         account.balance = 0;
-                        account.pending_withdrawal_amount += balance;
                         account.has_pending_withdrawal = true;
                         self.canonical_state.set_account(key, account);
                     }
@@ -1013,10 +1014,9 @@ impl<
                     // Withdraw the portion of the balance exceeding `validator_maximum_stake`
                     let excess_amount = balance - self.canonical_state.validator_maximum_stake;
 
-                    // Move excess from balance to pending_withdrawal_amount
+                    // Move excess from balance
                     if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
                         account.balance -= excess_amount;
-                        account.pending_withdrawal_amount += excess_amount;
                         account.has_pending_withdrawal = true;
                         self.canonical_state.set_account(key, account);
                     }
@@ -1230,7 +1230,6 @@ async fn parse_execution_requests<
                                     consensus_public_key: deposit_request.consensus_pubkey.clone(),
                                     withdrawal_credentials,
                                     balance: 0, // Balance will be set when deposit is processed
-                                    pending_withdrawal_amount: 0,
                                     status: ValidatorStatus::Inactive,
                                     has_pending_deposit: true,
                                     has_pending_withdrawal: false,
@@ -1363,9 +1362,8 @@ async fn parse_execution_requests<
                                 account.status = ValidatorStatus::SubmittedExitRequest;
                             }
 
-                            // Move balance to pending_withdrawal_amount
+                            // Move balance out
                             account.balance = 0;
-                            account.pending_withdrawal_amount += remaining_balance;
                             account.has_pending_withdrawal = true;
                             state.set_account(withdrawal_request.validator_pubkey, account);
 
@@ -1573,12 +1571,9 @@ async fn process_execution_requests<
             continue;
         }
 
-        // For balance_deduction > 0, the money was moved from balance to pending_withdrawal_amount
-        // at creation time. Now we subtract from pending_withdrawal_amount.
+        // For balance_deduction > 0, the money was moved from balance when the withdrawal
+        // was created. The balance_deduction is tracked on the PendingWithdrawal in the queue.
         if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned() {
-            account.pending_withdrawal_amount = account
-                .pending_withdrawal_amount
-                .saturating_sub(pending_withdrawal.balance_deduction);
             account.has_pending_withdrawal = false;
 
             #[cfg(debug_assertions)]
@@ -1597,8 +1592,8 @@ async fn process_execution_requests<
                 );
             }
 
-            // If both balance and pending_withdrawal_amount are 0, remove the validator account.
-            if account.balance == 0 && account.pending_withdrawal_amount == 0 {
+            // If balance is 0, remove the validator account.
+            if account.balance == 0 {
                 info!(
                     validator = hex::encode(pending_withdrawal.pubkey),
                     "removing validator account after full withdrawal"

@@ -682,7 +682,6 @@ fn get_initial_state(
                 consensus_public_key: validator.consensus_public_key.clone(),
                 withdrawal_credentials: validator.withdrawal_credentials,
                 balance: validator_minimum_stake,
-                pending_withdrawal_amount: 0,
                 status: ValidatorStatus::Active,
                 has_pending_deposit: false,
                 has_pending_withdrawal: false,

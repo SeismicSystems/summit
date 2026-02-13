@@ -308,7 +308,6 @@ pub fn get_initial_state(
                 consensus_public_key: consensus_pubkey.clone(),
                 withdrawal_credentials: *address,
                 balance,
-                pending_withdrawal_amount: 0,
                 status: ValidatorStatus::Active,
                 has_pending_deposit: false,
                 has_pending_withdrawal: false,
