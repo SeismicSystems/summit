@@ -222,8 +222,8 @@ impl ConsensusState {
             .push_request(request, withdrawal_epoch, balance_deduction);
     }
 
-    pub fn push_withdrawal(&mut self, request: PendingWithdrawal, withdrawal_epoch: u64) {
-        self.withdrawal_queue.push(request, withdrawal_epoch);
+    pub fn push_withdrawal(&mut self, request: PendingWithdrawal) {
+        self.withdrawal_queue.push(request);
     }
 
     pub fn peek_withdrawal(&self, withdrawal_epoch: u64) -> Option<&PendingWithdrawal> {
@@ -603,7 +603,7 @@ mod tests {
         }
     }
 
-    fn create_test_withdrawal(index: u64, amount: u64) -> PendingWithdrawal {
+    fn create_test_withdrawal(index: u64, amount: u64, epoch: u64) -> PendingWithdrawal {
         PendingWithdrawal {
             inner: Withdrawal {
                 index,
@@ -613,6 +613,7 @@ mod tests {
             },
             pubkey: [index as u8; 32],
             balance_deduction: amount,
+            epoch,
         }
     }
 
@@ -678,10 +679,10 @@ mod tests {
         original_state.push_deposit(deposit1);
         original_state.push_deposit(deposit2);
 
-        let withdrawal1 = create_test_withdrawal(1, 16000000000);
-        let withdrawal2 = create_test_withdrawal(2, 24000000000);
-        original_state.push_withdrawal(withdrawal1, 10); // epoch 10
-        original_state.push_withdrawal(withdrawal2, 11); // epoch 11
+        let withdrawal1 = create_test_withdrawal(1, 16000000000, 10);
+        let withdrawal2 = create_test_withdrawal(2, 24000000000, 11);
+        original_state.push_withdrawal(withdrawal1);
+        original_state.push_withdrawal(withdrawal2);
 
         // Add protocol param changes
         original_state.protocol_param_changes.push(
@@ -814,8 +815,8 @@ mod tests {
         let deposit = create_test_deposit_request(1, 32000000000);
         state.push_deposit(deposit);
 
-        let withdrawal = create_test_withdrawal(1, 16000000000);
-        state.push_withdrawal(withdrawal, 5); // epoch 5
+        let withdrawal = create_test_withdrawal(1, 16000000000, 5);
+        state.push_withdrawal(withdrawal);
 
         // Add protocol param changes
         state
@@ -957,8 +958,8 @@ mod tests {
         let deposit = create_test_deposit_request(1, 32000000000);
         original_state.push_deposit(deposit);
 
-        let withdrawal = create_test_withdrawal(1, 16000000000);
-        original_state.push_withdrawal(withdrawal, 7); // epoch 7
+        let withdrawal = create_test_withdrawal(1, 16000000000, 7);
+        original_state.push_withdrawal(withdrawal);
 
         let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
