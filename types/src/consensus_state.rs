@@ -4,9 +4,8 @@ use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
 use crate::state_trie::StateTrie;
-use crate::withdrawal::PendingWithdrawal;
+use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use crate::{Digest, PublicKey};
-use alloy_eips::eip4895::Withdrawal;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
@@ -19,9 +18,8 @@ pub struct ConsensusState {
     pub view: u64,
     pub latest_height: u64,
     pub head_digest: Digest,
-    pub next_withdrawal_index: u64,
     pub deposit_queue: VecDeque<DepositRequest>,
-    pub withdrawal_queue: BTreeMap<u64, VecDeque<PendingWithdrawal>>, // epoch -> withdrawals
+    pub withdrawal_queue: WithdrawalQueue,
     pub(crate) validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
     pub protocol_param_changes: Vec<ProtocolParam>,
     pub pending_checkpoint: Option<Checkpoint>,
@@ -47,7 +45,6 @@ impl Default for ConsensusState {
             view: 0,
             latest_height: 0,
             head_digest: sha256::Digest([0u8; 32]),
-            next_withdrawal_index: 0,
             deposit_queue: Default::default(),
             withdrawal_queue: Default::default(),
             protocol_param_changes: Default::default(),
@@ -107,7 +104,7 @@ impl ConsensusState {
     }
 
     pub fn get_next_withdrawal_index(&self) -> u64 {
-        self.next_withdrawal_index
+        self.withdrawal_queue.next_index()
     }
 
     pub fn get_head_digest(&self) -> Digest {
@@ -122,18 +119,12 @@ impl ConsensusState {
         self.validator_maximum_stake
     }
 
-    fn get_and_increment_withdrawal_index(&mut self) -> u64 {
-        let current = self.next_withdrawal_index;
-        self.next_withdrawal_index += 1;
-        current
-    }
-
     pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
         self.pending_checkpoint.as_ref()
     }
 
     pub fn set_next_withdrawal_index(&mut self, index: u64) {
-        self.next_withdrawal_index = index;
+        self.withdrawal_queue.set_next_index(index);
     }
 
     pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
@@ -225,66 +216,37 @@ impl ConsensusState {
         &mut self,
         request: WithdrawalRequest,
         withdrawal_epoch: u64,
-        subtract_balance: bool,
+        balance_deduction: u64,
     ) {
-        let withdrawal_index = self.get_and_increment_withdrawal_index();
-
-        let pending_withdrawal = PendingWithdrawal {
-            inner: Withdrawal {
-                index: withdrawal_index,
-                validator_index: 0,
-                address: request.source_address,
-                amount: request.amount,
-            },
-            pubkey: request.validator_pubkey,
-            subtract_balance,
-        };
-
-        self.push_withdrawal(pending_withdrawal, withdrawal_epoch);
+        self.withdrawal_queue
+            .push_request(request, withdrawal_epoch, balance_deduction);
     }
 
     pub fn push_withdrawal(&mut self, request: PendingWithdrawal, withdrawal_epoch: u64) {
-        self.withdrawal_queue
-            .entry(withdrawal_epoch)
-            .or_default()
-            .push_back(request);
+        self.withdrawal_queue.push(request, withdrawal_epoch);
     }
 
     pub fn peek_withdrawal(&self, withdrawal_epoch: u64) -> Option<&PendingWithdrawal> {
-        self.withdrawal_queue
-            .get(&withdrawal_epoch)
-            .and_then(|queue| queue.front())
+        self.withdrawal_queue.peek(withdrawal_epoch)
     }
 
     pub fn pop_withdrawal(&mut self, withdrawal_epoch: u64) -> Option<PendingWithdrawal> {
-        if let Some(queue) = self.withdrawal_queue.get_mut(&withdrawal_epoch) {
-            let withdrawal = queue.pop_front();
-            // Remove the epoch entry if the queue is now empty
-            if queue.is_empty() {
-                self.withdrawal_queue.remove(&withdrawal_epoch);
-            }
-            withdrawal
-        } else {
-            None
-        }
+        self.withdrawal_queue.pop(withdrawal_epoch)
     }
 
     /// Get all pending withdrawals for a specific epoch
-    pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Option<&VecDeque<PendingWithdrawal>> {
-        self.withdrawal_queue.get(&epoch)
+    pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Vec<&PendingWithdrawal> {
+        self.withdrawal_queue.get_for_epoch(epoch)
     }
 
     /// Get the number of pending withdrawals for a specific epoch
     pub fn get_withdrawal_count_for_epoch(&self, epoch: u64) -> usize {
-        self.withdrawal_queue
-            .get(&epoch)
-            .map(|queue| queue.len())
-            .unwrap_or(0)
+        self.withdrawal_queue.count_for_epoch(epoch)
     }
 
     /// Get all epochs that have pending withdrawals
     pub fn get_epochs_with_withdrawals(&self) -> Vec<u64> {
-        self.withdrawal_queue.keys().copied().collect()
+        self.withdrawal_queue.epochs_with_withdrawals()
     }
 
     pub fn get_validator_keys(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
@@ -381,15 +343,9 @@ impl EncodeSize for ConsensusState {
         8 // epoch
         + 8 // view
         + 8 // latest_height
-        + 8 // next_withdrawal_index
         + 4 // deposit_queue length
         + self.deposit_queue.iter().map(|req| req.encode_size()).sum::<usize>()
-        + 4 // withdrawal_queue epoch count
-        + self.withdrawal_queue.values().map(|queue| {
-            8 // epoch (u64)
-            + 4 // queue length (u32)
-            + queue.iter().map(|req| req.encode_size()).sum::<usize>()
-        }).sum::<usize>()
+        + self.withdrawal_queue.encode_size()
         + 4 // protocol_param_changes length
         + self.protocol_param_changes.iter().map(|param| param.encode_size()).sum::<usize>()
         + 4 // validator_accounts length
@@ -419,7 +375,6 @@ impl Read for ConsensusState {
         let epoch = buf.get_u64();
         let view = buf.get_u64();
         let latest_height = buf.get_u64();
-        let next_withdrawal_index = buf.get_u64();
 
         let deposit_queue_len = buf.get_u32() as usize;
         let mut deposit_queue = VecDeque::with_capacity(deposit_queue_len);
@@ -427,17 +382,7 @@ impl Read for ConsensusState {
             deposit_queue.push_back(DepositRequest::read_cfg(buf, &())?);
         }
 
-        let withdrawal_queue_epoch_count = buf.get_u32() as usize;
-        let mut withdrawal_queue = BTreeMap::new();
-        for _ in 0..withdrawal_queue_epoch_count {
-            let epoch = buf.get_u64();
-            let queue_len = buf.get_u32() as usize;
-            let mut queue = VecDeque::with_capacity(queue_len);
-            for _ in 0..queue_len {
-                queue.push_back(PendingWithdrawal::read_cfg(buf, &())?);
-            }
-            withdrawal_queue.insert(epoch, queue);
-        }
+        let withdrawal_queue = WithdrawalQueue::read_cfg(buf, &())?;
 
         let protocol_param_changes_len = buf.get_u32() as usize;
         let mut protocol_param_changes = Vec::with_capacity(protocol_param_changes_len);
@@ -528,7 +473,6 @@ impl Read for ConsensusState {
             view,
             latest_height,
             head_digest,
-            next_withdrawal_index,
             deposit_queue,
             withdrawal_queue,
             protocol_param_changes,
@@ -551,21 +495,13 @@ impl Write for ConsensusState {
         buf.put_u64(self.epoch);
         buf.put_u64(self.view);
         buf.put_u64(self.latest_height);
-        buf.put_u64(self.next_withdrawal_index);
 
         buf.put_u32(self.deposit_queue.len() as u32);
         for request in &self.deposit_queue {
             request.write(buf);
         }
 
-        buf.put_u32(self.withdrawal_queue.len() as u32);
-        for (epoch, queue) in &self.withdrawal_queue {
-            buf.put_u64(*epoch);
-            buf.put_u32(queue.len() as u32);
-            for request in queue {
-                request.write(buf);
-            }
-        }
+        self.withdrawal_queue.write(buf);
 
         buf.put_u32(self.protocol_param_changes.len() as u32);
         for param in &self.protocol_param_changes {
@@ -676,7 +612,7 @@ mod tests {
                 amount,
             },
             pubkey: [index as u8; 32],
-            subtract_balance: true,
+            balance_deduction: amount,
         }
     }
 
@@ -706,16 +642,16 @@ mod tests {
         assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
-            decoded_state.next_withdrawal_index,
-            original_state.next_withdrawal_index
+            decoded_state.get_next_withdrawal_index(),
+            original_state.get_next_withdrawal_index()
         );
         assert_eq!(
             decoded_state.deposit_queue.len(),
             original_state.deposit_queue.len()
         );
         assert_eq!(
-            decoded_state.withdrawal_queue.len(),
-            original_state.withdrawal_queue.len()
+            decoded_state.withdrawal_queue,
+            original_state.withdrawal_queue
         );
         assert_eq!(
             decoded_state.validator_accounts.len(),
@@ -734,7 +670,7 @@ mod tests {
         original_state.epoch = 7;
         original_state.view = 123;
         original_state.set_latest_height(42);
-        original_state.next_withdrawal_index = 5;
+        original_state.set_next_withdrawal_index(5);
         original_state.epoch_genesis_hash = [42u8; 32];
 
         let deposit1 = create_test_deposit_request(1, 32000000000);
@@ -797,8 +733,8 @@ mod tests {
         assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
-            decoded_state.next_withdrawal_index,
-            original_state.next_withdrawal_index
+            decoded_state.get_next_withdrawal_index(),
+            original_state.get_next_withdrawal_index()
         );
         assert_eq!(
             decoded_state.epoch_genesis_hash,
@@ -810,16 +746,16 @@ mod tests {
         assert_eq!(decoded_state.deposit_queue[1].amount, 16000000000);
 
         // Check withdrawal_queue - should have 2 epochs with withdrawals
-        assert_eq!(decoded_state.withdrawal_queue.len(), 2);
+        assert_eq!(decoded_state.withdrawal_queue.num_epochs(), 2);
 
         // Check epoch 10 withdrawal
-        let epoch10_withdrawals = decoded_state.get_withdrawals_for_epoch(10).unwrap();
+        let epoch10_withdrawals = decoded_state.get_withdrawals_for_epoch(10);
         assert_eq!(epoch10_withdrawals.len(), 1);
         assert_eq!(epoch10_withdrawals[0].inner.index, 1);
         assert_eq!(epoch10_withdrawals[0].inner.amount, 16000000000);
 
         // Check epoch 11 withdrawal
-        let epoch11_withdrawals = decoded_state.get_withdrawals_for_epoch(11).unwrap();
+        let epoch11_withdrawals = decoded_state.get_withdrawals_for_epoch(11);
         assert_eq!(epoch11_withdrawals.len(), 1);
         assert_eq!(epoch11_withdrawals[0].inner.index, 2);
         assert_eq!(epoch11_withdrawals[0].inner.amount, 24000000000);
@@ -873,7 +809,7 @@ mod tests {
         state.epoch = 3;
         state.view = 456;
         state.set_latest_height(42);
-        state.next_withdrawal_index = 5;
+        state.set_next_withdrawal_index(5);
 
         let deposit = create_test_deposit_request(1, 32000000000);
         state.push_deposit(deposit);
@@ -1014,7 +950,7 @@ mod tests {
         original_state.epoch = 5;
         original_state.view = 789;
         original_state.set_latest_height(100);
-        original_state.next_withdrawal_index = 42;
+        original_state.set_next_withdrawal_index(42);
         original_state.epoch_genesis_hash = [99u8; 32];
 
         // Add some data
@@ -1041,8 +977,8 @@ mod tests {
         assert_eq!(restored_state.view, original_state.view);
         assert_eq!(restored_state.latest_height, original_state.latest_height);
         assert_eq!(
-            restored_state.next_withdrawal_index,
-            original_state.next_withdrawal_index
+            restored_state.get_next_withdrawal_index(),
+            original_state.get_next_withdrawal_index()
         );
         assert_eq!(
             restored_state.epoch_genesis_hash,
@@ -1053,8 +989,8 @@ mod tests {
             original_state.deposit_queue.len()
         );
         assert_eq!(
-            restored_state.withdrawal_queue.len(),
-            original_state.withdrawal_queue.len()
+            restored_state.withdrawal_queue,
+            original_state.withdrawal_queue
         );
         assert_eq!(
             restored_state.validator_accounts.len(),
@@ -1063,7 +999,7 @@ mod tests {
 
         // Check specific values
         assert_eq!(restored_state.deposit_queue[0].amount, 32000000000);
-        let epoch7_withdrawals = restored_state.get_withdrawals_for_epoch(7).unwrap();
+        let epoch7_withdrawals = restored_state.get_withdrawals_for_epoch(7);
         assert_eq!(epoch7_withdrawals[0].inner.amount, 16000000000);
 
         let restored_account = restored_state.get_account(&pubkey).unwrap();

@@ -805,8 +805,9 @@ impl<
             let current_epoch = state.epoch;
             let ready_withdrawals = state
                 .get_withdrawals_for_epoch(current_epoch)
-                .map(|queue| queue.iter().cloned().collect())
-                .unwrap_or_default();
+                .into_iter()
+                .cloned()
+                .collect();
             let next_epoch = state.epoch + 1;
 
             BlockAuxData {
@@ -1006,7 +1007,7 @@ impl<
                     self.canonical_state.push_withdrawal_request(
                         withdrawal_request,
                         withdrawal_epoch,
-                        true, // subtract_balance
+                        balance,
                     );
                 } else if balance > self.canonical_state.validator_maximum_stake {
                     // Withdraw the portion of the balance exceeding `validator_maximum_stake`
@@ -1036,7 +1037,7 @@ impl<
                     self.canonical_state.push_withdrawal_request(
                         withdrawal_request,
                         withdrawal_epoch,
-                        true, // subtract_balance
+                        excess_amount,
                     );
                 }
             }
@@ -1269,7 +1270,7 @@ async fn parse_execution_requests<
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
                                 withdrawal_epoch,
-                                false, // subtract_balance: deposit was never credited to balance
+                                0, // deposit was never credited to balance
                             );
                         }
                     }
@@ -1381,7 +1382,7 @@ async fn parse_execution_requests<
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
                                 withdrawal_epoch,
-                                true, // subtract_balance
+                                remaining_balance,
                             );
                         }
                     }
@@ -1453,7 +1454,7 @@ async fn process_execution_requests<
                         state.push_withdrawal_request(
                             withdrawal_request,
                             withdrawal_epoch,
-                            false, // subtract_balance: deposit was never credited
+                            0, // deposit was never credited
                         );
                         // Remove the inactive account since validator won't be joining
                         state.remove_account(&node_pubkey_bytes);
@@ -1492,9 +1493,10 @@ async fn process_execution_requests<
                         gauge.set(request.amount as i64);
                         context.register(
                             format!(
-                                "<creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
+                                "<creds>{}</creds><pubkey>{}</pubkey>_<index>{}</index>_deposit_validator_balance",
                                 hex::encode(request.withdrawal_credentials),
-                                hex::encode(request.node_pubkey.encode())
+                                hex::encode(request.node_pubkey.encode()),
+                                request.index,
                             ),
                             "Validator balance",
                             gauge,
@@ -1535,7 +1537,7 @@ async fn process_execution_requests<
                         state.push_withdrawal_request(
                             withdrawal_request,
                             withdrawal_epoch,
-                            false, // subtract_balance: top-up deposit was never credited to balance
+                            0, // top-up deposit was never credited to balance
                         );
                         // Persist the has_pending_deposit = false change
                         state.set_account(node_pubkey_bytes, account);
@@ -1561,22 +1563,22 @@ async fn process_execution_requests<
         let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
         assert_eq!(pending_withdrawal.inner, *withdrawal);
 
-        // If subtract_balance is false, this is an immediate refund of a rejected deposit.
+        // If balance_deduction is 0, this is an immediate refund of a rejected deposit.
         // No account modifications needed - the money was never part of the account.
         // Note: if a deposit request with an invalid amount (below minimum or above maximum stake) was submitted,
         // a withdrawal request will be initiated immediately, without creating a validator account.
         // These are the cases where we process a withdrawal request without having a validator account
         // stored in the consensus state.
-        if !pending_withdrawal.subtract_balance {
+        if pending_withdrawal.balance_deduction == 0 {
             continue;
         }
 
-        // For subtract_balance = true, the money was moved from balance to pending_withdrawal_amount
+        // For balance_deduction > 0, the money was moved from balance to pending_withdrawal_amount
         // at creation time. Now we subtract from pending_withdrawal_amount.
         if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned() {
             account.pending_withdrawal_amount = account
                 .pending_withdrawal_amount
-                .saturating_sub(withdrawal.amount);
+                .saturating_sub(pending_withdrawal.balance_deduction);
             account.has_pending_withdrawal = false;
 
             #[cfg(debug_assertions)]
@@ -1585,9 +1587,10 @@ async fn process_execution_requests<
                 gauge.set(account.balance as i64);
                 context.register(
                     format!(
-                        "<creds>{}</creds><pubkey>{}</pubkey>_withdrawal_validator_balance",
+                        "<creds>{}</creds><pubkey>{}</pubkey><height>{}</height>_withdrawal_validator_balance",
                         hex::encode(account.withdrawal_credentials),
-                        hex::encode(pending_withdrawal.pubkey)
+                        hex::encode(pending_withdrawal.pubkey),
+                        state.get_latest_height(),
                     ),
                     "Validator balance",
                     gauge,
