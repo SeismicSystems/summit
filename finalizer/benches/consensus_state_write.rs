@@ -34,7 +34,7 @@ fn create_populated_state(num_validators: usize, epoch: u64, height: u64) -> Con
     state.epoch = epoch;
     state.view = height;
     state.set_latest_height(height);
-    state.next_withdrawal_index = epoch * 10;
+    state.set_next_withdrawal_index(epoch * 10);
     state.epoch_genesis_hash = [42u8; 32];
 
     // Add validators

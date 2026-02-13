@@ -1,24 +1,30 @@
+use crate::execution_request::WithdrawalRequest;
 use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
 use bytes::{Buf, BufMut};
-use commonware_codec::{Error, FixedSize, Read, Write};
+use commonware_codec::{EncodeSize, Error, FixedSize, Read, Write};
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingWithdrawal {
     pub inner: Withdrawal,
     pub pubkey: [u8; 32],
-    pub subtract_balance: bool,
+    /// Amount to subtract from the validator's `pending_withdrawal_amount` when processed.
+    /// For validator-initiated withdrawals and stake bounds enforcement, this equals the
+    /// withdrawal amount. For deposit refunds (where funds were never credited to the
+    /// account), this is 0.
+    pub balance_deduction: u64,
 }
 
 impl TryFrom<&[u8]> for PendingWithdrawal {
     type Error = &'static str;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        // PendingWithdrawal data is exactly 77 bytes
-        // Format: index(8) + validator_index(8) + address(20) + amount(8) + pubkey(32) + subtract_balance(1) = 77 bytes
+        // PendingWithdrawal data is exactly 84 bytes
+        // Format: index(8) + validator_index(8) + address(20) + amount(8) + pubkey(32) + balance_deduction(8) = 84 bytes
 
-        if bytes.len() != 77 {
-            return Err("PendingWithdrawal must be exactly 77 bytes");
+        if bytes.len() != 84 {
+            return Err("PendingWithdrawal must be exactly 84 bytes");
         }
 
         // Extract index (8 bytes, little-endian u64)
@@ -50,8 +56,11 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
             .try_into()
             .map_err(|_| "Failed to parse pubkey")?;
 
-        // Extract subtract_balance (1 byte)
-        let subtract_balance = bytes[76] != 0;
+        // Extract balance_deduction (8 bytes, little-endian u64)
+        let balance_deduction_bytes: [u8; 8] = bytes[76..84]
+            .try_into()
+            .map_err(|_| "Failed to parse balance_deduction")?;
+        let balance_deduction = u64::from_le_bytes(balance_deduction_bytes);
 
         Ok(PendingWithdrawal {
             inner: Withdrawal {
@@ -61,7 +70,7 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
                 amount,
             },
             pubkey,
-            subtract_balance,
+            balance_deduction,
         })
     }
 }
@@ -73,19 +82,19 @@ impl Write for PendingWithdrawal {
         buf.put(&self.inner.address.0[..]);
         buf.put(&self.inner.amount.to_le_bytes()[..]);
         buf.put(&self.pubkey[..]);
-        buf.put_u8(self.subtract_balance as u8);
+        buf.put(&self.balance_deduction.to_le_bytes()[..]);
     }
 }
 
 impl FixedSize for PendingWithdrawal {
-    const SIZE: usize = 77; // 8 + 8 + 20 + 8 + 32 + 1
+    const SIZE: usize = 84; // 8 + 8 + 20 + 8 + 32 + 8
 }
 
 impl Read for PendingWithdrawal {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        if buf.remaining() < 77 {
+        if buf.remaining() < 84 {
             return Err(Error::Invalid("PendingWithdrawal", "Insufficient bytes"));
         }
 
@@ -108,7 +117,9 @@ impl Read for PendingWithdrawal {
         let mut pubkey = [0u8; 32];
         buf.copy_to_slice(&mut pubkey);
 
-        let subtract_balance = buf.get_u8() != 0;
+        let mut balance_deduction_bytes = [0u8; 8];
+        buf.copy_to_slice(&mut balance_deduction_bytes);
+        let balance_deduction = u64::from_le_bytes(balance_deduction_bytes);
 
         Ok(PendingWithdrawal {
             inner: Withdrawal {
@@ -118,7 +129,204 @@ impl Read for PendingWithdrawal {
                 amount,
             },
             pubkey,
-            subtract_balance,
+            balance_deduction,
+        })
+    }
+}
+
+/// Encapsulates withdrawal data and scheduling.
+///
+/// Stores at most one withdrawal per validator (keyed by pubkey). If a withdrawal
+/// is pushed for a pubkey that already has one pending, amounts and balance
+/// deductions are merged and the original scheduled epoch is kept.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WithdrawalQueue {
+    /// Map from validator pubkey to their pending withdrawal data.
+    withdrawals: BTreeMap<[u8; 32], PendingWithdrawal>,
+    /// Withdrawals ordered by epoch. Each epoch maps to an ordered list of
+    /// validator pubkeys whose withdrawals should be processed in that epoch.
+    schedule: BTreeMap<u64, VecDeque<[u8; 32]>>,
+    /// The next withdrawal index to assign.
+    next_index: u64,
+}
+
+impl WithdrawalQueue {
+    /// Add a withdrawal request. If the pubkey already has a pending withdrawal,
+    /// merges amounts and balance deductions into the existing entry (keeping the
+    /// original scheduled epoch).
+    pub fn push_request(&mut self, request: WithdrawalRequest, epoch: u64, balance_deduction: u64) {
+        let pubkey = request.validator_pubkey;
+
+        if let Some(existing) = self.withdrawals.get_mut(&pubkey) {
+            existing.inner.amount += request.amount;
+            existing.balance_deduction += balance_deduction;
+        } else {
+            let index = self.next_index;
+            self.next_index += 1;
+
+            let pending = PendingWithdrawal {
+                inner: Withdrawal {
+                    index,
+                    validator_index: 0,
+                    address: request.source_address,
+                    amount: request.amount,
+                },
+                pubkey,
+                balance_deduction,
+            };
+
+            self.withdrawals.insert(pubkey, pending);
+            self.schedule.entry(epoch).or_default().push_back(pubkey);
+        }
+    }
+
+    /// Push a pre-built withdrawal directly (for test setup and deserialization).
+    pub fn push(&mut self, withdrawal: PendingWithdrawal, epoch: u64) {
+        let pubkey = withdrawal.pubkey;
+        self.withdrawals.insert(pubkey, withdrawal);
+        self.schedule.entry(epoch).or_default().push_back(pubkey);
+    }
+
+    /// Pop the next withdrawal for the given epoch.
+    pub fn pop(&mut self, epoch: u64) -> Option<PendingWithdrawal> {
+        if let Some(queue) = self.schedule.get_mut(&epoch)
+            && let Some(pubkey) = queue.pop_front()
+        {
+            if queue.is_empty() {
+                self.schedule.remove(&epoch);
+            }
+            return self.withdrawals.remove(&pubkey);
+        }
+        None
+    }
+
+    /// Peek at the next withdrawal for the given epoch without removing it.
+    pub fn peek(&self, epoch: u64) -> Option<&PendingWithdrawal> {
+        self.schedule
+            .get(&epoch)
+            .and_then(|queue| queue.front())
+            .and_then(|pubkey| self.withdrawals.get(pubkey))
+    }
+
+    /// Get all pending withdrawals for a specific epoch.
+    pub fn get_for_epoch(&self, epoch: u64) -> Vec<&PendingWithdrawal> {
+        self.schedule
+            .get(&epoch)
+            .map(|queue| {
+                queue
+                    .iter()
+                    .filter_map(|pk| self.withdrawals.get(pk))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get the number of pending withdrawals for a specific epoch.
+    pub fn count_for_epoch(&self, epoch: u64) -> usize {
+        self.schedule.get(&epoch).map(|q| q.len()).unwrap_or(0)
+    }
+
+    /// Get all epochs that have pending withdrawals.
+    pub fn epochs_with_withdrawals(&self) -> Vec<u64> {
+        self.schedule.keys().copied().collect()
+    }
+
+    /// Get the next withdrawal index.
+    pub fn next_index(&self) -> u64 {
+        self.next_index
+    }
+
+    /// Set the next withdrawal index.
+    pub fn set_next_index(&mut self, index: u64) {
+        self.next_index = index;
+    }
+
+    /// Number of unique validators with pending withdrawals.
+    pub fn len(&self) -> usize {
+        self.withdrawals.len()
+    }
+
+    /// Whether there are any pending withdrawals.
+    pub fn is_empty(&self) -> bool {
+        self.withdrawals.is_empty()
+    }
+
+    /// Number of epochs with scheduled withdrawals.
+    pub fn num_epochs(&self) -> usize {
+        self.schedule.len()
+    }
+}
+
+impl EncodeSize for WithdrawalQueue {
+    fn encode_size(&self) -> usize {
+        8 // next_index
+        + 4 // withdrawals count
+        + self.withdrawals.len() * (32 + PendingWithdrawal::SIZE)
+        + 4 // schedule epoch count
+        + self.schedule.values().map(|pubkeys| {
+            8 // epoch
+            + 4 // pubkey count
+            + pubkeys.len() * 32
+        }).sum::<usize>()
+    }
+}
+
+impl Write for WithdrawalQueue {
+    fn write(&self, buf: &mut impl BufMut) {
+        buf.put_u64(self.next_index);
+
+        // Write withdrawals map
+        buf.put_u32(self.withdrawals.len() as u32);
+        for (pubkey, withdrawal) in &self.withdrawals {
+            buf.put_slice(pubkey);
+            withdrawal.write(buf);
+        }
+
+        // Write schedule
+        buf.put_u32(self.schedule.len() as u32);
+        for (epoch, pubkeys) in &self.schedule {
+            buf.put_u64(*epoch);
+            buf.put_u32(pubkeys.len() as u32);
+            for pubkey in pubkeys {
+                buf.put_slice(pubkey);
+            }
+        }
+    }
+}
+
+impl Read for WithdrawalQueue {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
+        let next_index = buf.get_u64();
+
+        let withdrawals_len = buf.get_u32() as usize;
+        let mut withdrawals = BTreeMap::new();
+        for _ in 0..withdrawals_len {
+            let mut pubkey = [0u8; 32];
+            buf.copy_to_slice(&mut pubkey);
+            let withdrawal = PendingWithdrawal::read_cfg(buf, &())?;
+            withdrawals.insert(pubkey, withdrawal);
+        }
+
+        let schedule_len = buf.get_u32() as usize;
+        let mut schedule = BTreeMap::new();
+        for _ in 0..schedule_len {
+            let epoch = buf.get_u64();
+            let pubkeys_len = buf.get_u32() as usize;
+            let mut pubkeys = VecDeque::with_capacity(pubkeys_len);
+            for _ in 0..pubkeys_len {
+                let mut pubkey = [0u8; 32];
+                buf.copy_to_slice(&mut pubkey);
+                pubkeys.push_back(pubkey);
+            }
+            schedule.insert(epoch, pubkeys);
+        }
+
+        Ok(Self {
+            withdrawals,
+            schedule,
+            next_index,
         })
     }
 }
@@ -139,13 +347,13 @@ mod tests {
                 amount: 16000000000u64, // 16 ETH in gwei
             },
             pubkey: [42u8; 32],
-            subtract_balance: true,
+            balance_deduction: 16000000000u64,
         };
 
         // Test Write
         let mut buf = BytesMut::new();
         withdrawal.write(&mut buf);
-        assert_eq!(buf.len(), 77); // 8 + 8 + 20 + 8 + 32 + 1
+        assert_eq!(buf.len(), 84); // 8 + 8 + 20 + 8 + 32 + 8
 
         // Test Read
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();
@@ -162,7 +370,7 @@ mod tests {
                 amount: 32000000000u64, // 32 ETH in gwei
             },
             pubkey: [2u8; 32],
-            subtract_balance: false,
+            balance_deduction: 0,
         };
 
         // Encode with Write
@@ -177,7 +385,7 @@ mod tests {
     #[test]
     fn test_pending_withdrawal_insufficient_bytes() {
         let mut buf = BytesMut::new();
-        buf.put(&[0u8; 76][..]); // One byte short
+        buf.put(&[0u8; 83][..]); // One byte short
 
         let result = PendingWithdrawal::read(&mut buf.as_ref());
         assert!(result.is_err());
@@ -191,23 +399,23 @@ mod tests {
 
     #[test]
     fn test_pending_withdrawal_try_from_insufficient_bytes() {
-        let buf = [0u8; 76]; // One byte short
+        let buf = [0u8; 83]; // One byte short
         let result = PendingWithdrawal::try_from(buf.as_ref());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 77 bytes"
+            "PendingWithdrawal must be exactly 84 bytes"
         );
     }
 
     #[test]
     fn test_pending_withdrawal_try_from_too_many_bytes() {
-        let buf = [0u8; 78]; // One byte too many
+        let buf = [0u8; 85]; // One byte too many
         let result = PendingWithdrawal::try_from(buf.as_ref());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 77 bytes"
+            "PendingWithdrawal must be exactly 84 bytes"
         );
     }
 
@@ -222,7 +430,7 @@ mod tests {
                 amount: 64000000000u64, // 64 ETH in gwei
             },
             pubkey: [3u8; 32],
-            subtract_balance: true,
+            balance_deduction: 64000000000u64,
         };
 
         // Encode with Codec
@@ -241,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_pending_withdrawal_fixed_size() {
-        assert_eq!(PendingWithdrawal::SIZE, 77);
+        assert_eq!(PendingWithdrawal::SIZE, 84);
 
         let withdrawal = PendingWithdrawal {
             inner: Withdrawal {
@@ -251,7 +459,7 @@ mod tests {
                 amount: 0,
             },
             pubkey: [0u8; 32],
-            subtract_balance: false,
+            balance_deduction: 0,
         };
 
         let mut buf = BytesMut::new();
@@ -273,7 +481,7 @@ mod tests {
                 amount: 0xa1b2c3d4e5f60708u64,
             },
             pubkey: [5u8; 32],
-            subtract_balance: true,
+            balance_deduction: 0xa1b2c3d4e5f60708u64,
         };
 
         let mut buf = BytesMut::new();
@@ -302,11 +510,292 @@ mod tests {
         // Check pubkey (next 32 bytes)
         assert_eq!(&bytes[44..76], &[5u8; 32]);
 
-        // Check subtract_balance (last 1 byte)
-        assert_eq!(bytes[76], 1u8);
+        // Check balance_deduction (last 8 bytes, little-endian)
+        assert_eq!(&bytes[76..84], &0xa1b2c3d4e5f60708u64.to_le_bytes());
 
         // Verify roundtrip
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();
         assert_eq!(decoded, withdrawal);
+    }
+
+    fn make_request(pubkey: [u8; 32], amount: u64) -> WithdrawalRequest {
+        WithdrawalRequest {
+            source_address: Address::from([1u8; 20]),
+            validator_pubkey: pubkey,
+            amount,
+        }
+    }
+
+    #[test]
+    fn test_queue_push_pop_basic() {
+        let mut queue = WithdrawalQueue::default();
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+
+        let req = make_request([1u8; 32], 100);
+        queue.push_request(req, 5, 100);
+
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.num_epochs(), 1);
+        assert_eq!(queue.next_index(), 1);
+
+        let w = queue.pop(5).unwrap();
+        assert_eq!(w.inner.amount, 100);
+        assert_eq!(w.inner.index, 0);
+        assert_eq!(w.balance_deduction, 100);
+        assert_eq!(w.pubkey, [1u8; 32]);
+
+        assert!(queue.is_empty());
+        assert_eq!(queue.num_epochs(), 0);
+    }
+
+    #[test]
+    fn test_queue_peek() {
+        let mut queue = WithdrawalQueue::default();
+        assert!(queue.peek(5).is_none());
+
+        let req = make_request([1u8; 32], 100);
+        queue.push_request(req, 5, 100);
+
+        let w = queue.peek(5).unwrap();
+        assert_eq!(w.inner.amount, 100);
+        // peek doesn't remove
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn test_queue_pop_wrong_epoch() {
+        let mut queue = WithdrawalQueue::default();
+        let req = make_request([1u8; 32], 100);
+        queue.push_request(req, 5, 100);
+
+        assert!(queue.pop(4).is_none());
+        assert!(queue.pop(6).is_none());
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn test_queue_multiple_validators_same_epoch() {
+        let mut queue = WithdrawalQueue::default();
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([2u8; 32], 200), 5, 200);
+        queue.push_request(make_request([3u8; 32], 300), 5, 300);
+
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.count_for_epoch(5), 3);
+        assert_eq!(queue.num_epochs(), 1);
+
+        // Pop in FIFO order
+        assert_eq!(queue.pop(5).unwrap().inner.amount, 100);
+        assert_eq!(queue.pop(5).unwrap().inner.amount, 200);
+        assert_eq!(queue.pop(5).unwrap().inner.amount, 300);
+        assert!(queue.pop(5).is_none());
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_queue_multiple_epochs() {
+        let mut queue = WithdrawalQueue::default();
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([2u8; 32], 200), 7, 200);
+
+        assert_eq!(queue.num_epochs(), 2);
+        let mut epochs = queue.epochs_with_withdrawals();
+        epochs.sort();
+        assert_eq!(epochs, vec![5, 7]);
+
+        assert_eq!(queue.count_for_epoch(5), 1);
+        assert_eq!(queue.count_for_epoch(7), 1);
+        assert_eq!(queue.count_for_epoch(6), 0);
+    }
+
+    #[test]
+    fn test_queue_get_for_epoch() {
+        let mut queue = WithdrawalQueue::default();
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([2u8; 32], 200), 5, 200);
+        queue.push_request(make_request([3u8; 32], 300), 7, 300);
+
+        let epoch5 = queue.get_for_epoch(5);
+        assert_eq!(epoch5.len(), 2);
+        assert_eq!(epoch5[0].inner.amount, 100);
+        assert_eq!(epoch5[1].inner.amount, 200);
+
+        let epoch7 = queue.get_for_epoch(7);
+        assert_eq!(epoch7.len(), 1);
+        assert_eq!(epoch7[0].inner.amount, 300);
+
+        assert!(queue.get_for_epoch(6).is_empty());
+    }
+
+    #[test]
+    fn test_queue_merge_same_pubkey() {
+        let mut queue = WithdrawalQueue::default();
+
+        // First withdrawal: user-initiated, 50 ETH
+        queue.push_request(make_request([1u8; 32], 50), 5, 50);
+        assert_eq!(queue.next_index(), 1);
+
+        // Second withdrawal for same pubkey: deposit refund, 10 ETH, balance_deduction=0
+        queue.push_request(make_request([1u8; 32], 10), 7, 0);
+
+        // Should still be one entry, no new index assigned
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.next_index(), 1);
+
+        // Amounts merged, original epoch preserved
+        let w = queue.peek(5).unwrap();
+        assert_eq!(w.inner.amount, 60); // 50 + 10
+        assert_eq!(w.balance_deduction, 50); // 50 + 0
+        assert_eq!(w.inner.index, 0);
+
+        // Nothing at the second epoch (merged into first)
+        assert!(queue.peek(7).is_none());
+        assert_eq!(queue.num_epochs(), 1);
+    }
+
+    #[test]
+    fn test_queue_merge_accumulates_balance_deduction() {
+        let mut queue = WithdrawalQueue::default();
+
+        // First: user withdrawal, 50 ETH
+        queue.push_request(make_request([1u8; 32], 50), 5, 50);
+
+        // Second: stake bounds enforcement adds 10 ETH
+        queue.push_request(make_request([1u8; 32], 10), 6, 10);
+
+        let w = queue.peek(5).unwrap();
+        assert_eq!(w.inner.amount, 60);
+        assert_eq!(w.balance_deduction, 60); // 50 + 10
+    }
+
+    #[test]
+    fn test_queue_merge_does_not_affect_other_validators() {
+        let mut queue = WithdrawalQueue::default();
+
+        queue.push_request(make_request([1u8; 32], 50), 5, 50);
+        queue.push_request(make_request([2u8; 32], 30), 5, 30);
+
+        // Merge into validator 1 only
+        queue.push_request(make_request([1u8; 32], 10), 5, 0);
+
+        assert_eq!(queue.len(), 2);
+
+        let epoch5 = queue.get_for_epoch(5);
+        assert_eq!(epoch5.len(), 2);
+        // Validator 1: merged
+        assert_eq!(epoch5[0].inner.amount, 60);
+        assert_eq!(epoch5[0].balance_deduction, 50);
+        // Validator 2: unchanged
+        assert_eq!(epoch5[1].inner.amount, 30);
+        assert_eq!(epoch5[1].balance_deduction, 30);
+    }
+
+    #[test]
+    fn test_queue_next_index_increments() {
+        let mut queue = WithdrawalQueue::default();
+        assert_eq!(queue.next_index(), 0);
+
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        assert_eq!(queue.next_index(), 1);
+
+        queue.push_request(make_request([2u8; 32], 200), 5, 200);
+        assert_eq!(queue.next_index(), 2);
+
+        // Merge doesn't increment
+        queue.push_request(make_request([1u8; 32], 50), 5, 0);
+        assert_eq!(queue.next_index(), 2);
+    }
+
+    #[test]
+    fn test_queue_set_next_index() {
+        let mut queue = WithdrawalQueue::default();
+        queue.set_next_index(42);
+        assert_eq!(queue.next_index(), 42);
+
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        assert_eq!(queue.next_index(), 43);
+    }
+
+    #[test]
+    fn test_queue_serialization_roundtrip_empty() {
+        let queue = WithdrawalQueue::default();
+
+        let mut buf = BytesMut::new();
+        queue.write(&mut buf);
+        assert_eq!(buf.len(), queue.encode_size());
+
+        let decoded = WithdrawalQueue::read(&mut buf.as_ref()).unwrap();
+        assert_eq!(decoded, queue);
+    }
+
+    #[test]
+    fn test_queue_serialization_roundtrip_populated() {
+        let mut queue = WithdrawalQueue::default();
+        queue.set_next_index(10);
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([2u8; 32], 200), 5, 200);
+        queue.push_request(make_request([3u8; 32], 300), 7, 300);
+
+        let mut buf = BytesMut::new();
+        queue.write(&mut buf);
+        assert_eq!(buf.len(), queue.encode_size());
+
+        let decoded = WithdrawalQueue::read(&mut buf.as_ref()).unwrap();
+        assert_eq!(decoded, queue);
+        assert_eq!(decoded.next_index(), 13);
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded.num_epochs(), 2);
+    }
+
+    #[test]
+    fn test_queue_serialization_roundtrip_after_merge() {
+        let mut queue = WithdrawalQueue::default();
+        queue.push_request(make_request([1u8; 32], 50), 5, 50);
+        queue.push_request(make_request([1u8; 32], 10), 7, 0); // merged
+
+        let mut buf = BytesMut::new();
+        queue.write(&mut buf);
+        assert_eq!(buf.len(), queue.encode_size());
+
+        let decoded = WithdrawalQueue::read(&mut buf.as_ref()).unwrap();
+        assert_eq!(decoded, queue);
+        assert_eq!(decoded.len(), 1);
+
+        let w = decoded.peek(5).unwrap();
+        assert_eq!(w.inner.amount, 60);
+        assert_eq!(w.balance_deduction, 50);
+    }
+
+    #[test]
+    fn test_queue_push_raw() {
+        let mut queue = WithdrawalQueue::default();
+
+        let pending = PendingWithdrawal {
+            inner: Withdrawal {
+                index: 42,
+                validator_index: 0,
+                address: Address::from([1u8; 20]),
+                amount: 100,
+            },
+            pubkey: [1u8; 32],
+            balance_deduction: 100,
+        };
+        queue.push(pending.clone(), 5);
+
+        assert_eq!(queue.len(), 1);
+        let w = queue.pop(5).unwrap();
+        assert_eq!(w, pending);
+    }
+
+    #[test]
+    fn test_queue_pop_cleans_up_empty_epoch() {
+        let mut queue = WithdrawalQueue::default();
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+
+        assert_eq!(queue.num_epochs(), 1);
+        queue.pop(5);
+        assert_eq!(queue.num_epochs(), 0);
+        assert!(queue.epochs_with_withdrawals().is_empty());
     }
 }
