@@ -50,17 +50,17 @@ Withdrawals are parsed in `parse_execution_requests` and processed when included
 
 | Scenario | When Parsed | When Processed |
 |----------|-------------|----------------|
-| User-initiated | Move balance to pending, set flag | Subtract `balance_deduction` from pending, clear flag |
-| Below min stake | Move balance to pending, set flag | Subtract `balance_deduction` from pending, clear flag |
-| Above max stake | Move excess to pending, set flag | Subtract `balance_deduction` from pending, clear flag |
+| User-initiated | Set balance to 0, set flag | Clear flag, remove account if balance is 0 |
+| Below min stake | Set balance to 0, set flag | Clear flag, remove account if balance is 0 |
+| Above max stake | Subtract excess from balance, set flag | Clear flag |
 | Failed deposit refund | Create refund withdrawal (or merge into existing) | No account changes |
 | Top-up exceeds range | Create refund withdrawal (or merge into existing) | No account changes |
 | New deposit invalid | Create refund withdrawal, remove account | No account changes |
 
 ### User-Initiated Withdrawal
 
-1. **Parsing**: Balance moved from `balance` to `pending_withdrawal_amount`, `has_pending_withdrawal = true`. Validator added to `removed_validators`.
-2. **Processing**: `balance_deduction` subtracted from `pending_withdrawal_amount`, flag cleared. Account removed if both `balance` and `pending_withdrawal_amount` are zero.
+1. **Parsing**: `balance` set to 0, `has_pending_withdrawal = true`. The withdrawn amount is tracked as `balance_deduction` on the `PendingWithdrawal` in the queue. Validator added to `removed_validators`.
+2. **Processing**: Flag cleared. Account removed if `balance` is zero.
 
 ### Stake Bound Violations
 
@@ -86,7 +86,7 @@ If withdrawal credentials cannot be parsed:
 
 The `WithdrawalQueue` stores at most one pending withdrawal per validator (keyed by pubkey). Each withdrawal tracks:
 - `amount`: the total withdrawal amount (included in the block as an EIP-4895 withdrawal)
-- `balance_deduction`: the amount to subtract from `pending_withdrawal_amount` when processed
+- `balance_deduction`: the amount that was moved out of the validator's `balance` when the withdrawal was created. This is used by the RPC `getValidatorBalance` endpoint to include pending withdrawal funds in the reported balance.
 
 When a new withdrawal is pushed for a validator that already has a pending entry, the amounts and balance deductions are merged into the existing entry, keeping the original scheduled epoch. This ensures that refund withdrawals (which bypass the `has_pending_withdrawal` guard) do not create duplicate queue entries.
 
