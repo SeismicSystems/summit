@@ -335,7 +335,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(Some(checkpoint)) => {
                         let state = ConsensusState::try_from(&checkpoint)
                             .expect("Failed to parse checkpoint");
-                        println!("Retrieved checkpoint at height {}", state.latest_height);
+                        println!("Retrieved checkpoint at height {}", state.get_latest_height());
                         break state;
                     }
                     Ok(None) => {

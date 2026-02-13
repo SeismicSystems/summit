@@ -749,8 +749,8 @@ where
             .expect("failed to create consensus state from checkpoint");
 
         info!(
-            epoch = consensus_state.epoch,
-            height = consensus_state.latest_height,
+            epoch = consensus_state.get_epoch(),
+            height = consensus_state.get_latest_height(),
             num_validators = consensus_state.num_validators(),
             checkpoint_path = %path.display(),
             "loaded checkpoint from file"
@@ -825,8 +825,8 @@ where
 
         if let Some(ref state) = consensus_state {
             info!(
-                epoch = state.epoch,
-                height = state.latest_height,
+                epoch = state.get_epoch(),
+                height = state.get_latest_height(),
                 num_validators = state.num_validators(),
                 has_last_block = last_block.is_some(),
                 has_finalized_header = header.is_some(),

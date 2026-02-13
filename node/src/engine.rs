@@ -312,9 +312,9 @@ where
         // Initialize the sync variables from the consensus state returned by the finalizer.
         // This covers the case where the finalizer reads the consensus state from disk.
         let sync_start = SyncStart {
-            height: initial_state.latest_height,
-            epoch: initial_state.epoch,
-            view: initial_state.view,
+            height: initial_state.get_latest_height(),
+            epoch: initial_state.get_epoch(),
+            view: initial_state.get_view(),
         };
         let num_validators = initial_state.num_validators();
 

@@ -91,7 +91,7 @@ fn test_single_engine_with_checkpoint() {
         let namespace = String::from("_SEISMIC_BFT");
         let engine_client = engine_client_network.create_client(uid.clone());
 
-        let latest_height = consensus_state.latest_height;
+        let latest_height = consensus_state.get_latest_height();
 
         let config = get_default_engine_config(
             engine_client,
@@ -280,10 +280,10 @@ fn test_node_joins_later_with_checkpoint() {
 
         // This corresponds to snapshotting Reth
         let consensus_state = ConsensusState::try_from(&checkpoint).unwrap();
-        let from_block = consensus_state.latest_height + 1;
-        let eth_hash = consensus_state.forkchoice.head_block_hash.into();
+        let from_block = consensus_state.get_latest_height() + 1;
+        let eth_hash = consensus_state.get_forkchoice().head_block_hash.into();
 
-        engine_client.load_checkpoint(consensus_state.latest_height, eth_hash);
+        engine_client.load_checkpoint(consensus_state.get_latest_height(), eth_hash);
 
         let config = get_default_engine_config(
             engine_client,
@@ -515,10 +515,10 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
 
         // This corresponds to snapshotting Reth
         let consensus_state = ConsensusState::try_from(&checkpoint).unwrap();
-        let from_block = consensus_state.latest_height + 1;
-        let eth_hash = consensus_state.forkchoice.head_block_hash.into();
+        let from_block = consensus_state.get_latest_height() + 1;
+        let eth_hash = consensus_state.get_forkchoice().head_block_hash.into();
 
-        engine_client.load_checkpoint(consensus_state.latest_height, eth_hash);
+        engine_client.load_checkpoint(consensus_state.get_latest_height(), eth_hash);
 
         let config = get_default_engine_config(
             engine_client,

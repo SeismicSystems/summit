@@ -178,7 +178,7 @@ fn test_checkpoint_verification_fixed_committee() {
 
         let checkpoint_state =
             ConsensusState::try_from(&raw_checkpoint).expect("failed to parse consensus state");
-        let checkpoint_epoch = checkpoint_state.epoch;
+        let checkpoint_epoch = checkpoint_state.get_epoch();
         assert!(
             checkpoint_epoch >= num_epochs - 1,
             "expected checkpoint at epoch >= {}, got {}",
@@ -420,7 +420,7 @@ fn test_checkpoint_verification_dynamic_committee() {
 
         let checkpoint_state =
             ConsensusState::try_from(&raw_checkpoint).expect("failed to parse consensus state");
-        let checkpoint_epoch = checkpoint_state.epoch;
+        let checkpoint_epoch = checkpoint_state.get_epoch();
         assert!(
             checkpoint_epoch >= 3,
             "expected checkpoint at epoch >= 3, got {}",

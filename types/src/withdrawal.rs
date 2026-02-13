@@ -280,6 +280,16 @@ impl WithdrawalQueue {
             .map(|w| w.balance_deduction)
             .unwrap_or(0)
     }
+
+    /// Get a pending withdrawal by validator pubkey.
+    pub fn get_withdrawal(&self, pubkey: &[u8; 32]) -> Option<&PendingWithdrawal> {
+        self.withdrawals.get(pubkey)
+    }
+
+    /// Iterate over all pending withdrawals as (pubkey, withdrawal) pairs.
+    pub fn withdrawals_iter(&self) -> impl Iterator<Item = (&[u8; 32], &PendingWithdrawal)> {
+        self.withdrawals.iter()
+    }
 }
 
 impl EncodeSize for WithdrawalQueue {

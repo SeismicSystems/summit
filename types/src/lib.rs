@@ -17,6 +17,7 @@ pub mod reth;
 pub mod rpc;
 pub mod scheme;
 pub mod state_trie;
+pub mod state_trie_key;
 pub mod utils;
 pub mod withdrawal;
 

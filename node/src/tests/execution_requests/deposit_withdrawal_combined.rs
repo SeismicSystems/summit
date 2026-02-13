@@ -577,7 +577,7 @@ fn test_deposit_blocked_by_pending_withdrawal() {
 
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
@@ -766,7 +766,7 @@ fn test_withdrawal_blocked_by_pending_deposit() {
 
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
@@ -967,7 +967,7 @@ fn test_deposit_and_withdrawal_same_block() {
 
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();

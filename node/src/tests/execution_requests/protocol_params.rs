@@ -311,7 +311,7 @@ fn test_protocol_param_stake_update_committee() {
             .with_execution_requests(execution_requests_map)
             .build();
         let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         // Store validator public keys for later verification
         let validator8_pubkey = validators[8].0.clone();
