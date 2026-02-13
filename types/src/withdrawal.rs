@@ -14,17 +14,19 @@ pub struct PendingWithdrawal {
     /// withdrawal amount. For deposit refunds (where funds were never credited to the
     /// account), this is 0.
     pub balance_deduction: u64,
+    /// The epoch in which this withdrawal is scheduled to be processed.
+    pub epoch: u64,
 }
 
 impl TryFrom<&[u8]> for PendingWithdrawal {
     type Error = &'static str;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        // PendingWithdrawal data is exactly 84 bytes
-        // Format: index(8) + validator_index(8) + address(20) + amount(8) + pubkey(32) + balance_deduction(8) = 84 bytes
+        // PendingWithdrawal data is exactly 92 bytes
+        // Format: index(8) + validator_index(8) + address(20) + amount(8) + pubkey(32) + balance_deduction(8) + epoch(8) = 92 bytes
 
-        if bytes.len() != 84 {
-            return Err("PendingWithdrawal must be exactly 84 bytes");
+        if bytes.len() != 92 {
+            return Err("PendingWithdrawal must be exactly 92 bytes");
         }
 
         // Extract index (8 bytes, little-endian u64)
@@ -62,6 +64,12 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
             .map_err(|_| "Failed to parse balance_deduction")?;
         let balance_deduction = u64::from_le_bytes(balance_deduction_bytes);
 
+        // Extract epoch (8 bytes, little-endian u64)
+        let epoch_bytes: [u8; 8] = bytes[84..92]
+            .try_into()
+            .map_err(|_| "Failed to parse epoch")?;
+        let epoch = u64::from_le_bytes(epoch_bytes);
+
         Ok(PendingWithdrawal {
             inner: Withdrawal {
                 index,
@@ -71,6 +79,7 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
             },
             pubkey,
             balance_deduction,
+            epoch,
         })
     }
 }
@@ -83,18 +92,19 @@ impl Write for PendingWithdrawal {
         buf.put(&self.inner.amount.to_le_bytes()[..]);
         buf.put(&self.pubkey[..]);
         buf.put(&self.balance_deduction.to_le_bytes()[..]);
+        buf.put(&self.epoch.to_le_bytes()[..]);
     }
 }
 
 impl FixedSize for PendingWithdrawal {
-    const SIZE: usize = 84; // 8 + 8 + 20 + 8 + 32 + 8
+    const SIZE: usize = 92; // 8 + 8 + 20 + 8 + 32 + 8 + 8
 }
 
 impl Read for PendingWithdrawal {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        if buf.remaining() < 84 {
+        if buf.remaining() < 92 {
             return Err(Error::Invalid("PendingWithdrawal", "Insufficient bytes"));
         }
 
@@ -121,6 +131,10 @@ impl Read for PendingWithdrawal {
         buf.copy_to_slice(&mut balance_deduction_bytes);
         let balance_deduction = u64::from_le_bytes(balance_deduction_bytes);
 
+        let mut epoch_bytes = [0u8; 8];
+        buf.copy_to_slice(&mut epoch_bytes);
+        let epoch = u64::from_le_bytes(epoch_bytes);
+
         Ok(PendingWithdrawal {
             inner: Withdrawal {
                 index,
@@ -130,6 +144,7 @@ impl Read for PendingWithdrawal {
             },
             pubkey,
             balance_deduction,
+            epoch,
         })
     }
 }
@@ -173,6 +188,7 @@ impl WithdrawalQueue {
                 },
                 pubkey,
                 balance_deduction,
+                epoch,
             };
 
             self.withdrawals.insert(pubkey, pending);
@@ -181,8 +197,9 @@ impl WithdrawalQueue {
     }
 
     /// Push a pre-built withdrawal directly (for test setup and deserialization).
-    pub fn push(&mut self, withdrawal: PendingWithdrawal, epoch: u64) {
+    pub fn push(&mut self, withdrawal: PendingWithdrawal) {
         let pubkey = withdrawal.pubkey;
+        let epoch = withdrawal.epoch;
         self.withdrawals.insert(pubkey, withdrawal);
         self.schedule.entry(epoch).or_default().push_back(pubkey);
     }
@@ -348,12 +365,13 @@ mod tests {
             },
             pubkey: [42u8; 32],
             balance_deduction: 16000000000u64,
+            epoch: 5,
         };
 
         // Test Write
         let mut buf = BytesMut::new();
         withdrawal.write(&mut buf);
-        assert_eq!(buf.len(), 84); // 8 + 8 + 20 + 8 + 32 + 8
+        assert_eq!(buf.len(), 92); // 8 + 8 + 20 + 8 + 32 + 8 + 8
 
         // Test Read
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();
@@ -371,6 +389,7 @@ mod tests {
             },
             pubkey: [2u8; 32],
             balance_deduction: 0,
+            epoch: 10,
         };
 
         // Encode with Write
@@ -385,7 +404,7 @@ mod tests {
     #[test]
     fn test_pending_withdrawal_insufficient_bytes() {
         let mut buf = BytesMut::new();
-        buf.put(&[0u8; 83][..]); // One byte short
+        buf.put(&[0u8; 91][..]); // One byte short
 
         let result = PendingWithdrawal::read(&mut buf.as_ref());
         assert!(result.is_err());
@@ -399,23 +418,23 @@ mod tests {
 
     #[test]
     fn test_pending_withdrawal_try_from_insufficient_bytes() {
-        let buf = [0u8; 83]; // One byte short
+        let buf = [0u8; 91]; // One byte short
         let result = PendingWithdrawal::try_from(buf.as_ref());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 84 bytes"
+            "PendingWithdrawal must be exactly 92 bytes"
         );
     }
 
     #[test]
     fn test_pending_withdrawal_try_from_too_many_bytes() {
-        let buf = [0u8; 85]; // One byte too many
+        let buf = [0u8; 93]; // One byte too many
         let result = PendingWithdrawal::try_from(buf.as_ref());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 84 bytes"
+            "PendingWithdrawal must be exactly 92 bytes"
         );
     }
 
@@ -431,6 +450,7 @@ mod tests {
             },
             pubkey: [3u8; 32],
             balance_deduction: 64000000000u64,
+            epoch: 42,
         };
 
         // Encode with Codec
@@ -449,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_pending_withdrawal_fixed_size() {
-        assert_eq!(PendingWithdrawal::SIZE, 84);
+        assert_eq!(PendingWithdrawal::SIZE, 92);
 
         let withdrawal = PendingWithdrawal {
             inner: Withdrawal {
@@ -460,6 +480,7 @@ mod tests {
             },
             pubkey: [0u8; 32],
             balance_deduction: 0,
+            epoch: 0,
         };
 
         let mut buf = BytesMut::new();
@@ -482,6 +503,7 @@ mod tests {
             },
             pubkey: [5u8; 32],
             balance_deduction: 0xa1b2c3d4e5f60708u64,
+            epoch: 0x1122334455667788u64,
         };
 
         let mut buf = BytesMut::new();
@@ -510,8 +532,11 @@ mod tests {
         // Check pubkey (next 32 bytes)
         assert_eq!(&bytes[44..76], &[5u8; 32]);
 
-        // Check balance_deduction (last 8 bytes, little-endian)
+        // Check balance_deduction (next 8 bytes, little-endian)
         assert_eq!(&bytes[76..84], &0xa1b2c3d4e5f60708u64.to_le_bytes());
+
+        // Check epoch (last 8 bytes, little-endian)
+        assert_eq!(&bytes[84..92], &0x1122334455667788u64.to_le_bytes());
 
         // Verify roundtrip
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();
@@ -544,6 +569,7 @@ mod tests {
         assert_eq!(w.inner.index, 0);
         assert_eq!(w.balance_deduction, 100);
         assert_eq!(w.pubkey, [1u8; 32]);
+        assert_eq!(w.epoch, 5);
 
         assert!(queue.is_empty());
         assert_eq!(queue.num_epochs(), 0);
@@ -648,6 +674,7 @@ mod tests {
         assert_eq!(w.inner.amount, 60); // 50 + 10
         assert_eq!(w.balance_deduction, 50); // 50 + 0
         assert_eq!(w.inner.index, 0);
+        assert_eq!(w.epoch, 5); // original epoch, not 7
 
         // Nothing at the second epoch (merged into first)
         assert!(queue.peek(7).is_none());
@@ -780,8 +807,9 @@ mod tests {
             },
             pubkey: [1u8; 32],
             balance_deduction: 100,
+            epoch: 5,
         };
-        queue.push(pending.clone(), 5);
+        queue.push(pending.clone());
 
         assert_eq!(queue.len(), 1);
         let w = queue.pop(5).unwrap();

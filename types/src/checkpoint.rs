@@ -423,6 +423,7 @@ mod tests {
             },
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
+            epoch: 5,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -458,7 +459,7 @@ mod tests {
 
         let mut withdrawal_queue = WithdrawalQueue::default();
         withdrawal_queue.set_next_index(200);
-        withdrawal_queue.push(pending_withdrawal, 5); // epoch 5
+        withdrawal_queue.push(pending_withdrawal);
 
         let mut validator_accounts = BTreeMap::new();
         validator_accounts.insert([10u8; 32], validator_account1);
@@ -589,6 +590,7 @@ mod tests {
             },
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
+            epoch: 5,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -624,7 +626,7 @@ mod tests {
 
         let mut withdrawal_queue = WithdrawalQueue::default();
         withdrawal_queue.set_next_index(300);
-        withdrawal_queue.push(pending_withdrawal, 5); // epoch 5
+        withdrawal_queue.push(pending_withdrawal);
 
         let mut validator_accounts = BTreeMap::new();
         validator_accounts.insert([10u8; 32], validator_account1);
@@ -843,6 +845,7 @@ mod tests {
             },
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
+            epoch: 5,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -864,7 +867,7 @@ mod tests {
 
         let mut withdrawal_queue = WithdrawalQueue::default();
         withdrawal_queue.set_next_index(200);
-        withdrawal_queue.push(pending_withdrawal, 5); // epoch 5
+        withdrawal_queue.push(pending_withdrawal);
 
         let mut validator_accounts = BTreeMap::new();
         validator_accounts.insert([10u8; 32], validator_account1);
