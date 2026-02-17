@@ -494,6 +494,7 @@ mod tests {
                 alloy_primitives::U256::from(42u64), // block_value
                 Vec::new(),                          // added_validators
                 Vec::new(),                          // removed_validators
+                [0u8; 32],                           // parent_beacon_block_root
             );
 
             // Create finalization proof
@@ -543,6 +544,7 @@ mod tests {
                 alloy_primitives::U256::from(84u64), // block_value
                 Vec::new(),                          // added_validators
                 Vec::new(),                          // removed_validators
+                [0u8; 32],                           // parent_beacon_block_root
             );
             let proposal2 = Proposal {
                 round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
@@ -605,6 +607,7 @@ mod tests {
                 alloy_primitives::U256::from(42u64), // block_value
                 Vec::new(),                          // added_validators
                 Vec::new(),                          // removed_validators
+                [0u8; 32],                           // parent_beacon_block_root
             );
             let proposal1 = Proposal {
                 round: Round::new(Epoch::new(header1.epoch), View::new(header1.view)),
@@ -635,6 +638,7 @@ mod tests {
                 alloy_primitives::U256::from(126u64), // block_value
                 Vec::new(),                           // added_validators
                 Vec::new(),                           // removed_validators
+                [0u8; 32],                            // parent_beacon_block_root
             );
             let proposal3 = Proposal {
                 round: Round::new(Epoch::new(header3.epoch), View::new(header3.view)),
@@ -665,6 +669,7 @@ mod tests {
                 alloy_primitives::U256::from(84u64), // block_value
                 Vec::new(),                          // added_validators
                 Vec::new(),                          // removed_validators
+                [0u8; 32],                           // parent_beacon_block_root
             );
             let proposal2 = Proposal {
                 round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
