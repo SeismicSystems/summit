@@ -197,7 +197,7 @@ impl ConsensusState {
         for pubkey in &validators {
             let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
             self.state_trie
-                .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[]);
+                .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[1]);
         }
         self.removed_validators = validators;
     }
@@ -276,7 +276,7 @@ impl ConsensusState {
     pub fn push_removed_validator(&mut self, pubkey: PublicKey) {
         let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
         self.state_trie
-            .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[]);
+            .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[1]);
         self.removed_validators.push(pubkey);
     }
 
@@ -806,7 +806,7 @@ impl ConsensusState {
         for pubkey in &self.removed_validators {
             let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
             self.state_trie
-                .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[]);
+                .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[1]);
         }
     }
 
@@ -1476,5 +1476,548 @@ mod tests {
         let restored_account = restored_state.get_account(&pubkey).unwrap();
         assert_eq!(restored_account.balance, 32000000000);
         assert_eq!(restored_account.last_deposit_index, 1);
+    }
+
+    // ---- State trie integration tests ----
+
+    /// Helper: verify a single trie key/value inclusion proof against the current root.
+    fn assert_trie_proves(state: &ConsensusState, key: &[u8], value: &[u8]) {
+        let trie = state.state_trie();
+        let proof = trie.generate_proof(&[key]);
+        assert!(
+            StateTrie::verify_proof(&trie.root(), &proof, &[(key, Some(value))]),
+            "inclusion proof failed for key {:?}",
+            String::from_utf8_lossy(key),
+        );
+    }
+
+    /// Helper: verify a trie key is absent.
+    fn assert_trie_absent(state: &ConsensusState, key: &[u8]) {
+        let trie = state.state_trie();
+        let proof = trie.generate_proof(&[key]);
+        assert!(
+            StateTrie::verify_proof(&trie.root(), &proof, &[(key, None)]),
+            "exclusion proof failed for key {:?}",
+            String::from_utf8_lossy(key),
+        );
+    }
+
+    #[test]
+    fn test_trie_scalar_setters_update_trie() {
+        let mut state = ConsensusState::default();
+        let root_before = state.state_trie().root();
+
+        state.set_epoch(10);
+        assert_ne!(state.state_trie().root(), root_before);
+        assert_trie_proves(&state, state_trie_key::EPOCH, &10u64.to_be_bytes());
+
+        state.set_view(99);
+        assert_trie_proves(&state, state_trie_key::VIEW, &99u64.to_be_bytes());
+
+        state.set_latest_height(500);
+        assert_trie_proves(&state, state_trie_key::LATEST_HEIGHT, &500u64.to_be_bytes());
+
+        state.set_head_digest(sha256::Digest([0xAB; 32]));
+        assert_trie_proves(&state, state_trie_key::HEAD_DIGEST, &[0xAB; 32]);
+
+        state.set_epoch_genesis_hash([0xCD; 32]);
+        assert_trie_proves(&state, state_trie_key::EPOCH_GENESIS_HASH, &[0xCD; 32]);
+
+        state.set_minimum_stake(16_000_000_000);
+        assert_trie_proves(
+            &state,
+            state_trie_key::VALIDATOR_MINIMUM_STAKE,
+            &16_000_000_000u64.to_be_bytes(),
+        );
+
+        state.set_maximum_stake(64_000_000_000);
+        assert_trie_proves(
+            &state,
+            state_trie_key::VALIDATOR_MAXIMUM_STAKE,
+            &64_000_000_000u64.to_be_bytes(),
+        );
+
+        state.set_next_withdrawal_index(42);
+        assert_trie_proves(
+            &state,
+            state_trie_key::NEXT_WITHDRAWAL_INDEX,
+            &42u64.to_be_bytes(),
+        );
+    }
+
+    #[test]
+    fn test_trie_forkchoice_updates() {
+        let mut state = ConsensusState::default();
+
+        let fcs = ForkchoiceState {
+            head_block_hash: [0x11; 32].into(),
+            safe_block_hash: [0x22; 32].into(),
+            finalized_block_hash: [0x33; 32].into(),
+        };
+        state.set_forkchoice(fcs);
+        assert_trie_proves(
+            &state,
+            state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH,
+            &[0x11; 32],
+        );
+        assert_trie_proves(
+            &state,
+            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
+            &[0x22; 32],
+        );
+        assert_trie_proves(
+            &state,
+            state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH,
+            &[0x33; 32],
+        );
+
+        // Partial setters
+        state.set_forkchoice_head([0xAA; 32].into());
+        assert_trie_proves(
+            &state,
+            state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH,
+            &[0xAA; 32],
+        );
+        // safe/finalized unchanged
+        assert_trie_proves(
+            &state,
+            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
+            &[0x22; 32],
+        );
+
+        state.set_forkchoice_safe_and_finalized([0xBB; 32].into());
+        assert_trie_proves(
+            &state,
+            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
+            &[0xBB; 32],
+        );
+        assert_trie_proves(
+            &state,
+            state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH,
+            &[0xBB; 32],
+        );
+    }
+
+    #[test]
+    fn test_trie_validator_account_lifecycle() {
+        let mut state = ConsensusState::default();
+        let pubkey = [1u8; 32];
+        let account = create_test_validator_account(1, 32_000_000_000);
+
+        // Before insertion, keys should be absent
+        assert_trie_absent(&state, &state_trie_key::validator_account_balance(&pubkey));
+
+        // Insert
+        state.set_account(pubkey, account.clone());
+        assert_trie_proves(
+            &state,
+            &state_trie_key::validator_account_balance(&pubkey),
+            &32_000_000_000u64.to_be_bytes(),
+        );
+        assert_trie_proves(
+            &state,
+            &state_trie_key::validator_account_status(&pubkey),
+            &[0u8], // Active = 0
+        );
+        assert_trie_proves(
+            &state,
+            &state_trie_key::validator_account_has_pending_deposit(&pubkey),
+            &[0u8], // false
+        );
+        assert_trie_proves(
+            &state,
+            &state_trie_key::validator_account_has_pending_withdrawal(&pubkey),
+            &[0u8], // false
+        );
+        assert_trie_proves(
+            &state,
+            &state_trie_key::validator_account_joining_epoch(&pubkey),
+            &0u64.to_be_bytes(),
+        );
+
+        let root_with_account = state.state_trie().root();
+
+        // Update balance
+        let mut updated = account.clone();
+        updated.balance = 48_000_000_000;
+        state.set_account(pubkey, updated);
+        assert_ne!(state.state_trie().root(), root_with_account);
+        assert_trie_proves(
+            &state,
+            &state_trie_key::validator_account_balance(&pubkey),
+            &48_000_000_000u64.to_be_bytes(),
+        );
+
+        // Remove
+        state.remove_account(&pubkey);
+        assert_trie_absent(&state, &state_trie_key::validator_account_balance(&pubkey));
+        assert_trie_absent(&state, &state_trie_key::validator_account_status(&pubkey));
+        assert_trie_absent(
+            &state,
+            &state_trie_key::validator_account_consensus_public_key(&pubkey),
+        );
+    }
+
+    #[test]
+    fn test_trie_deposit_queue_operations() {
+        let mut state = ConsensusState::default();
+        let deposit = create_test_deposit_request(1, 32_000_000_000);
+        let node_pubkey_bytes: [u8; 32] = deposit.node_pubkey.as_ref().try_into().unwrap();
+
+        // Push deposit
+        state.push_deposit(deposit.clone());
+        assert_trie_proves(
+            &state,
+            &state_trie_key::deposit_queue_request_amount(&node_pubkey_bytes),
+            &32_000_000_000u64.to_be_bytes(),
+        );
+
+        let root_with_deposit = state.state_trie().root();
+
+        // Pop deposit removes trie entries
+        let popped = state.pop_deposit().unwrap();
+        assert_eq!(popped.amount, 32_000_000_000);
+        assert_ne!(state.state_trie().root(), root_with_deposit);
+        assert_trie_absent(
+            &state,
+            &state_trie_key::deposit_queue_request_amount(&node_pubkey_bytes),
+        );
+        assert_trie_absent(
+            &state,
+            &state_trie_key::deposit_queue_request_consensus_pubkey(&node_pubkey_bytes),
+        );
+    }
+
+    #[test]
+    fn test_trie_withdrawal_queue_operations() {
+        let mut state = ConsensusState::default();
+        let withdrawal = create_test_withdrawal(1, 16_000_000_000, 5);
+        let pubkey = withdrawal.pubkey;
+
+        state.push_withdrawal(withdrawal);
+        assert_trie_proves(
+            &state,
+            &state_trie_key::withdrawal_queue_request_balance_deduction(&pubkey),
+            &16_000_000_000u64.to_be_bytes(),
+        );
+        assert_trie_proves(
+            &state,
+            &state_trie_key::withdrawal_queue_request_epoch(&pubkey),
+            &5u64.to_be_bytes(),
+        );
+
+        let root_with_withdrawal = state.state_trie().root();
+
+        // Pop withdrawal removes trie entries
+        let popped = state.pop_withdrawal(5).unwrap();
+        assert_eq!(popped.inner.amount, 16_000_000_000);
+        assert_ne!(state.state_trie().root(), root_with_withdrawal);
+        assert_trie_absent(
+            &state,
+            &state_trie_key::withdrawal_queue_request_balance_deduction(&pubkey),
+        );
+        assert_trie_absent(
+            &state,
+            &state_trie_key::withdrawal_queue_request_epoch(&pubkey),
+        );
+    }
+
+    #[test]
+    fn test_trie_added_removed_validators() {
+        let mut state = ConsensusState::default();
+
+        let validator = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(10).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(10).public_key(),
+        };
+        let node_key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
+
+        // add_validator inserts trie entry
+        state.add_validator(5, validator.clone());
+        let key = state_trie_key::added_validators_consensus_key(&node_key_bytes);
+        let encoded = validator.consensus_key.encode();
+        assert_trie_proves(&state, &key, &encoded);
+
+        // remove_added_validators_for_epoch clears trie entries
+        state.remove_added_validators_for_epoch(5);
+        assert_trie_absent(&state, &key);
+
+        // push_removed_validator / clear_removed_validators
+        let removed_pk = ed25519::PrivateKey::from_seed(20).public_key();
+        let removed_bytes: [u8; 32] = removed_pk.as_ref().try_into().unwrap();
+        let removed_key = state_trie_key::removed_validators(&removed_bytes);
+
+        state.push_removed_validator(removed_pk);
+        assert_trie_proves(&state, &removed_key, &[1]);
+
+        state.clear_removed_validators();
+        assert_trie_absent(&state, &removed_key);
+    }
+
+    #[test]
+    fn test_trie_remove_single_added_validator() {
+        let mut state = ConsensusState::default();
+
+        let v1 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(10).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(10).public_key(),
+        };
+        let v2 = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(20).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(20).public_key(),
+        };
+        let v1_bytes: [u8; 32] = v1.node_key.as_ref().try_into().unwrap();
+        let v2_bytes: [u8; 32] = v2.node_key.as_ref().try_into().unwrap();
+
+        state.add_validator(5, v1.clone());
+        state.add_validator(5, v2.clone());
+
+        // Remove just v1
+        assert!(state.remove_added_validator(5, &v1.node_key));
+        assert_trie_absent(
+            &state,
+            &state_trie_key::added_validators_consensus_key(&v1_bytes),
+        );
+        // v2 still present
+        assert_trie_proves(
+            &state,
+            &state_trie_key::added_validators_consensus_key(&v2_bytes),
+            &v2.consensus_key.encode(),
+        );
+    }
+
+    #[test]
+    fn test_trie_protocol_param_changes() {
+        let mut state = ConsensusState::default();
+
+        state.push_protocol_param_change(ProtocolParam::MinimumStake(40_000_000_000));
+        assert_trie_proves(
+            &state,
+            &state_trie_key::protocol_param_changes_param(b"minimum_stake"),
+            &40_000_000_000u64.to_be_bytes(),
+        );
+
+        state.push_protocol_param_change(ProtocolParam::MaximumStake(80_000_000_000));
+        assert_trie_proves(
+            &state,
+            &state_trie_key::protocol_param_changes_param(b"maximum_stake"),
+            &80_000_000_000u64.to_be_bytes(),
+        );
+
+        // apply_protocol_parameter_changes consumes them and removes trie entries
+        let changed = state.apply_protocol_parameter_changes();
+        assert!(changed);
+        assert_trie_absent(
+            &state,
+            &state_trie_key::protocol_param_changes_param(b"minimum_stake"),
+        );
+        assert_trie_absent(
+            &state,
+            &state_trie_key::protocol_param_changes_param(b"maximum_stake"),
+        );
+
+        // But the scalar fields themselves are updated
+        assert_trie_proves(
+            &state,
+            state_trie_key::VALIDATOR_MINIMUM_STAKE,
+            &40_000_000_000u64.to_be_bytes(),
+        );
+        assert_trie_proves(
+            &state,
+            state_trie_key::VALIDATOR_MAXIMUM_STAKE,
+            &80_000_000_000u64.to_be_bytes(),
+        );
+    }
+
+    #[test]
+    fn test_trie_rebuild_matches_incremental() {
+        let mut state = ConsensusState::default();
+
+        // Build up state incrementally through setters
+        state.set_epoch(7);
+        state.set_view(42);
+        state.set_latest_height(100);
+        state.set_head_digest(sha256::Digest([0xAB; 32]));
+        state.set_epoch_genesis_hash([0xCD; 32]);
+        state.set_minimum_stake(16_000_000_000);
+        state.set_maximum_stake(64_000_000_000);
+        state.set_next_withdrawal_index(5);
+        state.set_forkchoice(ForkchoiceState {
+            head_block_hash: [0x11; 32].into(),
+            safe_block_hash: [0x22; 32].into(),
+            finalized_block_hash: [0x33; 32].into(),
+        });
+
+        let pubkey = [1u8; 32];
+        state.set_account(pubkey, create_test_validator_account(1, 32_000_000_000));
+
+        let deposit = create_test_deposit_request(1, 32_000_000_000);
+        state.push_deposit(deposit);
+
+        let withdrawal = create_test_withdrawal(1, 16_000_000_000, 5);
+        state.push_withdrawal(withdrawal);
+
+        let incremental_root = state.state_trie().root();
+
+        // Rebuild from scratch
+        state.rebuild_state_trie();
+        let rebuilt_root = state.state_trie().root();
+
+        assert_eq!(incremental_root, rebuilt_root);
+    }
+
+    #[test]
+    fn test_trie_root_survives_serialization_roundtrip() {
+        let mut state = ConsensusState::default();
+
+        state.set_epoch(5);
+        state.set_view(99);
+        state.set_latest_height(200);
+        state.set_next_withdrawal_index(10);
+        state.set_epoch_genesis_hash([0xFF; 32]);
+        state.set_forkchoice(ForkchoiceState {
+            head_block_hash: [0xAA; 32].into(),
+            safe_block_hash: [0xBB; 32].into(),
+            finalized_block_hash: [0xCC; 32].into(),
+        });
+
+        let pubkey = [1u8; 32];
+        state.set_account(pubkey, create_test_validator_account(1, 32_000_000_000));
+
+        let deposit = create_test_deposit_request(1, 32_000_000_000);
+        state.push_deposit(deposit);
+
+        let withdrawal = create_test_withdrawal(1, 16_000_000_000, 7);
+        state.push_withdrawal(withdrawal);
+
+        let original_root = state.state_trie().root();
+
+        // Round-trip through serialization
+        let mut encoded = state.encode();
+        let decoded = ConsensusState::decode(&mut encoded).unwrap();
+
+        assert_eq!(decoded.state_trie().root(), original_root);
+    }
+
+    #[test]
+    fn test_trie_set_validator_accounts_rebuilds() {
+        let mut state = ConsensusState::default();
+        state.set_epoch(3);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+
+        let root_before = state.state_trie().root();
+
+        // Bulk replace validator accounts
+        let mut new_accounts = BTreeMap::new();
+        new_accounts.insert([2u8; 32], create_test_validator_account(2, 64_000_000_000));
+        new_accounts.insert([3u8; 32], create_test_validator_account(3, 48_000_000_000));
+        state.set_validator_accounts(new_accounts);
+
+        assert_ne!(state.state_trie().root(), root_before);
+
+        // Old account gone
+        assert_trie_absent(
+            &state,
+            &state_trie_key::validator_account_balance(&[1u8; 32]),
+        );
+
+        // New accounts present
+        assert_trie_proves(
+            &state,
+            &state_trie_key::validator_account_balance(&[2u8; 32]),
+            &64_000_000_000u64.to_be_bytes(),
+        );
+        assert_trie_proves(
+            &state,
+            &state_trie_key::validator_account_balance(&[3u8; 32]),
+            &48_000_000_000u64.to_be_bytes(),
+        );
+
+        // Scalar fields survive the rebuild
+        assert_trie_proves(&state, state_trie_key::EPOCH, &3u64.to_be_bytes());
+    }
+
+    #[test]
+    fn test_trie_set_removed_validators_replaces() {
+        let mut state = ConsensusState::default();
+
+        let pk1 = ed25519::PrivateKey::from_seed(1).public_key();
+        let pk2 = ed25519::PrivateKey::from_seed(2).public_key();
+        let pk3 = ed25519::PrivateKey::from_seed(3).public_key();
+
+        let pk1_bytes: [u8; 32] = pk1.as_ref().try_into().unwrap();
+        let pk2_bytes: [u8; 32] = pk2.as_ref().try_into().unwrap();
+        let pk3_bytes: [u8; 32] = pk3.as_ref().try_into().unwrap();
+
+        // Set initial removed validators
+        state.set_removed_validators(vec![pk1, pk2]);
+        assert_trie_proves(
+            &state,
+            &state_trie_key::removed_validators(&pk1_bytes),
+            &[1],
+        );
+        assert_trie_proves(
+            &state,
+            &state_trie_key::removed_validators(&pk2_bytes),
+            &[1],
+        );
+
+        // Replace with a different set — old entries removed, new ones added
+        state.set_removed_validators(vec![pk3]);
+        assert_trie_absent(&state, &state_trie_key::removed_validators(&pk1_bytes));
+        assert_trie_absent(&state, &state_trie_key::removed_validators(&pk2_bytes));
+        assert_trie_proves(
+            &state,
+            &state_trie_key::removed_validators(&pk3_bytes),
+            &[1],
+        );
+    }
+
+    #[test]
+    fn test_trie_multi_key_proof() {
+        let mut state = ConsensusState::default();
+        state.set_epoch(10);
+        state.set_view(20);
+
+        let pubkey = [1u8; 32];
+        state.set_account(pubkey, create_test_validator_account(1, 32_000_000_000));
+
+        // Prove multiple keys in a single proof
+        let balance_key = state_trie_key::validator_account_balance(&pubkey);
+        let trie = state.state_trie();
+        let proof =
+            trie.generate_proof(&[state_trie_key::EPOCH, state_trie_key::VIEW, &balance_key]);
+
+        assert!(StateTrie::verify_proof(
+            &trie.root(),
+            &proof,
+            &[
+                (state_trie_key::EPOCH, Some(&10u64.to_be_bytes())),
+                (state_trie_key::VIEW, Some(&20u64.to_be_bytes())),
+                (&balance_key, Some(&32_000_000_000u64.to_be_bytes())),
+            ],
+        ));
+    }
+
+    #[test]
+    fn test_trie_clone_independence() {
+        let mut state = ConsensusState::default();
+        state.set_epoch(5);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+
+        let cloned = state.clone();
+        let root_before = cloned.state_trie().root();
+
+        // Mutate original
+        state.set_epoch(99);
+        state.set_account([2u8; 32], create_test_validator_account(2, 64_000_000_000));
+
+        // Clone is unaffected
+        assert_eq!(cloned.state_trie().root(), root_before);
+        assert_trie_proves(&cloned, state_trie_key::EPOCH, &5u64.to_be_bytes());
+        assert_trie_absent(
+            &cloned,
+            &state_trie_key::validator_account_balance(&[2u8; 32]),
+        );
     }
 }
