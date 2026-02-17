@@ -2,9 +2,30 @@
 
 High-performance consensus client for EVM-based blockchains, built by [Seismic Systems](https://github.com/SeismicSystems). Uses the [Simplex consensus protocol](https://eprint.iacr.org/2023/463) for sub-second block finality. Communicates with any EVM execution client (Reth, Geth) via the Engine API.
 
+## Commonware
+
+[Commonware](https://commonware.xyz) is Summit's core infrastructure layer. Summit depends on 12 Commonware crates (version pinned in root `Cargo.toml`). Nearly every component in Summit is built on top of Commonware primitives.
+
+| Crate | What it provides |
+| --- | --- |
+| `commonware-consensus` | Simplex BFT protocol — leader election, notarization (2/3+1), finalization |
+| `commonware-cryptography` | BLS12-381 multisig, Ed25519 identity, SHA256 hashing |
+| `commonware-runtime` | Async runtime abstractions — Clock, Spawner, Metrics, Signal/Stopper |
+| `commonware-storage` | QMDB key-value store, immutable & prunable archives |
+| `commonware-p2p` | Authenticated P2P connections, peer management, simulated network for tests |
+| `commonware-broadcast` | Buffered reliable broadcast between validators |
+| `commonware-codec` | Streaming encode/decode for blocks, checkpoints, and messages |
+| `commonware-resolver` | Request-response backfill for missing blocks from peers |
+| `commonware-utils` | Channels (mpsc, oneshot), ordered sets, byte utilities, non-zero types |
+| `commonware-macros` | `select!`/`select_loop!` async macros, `test_traced!` for instrumented tests |
+| `commonware-math` | Cryptographic randomness for key generation |
+| `commonware-parallel` | Sequential/parallel processing strategies |
+
+Summit integrates with Simplex by implementing Commonware's `Automaton` and `Relay` traits (see `application/src/actor.rs`). The orchestrator spawns Simplex engines per epoch, and all inter-actor communication uses Commonware channels and async primitives.
+
 ## Build
 
-Rust workspace (edition 2024) pinned to **toolchain 1.91.1** via `rust-toolchain.toml`. The toolchain auto-installs on first build.
+Rust workspace (edition 2024) with toolchain pinned in `rust-toolchain.toml`. The toolchain auto-installs on first build.
 
 ### macOS (arm64/x86_64)
 
@@ -75,6 +96,59 @@ RUSTFLAGS="-D warnings" cargo check --all-features  # no warnings (all features)
 ```bash
 cargo bench -p summit-finalizer       # consensus_state_write benchmark
 ```
+
+## Local Testnet
+
+The `testnet` binary spins up a multi-node network locally — this is the main way to test end-to-end during development.
+
+### Prerequisites
+
+- `reth` binary in PATH. Build from [seismic-reth](https://github.com/SeismicSystems/seismic-reth) or use upstream reth.
+
+### Quick start
+
+```bash
+cargo run --bin testnet
+```
+
+This starts 4 Reth execution nodes + 4 Summit consensus validators, all wired together via Engine API over IPC.
+
+### CLI flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--nodes <N>` | 4 | Number of nodes to run |
+| `--only-reth` | off | Start only Reth execution nodes (no consensus) |
+| `--log-dir <PATH>` | none | Write per-node logs (`node0.log`, `node1.log`, ...) |
+
+### Port layout (default 4 nodes)
+
+| Service | Ports |
+| --- | --- |
+| Reth RPC | 8545, 8546, 8547, 8548 |
+| Summit RPC | 3030, 3040, 3050, 3060 |
+| P2P | 26600, 26610, 26620, 26630 |
+| Engine API IPC | `/tmp/reth_engine_api{0-3}.ipc` |
+
+### Interact with the network
+
+```bash
+curl -X POST http://localhost:8545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+
+### Reset state
+
+```bash
+cd testnet && ./reset.sh
+```
+
+### Config files (`testnet/`)
+
+- `dev.json` — Ethereum genesis with pre-funded test accounts
+- `jwt.hex` — Engine API auth token
+- `node{0-3}/` — per-node keys (`consensus_key.pem`, `node_key.pem`) and data directories
 
 ## Binaries
 
@@ -153,11 +227,11 @@ Finalizer → executes blocks against EVM client, manages validator set, creates
 Engine Client → Engine API calls to Reth/Geth (forkchoice, payload, new block)
 ```
 
-Key external dependency: [Commonware](https://commonware.xyz) (`2026.2.0`) provides consensus (Simplex), cryptography (BLS12-381, Ed25519), P2P networking, broadcast, storage (QMDB), and runtime.
+See the **Commonware** section above for details on the consensus and infrastructure layer.
 
 ## Code Style
 
-- **Edition 2024**, Rust 1.91.1
+- **Edition 2024**, toolchain pinned in `rust-toolchain.toml`
 - `cargo +nightly fmt` for formatting (CI enforces nightly rustfmt)
 - No `.rustfmt.toml` or `.clippy.toml` — uses defaults
 - `RUSTFLAGS="-D warnings"` — zero warnings policy
@@ -177,9 +251,9 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 
 | Problem                                             | Fix                                                                                                                           |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `rustup` installs toolchain on first build          | Expected — `rust-toolchain.toml` pins 1.91.1, auto-installed by rustup                                                        |
+| `rustup` installs toolchain on first build          | Expected — `rust-toolchain.toml` pins the required version, auto-installed by rustup                                           |
 | `testnet` binary exits immediately without `reth`   | Requires `reth` in PATH. Install [seismic-reth](https://github.com/SeismicSystems/seismic-reth) or upstream reth              |
-| `prom` feature fails to build                       | Pulls `reth-metrics` from `SeismicSystems/seismic-reth` git — needs network access and SSH key for private repos              |
+| `prom` feature fails to build                       | Pulls `reth-metrics` from `SeismicSystems/seismic-reth` git — needs network access                                            |
 | `procfs` compile error on macOS with `prom` feature | `procfs` is Linux-only, gated behind `cfg(target_os = "linux")` — build `prom` on Linux or use `--features jemalloc` on macOS |
 | `e2e` binaries not found                            | Build with `cargo build --features e2e`                                                                                       |
 | `bench` binaries not found                          | Build with `cargo build --features bench`                                                                                     |
