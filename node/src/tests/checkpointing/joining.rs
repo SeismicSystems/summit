@@ -360,6 +360,8 @@ fn test_node_joins_later_with_checkpoint() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     });
 }
@@ -591,14 +593,14 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         }
 
         // Check that all validators (including the joining validator) stored the same checkpoints
-        let mut reference_mailbox = consensus_state_queries.remove(&0).unwrap();
+        let mut reference_mailbox = consensus_state_queries.get(&0).unwrap().clone();
         let mut reference_digests = Vec::with_capacity(end_epoch as usize);
         for epoch in 0..end_epoch {
             let (ckpt, _) = reference_mailbox.get_checkpoint(epoch).await.unwrap();
             reference_digests.push(ckpt.digest);
         }
         for i in 1..n {
-            let mut mailbox = consensus_state_queries.remove(&i).unwrap();
+            let mut mailbox = consensus_state_queries.get(&i).unwrap().clone();
             // Only check starting from epoch 1 because the joining node won't have
             // a checkpoint for epoch 0
             for j in 1..end_epoch {
@@ -613,6 +615,8 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
                 .verify_consensus(Some(from_block), Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     });

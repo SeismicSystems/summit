@@ -24,6 +24,7 @@ use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
 };
+use summit_finalizer::FinalizerMailbox;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::{
@@ -31,7 +32,8 @@ use summit_types::execution_request::{
 };
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
-use summit_types::{Digest, EngineClient, PrivateKey, PublicKey};
+use summit_types::scheme::MultisigScheme;
+use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
 use tokio::sync::mpsc;
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
@@ -273,8 +275,47 @@ pub fn run_until_height(
             );
         }
 
+        // Verify all validators share the same state root
+        assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     })
+}
+
+/// Assert that all validators share the same state trie root.
+pub async fn assert_state_root_consensus(
+    queries: &HashMap<usize, FinalizerMailbox<MultisigScheme, Block>>,
+) {
+    assert_state_root_consensus_skip(queries, &[]).await;
+}
+
+/// Assert that all validators (except those in `skip`) share the same state trie root.
+///
+/// Validators that have exited the committee may have stale state, so they should
+/// be included in the `skip` list.
+pub async fn assert_state_root_consensus_skip(
+    queries: &HashMap<usize, FinalizerMailbox<MultisigScheme, Block>>,
+    skip: &[usize],
+) {
+    let mut roots: Vec<(usize, [u8; 32])> = Vec::new();
+    for (&idx, mailbox) in queries.iter() {
+        if skip.contains(&idx) {
+            continue;
+        }
+        let root = mailbox.get_state_root().await;
+        roots.push((idx, root));
+    }
+    assert!(
+        roots.len() >= 2,
+        "need at least 2 active validators to compare state roots"
+    );
+    let (first_idx, first_root) = roots[0];
+    for &(idx, root) in &roots[1..] {
+        assert_eq!(
+            root, first_root,
+            "state root mismatch: validator {idx} differs from validator {first_idx}"
+        );
+    }
 }
 
 pub fn get_domain() -> Digest {

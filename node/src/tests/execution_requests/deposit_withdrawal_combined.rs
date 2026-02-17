@@ -215,6 +215,8 @@ fn test_deposit_and_withdrawal_request_single() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     })
 }
@@ -464,6 +466,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     })
 }
@@ -658,6 +662,8 @@ fn test_deposit_blocked_by_pending_withdrawal() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+
         context.auditor().state()
     })
 }
@@ -851,6 +857,8 @@ fn test_withdrawal_blocked_by_pending_deposit() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     })
@@ -1051,6 +1059,8 @@ fn test_deposit_and_withdrawal_same_block() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     })

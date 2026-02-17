@@ -16,6 +16,7 @@ pub enum ConsensusStateRequest {
     GetFinalizedHeader(u64),
     GetMinimumStake,
     GetMaximumStake,
+    GetStateRoot,
 }
 
 pub enum ConsensusStateResponse<S: Scheme> {
@@ -28,6 +29,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     FinalizedHeader(Option<FinalizedHeader<S>>),
     MinimumStake(u64),
     MaximumStake(u64),
+    StateRoot([u8; 32]),
 }
 
 /// Used to send queries to the application finalizer to query the consensus state.

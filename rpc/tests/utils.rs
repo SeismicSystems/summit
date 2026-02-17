@@ -102,6 +102,9 @@ pub fn create_test_finalizer_mailbox(
                         let _ = response
                             .send(ConsensusStateResponse::MaximumStake(state.maximum_stake));
                     }
+                    ConsensusStateRequest::GetStateRoot => {
+                        let _ = response.send(ConsensusStateResponse::StateRoot([0; 32]));
+                    }
                 },
                 _ => {}
             }

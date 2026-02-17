@@ -172,6 +172,8 @@ fn test_protocol_param_max_stake() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     })
 }
@@ -456,6 +458,8 @@ fn test_protocol_param_stake_update_committee() {
                 .verify_consensus_skip(None, Some(stop_height), &[&validator9_client_id])
                 .is_ok()
         );
+
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[9]).await;
 
         context.auditor().state()
     })

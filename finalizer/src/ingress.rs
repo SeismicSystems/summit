@@ -261,6 +261,24 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         };
         stake
     }
+
+    pub async fn get_state_root(&self) -> [u8; 32] {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetStateRoot;
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::StateRoot(root) = res else {
+            unreachable!("request and response variants must match");
+        };
+        root
+    }
 }
 
 impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> Reporter

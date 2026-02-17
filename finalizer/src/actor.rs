@@ -908,6 +908,10 @@ impl<
                 let stake = self.canonical_state.get_maximum_stake();
                 let _ = sender.send(ConsensusStateResponse::MaximumStake(stake));
             }
+            ConsensusStateRequest::GetStateRoot => {
+                let root = self.canonical_state.state_trie().root();
+                let _ = sender.send(ConsensusStateResponse::StateRoot(root));
+            }
         }
     }
 

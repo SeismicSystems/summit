@@ -217,6 +217,8 @@ fn test_added_validators_at_epoch_boundary() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&finalizer_mailboxes).await;
+
         context.auditor().state()
     });
 }
@@ -425,6 +427,13 @@ fn test_removed_validators_at_epoch_boundary() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        // Skip the withdrawn validator since its finalizer shuts down after exit
+        common::assert_state_root_consensus_skip(
+            &finalizer_mailboxes,
+            &[withdrawing_validator_idx],
+        )
+        .await;
 
         context.auditor().state()
     });
