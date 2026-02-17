@@ -222,6 +222,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     })
 }
@@ -401,6 +403,8 @@ fn test_duplicate_withdrawal_blocked() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+
         context.auditor().state()
     })
 }
@@ -579,6 +583,8 @@ fn test_withdrawal_wrong_source_address_rejected() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     })
 }
@@ -754,6 +760,8 @@ fn test_withdrawal_nonexistent_validator_ignored() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     })
@@ -962,6 +970,8 @@ fn test_withdrawal_during_onboarding_aborts() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     })
@@ -1190,6 +1200,8 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[last_idx]).await;
+
         context.auditor().state()
     })
 }
@@ -1408,6 +1420,8 @@ fn test_stake_bounds_skips_zero_balance_validator() {
                 .verify_consensus_skip(None, Some(stop_height), &[&validator0_uid])
                 .is_ok()
         );
+
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })

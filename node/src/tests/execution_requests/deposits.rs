@@ -178,6 +178,8 @@ fn test_deposit_request_single() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     });
 }
@@ -1001,6 +1003,8 @@ fn test_deposit_request_invalid_node_signature() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     });
 }
@@ -1195,6 +1199,8 @@ fn test_deposit_request_invalid_consensus_signature() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     });

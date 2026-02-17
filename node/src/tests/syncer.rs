@@ -232,6 +232,8 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     });
 }
@@ -455,6 +457,8 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     });
