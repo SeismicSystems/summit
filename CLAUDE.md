@@ -103,7 +103,10 @@ The `testnet` binary spins up a multi-node network locally — this is the main 
 
 ### Prerequisites
 
-- `reth` binary in PATH. Build from [seismic-reth](https://github.com/SeismicSystems/seismic-reth) or use upstream reth.
+- A binary named `reth` must be in PATH. If using [seismic-reth](https://github.com/SeismicSystems/seismic-reth), the build produces a `seismic-reth` binary — symlink or copy it as `reth`:
+  ```bash
+  ln -s /path/to/seismic-reth ~/.cargo/bin/reth
+  ```
 
 ### Quick start
 
