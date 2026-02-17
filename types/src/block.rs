@@ -16,7 +16,6 @@ pub struct Block {
     pub header: Header,
     pub payload: ExecutionPayloadV3,
     pub execution_requests: Vec<AlloyBytes>,
-    pub parent_beacon_block_root: [u8; 32],
 }
 
 impl Block {
@@ -82,13 +81,13 @@ impl Block {
             block_value,
             added_validators,
             removed_validators,
+            parent_beacon_block_root,
         );
 
         Self {
             header,
             payload,
             execution_requests,
-            parent_beacon_block_root,
         }
     }
 
@@ -96,7 +95,6 @@ impl Block {
         header: Header,
         payload: ExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
-        parent_beacon_block_root: [u8; 32],
     ) -> Result<Self> {
         let payload_ssz = payload.as_ssz_bytes();
         let mut hasher = Sha256::new();
@@ -122,7 +120,6 @@ impl Block {
             header,
             payload,
             execution_requests,
-            parent_beacon_block_root,
         })
     }
 
@@ -146,13 +143,13 @@ impl Block {
             block_value: U256::ZERO,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            parent_beacon_block_root: [0; 32],
             digest: genesis_hash.into(),
         };
         Self {
             header,
             payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
             execution_requests: Default::default(),
-            parent_beacon_block_root: [0; 32],
         }
     }
 
@@ -205,14 +202,13 @@ impl ssz::Encode for Block {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset = ssz::BYTES_PER_LENGTH_OFFSET * 4; // 4 variable-length fields
+        let offset = ssz::BYTES_PER_LENGTH_OFFSET * 3; // 3 variable-length fields
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
 
         encoder.append(&self.header);
         encoder.append(&self.payload);
         encoder.append(&self.execution_requests);
-        encoder.append(&self.parent_beacon_block_root.to_vec());
         encoder.finalize();
     }
 
@@ -220,8 +216,7 @@ impl ssz::Encode for Block {
         self.header.ssz_bytes_len()
             + self.payload.ssz_bytes_len()
             + self.execution_requests.ssz_bytes_len()
-            + 32 // parent_beacon_block_root
-            + ssz::BYTES_PER_LENGTH_OFFSET * 4 // 4 variable-length fields need 4 offsets
+            + ssz::BYTES_PER_LENGTH_OFFSET * 3 // 3 variable-length fields need 3 offsets
     }
 }
 
@@ -235,25 +230,15 @@ impl ssz::Decode for Block {
         builder.register_type::<Header>()?;
         builder.register_type::<ExecutionPayloadV3>()?;
         builder.register_type::<Vec<AlloyBytes>>()?;
-        builder.register_type::<Vec<u8>>()?;
 
         let mut decoder = builder.build()?;
 
         let header: Header = decoder.decode_next()?;
         let payload = decoder.decode_next()?;
         let execution_requests = decoder.decode_next()?;
-        let root_bytes: Vec<u8> = decoder.decode_next()?;
-        let parent_beacon_block_root: [u8; 32] = root_bytes.try_into().map_err(|_| {
-            ssz::DecodeError::BytesInvalid("parent_beacon_block_root must be 32 bytes".to_string())
-        })?;
 
-        Self::new_with_verify(
-            header,
-            payload,
-            execution_requests,
-            parent_beacon_block_root,
-        )
-        .map_err(|e| ssz::DecodeError::BytesInvalid(e.to_string()))
+        Self::new_with_verify(header, payload, execution_requests)
+            .map_err(|e| ssz::DecodeError::BytesInvalid(e.to_string()))
     }
 }
 
