@@ -48,6 +48,7 @@ pub struct BlockAuxData {
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
     pub withdrawal_credentials: Address,
+    pub state_root: [u8; 32],
 }
 
 pub use commonware_cryptography::bls12381;
