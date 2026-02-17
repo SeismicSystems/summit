@@ -466,7 +466,7 @@ impl<
                         current,
                         withdrawals,
                         aux_data.withdrawal_credentials,
-                        Some(parent.1.0.into()),
+                        Some(aux_data.state_root.into()),
                     )
                     .await
             }

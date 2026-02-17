@@ -830,6 +830,7 @@ impl<
                 removed_validators: state.get_removed_validators().clone(),
                 forkchoice: *state.get_forkchoice(),
                 withdrawal_credentials,
+                state_root: state.state_trie().root(),
             }
         } else {
             BlockAuxData {
@@ -841,6 +842,7 @@ impl<
                 removed_validators: vec![],
                 forkchoice: *state.get_forkchoice(),
                 withdrawal_credentials,
+                state_root: state.state_trie().root(),
             }
         };
         trace!(
