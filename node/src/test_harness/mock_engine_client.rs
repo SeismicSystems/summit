@@ -784,6 +784,7 @@ mod tests {
             [0u8; 32].into(),
             Vec::new(), // added_validators
             Vec::new(), // removed_validators
+            [0u8; 32],  // parent_beacon_block_root
         );
 
         // Client2 checks the payload (validates it)
@@ -866,6 +867,7 @@ mod tests {
                         [0u8; 32].into(),
                         Vec::new(), // added_validators
                         Vec::new(), // removed_validators
+                        [0u8; 32],  // parent_beacon_block_root
                     );
 
                     // Client validates the block
@@ -967,6 +969,7 @@ mod tests {
             [0u8; 32].into(),
             Vec::new(), // added_validators
             Vec::new(), // removed_validators
+            [0u8; 32],  // parent_beacon_block_root
         );
 
         client2.check_payload(&block_for_validation).await;

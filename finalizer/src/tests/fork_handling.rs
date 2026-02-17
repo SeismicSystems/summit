@@ -75,6 +75,7 @@ fn create_test_block(parent_digest: Digest, height: u64, view: u64, unique_seed:
         [0u8; 32].into(),
         Vec::new(),
         Vec::new(),
+        [0u8; 32],
     )
 }
 

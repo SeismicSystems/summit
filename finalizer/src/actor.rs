@@ -1083,6 +1083,7 @@ async fn execute_block<
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
+
     let payload_status = engine_client.check_payload(block).await;
     let new_height = block.height();
 
