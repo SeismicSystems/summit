@@ -23,6 +23,16 @@ High-performance consensus client for EVM-based blockchains, built by [Seismic S
 
 Summit integrates with Simplex by implementing Commonware's `Automaton` and `Relay` traits (see `application/src/actor.rs`). The orchestrator spawns Simplex engines per epoch, and all inter-actor communication uses Commonware channels and async primitives.
 
+### Commonware MCP Server
+
+Commonware provides an MCP server for querying its library documentation directly from Claude Code. Add it with:
+
+```bash
+claude mcp add --transport http commonware-library https://mcp.commonware.xyz
+```
+
+This gives Claude Code searchable access to Commonware docs — useful when working with Simplex, QMDB, P2P, codec, or any other Commonware crate.
+
 ## Build
 
 Rust workspace (edition 2024) with toolchain pinned in `rust-toolchain.toml`. The toolchain auto-installs on first build.
@@ -40,22 +50,6 @@ cargo build --release                 # release
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libssl-dev
 cargo build
-```
-
-### Feature flags
-
-| Flag            | Effect                                                 |
-| --------------- | ------------------------------------------------------ |
-| `prom`          | Prometheus metrics (requires `reth-metrics` git dep)   |
-| `jemalloc`      | jemalloc allocator (unix only)                         |
-| `tokio-console` | tokio console subscriber for runtime debugging         |
-| `bench`         | Historical block replay benchmarking binaries          |
-| `e2e`           | End-to-end test binaries (stake, withdraw, sync, etc.) |
-
-```bash
-cargo build --features prom           # with metrics
-cargo build --all-features            # everything
-cargo build --no-default-features     # minimal
 ```
 
 ### Verify
