@@ -176,6 +176,7 @@ fn execution_payload_envelope_to_block(
         Digest::from([0u8; 32]), // prev_epoch_header_hash
         Vec::new(),              // added_validators
         Vec::new(),              // removed_validators
+        [0u8; 32],               // parent_beacon_block_root
     )
 }
 

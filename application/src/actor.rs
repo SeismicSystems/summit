@@ -466,8 +466,7 @@ impl<
                         current,
                         withdrawals,
                         aux_data.withdrawal_credentials,
-                        None,
-                        //Some(aux_data.state_root.into()),
+                        Some(aux_data.state_root.into()),
                     )
                     .await
             }
@@ -510,6 +509,7 @@ impl<
             aux_data.header_hash,
             aux_data.added_validators,
             aux_data.removed_validators,
+            aux_data.state_root,
         );
 
         #[cfg(feature = "prom")]

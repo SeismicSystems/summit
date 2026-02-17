@@ -81,6 +81,7 @@ fn create_test_block_with_epoch(
         [0u8; 32].into(),
         Vec::new(),
         Vec::new(),
+        [0u8; 32],
     )
 }
 
