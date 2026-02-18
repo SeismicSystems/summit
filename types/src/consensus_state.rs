@@ -37,6 +37,11 @@ pub struct ConsensusState {
     /// In-memory Merkle Patricia Trie over validator_accounts.
     /// Not serialized — rebuilt from validator_accounts on deserialization.
     pub(crate) state_trie: StateTrie,
+
+    /// Snapshot of `state_trie.root()` captured after block execution.
+    /// Not serialized — set via `capture_state_root()` in the finalizer after `execute_block`.
+    /// Survives finalization mutations (which change the live trie but not this field).
+    pub(crate) state_root: [u8; 32],
 }
 
 impl Default for ConsensusState {
@@ -59,6 +64,7 @@ impl Default for ConsensusState {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             state_trie: StateTrie::default(),
+            state_root: [0u8; 32],
         };
         s.rebuild_state_trie();
         s
@@ -89,6 +95,7 @@ impl ConsensusState {
             validator_minimum_stake,
             validator_maximum_stake,
             state_trie: StateTrie::default(),
+            state_root: [0u8; 32],
         };
         s.rebuild_state_trie();
         s
@@ -362,6 +369,17 @@ impl ConsensusState {
 
     pub fn state_trie(&self) -> &StateTrie {
         &self.state_trie
+    }
+
+    /// Snapshot the current trie root. Called after `execute_block` so that
+    /// subsequent finalization mutations don't alter the captured value.
+    pub fn capture_state_root(&mut self) {
+        self.state_root = self.state_trie.root();
+    }
+
+    /// Returns the state root captured by `capture_state_root()`.
+    pub fn get_state_root(&self) -> [u8; 32] {
+        self.state_root
     }
 
     // Deposit queue operations
@@ -808,6 +826,9 @@ impl ConsensusState {
             self.state_trie
                 .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[1]);
         }
+
+        // Capture root so get_state_root() is valid after deserialization / bulk reset
+        self.state_root = self.state_trie.root();
     }
 
     pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
@@ -965,6 +986,7 @@ impl Read for ConsensusState {
             validator_minimum_stake,
             validator_maximum_stake,
             state_trie: StateTrie::default(),
+            state_root: [0u8; 32],
         };
         state.rebuild_state_trie();
         Ok(state)

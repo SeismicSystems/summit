@@ -563,6 +563,16 @@ fn handle_verify(block: &Block, parent: Block, epoch_length: u64, aux_data: &Blo
         return false;
     }
 
+    // Validate consensus trie state root
+    if block.header.parent_beacon_block_root != aux_data.state_root {
+        warn!(
+            expected = ?aux_data.state_root,
+            actual = ?block.header.parent_beacon_block_root,
+            "parent_beacon_block_root mismatch"
+        );
+        return false;
+    }
+
     // Validate checkpoint_hash (None means [0; 32], matching Block::compute_digest)
     let expected_checkpoint_hash: Digest =
         aux_data.checkpoint_hash.unwrap_or_else(|| [0; 32].into());

@@ -830,7 +830,7 @@ impl<
                 removed_validators: state.get_removed_validators().clone(),
                 forkchoice: *state.get_forkchoice(),
                 withdrawal_credentials,
-                state_root: state.state_trie().root(),
+                state_root: state.get_state_root(),
             }
         } else {
             BlockAuxData {
@@ -842,7 +842,7 @@ impl<
                 removed_validators: vec![],
                 forkchoice: *state.get_forkchoice(),
                 withdrawal_credentials,
-                state_root: state.state_trie().root(),
+                state_root: state.get_state_root(),
             }
         };
         trace!(
@@ -1186,6 +1186,10 @@ async fn execute_block<
             .record(total_block_processing_duration);
         counter!("blocks_processed_total").increment(1);
     }
+
+    // Freeze the trie root so that subsequent finalization mutations
+    // (epoch transitions, forkchoice updates) don't alter the captured value.
+    state.capture_state_root();
 }
 
 async fn parse_execution_requests<
