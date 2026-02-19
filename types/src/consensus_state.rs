@@ -38,10 +38,19 @@ pub struct ConsensusState {
     /// Not serialized — rebuilt from validator_accounts on deserialization.
     pub(crate) state_trie: StateTrie,
 
+    /// Frozen snapshot of `state_trie` at `capture_state_root()` time.
+    /// Proofs are generated from this trie so they verify against the on-chain root.
+    /// Not serialized — rebuilt alongside `state_trie`.
+    pub(crate) proof_trie: StateTrie,
+
     /// Snapshot of `state_trie.root()` captured after block execution.
     /// Not serialized — set via `capture_state_root()` in the finalizer after `execute_block`.
     /// Survives finalization mutations (which change the live trie but not this field).
     pub(crate) state_root: [u8; 32],
+
+    /// The EL (Reth) block number at the time `capture_state_root()` was called.
+    /// The state root appears on-chain in EL block `proof_el_block_number + 1`.
+    pub(crate) proof_el_block_number: u64,
 }
 
 impl Default for ConsensusState {
@@ -64,7 +73,9 @@ impl Default for ConsensusState {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             state_trie: StateTrie::default(),
+            proof_trie: StateTrie::default(),
             state_root: [0u8; 32],
+            proof_el_block_number: 0,
         };
         s.rebuild_state_trie();
         s
@@ -95,7 +106,9 @@ impl ConsensusState {
             validator_minimum_stake,
             validator_maximum_stake,
             state_trie: StateTrie::default(),
+            proof_trie: StateTrie::default(),
             state_root: [0u8; 32],
+            proof_el_block_number: 0,
         };
         s.rebuild_state_trie();
         s
@@ -371,10 +384,29 @@ impl ConsensusState {
         &self.state_trie
     }
 
-    /// Snapshot the current trie root. Called after `execute_block` so that
-    /// subsequent finalization mutations don't alter the captured value.
-    pub fn capture_state_root(&mut self) {
+    /// Snapshot the current trie root and freeze a proof-able copy.
+    /// Called after `execute_block` so that subsequent finalization mutations
+    /// don't alter the captured value or the proof trie.
+    ///
+    /// `el_block_number` is the Reth block number from the execution payload
+    /// that was just processed. The state root will appear on-chain in EL
+    /// block `el_block_number + 1`.
+    pub fn capture_state_root(&mut self, el_block_number: u64) {
         self.state_root = self.state_trie.root();
+        self.proof_trie = self.state_trie.clone();
+        self.proof_el_block_number = el_block_number;
+    }
+
+    /// Returns the frozen trie snapshot for proof generation.
+    /// Proofs from this trie verify against the on-chain `parent_beacon_block_root`.
+    pub fn proof_trie(&self) -> &StateTrie {
+        &self.proof_trie
+    }
+
+    /// Returns the EL block number at the time the proof trie was captured.
+    /// The state root appears on-chain in EL block `proof_el_block_number + 1`.
+    pub fn get_proof_el_block_number(&self) -> u64 {
+        self.proof_el_block_number
     }
 
     /// Returns the state root captured by `capture_state_root()`.
@@ -827,8 +859,10 @@ impl ConsensusState {
                 .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[1]);
         }
 
-        // Capture root so get_state_root() is valid after deserialization / bulk reset
+        // Capture root and freeze proof trie so get_state_root() / proof_trie() are valid
+        // after deserialization or bulk reset.
         self.state_root = self.state_trie.root();
+        self.proof_trie = self.state_trie.clone();
     }
 
     pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
@@ -986,7 +1020,9 @@ impl Read for ConsensusState {
             validator_minimum_stake,
             validator_maximum_stake,
             state_trie: StateTrie::default(),
+            proof_trie: StateTrie::default(),
             state_root: [0u8; 32],
+            proof_el_block_number: 0,
         };
         state.rebuild_state_trie();
         Ok(state)

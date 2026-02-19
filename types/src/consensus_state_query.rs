@@ -17,6 +17,7 @@ pub enum ConsensusStateRequest {
     GetMinimumStake,
     GetMaximumStake,
     GetStateRoot,
+    GenerateStateProof(Vec<Vec<u8>>),
 }
 
 pub enum ConsensusStateResponse<S: Scheme> {
@@ -29,7 +30,16 @@ pub enum ConsensusStateResponse<S: Scheme> {
     FinalizedHeader(Option<FinalizedHeader<S>>),
     MinimumStake(u64),
     MaximumStake(u64),
-    StateRoot([u8; 32]),
+    StateRoot {
+        root: [u8; 32],
+        el_block_number: u64,
+    },
+    StateProof {
+        root: [u8; 32],
+        el_block_number: u64,
+        proof: Vec<Vec<u8>>,
+        values: Vec<Option<Vec<u8>>>,
+    },
 }
 
 /// Used to send queries to the application finalizer to query the consensus state.

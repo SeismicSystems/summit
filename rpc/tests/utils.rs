@@ -103,7 +103,18 @@ pub fn create_test_finalizer_mailbox(
                             .send(ConsensusStateResponse::MaximumStake(state.maximum_stake));
                     }
                     ConsensusStateRequest::GetStateRoot => {
-                        let _ = response.send(ConsensusStateResponse::StateRoot([0; 32]));
+                        let _ = response.send(ConsensusStateResponse::StateRoot {
+                            root: [0; 32],
+                            el_block_number: 0,
+                        });
+                    }
+                    ConsensusStateRequest::GenerateStateProof(keys) => {
+                        let _ = response.send(ConsensusStateResponse::StateProof {
+                            root: [0; 32],
+                            el_block_number: 0,
+                            proof: vec![],
+                            values: keys.iter().map(|_| None).collect(),
+                        });
                     }
                 },
                 _ => {}

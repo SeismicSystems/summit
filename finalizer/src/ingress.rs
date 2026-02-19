@@ -262,7 +262,7 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         stake
     }
 
-    pub async fn get_state_root(&self) -> [u8; 32] {
+    pub async fn get_state_root(&self) -> ([u8; 32], u64) {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetStateRoot;
         let _ = self
@@ -274,10 +274,41 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         let res = rx
             .await
             .expect("consensus state query response sender dropped");
-        let ConsensusStateResponse::StateRoot(root) = res else {
+        let ConsensusStateResponse::StateRoot {
+            root,
+            el_block_number,
+        } = res
+        else {
             unreachable!("request and response variants must match");
         };
-        root
+        (root, el_block_number)
+    }
+
+    pub async fn generate_state_proof(
+        &self,
+        keys: Vec<Vec<u8>>,
+    ) -> ([u8; 32], u64, Vec<Vec<u8>>, Vec<Option<Vec<u8>>>) {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GenerateStateProof(keys);
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::StateProof {
+            root,
+            el_block_number,
+            proof,
+            values,
+        } = res
+        else {
+            unreachable!("request and response variants must match");
+        };
+        (root, el_block_number, proof, values)
     }
 }
 

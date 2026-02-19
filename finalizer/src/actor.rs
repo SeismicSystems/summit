@@ -909,8 +909,27 @@ impl<
                 let _ = sender.send(ConsensusStateResponse::MaximumStake(stake));
             }
             ConsensusStateRequest::GetStateRoot => {
-                let root = self.canonical_state.state_trie().root();
-                let _ = sender.send(ConsensusStateResponse::StateRoot(root));
+                let root = self.canonical_state.get_state_root();
+                let el_block_number = self.canonical_state.get_proof_el_block_number();
+                let _ = sender.send(ConsensusStateResponse::StateRoot {
+                    root,
+                    el_block_number,
+                });
+            }
+            ConsensusStateRequest::GenerateStateProof(keys) => {
+                let proof_trie = self.canonical_state.proof_trie();
+                let key_refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
+                let proof = proof_trie.generate_proof(&key_refs);
+                let values: Vec<Option<Vec<u8>>> =
+                    keys.iter().map(|k| proof_trie.get_raw(k)).collect();
+                let root = self.canonical_state.get_state_root();
+                let el_block_number = self.canonical_state.get_proof_el_block_number();
+                let _ = sender.send(ConsensusStateResponse::StateProof {
+                    root,
+                    el_block_number,
+                    proof,
+                    values,
+                });
             }
         }
     }
@@ -1189,7 +1208,8 @@ async fn execute_block<
 
     // Freeze the trie root so that subsequent finalization mutations
     // (epoch transitions, forkchoice updates) don't alter the captured value.
-    state.capture_state_root();
+    let el_block_number = block.payload.payload_inner.payload_inner.block_number;
+    state.capture_state_root(el_block_number);
 }
 
 async fn parse_execution_requests<

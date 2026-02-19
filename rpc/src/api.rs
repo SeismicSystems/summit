@@ -1,6 +1,6 @@
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, FinalizedHeaderRes,
-    PublicKeysResponse,
+    PublicKeysResponse, StateProofResponse, StateRootResponse,
 };
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
@@ -46,6 +46,15 @@ pub trait SummitApi {
 
     #[method(name = "getMaximumStake")]
     async fn get_maximum_stake(&self) -> RpcResult<u64>;
+}
+
+#[rpc(server, client)]
+pub trait SummitProofApi {
+    #[method(name = "getStateRoot")]
+    async fn get_state_root(&self) -> RpcResult<StateRootResponse>;
+
+    #[method(name = "getStateProof")]
+    async fn get_state_proof(&self, keys: Vec<String>) -> RpcResult<StateProofResponse>;
 }
 
 #[rpc(server, client)]
