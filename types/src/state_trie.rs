@@ -2,7 +2,7 @@ use alloy_primitives::{hex, keccak256};
 use hash_db::Hasher;
 use memory_db::{HashKey, MemoryDB};
 use std::fmt;
-use trie_db::{TrieDBMutBuilder, TrieMut};
+use trie_db::{Trie, TrieDBBuilder, TrieDBMutBuilder, TrieMut};
 
 type KeccakHasher = keccak_hasher::KeccakHasher;
 type Layout = reference_trie::ExtensionLayout;
@@ -49,6 +49,13 @@ impl StateTrie {
     /// Insert a bool as a single byte (0 or 1).
     pub fn insert_bool(&mut self, field_key: &[u8], value: bool) {
         self.insert_raw(field_key, &[value as u8]);
+    }
+
+    /// Look up the value for a logical key. The key is hashed with keccak256.
+    pub fn get_raw(&self, logical_key: &[u8]) -> Option<Vec<u8>> {
+        let key = keccak256(logical_key);
+        let trie = TrieDBBuilder::<Layout>::new(&self.memdb, &self.root).build();
+        trie.get(key.as_slice()).expect("trie get failed")
     }
 
     /// Returns the current Merkle root hash.

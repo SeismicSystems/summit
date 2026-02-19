@@ -302,7 +302,7 @@ pub async fn assert_state_root_consensus_skip(
         if skip.contains(&idx) {
             continue;
         }
-        let root = mailbox.get_state_root().await;
+        let (root, _el_block_number) = mailbox.get_state_root().await;
         roots.push((idx, root));
     }
     assert!(

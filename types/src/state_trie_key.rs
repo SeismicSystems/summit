@@ -3,6 +3,8 @@
 //! All keys are hashed with `keccak256` before insertion into the MPT.
 //! Each field of each struct gets its own trie entry for fine-grained proofs.
 
+use alloy_primitives::hex;
+
 // --- Scalar fields ---
 pub const EPOCH: &[u8] = b"epoch";
 pub const VIEW: &[u8] = b"view";
@@ -116,6 +118,87 @@ pub fn added_validators_consensus_key(node_key: &[u8; 32]) -> Vec<u8> {
 
 pub fn removed_validators(node_key: &[u8; 32]) -> Vec<u8> {
     prefixed_key(b"removed_validators_", node_key)
+}
+
+// --- Parsing ---
+
+/// Parse a human-readable key descriptor into a logical trie key.
+///
+/// Scalar keys: `"epoch"`, `"view"`, `"latest_height"`, etc.
+/// Parameterized keys: `"validator_account_balance:0xABCD..."` (hex-encoded 32-byte pubkey after colon).
+pub fn parse_key(descriptor: &str) -> Result<Vec<u8>, String> {
+    // Try scalar keys first
+    match descriptor {
+        "epoch" => return Ok(EPOCH.to_vec()),
+        "view" => return Ok(VIEW.to_vec()),
+        "latest_height" => return Ok(LATEST_HEIGHT.to_vec()),
+        "head_digest" => return Ok(HEAD_DIGEST.to_vec()),
+        "epoch_genesis_hash" => return Ok(EPOCH_GENESIS_HASH.to_vec()),
+        "validator_minimum_stake" => return Ok(VALIDATOR_MINIMUM_STAKE.to_vec()),
+        "validator_maximum_stake" => return Ok(VALIDATOR_MAXIMUM_STAKE.to_vec()),
+        "next_withdrawal_index" => return Ok(NEXT_WITHDRAWAL_INDEX.to_vec()),
+        "forkchoice_head_block_hash" => return Ok(FORKCHOICE_HEAD_BLOCK_HASH.to_vec()),
+        "forkchoice_safe_block_hash" => return Ok(FORKCHOICE_SAFE_BLOCK_HASH.to_vec()),
+        "forkchoice_finalized_block_hash" => return Ok(FORKCHOICE_FINALIZED_BLOCK_HASH.to_vec()),
+        _ => {}
+    }
+
+    // Try parameterized keys (field_name:hex_pubkey)
+    let (field, hex_str) = descriptor
+        .split_once(':')
+        .ok_or_else(|| format!("unknown key: {descriptor}"))?;
+
+    let pubkey = parse_hex_pubkey(hex_str)?;
+
+    match field {
+        // Validator account fields
+        "validator_account_balance" => Ok(validator_account_balance(&pubkey)),
+        "validator_account_status" => Ok(validator_account_status(&pubkey)),
+        "validator_account_consensus_public_key" => {
+            Ok(validator_account_consensus_public_key(&pubkey))
+        }
+        "validator_account_withdrawal_credentials" => {
+            Ok(validator_account_withdrawal_credentials(&pubkey))
+        }
+        "validator_account_has_pending_deposit" => {
+            Ok(validator_account_has_pending_deposit(&pubkey))
+        }
+        "validator_account_has_pending_withdrawal" => {
+            Ok(validator_account_has_pending_withdrawal(&pubkey))
+        }
+        "validator_account_joining_epoch" => Ok(validator_account_joining_epoch(&pubkey)),
+        // Deposit queue fields
+        "deposit_queue_request_amount" => Ok(deposit_queue_request_amount(&pubkey)),
+        "deposit_queue_request_consensus_pubkey" => {
+            Ok(deposit_queue_request_consensus_pubkey(&pubkey))
+        }
+        "deposit_queue_request_withdrawal_credentials" => {
+            Ok(deposit_queue_request_withdrawal_credentials(&pubkey))
+        }
+        "deposit_queue_request_node_signature" => Ok(deposit_queue_request_node_signature(&pubkey)),
+        "deposit_queue_request_consensus_signature" => {
+            Ok(deposit_queue_request_consensus_signature(&pubkey))
+        }
+        // Withdrawal queue fields
+        "withdrawal_queue_request_amount" => Ok(withdrawal_queue_request_amount(&pubkey)),
+        "withdrawal_queue_request_balance_deduction" => {
+            Ok(withdrawal_queue_request_balance_deduction(&pubkey))
+        }
+        "withdrawal_queue_request_address" => Ok(withdrawal_queue_request_address(&pubkey)),
+        "withdrawal_queue_request_epoch" => Ok(withdrawal_queue_request_epoch(&pubkey)),
+        // Added/removed validators
+        "added_validators_consensus_key" => Ok(added_validators_consensus_key(&pubkey)),
+        "removed_validators" => Ok(removed_validators(&pubkey)),
+        _ => Err(format!("unknown parameterized key: {field}")),
+    }
+}
+
+fn parse_hex_pubkey(hex_str: &str) -> Result<[u8; 32], String> {
+    let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid hex: {e}"))?;
+    bytes
+        .try_into()
+        .map_err(|_| "pubkey must be exactly 32 bytes".to_string())
 }
 
 // --- Helper ---

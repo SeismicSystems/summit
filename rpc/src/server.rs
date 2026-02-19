@@ -1,8 +1,8 @@
-use crate::api::SummitApiServer;
+use crate::api::{SummitApiServer, SummitProofApiServer};
 use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, FinalizedHeaderRes,
-    PublicKeysResponse,
+    PublicKeysResponse, StateProofResponse, StateRootResponse,
 };
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
@@ -19,6 +19,7 @@ use summit_types::{
     execution_request::{DepositRequest, compute_deposit_data_root},
 };
 
+#[derive(Clone)]
 pub struct SummitRpcServer {
     key_store_path: String,
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
@@ -250,5 +251,35 @@ impl SummitApiServer for SummitRpcServer {
     async fn get_maximum_stake(&self) -> RpcResult<u64> {
         let maximum_stake = self.finalizer_mailbox.get_maximum_stake().await;
         Ok(maximum_stake)
+    }
+}
+
+#[async_trait]
+impl SummitProofApiServer for SummitRpcServer {
+    async fn get_state_root(&self) -> RpcResult<StateRootResponse> {
+        let (root, el_block_number) = self.finalizer_mailbox.get_state_root().await;
+        Ok(StateRootResponse {
+            root,
+            el_block_number,
+        })
+    }
+
+    async fn get_state_proof(&self, keys: Vec<String>) -> RpcResult<StateProofResponse> {
+        let parsed_keys: Vec<Vec<u8>> = keys
+            .iter()
+            .map(|k| summit_types::state_trie_key::parse_key(k).map_err(RpcError::InvalidKey))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let (root, el_block_number, proof, values) = self
+            .finalizer_mailbox
+            .generate_state_proof(parsed_keys)
+            .await;
+
+        Ok(StateProofResponse {
+            root,
+            el_block_number,
+            proof,
+            values,
+        })
     }
 }
