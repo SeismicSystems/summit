@@ -45,18 +45,60 @@ Values are encoded using `commonware_codec::Encode` for structured types or big-
 
 **Key definitions** (`types/src/state_trie_key.rs`):
 
+**Scalar fields:**
+
 | Key | Description |
 |-----|-------------|
 | `epoch` | Current epoch number |
 | `view` | Current consensus view |
 | `latest_height` | Latest finalized block height |
 | `head_digest` | Head block digest |
+| `epoch_genesis_hash` | Genesis hash for current epoch |
 | `validator_minimum_stake` | Minimum validator stake |
 | `validator_maximum_stake` | Maximum validator stake |
+| `next_withdrawal_index` | Next withdrawal index |
 | `forkchoice_head_block_hash` | Forkchoice head hash |
-| `validator_account_balance:<pubkey>` | Validator's staked balance |
-| `validator_account_status:<pubkey>` | Validator status (active, pending, exiting) |
-| `validator_account_withdrawal_credentials:<pubkey>` | Validator's withdrawal address |
+| `forkchoice_safe_block_hash` | Forkchoice safe hash |
+| `forkchoice_finalized_block_hash` | Forkchoice finalized hash |
+
+**Validator account fields** (per pubkey):
+
+| Key | Description |
+|-----|-------------|
+| `validator_account_balance:<pubkey>` | Staked balance |
+| `validator_account_status:<pubkey>` | Status (active, pending, exiting) |
+| `validator_account_consensus_public_key:<pubkey>` | BLS consensus public key |
+| `validator_account_withdrawal_credentials:<pubkey>` | Withdrawal address |
+| `validator_account_has_pending_deposit:<pubkey>` | Whether a deposit is pending |
+| `validator_account_has_pending_withdrawal:<pubkey>` | Whether a withdrawal is pending |
+| `validator_account_joining_epoch:<pubkey>` | Epoch the validator joined |
+
+**Deposit queue fields** (per pubkey):
+
+| Key | Description |
+|-----|-------------|
+| `deposit_queue_request_consensus_pubkey:<pubkey>` | BLS key in deposit request |
+| `deposit_queue_request_withdrawal_credentials:<pubkey>` | Withdrawal address in deposit request |
+| `deposit_queue_request_amount:<pubkey>` | Deposit amount |
+| `deposit_queue_request_node_signature:<pubkey>` | Node signature on deposit |
+| `deposit_queue_request_consensus_signature:<pubkey>` | Consensus signature on deposit |
+
+**Withdrawal queue fields** (per pubkey):
+
+| Key | Description |
+|-----|-------------|
+| `withdrawal_queue_request_balance_deduction:<pubkey>` | Balance to deduct |
+| `withdrawal_queue_request_address:<pubkey>` | Withdrawal destination address |
+| `withdrawal_queue_request_amount:<pubkey>` | Withdrawal amount |
+| `withdrawal_queue_request_epoch:<pubkey>` | Epoch withdrawal was requested |
+
+**Other fields** (per pubkey):
+
+| Key | Description |
+|-----|-------------|
+| `added_validators_consensus_key:<pubkey>` | Consensus key of newly added validator |
+| `removed_validators:<pubkey>` | Marker for removed validator |
+| `protocol_param_changes_param:<variant>` | Pending protocol parameter change |
 
 ### Trie Updates
 
