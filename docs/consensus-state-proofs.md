@@ -9,7 +9,7 @@ Summit maintains a Merkle Patricia Trie (MPT) over its consensus state and commi
 │      Summit Node        │
 │                         │
 │  ConsensusState         │       Engine API          ┌───────────────┐
-│  ├─ epoch               │  ─────────────────────▶   │     Reth      │
+│  ├─ epoch               │  ─────────────────────▶  │     Reth      │
 │  ├─ validator_accounts  │  parent_beacon_block_root │               │
 │  ├─ ...                 │  = state_trie.root()      │  EIP-4788     │
 │  └─ state_trie ───┐     │                           │  Contract     │
@@ -22,7 +22,7 @@ Summit maintains a Merkle Patricia Trie (MPT) over its consensus state and commi
                │ RPC: get   │                          │ On-chain    │
                │ StateProof │                          │ precompile  │
                │ (root +    │                          │ 0x6A        │
-               │  proof +   │  ────── proof ──────▶    │ verifies    │
+               │  proof +   │  ────── proof ──────▶   │ verifies    │
                │  values)   │                          │ MPT proof   │
                └────────────┘                          └─────────────┘
 ```
@@ -273,7 +273,7 @@ Summit Finalizer                    Reth (EL)                    Smart Contract
      │                                │                               │
      │  propose block N+1             │                               │
      │  parent_beacon_block_root=root │                               │
-     │  ──────────────────────────▶   │                               │
+     │  ──────────────────────────▶  │                               │
      │                                │  store root at                │
      │                                │  timestamp(N+1)               │
      │                                │                               │
@@ -281,12 +281,12 @@ Summit Finalizer                    Reth (EL)                    Smart Contract
      │  getStateProof(keys)           │                               │
      │  ◀──────────────────────────  │                               │
      │  returns: root, proof, values  │                               │
-     │  ──────────────────────────▶   │                               │
+     │  ──────────────────────────▶  │                               │
      │                                │                        call verify()
      │                                │                   ◀──────────│
      │                                │  read root from               │
      │                                │  system contract              │
-     │                                │  ────────────────▶            │
+     │                                │  ────────────────▶           │
      │                                │                          verify proof
      │                                │                            via 0x6A
      │                                │                               │
