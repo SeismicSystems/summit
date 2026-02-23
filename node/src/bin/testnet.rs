@@ -208,5 +208,6 @@ fn get_node_flags(node: usize) -> RunFlags {
         ip: None,
         archive_mode: false,
         bootstrappers: None,
+        critical_log_dir: None,
     }
 }

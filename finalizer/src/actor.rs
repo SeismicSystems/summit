@@ -588,6 +588,8 @@ impl<
         }
 
         if epoch_change {
+            error!(target: "critical", reason = "state root mismatch", height = 42, "state corruption detected");
+
             // Shut down the Simplex engine for the old epoch
             debug!(
                 old_epoch = self.canonical_state.get_epoch() - 1,
