@@ -306,7 +306,7 @@ impl Command {
             let engine_client =
                 RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-            let our_ip = get_node_ip(flags, &key_store, &committee);
+            let our_ip = get_node_ip(flags, &key_store, &committee).await;
 
             let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
                 .into_iter()
@@ -532,7 +532,7 @@ pub fn run_node_local(
         let engine_client =
             RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-        let our_ip = get_node_ip(&flags, &key_store, &committee);
+        let our_ip = get_node_ip(&flags, &key_store, &committee).await;
 
         let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
             .into_iter()
@@ -700,7 +700,7 @@ fn get_initial_state(
     })
 }
 
-fn get_node_ip(
+async fn get_node_ip(
     flags: &RunFlags,
     key_store: &KeyStore<PrivateKey>,
     committee: &[Validator],
@@ -709,17 +709,20 @@ fn get_node_ip(
         ip_str
             .parse::<SocketAddr>()
             .expect("Invalid IP address format")
+    } else if let Some(addr) = committee.iter().find_map(|v| {
+        if v.node_public_key == key_store.node_key.public_key() {
+            Some(v.ip_address)
+        } else {
+            None
+        }
+    }) {
+        addr
     } else {
-        committee
-            .iter()
-            .find_map(|v| {
-                if v.node_public_key == key_store.node_key.public_key() {
-                    Some(v.ip_address)
-                } else {
-                    None
-                }
-            })
-            .expect("This node is not on the committee")
+        info!("node not on committee, resolving external IP");
+        let ip = crate::nat::resolve_external_ip()
+            .await
+            .expect("failed to resolve external IP: not on committee and all IP services failed");
+        SocketAddr::new(ip, flags.port)
     }
 }
 
