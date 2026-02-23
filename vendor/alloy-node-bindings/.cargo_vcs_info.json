@@ -1,0 +1,6 @@
+{
+  "git": {
+    "sha1": "c6b534edaaf09b72971959e63d40206de0418c19"
+  },
+  "path_in_vcs": "crates/node-bindings"
+}

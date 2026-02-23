@@ -335,8 +335,6 @@ dependencies = [
 [[package]]
 name = "alloy-node-bindings"
 version = "1.0.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f70cdf0ba711fb6f1a427fd026e149bd6d64c9da4c020c1c96c69245c4721ac1"
 dependencies = [
  "alloy-genesis",
  "alloy-hardforks",

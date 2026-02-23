@@ -32,7 +32,7 @@ alloy-consensus = "1.0.12"
 alloy-eips = { version = "1.0.19", features = ["ssz"] }
 alloy-genesis = "1.0.9"
 alloy-network = "1.0.9"
-alloy-node-bindings = "1.0.9"
+alloy-node-bindings = "1.0.19"
 alloy-rpc-client = { version = "1.0.9", features = [
     "hyper",
     "alloy-transport-http",
@@ -77,3 +77,6 @@ governor = "0.10.2"
 rand = "0.8.5"
 rand_core = "0.6"
 tracing = "0.1.41"
+
+[patch.crates-io]
+alloy-node-bindings = { path = "vendor/alloy-node-bindings" }

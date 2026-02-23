@@ -85,8 +85,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut consensus_handles = Vec::new();
             // let mut read_threads = Vec::new();
 
-            // Enode URL of node 0, used as bootnode for other nodes
-            let mut bootnode_enode = String::new();
+            // Collect enode URLs for all nodes to use as trusted peers
+            let mut enode_urls: Vec<String> = Vec::new();
 
             for x in 0..args.nodes {
                 // Start Reth
@@ -95,6 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut reth_builder = Reth::new()
                     .instance(x + 1)
                     .keep_stdout()
+                    .skip_p2p_check()
                     //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
                     .data_dir(format!("testnet/node{x}/data/reth_db"))
                     .arg("--enclave.mock-server")
@@ -106,13 +107,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .arg("--metrics")
                     .arg(format!("0.0.0.0:{}", 9001 + x))
                     .arg("--nat")
-                    .arg("extip:127.0.0.1");
+                    .arg("extip:127.0.0.1")
+                    .arg("--disable-discv4-discovery")
+                    .arg("--disable-dns-discovery")
+                    .arg("--enable-discv5-discovery")
+                    .arg("--discovery.v5.port")
+                    .arg(format!("{}", 9200 + x));
 
-                // Point nodes 1+ at node 0 for peer discovery
-                if x > 0 && !bootnode_enode.is_empty() {
+                // Point nodes 1+ at node 0 for discv5 discovery
+                if x > 0 && !enode_urls.is_empty() {
                     reth_builder = reth_builder
                         .arg("--bootnodes")
-                        .arg(&bootnode_enode);
+                        .arg(&enode_urls[0]);
+                    // Add all previously started nodes as trusted peers
+                    // (works around discv5 /24 subnet filter on localhost)
+                    reth_builder = reth_builder
+                        .arg("--trusted-peers")
+                        .arg(enode_urls.join(","));
                 }
 
                 let mut reth = reth_builder.spawn();
@@ -161,8 +172,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 println!("Node {} rpc address: {}", x, reth.http_port());
 
-                // After node 0 starts, fetch its enode URL to use as bootnode for other nodes
-                if x == 0 {
+                // Fetch enode URL for this node
+                {
                     let client = reqwest::Client::new();
                     let resp = client
                         .post(format!("http://localhost:{}", reth.http_port()))
@@ -174,16 +185,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }))
                         .send()
                         .await
-                        .expect("Failed to query admin_nodeInfo on node 0");
+                        .expect("Failed to query admin_nodeInfo");
                     let body: serde_json::Value = resp
                         .json()
                         .await
                         .expect("Failed to parse admin_nodeInfo response");
-                    bootnode_enode = body["result"]["enode"]
+                    let enode = body["result"]["enode"]
                         .as_str()
                         .expect("No enode in admin_nodeInfo response")
                         .to_string();
-                    println!("Node 0 enode: {bootnode_enode}");
+                    println!("Node {x} enode: {enode}");
+                    enode_urls.push(enode);
                 }
 
                 // read_threads.push(reader_thread);
