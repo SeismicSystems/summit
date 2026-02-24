@@ -265,12 +265,12 @@ impl SummitProofApiServer for SummitRpcServer {
     }
 
     async fn get_state_proof(&self, keys: Vec<String>) -> RpcResult<StateProofResponse> {
-        let parsed_keys: Vec<Vec<u8>> = keys
+        let parsed_keys = keys
             .iter()
-            .map(|k| summit_types::state_trie_key::parse_key(k).map_err(RpcError::InvalidKey))
+            .map(|k| summit_types::ssz_tree_key::parse_key(k).map_err(RpcError::InvalidKey))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let (root, el_block_number, proof, values) = self
+        let (root, el_block_number, proofs) = self
             .finalizer_mailbox
             .generate_state_proof(parsed_keys)
             .await;
@@ -278,8 +278,7 @@ impl SummitProofApiServer for SummitRpcServer {
         Ok(StateProofResponse {
             root,
             el_block_number,
-            proof,
-            values,
+            proofs,
         })
     }
 }

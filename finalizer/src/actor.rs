@@ -917,18 +917,30 @@ impl<
                 });
             }
             ConsensusStateRequest::GenerateStateProof(keys) => {
-                let proof_trie = self.canonical_state.proof_trie();
-                let key_refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
-                let proof = proof_trie.generate_proof(&key_refs);
-                let values: Vec<Option<Vec<u8>>> =
-                    keys.iter().map(|k| proof_trie.get_raw(k)).collect();
+                use summit_types::ssz_state_tree::SszStateProof;
+                use summit_types::ssz_tree_key::SszStateKey;
+
+                let proof_tree = self.canonical_state.proof_tree();
+                let proofs: Vec<SszStateProof> = keys
+                    .iter()
+                    .filter_map(|key| match key {
+                        SszStateKey::Scalar(leaf_index) => Some(SszStateProof::Scalar(
+                            proof_tree.generate_scalar_proof(*leaf_index),
+                        )),
+                        SszStateKey::Validator(pubkey) => proof_tree
+                            .generate_validator_proof(
+                                pubkey,
+                                self.canonical_state.proof_validator_keys(),
+                            )
+                            .map(SszStateProof::Collection),
+                    })
+                    .collect();
                 let root = self.canonical_state.get_state_root();
                 let el_block_number = self.canonical_state.get_proof_el_block_number();
                 let _ = sender.send(ConsensusStateResponse::StateProof {
                     root,
                     el_block_number,
-                    proof,
-                    values,
+                    proofs,
                 });
             }
         }

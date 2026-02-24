@@ -108,12 +108,11 @@ pub fn create_test_finalizer_mailbox(
                             el_block_number: 0,
                         });
                     }
-                    ConsensusStateRequest::GenerateStateProof(keys) => {
+                    ConsensusStateRequest::GenerateStateProof(_keys) => {
                         let _ = response.send(ConsensusStateResponse::StateProof {
                             root: [0; 32],
                             el_block_number: 0,
-                            proof: vec![],
-                            values: keys.iter().map(|_| None).collect(),
+                            proofs: vec![],
                         });
                     }
                 },

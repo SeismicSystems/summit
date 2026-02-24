@@ -1,5 +1,7 @@
 use crate::account::ValidatorAccount;
 use crate::checkpoint::Checkpoint;
+use crate::ssz_state_tree::SszStateProof;
+use crate::ssz_tree_key::SszStateKey;
 use crate::{Block, FinalizedHeader, PublicKey};
 use commonware_cryptography::certificate::Scheme;
 use futures::SinkExt;
@@ -17,7 +19,7 @@ pub enum ConsensusStateRequest {
     GetMinimumStake,
     GetMaximumStake,
     GetStateRoot,
-    GenerateStateProof(Vec<Vec<u8>>),
+    GenerateStateProof(Vec<SszStateKey>),
 }
 
 pub enum ConsensusStateResponse<S: Scheme> {
@@ -37,8 +39,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     StateProof {
         root: [u8; 32],
         el_block_number: u64,
-        proof: Vec<Vec<u8>>,
-        values: Vec<Option<Vec<u8>>>,
+        proofs: Vec<SszStateProof>,
     },
 }
 

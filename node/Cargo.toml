@@ -37,8 +37,8 @@ path = "src/bin/sync_from_genesis.rs"
 required-features = ["e2e"]
 
 [[bin]]
-name = "verify-mpt-proof"
-path = "src/bin/verify_mpt_proof.rs"
+name = "verify-consensus-state-proof"
+path = "src/bin/verify_consensus_state_proof.rs"
 required-features = ["e2e"]
 
 [[bin]]

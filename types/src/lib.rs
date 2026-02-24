@@ -16,8 +16,10 @@ pub mod protocol_params;
 pub mod reth;
 pub mod rpc;
 pub mod scheme;
-pub mod state_trie;
-pub mod state_trie_key;
+pub mod ssz_hash;
+pub mod ssz_state_tree;
+pub mod ssz_tree;
+pub mod ssz_tree_key;
 pub mod utils;
 pub mod withdrawal;
 

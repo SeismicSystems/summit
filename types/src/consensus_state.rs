@@ -3,13 +3,12 @@ use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
-use crate::state_trie::StateTrie;
-use crate::state_trie_key;
+use crate::ssz_state_tree::SszStateTree;
 use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use crate::{Digest, PublicKey};
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Write};
+use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{bls12381, sha256};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -34,18 +33,22 @@ pub struct ConsensusState {
     pub(crate) validator_minimum_stake: u64, // in gwei
     pub(crate) validator_maximum_stake: u64, // in gwei
 
-    /// In-memory Merkle Patricia Trie over validator_accounts.
-    /// Not serialized — rebuilt from validator_accounts on deserialization.
-    pub(crate) state_trie: StateTrie,
+    /// In-memory SSZ binary Merkle tree over the entire consensus state.
+    /// Not serialized — rebuilt from data fields on deserialization.
+    pub(crate) ssz_tree: SszStateTree,
 
-    /// Frozen snapshot of `state_trie` at `capture_state_root()` time.
-    /// Proofs are generated from this trie so they verify against the on-chain root.
-    /// Not serialized — rebuilt alongside `state_trie`.
-    pub(crate) proof_trie: StateTrie,
+    /// Frozen snapshot of `ssz_tree` at `capture_state_root()` time.
+    /// Proofs are generated from this tree so they verify against the on-chain root.
+    /// Not serialized — rebuilt alongside `ssz_tree`.
+    pub(crate) proof_tree: SszStateTree,
 
-    /// Snapshot of `state_trie.root()` captured after block execution.
+    /// Frozen snapshot of validator pubkeys (sorted) at `capture_state_root()` time.
+    /// Needed for positional index lookups when generating validator proofs.
+    pub(crate) proof_validator_keys: Vec<[u8; 32]>,
+
+    /// Snapshot of `ssz_tree.root()` captured after block execution.
     /// Not serialized — set via `capture_state_root()` in the finalizer after `execute_block`.
-    /// Survives finalization mutations (which change the live trie but not this field).
+    /// Survives finalization mutations (which change the live tree but not this field).
     pub(crate) state_root: [u8; 32],
 
     /// The EL (Reth) block number at the time `capture_state_root()` was called.
@@ -72,12 +75,13 @@ impl Default for ConsensusState {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
-            state_trie: StateTrie::default(),
-            proof_trie: StateTrie::default(),
+            ssz_tree: SszStateTree::default(),
+            proof_tree: SszStateTree::default(),
+            proof_validator_keys: Vec::new(),
             state_root: [0u8; 32],
             proof_el_block_number: 0,
         };
-        s.rebuild_state_trie();
+        s.rebuild_ssz_tree();
         s
     }
 }
@@ -105,12 +109,13 @@ impl ConsensusState {
             epoch_genesis_hash: forkchoice.head_block_hash.into(),
             validator_minimum_stake,
             validator_maximum_stake,
-            state_trie: StateTrie::default(),
-            proof_trie: StateTrie::default(),
+            ssz_tree: SszStateTree::default(),
+            proof_tree: SszStateTree::default(),
+            proof_validator_keys: Vec::new(),
             state_root: [0u8; 32],
             proof_el_block_number: 0,
         };
-        s.rebuild_state_trie();
+        s.rebuild_ssz_tree();
         s
     }
 
@@ -121,7 +126,7 @@ impl ConsensusState {
 
     pub fn set_epoch(&mut self, epoch: u64) {
         self.epoch = epoch;
-        self.state_trie.insert_u64(state_trie_key::EPOCH, epoch);
+        self.ssz_tree.set_epoch(epoch);
     }
 
     pub fn get_view(&self) -> u64 {
@@ -130,7 +135,7 @@ impl ConsensusState {
 
     pub fn set_view(&mut self, view: u64) {
         self.view = view;
-        self.state_trie.insert_u64(state_trie_key::VIEW, view);
+        self.ssz_tree.set_view(view);
     }
 
     pub fn get_latest_height(&self) -> u64 {
@@ -139,8 +144,7 @@ impl ConsensusState {
 
     pub fn set_latest_height(&mut self, height: u64) {
         self.latest_height = height;
-        self.state_trie
-            .insert_u64(state_trie_key::LATEST_HEIGHT, height);
+        self.ssz_tree.set_latest_height(height);
     }
 
     pub fn get_next_withdrawal_index(&self) -> u64 {
@@ -161,14 +165,12 @@ impl ConsensusState {
 
     pub fn set_minimum_stake(&mut self, stake: u64) {
         self.validator_minimum_stake = stake;
-        self.state_trie
-            .insert_u64(state_trie_key::VALIDATOR_MINIMUM_STAKE, stake);
+        self.ssz_tree.set_validator_minimum_stake(stake);
     }
 
     pub fn set_maximum_stake(&mut self, stake: u64) {
         self.validator_maximum_stake = stake;
-        self.state_trie
-            .insert_u64(state_trie_key::VALIDATOR_MAXIMUM_STAKE, stake);
+        self.ssz_tree.set_validator_maximum_stake(stake);
     }
 
     pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
@@ -177,8 +179,7 @@ impl ConsensusState {
 
     pub fn set_next_withdrawal_index(&mut self, index: u64) {
         self.withdrawal_queue.set_next_index(index);
-        self.state_trie
-            .insert_u64(state_trie_key::NEXT_WITHDRAWAL_INDEX, index);
+        self.ssz_tree.set_next_withdrawal_index(index);
     }
 
     pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
@@ -190,16 +191,12 @@ impl ConsensusState {
     }
 
     pub fn add_validator(&mut self, epoch: u64, validator: AddedValidator) {
-        let node_key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
-        let encoded = validator.consensus_key.encode();
-        self.state_trie.insert_raw(
-            &state_trie_key::added_validators_consensus_key(&node_key_bytes),
-            &encoded,
-        );
         self.added_validators
             .entry(epoch)
             .or_default()
             .push(validator);
+        self.ssz_tree
+            .update_added_validators_root(&self.added_validators);
     }
 
     pub fn get_removed_validators(&self) -> &Vec<PublicKey> {
@@ -207,19 +204,9 @@ impl ConsensusState {
     }
 
     pub fn set_removed_validators(&mut self, validators: Vec<PublicKey>) {
-        // Remove old trie entries
-        for pubkey in &self.removed_validators {
-            let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
-            self.state_trie
-                .remove_raw(&state_trie_key::removed_validators(&pubkey_bytes));
-        }
-        // Insert new trie entries
-        for pubkey in &validators {
-            let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
-            self.state_trie
-                .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[1]);
-        }
         self.removed_validators = validators;
+        self.ssz_tree
+            .update_removed_validators_root(&self.removed_validators);
     }
 
     pub fn get_forkchoice(&self) -> &ForkchoiceState {
@@ -228,18 +215,12 @@ impl ConsensusState {
 
     pub fn set_forkchoice(&mut self, forkchoice: ForkchoiceState) {
         self.forkchoice = forkchoice;
-        self.state_trie.insert_hash(
-            state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH,
-            &forkchoice.head_block_hash.0,
-        );
-        self.state_trie.insert_hash(
-            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
-            &forkchoice.safe_block_hash.0,
-        );
-        self.state_trie.insert_hash(
-            state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH,
-            &forkchoice.finalized_block_hash.0,
-        );
+        self.ssz_tree
+            .set_forkchoice_head_block_hash(&forkchoice.head_block_hash.0);
+        self.ssz_tree
+            .set_forkchoice_safe_block_hash(&forkchoice.safe_block_hash.0);
+        self.ssz_tree
+            .set_forkchoice_finalized_block_hash(&forkchoice.finalized_block_hash.0);
     }
 
     pub fn get_epoch_genesis_hash(&self) -> [u8; 32] {
@@ -248,8 +229,7 @@ impl ConsensusState {
 
     pub fn set_epoch_genesis_hash(&mut self, hash: [u8; 32]) {
         self.epoch_genesis_hash = hash;
-        self.state_trie
-            .insert_hash(state_trie_key::EPOCH_GENESIS_HASH, &hash);
+        self.ssz_tree.set_epoch_genesis_hash(&hash);
     }
 
     pub fn get_head_digest_ref(&self) -> &Digest {
@@ -258,23 +238,19 @@ impl ConsensusState {
 
     pub fn set_head_digest(&mut self, digest: Digest) {
         self.head_digest = digest;
-        self.state_trie
-            .insert_hash(state_trie_key::HEAD_DIGEST, &digest.0);
+        self.ssz_tree.set_head_digest(&digest.0);
     }
 
     pub fn set_forkchoice_head(&mut self, hash: alloy_primitives::B256) {
         self.forkchoice.head_block_hash = hash;
-        self.state_trie
-            .insert_hash(state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH, &hash.0);
+        self.ssz_tree.set_forkchoice_head_block_hash(&hash.0);
     }
 
     pub fn set_forkchoice_safe_and_finalized(&mut self, hash: alloy_primitives::B256) {
         self.forkchoice.safe_block_hash = hash;
         self.forkchoice.finalized_block_hash = hash;
-        self.state_trie
-            .insert_hash(state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH, &hash.0);
-        self.state_trie
-            .insert_hash(state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH, &hash.0);
+        self.ssz_tree.set_forkchoice_safe_block_hash(&hash.0);
+        self.ssz_tree.set_forkchoice_finalized_block_hash(&hash.0);
     }
 
     pub fn take_pending_checkpoint(&mut self) -> Option<Checkpoint> {
@@ -282,31 +258,21 @@ impl ConsensusState {
     }
 
     pub fn push_protocol_param_change(&mut self, param: ProtocolParam) {
-        let (variant_name, value) = match &param {
-            ProtocolParam::MinimumStake(v) => (b"minimum_stake" as &[u8], *v),
-            ProtocolParam::MaximumStake(v) => (b"maximum_stake" as &[u8], *v),
-        };
-        self.state_trie.insert_u64(
-            &state_trie_key::protocol_param_changes_param(variant_name),
-            value,
-        );
         self.protocol_param_changes.push(param);
+        self.ssz_tree
+            .update_protocol_param_changes_root(&self.protocol_param_changes);
     }
 
     pub fn push_removed_validator(&mut self, pubkey: PublicKey) {
-        let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
-        self.state_trie
-            .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[1]);
         self.removed_validators.push(pubkey);
+        self.ssz_tree
+            .update_removed_validators_root(&self.removed_validators);
     }
 
     pub fn clear_removed_validators(&mut self) {
-        for pubkey in &self.removed_validators {
-            let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
-            self.state_trie
-                .remove_raw(&state_trie_key::removed_validators(&pubkey_bytes));
-        }
         self.removed_validators.clear();
+        self.ssz_tree
+            .update_removed_validators_root(&self.removed_validators);
     }
 
     pub fn has_removed_validators(&self) -> bool {
@@ -319,13 +285,8 @@ impl ConsensusState {
 
     pub fn remove_added_validators_for_epoch(&mut self, epoch: u64) -> Option<Vec<AddedValidator>> {
         let validators = self.added_validators.remove(&epoch)?;
-        for v in &validators {
-            let node_key_bytes: [u8; 32] = v.node_key.as_ref().try_into().unwrap();
-            self.state_trie
-                .remove_raw(&state_trie_key::added_validators_consensus_key(
-                    &node_key_bytes,
-                ));
-        }
+        self.ssz_tree
+            .update_added_validators_root(&self.added_validators);
         Some(validators)
     }
 
@@ -333,12 +294,9 @@ impl ConsensusState {
         if let Some(validators) = self.added_validators.get_mut(&epoch)
             && let Some(pos) = validators.iter().position(|v| v.node_key == *pubkey)
         {
-            let removed = validators.remove(pos);
-            let node_key_bytes: [u8; 32] = removed.node_key.as_ref().try_into().unwrap();
-            self.state_trie
-                .remove_raw(&state_trie_key::added_validators_consensus_key(
-                    &node_key_bytes,
-                ));
+            validators.remove(pos);
+            self.ssz_tree
+                .update_added_validators_root(&self.added_validators);
             return true;
         }
         false
@@ -358,13 +316,16 @@ impl ConsensusState {
     }
 
     pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
-        self.insert_validator_trie_entries(&pubkey, &account);
         self.validator_accounts.insert(pubkey, account);
+        self.ssz_tree.rebuild_validators(&self.validator_accounts);
     }
 
     pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
-        self.remove_validator_trie_entries(pubkey);
-        self.validator_accounts.remove(pubkey)
+        let removed = self.validator_accounts.remove(pubkey);
+        if removed.is_some() {
+            self.ssz_tree.rebuild_validators(&self.validator_accounts);
+        }
+        removed
     }
 
     pub fn num_validators(&self) -> usize {
@@ -377,33 +338,41 @@ impl ConsensusState {
 
     pub fn set_validator_accounts(&mut self, accounts: BTreeMap<[u8; 32], ValidatorAccount>) {
         self.validator_accounts = accounts;
-        self.rebuild_state_trie();
+        self.rebuild_ssz_tree();
     }
 
-    pub fn state_trie(&self) -> &StateTrie {
-        &self.state_trie
+    /// Returns a reference to the live SSZ state tree.
+    pub fn ssz_tree(&self) -> &SszStateTree {
+        &self.ssz_tree
     }
 
-    /// Snapshot the current trie root and freeze a proof-able copy.
+    /// Snapshot the current tree root and freeze a proof-able copy.
     /// Called after `execute_block` so that subsequent finalization mutations
-    /// don't alter the captured value or the proof trie.
+    /// don't alter the captured value or the proof tree.
     ///
     /// `el_block_number` is the Reth block number from the execution payload
     /// that was just processed. The state root will appear on-chain in EL
     /// block `el_block_number + 1`.
     pub fn capture_state_root(&mut self, el_block_number: u64) {
-        self.state_root = self.state_trie.root();
-        self.proof_trie = self.state_trie.clone();
+        self.state_root = self.ssz_tree.root();
+        self.proof_tree = self.ssz_tree.clone();
+        self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
         self.proof_el_block_number = el_block_number;
     }
 
-    /// Returns the frozen trie snapshot for proof generation.
-    /// Proofs from this trie verify against the on-chain `parent_beacon_block_root`.
-    pub fn proof_trie(&self) -> &StateTrie {
-        &self.proof_trie
+    /// Returns the frozen tree snapshot for proof generation.
+    /// Proofs from this tree verify against the on-chain `parent_beacon_block_root`.
+    pub fn proof_tree(&self) -> &SszStateTree {
+        &self.proof_tree
     }
 
-    /// Returns the EL block number at the time the proof trie was captured.
+    /// Returns the frozen validator pubkeys (sorted) for proof generation.
+    /// Needed for positional index lookups when generating validator proofs.
+    pub fn proof_validator_keys(&self) -> &[[u8; 32]] {
+        &self.proof_validator_keys
+    }
+
+    /// Returns the EL block number at the time the proof tree was captured.
     /// The state root appears on-chain in EL block `proof_el_block_number + 1`.
     pub fn get_proof_el_block_number(&self) -> u64 {
         self.proof_el_block_number
@@ -416,8 +385,8 @@ impl ConsensusState {
 
     // Deposit queue operations
     pub fn push_deposit(&mut self, request: DepositRequest) {
-        self.insert_deposit_trie_entries(&request);
         self.deposit_queue.push_back(request);
+        self.ssz_tree.update_deposit_queue_root(&self.deposit_queue);
     }
 
     pub fn peek_deposit(&self) -> Option<&DepositRequest> {
@@ -426,7 +395,7 @@ impl ConsensusState {
 
     pub fn pop_deposit(&mut self) -> Option<DepositRequest> {
         let request = self.deposit_queue.pop_front()?;
-        self.remove_deposit_trie_entries(&request);
+        self.ssz_tree.update_deposit_queue_root(&self.deposit_queue);
         Some(request)
     }
 
@@ -437,23 +406,19 @@ impl ConsensusState {
         withdrawal_epoch: u64,
         balance_deduction: u64,
     ) {
-        let pubkey = request.validator_pubkey;
         self.withdrawal_queue
             .push_request(request, withdrawal_epoch, balance_deduction);
-        // After push (which may merge), clone the current state and update trie
-        let w = self.withdrawal_queue.get_withdrawal(&pubkey).cloned();
-        if let Some(w) = &w {
-            self.insert_withdrawal_trie_entries(&pubkey, w);
-        }
+        // push_request() may increment next_index internally — sync the scalar leaf
+        self.ssz_tree
+            .set_next_withdrawal_index(self.withdrawal_queue.next_index());
+        self.ssz_tree
+            .update_withdrawal_queue_root(&self.withdrawal_queue);
     }
 
     pub fn push_withdrawal(&mut self, request: PendingWithdrawal) {
-        let pubkey = request.pubkey;
         self.withdrawal_queue.push(request);
-        let w = self.withdrawal_queue.get_withdrawal(&pubkey).cloned();
-        if let Some(w) = &w {
-            self.insert_withdrawal_trie_entries(&pubkey, w);
-        }
+        self.ssz_tree
+            .update_withdrawal_queue_root(&self.withdrawal_queue);
     }
 
     pub fn peek_withdrawal(&self, withdrawal_epoch: u64) -> Option<&PendingWithdrawal> {
@@ -462,7 +427,8 @@ impl ConsensusState {
 
     pub fn pop_withdrawal(&mut self, withdrawal_epoch: u64) -> Option<PendingWithdrawal> {
         let w = self.withdrawal_queue.pop(withdrawal_epoch)?;
-        self.remove_withdrawal_trie_entries(&w.pubkey);
+        self.ssz_tree
+            .update_withdrawal_queue_root(&self.withdrawal_queue);
         Some(w)
     }
 
@@ -555,314 +521,50 @@ impl ConsensusState {
             match param {
                 ProtocolParam::MinimumStake(min_stake) => {
                     self.validator_minimum_stake = min_stake;
-                    self.state_trie
-                        .insert_u64(state_trie_key::VALIDATOR_MINIMUM_STAKE, min_stake);
+                    self.ssz_tree.set_validator_minimum_stake(min_stake);
                     min_or_max_stake_changed = true;
                 }
                 ProtocolParam::MaximumStake(max_stake) => {
                     self.validator_maximum_stake = max_stake;
-                    self.state_trie
-                        .insert_u64(state_trie_key::VALIDATOR_MAXIMUM_STAKE, max_stake);
+                    self.ssz_tree.set_validator_maximum_stake(max_stake);
                     min_or_max_stake_changed = true;
                 }
             }
         }
-        // Protocol param changes have been consumed, remove their trie entries
-        self.state_trie
-            .remove_raw(&state_trie_key::protocol_param_changes_param(
-                b"minimum_stake",
-            ));
-        self.state_trie
-            .remove_raw(&state_trie_key::protocol_param_changes_param(
-                b"maximum_stake",
-            ));
+        // Protocol param changes have been consumed — update the (now empty) collection root
+        self.ssz_tree
+            .update_protocol_param_changes_root(&self.protocol_param_changes);
         min_or_max_stake_changed
     }
 
-    // --- Trie helper methods ---
-
-    fn insert_validator_trie_entries(&mut self, pubkey: &[u8; 32], account: &ValidatorAccount) {
-        let consensus_encoded = account.consensus_public_key.encode();
-        self.state_trie.insert_raw(
-            &state_trie_key::validator_account_consensus_public_key(pubkey),
-            &consensus_encoded,
-        );
-        self.state_trie.insert_raw(
-            &state_trie_key::validator_account_withdrawal_credentials(pubkey),
-            account.withdrawal_credentials.as_slice(),
-        );
-        self.state_trie.insert_u64(
-            &state_trie_key::validator_account_balance(pubkey),
-            account.balance,
-        );
-        let status_byte = match &account.status {
-            ValidatorStatus::Active => 0u8,
-            ValidatorStatus::Inactive => 1,
-            ValidatorStatus::SubmittedExitRequest => 2,
-            ValidatorStatus::Joining => 3,
-        };
-        self.state_trie.insert_raw(
-            &state_trie_key::validator_account_status(pubkey),
-            &[status_byte],
-        );
-        self.state_trie.insert_bool(
-            &state_trie_key::validator_account_has_pending_deposit(pubkey),
-            account.has_pending_deposit,
-        );
-        self.state_trie.insert_bool(
-            &state_trie_key::validator_account_has_pending_withdrawal(pubkey),
-            account.has_pending_withdrawal,
-        );
-        self.state_trie.insert_u64(
-            &state_trie_key::validator_account_joining_epoch(pubkey),
-            account.joining_epoch,
-        );
-    }
-
-    fn remove_validator_trie_entries(&mut self, pubkey: &[u8; 32]) {
-        self.state_trie
-            .remove_raw(&state_trie_key::validator_account_consensus_public_key(
-                pubkey,
-            ));
-        self.state_trie
-            .remove_raw(&state_trie_key::validator_account_withdrawal_credentials(
-                pubkey,
-            ));
-        self.state_trie
-            .remove_raw(&state_trie_key::validator_account_balance(pubkey));
-        self.state_trie
-            .remove_raw(&state_trie_key::validator_account_status(pubkey));
-        self.state_trie
-            .remove_raw(&state_trie_key::validator_account_has_pending_deposit(
-                pubkey,
-            ));
-        self.state_trie
-            .remove_raw(&state_trie_key::validator_account_has_pending_withdrawal(
-                pubkey,
-            ));
-        self.state_trie
-            .remove_raw(&state_trie_key::validator_account_joining_epoch(pubkey));
-    }
-
-    fn insert_deposit_trie_entries(&mut self, deposit: &DepositRequest) {
-        let node_pubkey_bytes: [u8; 32] = deposit.node_pubkey.as_ref().try_into().unwrap();
-        let consensus_encoded = deposit.consensus_pubkey.encode();
-        self.state_trie.insert_raw(
-            &state_trie_key::deposit_queue_request_consensus_pubkey(&node_pubkey_bytes),
-            &consensus_encoded,
-        );
-        self.state_trie.insert_raw(
-            &state_trie_key::deposit_queue_request_withdrawal_credentials(&node_pubkey_bytes),
-            &deposit.withdrawal_credentials,
-        );
-        self.state_trie.insert_u64(
-            &state_trie_key::deposit_queue_request_amount(&node_pubkey_bytes),
-            deposit.amount,
-        );
-        self.state_trie.insert_raw(
-            &state_trie_key::deposit_queue_request_node_signature(&node_pubkey_bytes),
-            &deposit.node_signature,
-        );
-        self.state_trie.insert_raw(
-            &state_trie_key::deposit_queue_request_consensus_signature(&node_pubkey_bytes),
-            &deposit.consensus_signature,
-        );
-    }
-
-    fn remove_deposit_trie_entries(&mut self, deposit: &DepositRequest) {
-        let node_pubkey_bytes: [u8; 32] = deposit.node_pubkey.as_ref().try_into().unwrap();
-        self.state_trie
-            .remove_raw(&state_trie_key::deposit_queue_request_consensus_pubkey(
-                &node_pubkey_bytes,
-            ));
-        self.state_trie.remove_raw(
-            &state_trie_key::deposit_queue_request_withdrawal_credentials(&node_pubkey_bytes),
-        );
-        self.state_trie
-            .remove_raw(&state_trie_key::deposit_queue_request_amount(
-                &node_pubkey_bytes,
-            ));
-        self.state_trie
-            .remove_raw(&state_trie_key::deposit_queue_request_node_signature(
-                &node_pubkey_bytes,
-            ));
-        self.state_trie
-            .remove_raw(&state_trie_key::deposit_queue_request_consensus_signature(
-                &node_pubkey_bytes,
-            ));
-    }
-
-    fn insert_withdrawal_trie_entries(&mut self, pubkey: &[u8; 32], w: &PendingWithdrawal) {
-        self.state_trie.insert_u64(
-            &state_trie_key::withdrawal_queue_request_balance_deduction(pubkey),
-            w.balance_deduction,
-        );
-        self.state_trie.insert_raw(
-            &state_trie_key::withdrawal_queue_request_address(pubkey),
-            w.inner.address.as_slice(),
-        );
-        self.state_trie.insert_u64(
-            &state_trie_key::withdrawal_queue_request_amount(pubkey),
-            w.inner.amount,
-        );
-        self.state_trie.insert_u64(
-            &state_trie_key::withdrawal_queue_request_epoch(pubkey),
-            w.epoch,
-        );
-    }
-
-    fn remove_withdrawal_trie_entries(&mut self, pubkey: &[u8; 32]) {
-        self.state_trie
-            .remove_raw(&state_trie_key::withdrawal_queue_request_balance_deduction(
-                pubkey,
-            ));
-        self.state_trie
-            .remove_raw(&state_trie_key::withdrawal_queue_request_address(pubkey));
-        self.state_trie
-            .remove_raw(&state_trie_key::withdrawal_queue_request_amount(pubkey));
-        self.state_trie
-            .remove_raw(&state_trie_key::withdrawal_queue_request_epoch(pubkey));
-    }
-
-    /// Rebuild the entire state trie from scratch.
+    /// Rebuild the entire SSZ state tree from scratch.
     ///
     /// Called on deserialization and when bulk-replacing state (e.g. `set_validator_accounts`).
-    pub fn rebuild_state_trie(&mut self) {
-        self.state_trie = StateTrie::default();
-
-        // Scalar fields
-        self.state_trie
-            .insert_u64(state_trie_key::EPOCH, self.epoch);
-        self.state_trie.insert_u64(state_trie_key::VIEW, self.view);
-        self.state_trie
-            .insert_u64(state_trie_key::LATEST_HEIGHT, self.latest_height);
-        self.state_trie
-            .insert_hash(state_trie_key::HEAD_DIGEST, &self.head_digest.0);
-        self.state_trie
-            .insert_hash(state_trie_key::EPOCH_GENESIS_HASH, &self.epoch_genesis_hash);
-        self.state_trie.insert_u64(
-            state_trie_key::VALIDATOR_MINIMUM_STAKE,
+    pub fn rebuild_ssz_tree(&mut self) {
+        self.ssz_tree.rebuild(
+            self.epoch,
+            self.view,
+            self.latest_height,
+            &self.head_digest.0,
+            &self.epoch_genesis_hash,
             self.validator_minimum_stake,
-        );
-        self.state_trie.insert_u64(
-            state_trie_key::VALIDATOR_MAXIMUM_STAKE,
             self.validator_maximum_stake,
-        );
-        self.state_trie.insert_u64(
-            state_trie_key::NEXT_WITHDRAWAL_INDEX,
             self.withdrawal_queue.next_index(),
-        );
-
-        // Forkchoice
-        self.state_trie.insert_hash(
-            state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH,
             &self.forkchoice.head_block_hash.0,
-        );
-        self.state_trie.insert_hash(
-            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
             &self.forkchoice.safe_block_hash.0,
-        );
-        self.state_trie.insert_hash(
-            state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH,
             &self.forkchoice.finalized_block_hash.0,
+            &self.validator_accounts,
+            &self.deposit_queue,
+            &self.withdrawal_queue,
+            &self.protocol_param_changes,
+            &self.added_validators,
+            &self.removed_validators,
         );
 
-        // Deposit queue
-        for deposit in &self.deposit_queue {
-            let node_pubkey_bytes: [u8; 32] = deposit.node_pubkey.as_ref().try_into().unwrap();
-            let consensus_encoded = deposit.consensus_pubkey.encode();
-            self.state_trie.insert_raw(
-                &state_trie_key::deposit_queue_request_consensus_pubkey(&node_pubkey_bytes),
-                &consensus_encoded,
-            );
-            self.state_trie.insert_raw(
-                &state_trie_key::deposit_queue_request_withdrawal_credentials(&node_pubkey_bytes),
-                &deposit.withdrawal_credentials,
-            );
-            self.state_trie.insert_u64(
-                &state_trie_key::deposit_queue_request_amount(&node_pubkey_bytes),
-                deposit.amount,
-            );
-            self.state_trie.insert_raw(
-                &state_trie_key::deposit_queue_request_node_signature(&node_pubkey_bytes),
-                &deposit.node_signature,
-            );
-            self.state_trie.insert_raw(
-                &state_trie_key::deposit_queue_request_consensus_signature(&node_pubkey_bytes),
-                &deposit.consensus_signature,
-            );
-        }
-
-        // Withdrawal queue
-        let withdrawals: Vec<([u8; 32], PendingWithdrawal)> = self
-            .withdrawal_queue
-            .withdrawals_iter()
-            .map(|(pk, w)| (*pk, w.clone()))
-            .collect();
-        for (pubkey, w) in &withdrawals {
-            self.state_trie.insert_u64(
-                &state_trie_key::withdrawal_queue_request_balance_deduction(pubkey),
-                w.balance_deduction,
-            );
-            self.state_trie.insert_raw(
-                &state_trie_key::withdrawal_queue_request_address(pubkey),
-                w.inner.address.as_slice(),
-            );
-            self.state_trie.insert_u64(
-                &state_trie_key::withdrawal_queue_request_amount(pubkey),
-                w.inner.amount,
-            );
-            self.state_trie.insert_u64(
-                &state_trie_key::withdrawal_queue_request_epoch(pubkey),
-                w.epoch,
-            );
-        }
-
-        // Validator accounts
-        let accounts: Vec<([u8; 32], ValidatorAccount)> = self
-            .validator_accounts
-            .iter()
-            .map(|(pk, acc)| (*pk, acc.clone()))
-            .collect();
-        for (pubkey, account) in &accounts {
-            self.insert_validator_trie_entries(pubkey, account);
-        }
-
-        // Protocol param changes
-        for param in &self.protocol_param_changes {
-            let (variant_name, value) = match param {
-                ProtocolParam::MinimumStake(v) => (b"minimum_stake" as &[u8], *v),
-                ProtocolParam::MaximumStake(v) => (b"maximum_stake" as &[u8], *v),
-            };
-            self.state_trie.insert_u64(
-                &state_trie_key::protocol_param_changes_param(variant_name),
-                value,
-            );
-        }
-
-        // Added validators
-        for validators in self.added_validators.values() {
-            for v in validators {
-                let node_key_bytes: [u8; 32] = v.node_key.as_ref().try_into().unwrap();
-                let encoded = v.consensus_key.encode();
-                self.state_trie.insert_raw(
-                    &state_trie_key::added_validators_consensus_key(&node_key_bytes),
-                    &encoded,
-                );
-            }
-        }
-
-        // Removed validators
-        for pubkey in &self.removed_validators {
-            let pubkey_bytes: [u8; 32] = pubkey.as_ref().try_into().unwrap();
-            self.state_trie
-                .insert_raw(&state_trie_key::removed_validators(&pubkey_bytes), &[1]);
-        }
-
-        // Capture root and freeze proof trie so get_state_root() / proof_trie() are valid
+        // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
         // after deserialization or bulk reset.
-        self.state_root = self.state_trie.root();
-        self.proof_trie = self.state_trie.clone();
+        self.state_root = self.ssz_tree.root();
+        self.proof_tree = self.ssz_tree.clone();
     }
 
     pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
@@ -1019,12 +721,13 @@ impl Read for ConsensusState {
             epoch_genesis_hash,
             validator_minimum_stake,
             validator_maximum_stake,
-            state_trie: StateTrie::default(),
-            proof_trie: StateTrie::default(),
+            ssz_tree: SszStateTree::default(),
+            proof_tree: SszStateTree::default(),
+            proof_validator_keys: Vec::new(),
             state_root: [0u8; 32],
             proof_el_block_number: 0,
         };
-        state.rebuild_state_trie();
+        state.rebuild_ssz_tree();
         Ok(state)
     }
 }
@@ -1116,6 +819,7 @@ mod tests {
     use crate::PublicKey;
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
+    use crate::ssz_state_tree;
     use crate::withdrawal::PendingWithdrawal;
 
     use alloy_eips::eip4895::Withdrawal;
@@ -1536,76 +1240,64 @@ mod tests {
         assert_eq!(restored_account.last_deposit_index, 1);
     }
 
-    // ---- State trie integration tests ----
-
-    /// Helper: verify a single trie key/value inclusion proof against the current root.
-    fn assert_trie_proves(state: &ConsensusState, key: &[u8], value: &[u8]) {
-        let trie = state.state_trie();
-        let proof = trie.generate_proof(&[key]);
-        assert!(
-            StateTrie::verify_proof(&trie.root(), &proof, &[(key, Some(value))]),
-            "inclusion proof failed for key {:?}",
-            String::from_utf8_lossy(key),
-        );
-    }
-
-    /// Helper: verify a trie key is absent.
-    fn assert_trie_absent(state: &ConsensusState, key: &[u8]) {
-        let trie = state.state_trie();
-        let proof = trie.generate_proof(&[key]);
-        assert!(
-            StateTrie::verify_proof(&trie.root(), &proof, &[(key, None)]),
-            "exclusion proof failed for key {:?}",
-            String::from_utf8_lossy(key),
-        );
-    }
+    // ---- SSZ state tree integration tests ----
 
     #[test]
-    fn test_trie_scalar_setters_update_trie() {
+    fn test_ssz_scalar_setters_update_root() {
         let mut state = ConsensusState::default();
-        let root_before = state.state_trie().root();
+        let root_before = state.ssz_tree().root();
 
         state.set_epoch(10);
-        assert_ne!(state.state_trie().root(), root_before);
-        assert_trie_proves(&state, state_trie_key::EPOCH, &10u64.to_be_bytes());
+        assert_ne!(state.ssz_tree().root(), root_before);
 
+        let r1 = state.ssz_tree().root();
         state.set_view(99);
-        assert_trie_proves(&state, state_trie_key::VIEW, &99u64.to_be_bytes());
+        assert_ne!(state.ssz_tree().root(), r1);
 
+        let r2 = state.ssz_tree().root();
         state.set_latest_height(500);
-        assert_trie_proves(&state, state_trie_key::LATEST_HEIGHT, &500u64.to_be_bytes());
+        assert_ne!(state.ssz_tree().root(), r2);
 
+        let r3 = state.ssz_tree().root();
         state.set_head_digest(sha256::Digest([0xAB; 32]));
-        assert_trie_proves(&state, state_trie_key::HEAD_DIGEST, &[0xAB; 32]);
+        assert_ne!(state.ssz_tree().root(), r3);
 
+        let r4 = state.ssz_tree().root();
         state.set_epoch_genesis_hash([0xCD; 32]);
-        assert_trie_proves(&state, state_trie_key::EPOCH_GENESIS_HASH, &[0xCD; 32]);
+        assert_ne!(state.ssz_tree().root(), r4);
 
+        let r5 = state.ssz_tree().root();
         state.set_minimum_stake(16_000_000_000);
-        assert_trie_proves(
-            &state,
-            state_trie_key::VALIDATOR_MINIMUM_STAKE,
-            &16_000_000_000u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), r5);
 
+        let r6 = state.ssz_tree().root();
         state.set_maximum_stake(64_000_000_000);
-        assert_trie_proves(
-            &state,
-            state_trie_key::VALIDATOR_MAXIMUM_STAKE,
-            &64_000_000_000u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), r6);
 
+        let r7 = state.ssz_tree().root();
         state.set_next_withdrawal_index(42);
-        assert_trie_proves(
-            &state,
-            state_trie_key::NEXT_WITHDRAWAL_INDEX,
-            &42u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), r7);
     }
 
     #[test]
-    fn test_trie_forkchoice_updates() {
+    fn test_ssz_scalar_proof_verifies() {
         let mut state = ConsensusState::default();
+        state.set_epoch(10);
+        state.set_view(99);
+
+        let tree = state.ssz_tree();
+        let root = tree.root();
+        let proof = tree.generate_scalar_proof(ssz_state_tree::EPOCH);
+        assert!(proof.verify(&root, tree.top_tree_depth()));
+
+        let proof_view = tree.generate_scalar_proof(ssz_state_tree::VIEW);
+        assert!(proof_view.verify(&root, tree.top_tree_depth()));
+    }
+
+    #[test]
+    fn test_ssz_forkchoice_updates() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
 
         let fcs = ForkchoiceState {
             head_block_hash: [0x11; 32].into(),
@@ -1613,282 +1305,144 @@ mod tests {
             finalized_block_hash: [0x33; 32].into(),
         };
         state.set_forkchoice(fcs);
-        assert_trie_proves(
-            &state,
-            state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH,
-            &[0x11; 32],
-        );
-        assert_trie_proves(
-            &state,
-            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
-            &[0x22; 32],
-        );
-        assert_trie_proves(
-            &state,
-            state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH,
-            &[0x33; 32],
-        );
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        let r1 = state.ssz_tree().root();
 
         // Partial setters
         state.set_forkchoice_head([0xAA; 32].into());
-        assert_trie_proves(
-            &state,
-            state_trie_key::FORKCHOICE_HEAD_BLOCK_HASH,
-            &[0xAA; 32],
-        );
-        // safe/finalized unchanged
-        assert_trie_proves(
-            &state,
-            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
-            &[0x22; 32],
-        );
+        assert_ne!(state.ssz_tree().root(), r1);
 
+        let r2 = state.ssz_tree().root();
         state.set_forkchoice_safe_and_finalized([0xBB; 32].into());
-        assert_trie_proves(
-            &state,
-            state_trie_key::FORKCHOICE_SAFE_BLOCK_HASH,
-            &[0xBB; 32],
-        );
-        assert_trie_proves(
-            &state,
-            state_trie_key::FORKCHOICE_FINALIZED_BLOCK_HASH,
-            &[0xBB; 32],
-        );
+        assert_ne!(state.ssz_tree().root(), r2);
     }
 
     #[test]
-    fn test_trie_validator_account_lifecycle() {
+    fn test_ssz_validator_account_lifecycle() {
         let mut state = ConsensusState::default();
         let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32_000_000_000);
 
-        // Before insertion, keys should be absent
-        assert_trie_absent(&state, &state_trie_key::validator_account_balance(&pubkey));
+        let root_before = state.ssz_tree().root();
 
         // Insert
         state.set_account(pubkey, account.clone());
-        assert_trie_proves(
-            &state,
-            &state_trie_key::validator_account_balance(&pubkey),
-            &32_000_000_000u64.to_be_bytes(),
-        );
-        assert_trie_proves(
-            &state,
-            &state_trie_key::validator_account_status(&pubkey),
-            &[0u8], // Active = 0
-        );
-        assert_trie_proves(
-            &state,
-            &state_trie_key::validator_account_has_pending_deposit(&pubkey),
-            &[0u8], // false
-        );
-        assert_trie_proves(
-            &state,
-            &state_trie_key::validator_account_has_pending_withdrawal(&pubkey),
-            &[0u8], // false
-        );
-        assert_trie_proves(
-            &state,
-            &state_trie_key::validator_account_joining_epoch(&pubkey),
-            &0u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), root_before);
 
-        let root_with_account = state.state_trie().root();
+        // Verify proof
+        let tree = state.ssz_tree();
+        let root = tree.root();
+        let keys = [pubkey];
+        let proof = tree.generate_validator_proof(&pubkey, &keys).unwrap();
+        assert!(proof.verify(&root));
 
         // Update balance
         let mut updated = account.clone();
         updated.balance = 48_000_000_000;
         state.set_account(pubkey, updated);
-        assert_ne!(state.state_trie().root(), root_with_account);
-        assert_trie_proves(
-            &state,
-            &state_trie_key::validator_account_balance(&pubkey),
-            &48_000_000_000u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), root);
 
         // Remove
+        let root_with_account = state.ssz_tree().root();
         state.remove_account(&pubkey);
-        assert_trie_absent(&state, &state_trie_key::validator_account_balance(&pubkey));
-        assert_trie_absent(&state, &state_trie_key::validator_account_status(&pubkey));
-        assert_trie_absent(
-            &state,
-            &state_trie_key::validator_account_consensus_public_key(&pubkey),
+        assert_ne!(state.ssz_tree().root(), root_with_account);
+
+        // Validator proof should return None for removed pubkey
+        assert!(
+            state
+                .ssz_tree()
+                .generate_validator_proof(&pubkey, &[])
+                .is_none()
         );
     }
 
     #[test]
-    fn test_trie_deposit_queue_operations() {
+    fn test_ssz_deposit_queue_operations() {
         let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+
         let deposit = create_test_deposit_request(1, 32_000_000_000);
-        let node_pubkey_bytes: [u8; 32] = deposit.node_pubkey.as_ref().try_into().unwrap();
-
-        // Push deposit
         state.push_deposit(deposit.clone());
-        assert_trie_proves(
-            &state,
-            &state_trie_key::deposit_queue_request_amount(&node_pubkey_bytes),
-            &32_000_000_000u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), root_before);
 
-        let root_with_deposit = state.state_trie().root();
+        let root_with_deposit = state.ssz_tree().root();
 
-        // Pop deposit removes trie entries
+        // Pop deposit changes root
         let popped = state.pop_deposit().unwrap();
         assert_eq!(popped.amount, 32_000_000_000);
-        assert_ne!(state.state_trie().root(), root_with_deposit);
-        assert_trie_absent(
-            &state,
-            &state_trie_key::deposit_queue_request_amount(&node_pubkey_bytes),
-        );
-        assert_trie_absent(
-            &state,
-            &state_trie_key::deposit_queue_request_consensus_pubkey(&node_pubkey_bytes),
-        );
+        assert_ne!(state.ssz_tree().root(), root_with_deposit);
     }
 
     #[test]
-    fn test_trie_withdrawal_queue_operations() {
+    fn test_ssz_withdrawal_queue_operations() {
         let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+
         let withdrawal = create_test_withdrawal(1, 16_000_000_000, 5);
-        let pubkey = withdrawal.pubkey;
-
         state.push_withdrawal(withdrawal);
-        assert_trie_proves(
-            &state,
-            &state_trie_key::withdrawal_queue_request_balance_deduction(&pubkey),
-            &16_000_000_000u64.to_be_bytes(),
-        );
-        assert_trie_proves(
-            &state,
-            &state_trie_key::withdrawal_queue_request_epoch(&pubkey),
-            &5u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), root_before);
 
-        let root_with_withdrawal = state.state_trie().root();
+        let root_with_withdrawal = state.ssz_tree().root();
 
-        // Pop withdrawal removes trie entries
+        // Pop withdrawal changes root
         let popped = state.pop_withdrawal(5).unwrap();
         assert_eq!(popped.inner.amount, 16_000_000_000);
-        assert_ne!(state.state_trie().root(), root_with_withdrawal);
-        assert_trie_absent(
-            &state,
-            &state_trie_key::withdrawal_queue_request_balance_deduction(&pubkey),
-        );
-        assert_trie_absent(
-            &state,
-            &state_trie_key::withdrawal_queue_request_epoch(&pubkey),
-        );
+        assert_ne!(state.ssz_tree().root(), root_with_withdrawal);
     }
 
     #[test]
-    fn test_trie_added_removed_validators() {
+    fn test_ssz_added_removed_validators() {
         let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
 
         let validator = AddedValidator {
             node_key: ed25519::PrivateKey::from_seed(10).public_key(),
             consensus_key: bls12381::PrivateKey::from_seed(10).public_key(),
         };
-        let node_key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
 
-        // add_validator inserts trie entry
+        // add_validator changes root
         state.add_validator(5, validator.clone());
-        let key = state_trie_key::added_validators_consensus_key(&node_key_bytes);
-        let encoded = validator.consensus_key.encode();
-        assert_trie_proves(&state, &key, &encoded);
+        assert_ne!(state.ssz_tree().root(), root_before);
 
-        // remove_added_validators_for_epoch clears trie entries
+        let root_with_added = state.ssz_tree().root();
+
+        // remove_added_validators_for_epoch changes root
         state.remove_added_validators_for_epoch(5);
-        assert_trie_absent(&state, &key);
+        assert_ne!(state.ssz_tree().root(), root_with_added);
 
         // push_removed_validator / clear_removed_validators
         let removed_pk = ed25519::PrivateKey::from_seed(20).public_key();
-        let removed_bytes: [u8; 32] = removed_pk.as_ref().try_into().unwrap();
-        let removed_key = state_trie_key::removed_validators(&removed_bytes);
-
+        let r1 = state.ssz_tree().root();
         state.push_removed_validator(removed_pk);
-        assert_trie_proves(&state, &removed_key, &[1]);
+        assert_ne!(state.ssz_tree().root(), r1);
 
+        let r2 = state.ssz_tree().root();
         state.clear_removed_validators();
-        assert_trie_absent(&state, &removed_key);
+        assert_ne!(state.ssz_tree().root(), r2);
     }
 
     #[test]
-    fn test_trie_remove_single_added_validator() {
+    fn test_ssz_protocol_param_changes() {
         let mut state = ConsensusState::default();
-
-        let v1 = AddedValidator {
-            node_key: ed25519::PrivateKey::from_seed(10).public_key(),
-            consensus_key: bls12381::PrivateKey::from_seed(10).public_key(),
-        };
-        let v2 = AddedValidator {
-            node_key: ed25519::PrivateKey::from_seed(20).public_key(),
-            consensus_key: bls12381::PrivateKey::from_seed(20).public_key(),
-        };
-        let v1_bytes: [u8; 32] = v1.node_key.as_ref().try_into().unwrap();
-        let v2_bytes: [u8; 32] = v2.node_key.as_ref().try_into().unwrap();
-
-        state.add_validator(5, v1.clone());
-        state.add_validator(5, v2.clone());
-
-        // Remove just v1
-        assert!(state.remove_added_validator(5, &v1.node_key));
-        assert_trie_absent(
-            &state,
-            &state_trie_key::added_validators_consensus_key(&v1_bytes),
-        );
-        // v2 still present
-        assert_trie_proves(
-            &state,
-            &state_trie_key::added_validators_consensus_key(&v2_bytes),
-            &v2.consensus_key.encode(),
-        );
-    }
-
-    #[test]
-    fn test_trie_protocol_param_changes() {
-        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
 
         state.push_protocol_param_change(ProtocolParam::MinimumStake(40_000_000_000));
-        assert_trie_proves(
-            &state,
-            &state_trie_key::protocol_param_changes_param(b"minimum_stake"),
-            &40_000_000_000u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), root_before);
 
+        let r1 = state.ssz_tree().root();
         state.push_protocol_param_change(ProtocolParam::MaximumStake(80_000_000_000));
-        assert_trie_proves(
-            &state,
-            &state_trie_key::protocol_param_changes_param(b"maximum_stake"),
-            &80_000_000_000u64.to_be_bytes(),
-        );
+        assert_ne!(state.ssz_tree().root(), r1);
 
-        // apply_protocol_parameter_changes consumes them and removes trie entries
+        // apply_protocol_parameter_changes consumes them
         let changed = state.apply_protocol_parameter_changes();
         assert!(changed);
-        assert_trie_absent(
-            &state,
-            &state_trie_key::protocol_param_changes_param(b"minimum_stake"),
-        );
-        assert_trie_absent(
-            &state,
-            &state_trie_key::protocol_param_changes_param(b"maximum_stake"),
-        );
-
-        // But the scalar fields themselves are updated
-        assert_trie_proves(
-            &state,
-            state_trie_key::VALIDATOR_MINIMUM_STAKE,
-            &40_000_000_000u64.to_be_bytes(),
-        );
-        assert_trie_proves(
-            &state,
-            state_trie_key::VALIDATOR_MAXIMUM_STAKE,
-            &80_000_000_000u64.to_be_bytes(),
-        );
+        assert_eq!(state.get_minimum_stake(), 40_000_000_000);
+        assert_eq!(state.get_maximum_stake(), 80_000_000_000);
     }
 
     #[test]
-    fn test_trie_rebuild_matches_incremental() {
+    fn test_ssz_rebuild_matches_incremental() {
         let mut state = ConsensusState::default();
 
         // Build up state incrementally through setters
@@ -1915,17 +1469,17 @@ mod tests {
         let withdrawal = create_test_withdrawal(1, 16_000_000_000, 5);
         state.push_withdrawal(withdrawal);
 
-        let incremental_root = state.state_trie().root();
+        let incremental_root = state.ssz_tree().root();
 
         // Rebuild from scratch
-        state.rebuild_state_trie();
-        let rebuilt_root = state.state_trie().root();
+        state.rebuild_ssz_tree();
+        let rebuilt_root = state.ssz_tree().root();
 
         assert_eq!(incremental_root, rebuilt_root);
     }
 
     #[test]
-    fn test_trie_root_survives_serialization_roundtrip() {
+    fn test_ssz_root_survives_serialization_roundtrip() {
         let mut state = ConsensusState::default();
 
         state.set_epoch(5);
@@ -1948,22 +1502,22 @@ mod tests {
         let withdrawal = create_test_withdrawal(1, 16_000_000_000, 7);
         state.push_withdrawal(withdrawal);
 
-        let original_root = state.state_trie().root();
+        let original_root = state.ssz_tree().root();
 
         // Round-trip through serialization
         let mut encoded = state.encode();
         let decoded = ConsensusState::decode(&mut encoded).unwrap();
 
-        assert_eq!(decoded.state_trie().root(), original_root);
+        assert_eq!(decoded.ssz_tree().root(), original_root);
     }
 
     #[test]
-    fn test_trie_set_validator_accounts_rebuilds() {
+    fn test_ssz_set_validator_accounts_rebuilds() {
         let mut state = ConsensusState::default();
         state.set_epoch(3);
         state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
 
-        let root_before = state.state_trie().root();
+        let root_before = state.ssz_tree().root();
 
         // Bulk replace validator accounts
         let mut new_accounts = BTreeMap::new();
@@ -1971,111 +1525,290 @@ mod tests {
         new_accounts.insert([3u8; 32], create_test_validator_account(3, 48_000_000_000));
         state.set_validator_accounts(new_accounts);
 
-        assert_ne!(state.state_trie().root(), root_before);
+        assert_ne!(state.ssz_tree().root(), root_before);
 
-        // Old account gone
-        assert_trie_absent(
-            &state,
-            &state_trie_key::validator_account_balance(&[1u8; 32]),
-        );
+        // New validators have proofs
+        let tree = state.ssz_tree();
+        let root = tree.root();
+        let keys = [[2u8; 32], [3u8; 32]];
+        let proof = tree.generate_validator_proof(&[2u8; 32], &keys).unwrap();
+        assert!(proof.verify(&root));
 
-        // New accounts present
-        assert_trie_proves(
-            &state,
-            &state_trie_key::validator_account_balance(&[2u8; 32]),
-            &64_000_000_000u64.to_be_bytes(),
-        );
-        assert_trie_proves(
-            &state,
-            &state_trie_key::validator_account_balance(&[3u8; 32]),
-            &48_000_000_000u64.to_be_bytes(),
-        );
-
-        // Scalar fields survive the rebuild
-        assert_trie_proves(&state, state_trie_key::EPOCH, &3u64.to_be_bytes());
+        // Old validator is gone
+        assert!(tree.generate_validator_proof(&[1u8; 32], &keys).is_none());
     }
 
     #[test]
-    fn test_trie_set_removed_validators_replaces() {
-        let mut state = ConsensusState::default();
-
-        let pk1 = ed25519::PrivateKey::from_seed(1).public_key();
-        let pk2 = ed25519::PrivateKey::from_seed(2).public_key();
-        let pk3 = ed25519::PrivateKey::from_seed(3).public_key();
-
-        let pk1_bytes: [u8; 32] = pk1.as_ref().try_into().unwrap();
-        let pk2_bytes: [u8; 32] = pk2.as_ref().try_into().unwrap();
-        let pk3_bytes: [u8; 32] = pk3.as_ref().try_into().unwrap();
-
-        // Set initial removed validators
-        state.set_removed_validators(vec![pk1, pk2]);
-        assert_trie_proves(
-            &state,
-            &state_trie_key::removed_validators(&pk1_bytes),
-            &[1],
-        );
-        assert_trie_proves(
-            &state,
-            &state_trie_key::removed_validators(&pk2_bytes),
-            &[1],
-        );
-
-        // Replace with a different set — old entries removed, new ones added
-        state.set_removed_validators(vec![pk3]);
-        assert_trie_absent(&state, &state_trie_key::removed_validators(&pk1_bytes));
-        assert_trie_absent(&state, &state_trie_key::removed_validators(&pk2_bytes));
-        assert_trie_proves(
-            &state,
-            &state_trie_key::removed_validators(&pk3_bytes),
-            &[1],
-        );
-    }
-
-    #[test]
-    fn test_trie_multi_key_proof() {
-        let mut state = ConsensusState::default();
-        state.set_epoch(10);
-        state.set_view(20);
-
-        let pubkey = [1u8; 32];
-        state.set_account(pubkey, create_test_validator_account(1, 32_000_000_000));
-
-        // Prove multiple keys in a single proof
-        let balance_key = state_trie_key::validator_account_balance(&pubkey);
-        let trie = state.state_trie();
-        let proof =
-            trie.generate_proof(&[state_trie_key::EPOCH, state_trie_key::VIEW, &balance_key]);
-
-        assert!(StateTrie::verify_proof(
-            &trie.root(),
-            &proof,
-            &[
-                (state_trie_key::EPOCH, Some(&10u64.to_be_bytes())),
-                (state_trie_key::VIEW, Some(&20u64.to_be_bytes())),
-                (&balance_key, Some(&32_000_000_000u64.to_be_bytes())),
-            ],
-        ));
-    }
-
-    #[test]
-    fn test_trie_clone_independence() {
+    fn test_ssz_clone_independence() {
         let mut state = ConsensusState::default();
         state.set_epoch(5);
         state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
 
         let cloned = state.clone();
-        let root_before = cloned.state_trie().root();
+        let root_before = cloned.ssz_tree().root();
 
         // Mutate original
         state.set_epoch(99);
         state.set_account([2u8; 32], create_test_validator_account(2, 64_000_000_000));
 
         // Clone is unaffected
-        assert_eq!(cloned.state_trie().root(), root_before);
-        assert_trie_proves(&cloned, state_trie_key::EPOCH, &5u64.to_be_bytes());
-        assert_trie_absent(
-            &cloned,
-            &state_trie_key::validator_account_balance(&[2u8; 32]),
+        assert_eq!(cloned.ssz_tree().root(), root_before);
+    }
+
+    #[test]
+    fn test_ssz_capture_and_proof_tree() {
+        let mut state = ConsensusState::default();
+        state.set_epoch(5);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+
+        // Capture state root
+        state.capture_state_root(100);
+        let captured_root = state.get_state_root();
+        assert_eq!(captured_root, state.proof_tree().root());
+        assert_eq!(state.get_proof_el_block_number(), 100);
+
+        // Mutate the live tree
+        state.set_epoch(99);
+        assert_ne!(state.ssz_tree().root(), captured_root);
+
+        // Proof tree is still frozen at the captured state
+        assert_eq!(state.proof_tree().root(), captured_root);
+
+        // Proof still verifies against captured root
+        let proof = state
+            .proof_tree()
+            .generate_validator_proof(&[1u8; 32], state.proof_validator_keys())
+            .unwrap();
+        assert!(proof.verify(&captured_root));
+    }
+
+    #[test]
+    fn test_ssz_push_withdrawal_request_keeps_next_index_in_sync() {
+        use crate::execution_request::WithdrawalRequest;
+
+        let mut state = ConsensusState::default();
+        state.set_epoch(1);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+
+        // push_withdrawal_request internally calls WithdrawalQueue::push_request
+        // which increments next_index. The SSZ tree's NEXT_WITHDRAWAL_INDEX leaf
+        // must stay in sync.
+        let request = WithdrawalRequest {
+            source_address: alloy_primitives::Address::from([0xAA; 20]),
+            validator_pubkey: [1u8; 32],
+            amount: 16_000_000_000,
+        };
+        state.push_withdrawal_request(request, 5, 16_000_000_000);
+
+        let incremental_root = state.ssz_tree().root();
+
+        // Rebuild must produce the same root
+        state.rebuild_ssz_tree();
+        let rebuilt_root = state.ssz_tree().root();
+
+        assert_eq!(
+            incremental_root, rebuilt_root,
+            "push_withdrawal_request must keep NEXT_WITHDRAWAL_INDEX in sync with rebuild"
+        );
+    }
+
+    /// Simulate the full block execution lifecycle and check that
+    /// incremental SSZ tree matches rebuild at every step.
+    #[test]
+    fn test_ssz_full_block_lifecycle_matches_rebuild() {
+        use crate::execution_request::WithdrawalRequest;
+        use crate::header::AddedValidator;
+        use crate::protocol_params::ProtocolParam;
+        use commonware_cryptography::Signer;
+
+        // Derive valid Ed25519 pubkeys from seeds
+        let ed_keys: Vec<ed25519::PrivateKey> = (1..=5u64)
+            .map(|i| ed25519::PrivateKey::from_seed(i))
+            .collect();
+        let pubkeys: Vec<[u8; 32]> = ed_keys
+            .iter()
+            .map(|k| k.public_key().as_ref().try_into().unwrap())
+            .collect();
+
+        // --- Genesis setup (mimics get_initial_state in args.rs) ---
+        let forkchoice = ForkchoiceState {
+            head_block_hash: [0xAA; 32].into(),
+            safe_block_hash: [0xAA; 32].into(),
+            finalized_block_hash: [0xAA; 32].into(),
+        };
+        let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 32_000_000_000);
+
+        // Add 4 genesis validators (like the testnet)
+        for i in 0..4 {
+            state.set_account(
+                pubkeys[i],
+                create_test_validator_account(i as u64 + 1, 32_000_000_000),
+            );
+        }
+
+        // Check: after genesis setup, incremental matches rebuild
+        let genesis_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            genesis_root,
+            state.ssz_tree().root(),
+            "genesis: incremental != rebuild"
+        );
+
+        // --- Simulate execute_block for height 1 ---
+        state.set_forkchoice_head([0xBB; 32].into());
+        state.set_latest_height(1);
+        state.set_view(1);
+        state.set_head_digest([0xCC; 32].into());
+        state.capture_state_root(100);
+
+        let block1_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            block1_root,
+            state.ssz_tree().root(),
+            "block 1: incremental != rebuild"
+        );
+
+        // --- Simulate finalization (forkchoice update after capture) ---
+        state.set_forkchoice_safe_and_finalized([0xBB; 32].into());
+
+        let post_finalization_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            post_finalization_root,
+            state.ssz_tree().root(),
+            "post-finalization: incremental != rebuild"
+        );
+
+        // --- Simulate execute_block for height 2 (with a deposit) ---
+        state.set_forkchoice_head([0xDD; 32].into());
+
+        // Push a deposit request
+        let deposit = create_test_deposit_request(1, 32_000_000_000);
+        state.push_deposit(deposit);
+
+        state.set_latest_height(2);
+        state.set_view(2);
+        state.set_head_digest([0xEE; 32].into());
+        state.capture_state_root(101);
+
+        let block2_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            block2_root,
+            state.ssz_tree().root(),
+            "block 2: incremental != rebuild"
+        );
+
+        // --- Simulate execute_block for height 3 (pop deposit, push withdrawal) ---
+        state.set_forkchoice_head([0xFF; 32].into());
+
+        // Pop the deposit
+        let _ = state.pop_deposit();
+
+        // Process the deposit: create a new validator
+        let new_pubkey = pubkeys[4];
+        let mut new_account = create_test_validator_account(5, 32_000_000_000);
+        new_account.status = ValidatorStatus::Joining;
+        new_account.joining_epoch = 2;
+        state.set_account(new_pubkey, new_account);
+
+        // Add to added_validators
+        let node_key = ed_keys[4].public_key();
+        let consensus_key = bls12381::PrivateKey::from_seed(5).public_key();
+        state.add_validator(
+            2,
+            AddedValidator {
+                node_key,
+                consensus_key,
+            },
+        );
+
+        state.set_latest_height(3);
+        state.set_view(3);
+        state.set_head_digest([0x11; 32].into());
+        state.capture_state_root(102);
+
+        let block3_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            block3_root,
+            state.ssz_tree().root(),
+            "block 3: incremental != rebuild"
+        );
+
+        // --- Simulate epoch transition ---
+        // Apply protocol param changes (none in this case)
+        state.apply_protocol_parameter_changes();
+
+        // Activate the joining validator
+        let mut account = state.get_account(&new_pubkey).unwrap().clone();
+        account.status = ValidatorStatus::Active;
+        state.set_account(new_pubkey, account);
+
+        // Clear added/removed validators
+        state.remove_added_validators_for_epoch(2);
+        state.clear_removed_validators();
+
+        // Increment epoch
+        state.set_epoch(2);
+        state.set_epoch_genesis_hash([0x22; 32]);
+
+        let epoch_transition_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            epoch_transition_root,
+            state.ssz_tree().root(),
+            "epoch transition: incremental != rebuild"
+        );
+
+        // --- Simulate withdrawal request ---
+        let wr = WithdrawalRequest {
+            source_address: alloy_primitives::Address::from([0xAA; 20]),
+            validator_pubkey: pubkeys[0],
+            amount: 32_000_000_000,
+        };
+        state.push_withdrawal_request(wr, 4, 32_000_000_000);
+
+        // Mark validator as exiting
+        let mut account = state.get_account(&pubkeys[0]).unwrap().clone();
+        account.balance = 0;
+        account.has_pending_withdrawal = true;
+        account.status = ValidatorStatus::Inactive;
+        state.set_account(pubkeys[0], account);
+
+        state.push_removed_validator(ed_keys[0].public_key());
+
+        let withdrawal_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            withdrawal_root,
+            state.ssz_tree().root(),
+            "withdrawal: incremental != rebuild"
+        );
+
+        // --- Simulate protocol param change ---
+        state.push_protocol_param_change(ProtocolParam::MinimumStake(16_000_000_000));
+        state.apply_protocol_parameter_changes();
+
+        let param_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            param_root,
+            state.ssz_tree().root(),
+            "protocol param: incremental != rebuild"
+        );
+
+        // --- Remove validator account ---
+        state.remove_account(&pubkeys[0]);
+
+        let remove_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            remove_root,
+            state.ssz_tree().root(),
+            "remove validator: incremental != rebuild"
         );
     }
 }

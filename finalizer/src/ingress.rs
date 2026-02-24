@@ -286,8 +286,12 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
 
     pub async fn generate_state_proof(
         &self,
-        keys: Vec<Vec<u8>>,
-    ) -> ([u8; 32], u64, Vec<Vec<u8>>, Vec<Option<Vec<u8>>>) {
+        keys: Vec<summit_types::ssz_tree_key::SszStateKey>,
+    ) -> (
+        [u8; 32],
+        u64,
+        Vec<summit_types::ssz_state_tree::SszStateProof>,
+    ) {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GenerateStateProof(keys);
         let _ = self
@@ -302,13 +306,12 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         let ConsensusStateResponse::StateProof {
             root,
             el_block_number,
-            proof,
-            values,
+            proofs,
         } = res
         else {
             unreachable!("request and response variants must match");
         };
-        (root, el_block_number, proof, values)
+        (root, el_block_number, proofs)
     }
 }
 
