@@ -118,6 +118,11 @@ where
     MultisigScheme: Scheme<summit_types::Digest, PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
+        #[cfg(any(debug_assertions, feature = "e2e"))]
+        let blocks_per_epoch = BLOCKS_PER_EPOCH;
+        #[cfg(all(not(debug_assertions), not(feature = "e2e")))]
+        let blocks_per_epoch = cfg.blocks_per_epoch;
+
         let page_cache = CacheRef::new(
             NonZero::new(BUFFER_POOL_PAGE_SIZE).unwrap(),
             BUFFER_POOL_CAPACITY,
@@ -139,7 +144,7 @@ where
                 mailbox_size: cfg.mailbox_size,
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
-                epoch_num_of_blocks: BLOCKS_PER_EPOCH,
+                epoch_num_of_blocks: blocks_per_epoch,
                 cancellation_token: cancellation_token.clone(),
             },
         )
@@ -236,7 +241,7 @@ where
 
         let syncer_config = summit_syncer::Config {
             scheme_provider: scheme_provider.clone(),
-            epoch_length: BLOCKS_PER_EPOCH,
+            epoch_length: blocks_per_epoch,
             partition_prefix: cfg.partition_prefix.clone(),
             mailbox_size: cfg.mailbox_size,
             view_retention_timeout: ViewDelta::new(cfg.activity_timeout),
@@ -270,7 +275,7 @@ where
                 namespace: cfg.namespace.as_bytes().to_vec(),
                 muxer_size: cfg.mailbox_size,
                 mailbox_size: cfg.mailbox_size,
-                blocks_per_epoch: BLOCKS_PER_EPOCH,
+                blocks_per_epoch: blocks_per_epoch,
                 partition_prefix: cfg.partition_prefix.clone(),
                 leader_timeout: cfg.leader_timeout,
                 notarization_timeout: cfg.notarization_timeout,
@@ -293,7 +298,7 @@ where
                 oracle: cfg.oracle.clone(),
                 orchestrator_mailbox,
                 protocol_consts: ProtocolConsts {
-                    epoch_num_of_blocks: BLOCKS_PER_EPOCH,
+                    epoch_num_of_blocks: blocks_per_epoch,
                     validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                     validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
                     validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
@@ -323,7 +328,7 @@ where
             sync_epoch = sync_start.epoch,
             sync_view = sync_start.view,
             num_validators,
-            blocks_per_epoch = BLOCKS_PER_EPOCH,
+            blocks_per_epoch = blocks_per_epoch,
             "engine initialized"
         );
 

@@ -42,6 +42,13 @@ pub struct Genesis {
     pub validator_minimum_stake: u64,
     /// Maximum validator stake in gwei
     pub validator_maximum_stake: u64,
+    /// Number of blocks in each epoch (default: 10000)
+    #[serde(default = "default_blocks_per_epoch")]
+    pub blocks_per_epoch: u64,
+}
+
+fn default_blocks_per_epoch() -> u64 {
+    10000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
