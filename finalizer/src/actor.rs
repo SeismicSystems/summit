@@ -220,6 +220,26 @@ impl<
             }))
             .await;
 
+        // Send initial forkchoice to the execution client so it knows the chain
+        // head and can start P2P sync. Without this, it has no sync target.
+        {
+            let forkchoice = self.canonical_state.forkchoice;
+            if !forkchoice.head_block_hash.is_zero() {
+                info!(
+                    head = %forkchoice.head_block_hash,
+                    "sending initial forkchoice update to execution client"
+                );
+                let status = self.engine_client.commit_hash_with_status(forkchoice).await;
+                if status.is_syncing() {
+                    info!("execution client is syncing to checkpoint head via P2P");
+                } else if status.is_valid() {
+                    info!("execution client already has checkpoint head");
+                } else {
+                    warn!(?status, "unexpected response to initial forkchoice update");
+                }
+            }
+        }
+
         loop {
             if self.validator_exit
                 && is_first_block_of_epoch(
@@ -1070,7 +1090,18 @@ async fn execute_block<
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
-    let payload_status = engine_client.check_payload(block).await;
+    let payload_status = loop {
+        let status = engine_client.check_payload(block).await;
+        if status.is_syncing() {
+            warn!(
+                height = block.height(),
+                "execution client returned SYNCING for payload, retrying in 5s..."
+            );
+            context.sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        }
+        break status;
+    };
     let new_height = block.height();
 
     #[cfg(feature = "prom")]
