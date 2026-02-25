@@ -347,11 +347,7 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
     pub async fn generate_state_proof(
         &self,
         keys: Vec<summit_types::ssz_tree_key::SszStateKey>,
-    ) -> (
-        [u8; 32],
-        u64,
-        Vec<summit_types::ssz_state_tree::SszStateProof>,
-    ) {
+    ) -> ([u8; 32], u64, Vec<summit_types::ssz_state_tree::SszProof>) {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GenerateStateProof(keys);
         let _ = self

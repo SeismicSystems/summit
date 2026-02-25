@@ -3,10 +3,16 @@
 //! The top-level tree has 32 leaf slots (17 used, depth 5). Scalar fields
 //! occupy leaves 0–10. Collection roots occupy leaves 11–16.
 //!
-//! The validator accounts collection uses a dedicated subtree (`SszTree`).
+//! The validator accounts collection uses a dedicated subtree (`SszTree`)
+//! where each validator occupies 8 contiguous leaves (one per field),
+//! forming a depth-3 per-validator sub-subtree. This enables field-level
+//! Merkle proofs (e.g., proving just the balance) in addition to whole-
+//! account proofs.
+//!
 //! Validator slot assignment is purely positional: the i-th entry in
-//! `BTreeMap<[u8; 32], ValidatorAccount>` iteration order occupies leaf i.
-//! The subtree is rebuilt from scratch on every mutation for determinism.
+//! `BTreeMap<[u8; 32], ValidatorAccount>` iteration order occupies
+//! leaves `[i*8 .. i*8+7]`. The subtree is rebuilt from scratch on
+//! every mutation for determinism.
 
 use crate::PublicKey;
 use crate::account::ValidatorAccount;
@@ -41,6 +47,20 @@ pub const REMOVED_VALIDATORS_ROOT: usize = 16;
 
 /// Number of used leaf slots in the top-level tree.
 pub const NUM_TOP_LEAVES: usize = 17;
+
+// --- Validator field indices (within each validator's 8-leaf subtree) ---
+
+pub const VALIDATOR_FIELD_CONSENSUS_PUBKEY: usize = 0;
+pub const VALIDATOR_FIELD_WITHDRAWAL_CREDENTIALS: usize = 1;
+pub const VALIDATOR_FIELD_BALANCE: usize = 2;
+pub const VALIDATOR_FIELD_STATUS: usize = 3;
+pub const VALIDATOR_FIELD_HAS_PENDING_DEPOSIT: usize = 4;
+pub const VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL: usize = 5;
+pub const VALIDATOR_FIELD_JOINING_EPOCH: usize = 6;
+pub const VALIDATOR_FIELD_LAST_DEPOSIT_INDEX: usize = 7;
+
+/// Number of SSZ fields per ValidatorAccount (8 fields = depth-3 subtree).
+pub const VALIDATOR_FIELDS_PER_ACCOUNT: usize = 8;
 
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
@@ -133,18 +153,57 @@ impl SszStateTree {
 
     /// Rebuild the validator subtree from the full validator accounts map.
     ///
-    /// Slot assignment is purely positional: the i-th entry in BTreeMap
-    /// iteration order (sorted by `[u8; 32]` key) occupies leaf i.
+    /// Each validator occupies 8 contiguous leaves (one per field) in the subtree,
+    /// forming a depth-3 per-validator sub-subtree. Slot assignment is purely
+    /// positional: the i-th entry in BTreeMap iteration order occupies leaves
+    /// `[i*8 .. i*8+7]`.
     pub fn rebuild_validators(&mut self, accounts: &BTreeMap<[u8; 32], ValidatorAccount>) {
         let count = accounts.len();
-        let capacity = count.max(1);
-        let mut tree = SszTree::new(capacity);
+        let leaf_count = (count * VALIDATOR_FIELDS_PER_ACCOUNT).max(1);
+        let mut tree = SszTree::new(leaf_count);
         for (i, account) in accounts.values().enumerate() {
-            tree.set_leaf(i, account.hash_tree_root());
+            Self::set_validator_fields(&mut tree, i, account);
         }
         self.validator_tree = tree;
         self.validator_count = count;
         self.update_validator_collection_root();
+    }
+
+    /// Set the 8 field leaves for validator at positional slot `i`.
+    fn set_validator_fields(tree: &mut SszTree, slot: usize, account: &ValidatorAccount) {
+        let base = slot * VALIDATOR_FIELDS_PER_ACCOUNT;
+        tree.set_leaf(
+            base + VALIDATOR_FIELD_CONSENSUS_PUBKEY,
+            account.consensus_public_key.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + VALIDATOR_FIELD_WITHDRAWAL_CREDENTIALS,
+            account.withdrawal_credentials.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + VALIDATOR_FIELD_BALANCE,
+            account.balance.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + VALIDATOR_FIELD_STATUS,
+            account.status.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + VALIDATOR_FIELD_HAS_PENDING_DEPOSIT,
+            account.has_pending_deposit.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL,
+            account.has_pending_withdrawal.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + VALIDATOR_FIELD_JOINING_EPOCH,
+            account.joining_epoch.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + VALIDATOR_FIELD_LAST_DEPOSIT_INDEX,
+            account.last_deposit_index.hash_tree_root(),
+        );
     }
 
     /// Get the positional index of a validator pubkey within sorted keys.
@@ -300,50 +359,150 @@ impl SszStateTree {
 
     // --- Proof generation ---
 
+    /// Compose a generalized index for a collection element.
+    ///
+    /// Given the top-level leaf index of the collection root and the
+    /// item's index within the subtree, computes the single generalized
+    /// index that addresses the item in the full state tree.
+    fn compose_collection_gindex(
+        &self,
+        top_leaf_index: usize,
+        subtree: &SszTree,
+        item_index: usize,
+    ) -> u64 {
+        let td = self.top.depth();
+        let sd = subtree.depth();
+        let top_gindex = (1u64 << td) + top_leaf_index as u64;
+        // The subtree root is the left child of the mix_in_length node,
+        // so the item sits at depth (sd + 1) below the top-level leaf.
+        (top_gindex << (sd + 1)) | (item_index as u64)
+    }
+
+    /// Build a unified branch for a collection element proof.
+    ///
+    /// Concatenates: subtree siblings + length sibling (mix_in_length) + top-level siblings.
+    fn build_collection_branch(
+        &self,
+        top_leaf_index: usize,
+        subtree: &SszTree,
+        item_index: usize,
+        collection_length: usize,
+    ) -> Vec<[u8; 32]> {
+        let mut branch = subtree.generate_proof(item_index);
+        // mix_in_length sibling: LE u64 length padded to 32 bytes
+        let mut length_bytes = [0u8; 32];
+        length_bytes[0..8].copy_from_slice(&(collection_length as u64).to_le_bytes());
+        branch.push(length_bytes);
+        branch.extend_from_slice(&self.top.generate_proof(top_leaf_index));
+        branch
+    }
+
     /// Generate a proof for a top-level scalar field.
-    pub fn generate_scalar_proof(&self, leaf_index: usize) -> StateProof {
-        StateProof {
-            leaf_index,
-            leaf_value: self.top.get_leaf(leaf_index),
+    pub fn generate_scalar_proof(&self, leaf_index: usize) -> SszProof {
+        let gindex = (1u64 << self.top.depth()) + leaf_index as u64;
+        SszProof {
+            gindex,
+            leaf: self.top.get_leaf(leaf_index),
             branch: self.top.generate_proof(leaf_index),
         }
     }
 
-    /// Generate a proof for a validator account.
+    /// Generate a proof for a validator account (whole account).
     ///
-    /// The validator's positional index is computed from `keys`,
-    /// which must be the sorted pubkeys used to build the tree.
+    /// The proof leaf is `hash_tree_root(ValidatorAccount)`, which is the
+    /// internal node at the root of the validator's 8-field subtree. The
+    /// proof branch is shorter by 3 compared to a field-level proof.
+    ///
     /// Returns `None` if the pubkey is not in the keys.
     pub fn generate_validator_proof(
         &self,
         pubkey: &[u8; 32],
         keys: &[[u8; 32]],
-    ) -> Option<CollectionProof> {
+    ) -> Option<SszProof> {
         let slot = Self::get_validator_index(keys, pubkey)?;
-        Some(CollectionProof {
-            item_index: slot,
-            leaf_value: self.validator_tree.get_leaf(slot),
-            subtree_branch: self.validator_tree.generate_proof(slot),
-            subtree_root: self.validator_tree.root(),
-            collection_length: self.validator_count,
-            top_leaf_index: VALIDATOR_ACCOUNTS_ROOT,
-            top_branch: self.top.generate_proof(VALIDATOR_ACCOUNTS_ROOT),
+        let (gindex, node_value, branch) = self.validator_account_proof(slot);
+        Some(SszProof {
+            gindex,
+            leaf: node_value,
+            branch,
         })
     }
 
+    /// Generate a proof for a single field of a validator account.
+    ///
+    /// `field_index` is one of the `VALIDATOR_FIELD_*` constants (0–7).
+    /// The proof goes from the field leaf all the way to the state root.
+    ///
+    /// Returns `None` if the pubkey is not in the keys.
+    pub fn generate_validator_field_proof(
+        &self,
+        pubkey: &[u8; 32],
+        field_index: usize,
+        keys: &[[u8; 32]],
+    ) -> Option<SszProof> {
+        assert!(
+            field_index < VALIDATOR_FIELDS_PER_ACCOUNT,
+            "field_index out of range"
+        );
+        let slot = Self::get_validator_index(keys, pubkey)?;
+        let leaf_index = slot * VALIDATOR_FIELDS_PER_ACCOUNT + field_index;
+        Some(SszProof {
+            gindex: self.compose_collection_gindex(
+                VALIDATOR_ACCOUNTS_ROOT,
+                &self.validator_tree,
+                leaf_index,
+            ),
+            leaf: self.validator_tree.get_leaf(leaf_index),
+            branch: self.build_collection_branch(
+                VALIDATOR_ACCOUNTS_ROOT,
+                &self.validator_tree,
+                leaf_index,
+                self.validator_count,
+            ),
+        })
+    }
+
+    /// Build a proof for the whole validator at positional `slot`.
+    ///
+    /// Returns (gindex, node_value, branch) where the node is the
+    /// per-validator subtree root (3 levels above the field leaves).
+    fn validator_account_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
+        let sd = self.validator_tree.depth();
+        // Per-validator root is at depth (sd - 3) in the subtree.
+        // Its 1-based tree index is: capacity / 8 + slot
+        let node_index = self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT + slot;
+        let node_value = self.validator_tree.get_node(node_index);
+
+        // Generalized index: top_gindex << (sd - 2) | slot
+        // (sd - 2 = (sd - 3) levels in subtree + 1 for mix_in_length)
+        let td = self.top.depth();
+        let top_gindex = (1u64 << td) + VALIDATOR_ACCOUNTS_ROOT as u64;
+        let gindex = (top_gindex << (sd - 2)) | (slot as u64);
+
+        // Branch: subtree proof from internal node + mix_in_length sibling + top proof
+        let mut branch = self.validator_tree.generate_proof_from_node(node_index);
+        let mut length_bytes = [0u8; 32];
+        length_bytes[0..8].copy_from_slice(&(self.validator_count as u64).to_le_bytes());
+        branch.push(length_bytes);
+        branch.extend_from_slice(&self.top.generate_proof(VALIDATOR_ACCOUNTS_ROOT));
+
+        (gindex, node_value, branch)
+    }
+
     /// Generate a proof for a deposit at a given queue index.
-    pub fn generate_deposit_proof(&self, index: usize) -> Option<CollectionProof> {
+    pub fn generate_deposit_proof(&self, index: usize) -> Option<SszProof> {
         if index >= self.deposit_count {
             return None;
         }
-        Some(CollectionProof {
-            item_index: index,
-            leaf_value: self.deposit_tree.get_leaf(index),
-            subtree_branch: self.deposit_tree.generate_proof(index),
-            subtree_root: self.deposit_tree.root(),
-            collection_length: self.deposit_count,
-            top_leaf_index: DEPOSIT_QUEUE_ROOT,
-            top_branch: self.top.generate_proof(DEPOSIT_QUEUE_ROOT),
+        Some(SszProof {
+            gindex: self.compose_collection_gindex(DEPOSIT_QUEUE_ROOT, &self.deposit_tree, index),
+            leaf: self.deposit_tree.get_leaf(index),
+            branch: self.build_collection_branch(
+                DEPOSIT_QUEUE_ROOT,
+                &self.deposit_tree,
+                index,
+                self.deposit_count,
+            ),
         })
     }
 
@@ -352,19 +511,24 @@ impl SszStateTree {
         &self,
         pubkey: &[u8; 32],
         keys: &[[u8; 32]],
-    ) -> Option<CollectionProof> {
+    ) -> Option<SszProof> {
         let slot = keys.iter().position(|k| k == pubkey)?;
         if slot >= self.withdrawal_count {
             return None;
         }
-        Some(CollectionProof {
-            item_index: slot,
-            leaf_value: self.withdrawal_tree.get_leaf(slot),
-            subtree_branch: self.withdrawal_tree.generate_proof(slot),
-            subtree_root: self.withdrawal_tree.root(),
-            collection_length: self.withdrawal_count,
-            top_leaf_index: WITHDRAWAL_QUEUE_ROOT,
-            top_branch: self.top.generate_proof(WITHDRAWAL_QUEUE_ROOT),
+        Some(SszProof {
+            gindex: self.compose_collection_gindex(
+                WITHDRAWAL_QUEUE_ROOT,
+                &self.withdrawal_tree,
+                slot,
+            ),
+            leaf: self.withdrawal_tree.get_leaf(slot),
+            branch: self.build_collection_branch(
+                WITHDRAWAL_QUEUE_ROOT,
+                &self.withdrawal_tree,
+                slot,
+                self.withdrawal_count,
+            ),
         })
     }
 
@@ -387,82 +551,26 @@ impl Default for SszStateTree {
 
 // --- Proof types ---
 
-/// Proof for a scalar field in the top-level tree.
+/// Unified SSZ Merkle proof using a generalized index.
+///
+/// The generalized index encodes the full path from root to leaf,
+/// including any nested subtrees and mix_in_length layers.
+/// This handles both scalar fields and collection elements uniformly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct StateProof {
-    pub leaf_index: usize,
-    pub leaf_value: [u8; 32],
+pub struct SszProof {
+    /// Generalized index of the leaf in the full state tree.
+    pub gindex: u64,
+    /// The 32-byte leaf value (hash_tree_root of the proven element).
+    pub leaf: [u8; 32],
+    /// Sibling hashes from leaf to root (bottom-up).
     pub branch: Vec<[u8; 32]>,
 }
 
-impl StateProof {
-    /// Verify this proof against a state root.
-    pub fn verify(&self, state_root: &[u8; 32], top_depth: usize) -> bool {
-        SszTree::verify_proof(
-            state_root,
-            self.leaf_index,
-            &self.leaf_value,
-            &self.branch,
-            top_depth,
-        )
-    }
-}
-
-/// Proof for an element in a collection subtree.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CollectionProof {
-    /// Index of the element within the subtree.
-    pub item_index: usize,
-    /// Hash-tree-root of the element.
-    pub leaf_value: [u8; 32],
-    /// Merkle siblings from element leaf to subtree root (bottom-up).
-    pub subtree_branch: Vec<[u8; 32]>,
-    /// The subtree root (before mix_in_length).
-    pub subtree_root: [u8; 32],
-    /// Number of items in the collection (for mix_in_length).
-    pub collection_length: usize,
-    /// Index of the collection root in the top-level tree.
-    pub top_leaf_index: usize,
-    /// Merkle siblings from collection leaf to state root (bottom-up).
-    pub top_branch: Vec<[u8; 32]>,
-}
-
-impl CollectionProof {
+impl SszProof {
     /// Verify this proof against a state root.
     pub fn verify(&self, state_root: &[u8; 32]) -> bool {
-        // 1. Verify subtree proof
-        let subtree_depth = self.subtree_branch.len();
-        if !SszTree::verify_proof(
-            &self.subtree_root,
-            self.item_index,
-            &self.leaf_value,
-            &self.subtree_branch,
-            subtree_depth,
-        ) {
-            return false;
-        }
-
-        // 2. Compute collection leaf = mix_in_length(subtree_root, length)
-        let collection_leaf = mix_in_length(self.subtree_root, self.collection_length);
-
-        // 3. Verify top-level proof
-        let top_depth = self.top_branch.len();
-        SszTree::verify_proof(
-            state_root,
-            self.top_leaf_index,
-            &collection_leaf,
-            &self.top_branch,
-            top_depth,
-        )
+        SszTree::verify_proof_gindex(state_root, self.gindex, &self.leaf, &self.branch)
     }
-}
-
-/// Tagged proof for a single key query (scalar or collection).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "proof_type")]
-pub enum SszStateProof {
-    Scalar(StateProof),
-    Collection(CollectionProof),
 }
 
 /// Compute a collection root: `mix_in_length(merkleize(items), length)`.
@@ -623,10 +731,12 @@ mod tests {
 
         let root = tree.root();
         let proof = tree.generate_scalar_proof(EPOCH);
-        assert!(proof.verify(&root, tree.top_tree_depth()));
+        assert!(proof.verify(&root));
+        // Check gindex: top depth is 5, EPOCH is leaf 0 → gindex = 32
+        assert_eq!(proof.gindex, (1u64 << tree.top_tree_depth()) + EPOCH as u64);
 
         let proof_view = tree.generate_scalar_proof(VIEW);
-        assert!(proof_view.verify(&root, tree.top_tree_depth()));
+        assert!(proof_view.verify(&root));
     }
 
     #[test]
@@ -634,7 +744,7 @@ mod tests {
         let mut tree = SszStateTree::new();
         tree.set_epoch(42);
         let proof = tree.generate_scalar_proof(EPOCH);
-        assert!(!proof.verify(&[0xFF; 32], tree.top_tree_depth()));
+        assert!(!proof.verify(&[0xFF; 32]));
     }
 
     #[test]
@@ -758,7 +868,7 @@ mod tests {
         assert!(proof.verify(&root));
 
         let scalar_proof = tree.generate_scalar_proof(EPOCH);
-        assert!(scalar_proof.verify(&root, tree.top_tree_depth()));
+        assert!(scalar_proof.verify(&root));
     }
 
     #[test]
@@ -837,7 +947,6 @@ mod tests {
         let root = tree.root();
         let proof = tree.generate_deposit_proof(0).unwrap();
         assert!(proof.verify(&root));
-        assert_eq!(proof.top_leaf_index, DEPOSIT_QUEUE_ROOT);
     }
 
     #[test]
@@ -886,7 +995,6 @@ mod tests {
 
         let proof1 = tree.generate_withdrawal_proof(&pk1, &keys).unwrap();
         assert!(proof1.verify(&root));
-        assert_eq!(proof1.top_leaf_index, WITHDRAWAL_QUEUE_ROOT);
 
         let proof2 = tree.generate_withdrawal_proof(&pk2, &keys).unwrap();
         assert!(proof2.verify(&root));
@@ -896,5 +1004,117 @@ mod tests {
     fn withdrawal_proof_unknown_key() {
         let tree = SszStateTree::new();
         assert!(tree.generate_withdrawal_proof(&[99u8; 32], &[]).is_none());
+    }
+
+    #[test]
+    fn validator_field_proof_verifies() {
+        let mut tree = SszStateTree::new();
+        let (pk1, acc1) = make_validator(1);
+        let (pk2, acc2) = make_validator(2);
+        let mut accounts = BTreeMap::new();
+        accounts.insert(pk1, acc1.clone());
+        accounts.insert(pk2, acc2);
+        tree.rebuild_validators(&accounts);
+
+        let root = tree.root();
+        let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+
+        // Prove each field of validator pk1
+        for field_idx in 0..VALIDATOR_FIELDS_PER_ACCOUNT {
+            let proof = tree
+                .generate_validator_field_proof(&pk1, field_idx, &keys)
+                .unwrap();
+            assert!(
+                proof.verify(&root),
+                "field proof failed for field {field_idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn validator_field_proof_has_correct_leaf() {
+        let mut tree = SszStateTree::new();
+        let (pk, acc) = make_validator(42);
+        let mut accounts = BTreeMap::new();
+        accounts.insert(pk, acc.clone());
+        tree.rebuild_validators(&accounts);
+
+        let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+
+        // Balance field should have the SSZ hash_tree_root of the balance
+        let balance_proof = tree
+            .generate_validator_field_proof(&pk, VALIDATOR_FIELD_BALANCE, &keys)
+            .unwrap();
+        assert_eq!(balance_proof.leaf, acc.balance.hash_tree_root());
+
+        // Status field
+        let status_proof = tree
+            .generate_validator_field_proof(&pk, VALIDATOR_FIELD_STATUS, &keys)
+            .unwrap();
+        assert_eq!(status_proof.leaf, acc.status.hash_tree_root());
+    }
+
+    #[test]
+    fn validator_field_proof_longer_than_account_proof() {
+        let mut tree = SszStateTree::new();
+        let (pk, acc) = make_validator(1);
+        let mut accounts = BTreeMap::new();
+        accounts.insert(pk, acc);
+        tree.rebuild_validators(&accounts);
+
+        let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+        let account_proof = tree.generate_validator_proof(&pk, &keys).unwrap();
+        let field_proof = tree.generate_validator_field_proof(&pk, 0, &keys).unwrap();
+
+        // Field proof branch is 3 elements longer (depth-3 per-validator subtree)
+        assert_eq!(
+            field_proof.branch.len(),
+            account_proof.branch.len() + 3,
+            "field branch should be 3 longer than account branch"
+        );
+    }
+
+    #[test]
+    fn validator_account_proof_leaf_matches_hash_tree_root() {
+        let mut tree = SszStateTree::new();
+        let (pk, acc) = make_validator(1);
+        let mut accounts = BTreeMap::new();
+        accounts.insert(pk, acc.clone());
+        tree.rebuild_validators(&accounts);
+
+        let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+        let proof = tree.generate_validator_proof(&pk, &keys).unwrap();
+
+        // The proof leaf should be hash_tree_root(account), computed from the
+        // internal node which is the root of the 8-field subtree
+        assert_eq!(proof.leaf, acc.hash_tree_root());
+    }
+
+    #[test]
+    fn many_validators_field_proofs() {
+        let mut tree = SszStateTree::new();
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=20u64).map(|i| make_validator(i)).collect();
+        let mut accounts = BTreeMap::new();
+        for (pk, acc) in &validators {
+            accounts.insert(*pk, acc.clone());
+        }
+        tree.rebuild_validators(&accounts);
+
+        let root = tree.root();
+        let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+
+        // Verify field proofs for every validator, every field
+        for (pk, _) in &validators {
+            for field_idx in 0..VALIDATOR_FIELDS_PER_ACCOUNT {
+                let proof = tree
+                    .generate_validator_field_proof(pk, field_idx, &keys)
+                    .unwrap();
+                assert!(
+                    proof.verify(&root),
+                    "field proof failed for field {field_idx}"
+                );
+            }
+        }
     }
 }

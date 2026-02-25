@@ -35,7 +35,7 @@ use summit_types::execution_request::{DepositRequest, ExecutionRequest, Withdraw
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::protocol_params::ProtocolParam;
 use summit_types::scheme::EpochTransition;
-use summit_types::ssz_state_tree::SszStateProof;
+use summit_types::ssz_state_tree::SszProof;
 use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::utils::{
     is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
@@ -932,27 +932,27 @@ impl<
             }
             ConsensusStateRequest::GenerateStateProof(keys) => {
                 let proof_tree = self.canonical_state.proof_tree();
-                let proofs: Vec<SszStateProof> = keys
+                let proofs: Vec<SszProof> = keys
                     .iter()
                     .filter_map(|key| match key {
-                        SszStateKey::Scalar(leaf_index) => Some(SszStateProof::Scalar(
-                            proof_tree.generate_scalar_proof(*leaf_index),
-                        )),
-                        SszStateKey::Validator(pubkey) => proof_tree
-                            .generate_validator_proof(
+                        SszStateKey::Scalar(leaf_index) => {
+                            Some(proof_tree.generate_scalar_proof(*leaf_index))
+                        }
+                        SszStateKey::Validator(pubkey) => proof_tree.generate_validator_proof(
+                            pubkey,
+                            self.canonical_state.proof_validator_keys(),
+                        ),
+                        SszStateKey::ValidatorField(pubkey, field_index) => proof_tree
+                            .generate_validator_field_proof(
                                 pubkey,
+                                *field_index,
                                 self.canonical_state.proof_validator_keys(),
-                            )
-                            .map(SszStateProof::Collection),
-                        SszStateKey::Deposit(index) => proof_tree
-                            .generate_deposit_proof(*index)
-                            .map(SszStateProof::Collection),
-                        SszStateKey::Withdrawal(pubkey) => proof_tree
-                            .generate_withdrawal_proof(
-                                pubkey,
-                                self.canonical_state.proof_withdrawal_keys(),
-                            )
-                            .map(SszStateProof::Collection),
+                            ),
+                        SszStateKey::Deposit(index) => proof_tree.generate_deposit_proof(*index),
+                        SszStateKey::Withdrawal(pubkey) => proof_tree.generate_withdrawal_proof(
+                            pubkey,
+                            self.canonical_state.proof_withdrawal_keys(),
+                        ),
                     })
                     .collect();
                 let root = self.canonical_state.get_state_root();

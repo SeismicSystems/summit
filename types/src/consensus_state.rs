@@ -1314,10 +1314,10 @@ mod tests {
         let tree = state.ssz_tree();
         let root = tree.root();
         let proof = tree.generate_scalar_proof(ssz_state_tree::EPOCH);
-        assert!(proof.verify(&root, tree.top_tree_depth()));
+        assert!(proof.verify(&root));
 
         let proof_view = tree.generate_scalar_proof(ssz_state_tree::VIEW);
-        assert!(proof_view.verify(&root, tree.top_tree_depth()));
+        assert!(proof_view.verify(&root));
     }
 
     #[test]

@@ -64,6 +64,26 @@ impl SszTree {
         self.nodes[self.capacity + leaf_index]
     }
 
+    /// Returns the value of any node (leaf or internal) by its 1-based tree index.
+    #[inline]
+    pub fn get_node(&self, node_index: usize) -> [u8; 32] {
+        self.nodes[node_index]
+    }
+
+    /// Generate a Merkle proof from an arbitrary node (not just a leaf) to the root.
+    ///
+    /// Returns sibling hashes in bottom-up order. The proof length equals the
+    /// depth of the node from the root (i.e., `floor(log2(node_index))`).
+    pub fn generate_proof_from_node(&self, node_index: usize) -> Vec<[u8; 32]> {
+        let mut idx = node_index;
+        let mut proof = Vec::new();
+        while idx > 1 {
+            proof.push(self.nodes[idx ^ 1]);
+            idx /= 2;
+        }
+        proof
+    }
+
     /// Set a leaf value and incrementally rehash the path to root.
     pub fn set_leaf(&mut self, leaf_index: usize, value: [u8; 32]) {
         let mut i = self.capacity + leaf_index;
@@ -114,6 +134,37 @@ impl SszTree {
             idx /= 2;
         }
         hash == *root
+    }
+
+    /// Verify a Merkle proof using a generalized index.
+    ///
+    /// The generalized index encodes the full path from root to leaf.
+    /// `proof` contains sibling hashes in bottom-up order.
+    /// The proof length must equal `floor(log2(gindex))`.
+    pub fn verify_proof_gindex(
+        root: &[u8; 32],
+        gindex: u64,
+        leaf_value: &[u8; 32],
+        proof: &[[u8; 32]],
+    ) -> bool {
+        if gindex == 0 {
+            return false;
+        }
+        let expected_depth = 63 - gindex.leading_zeros() as usize;
+        if proof.len() != expected_depth {
+            return false;
+        }
+        let mut hash = *leaf_value;
+        let mut idx = gindex;
+        for sibling in proof {
+            if idx.is_multiple_of(2) {
+                hash = hash32_concat(&hash, sibling);
+            } else {
+                hash = hash32_concat(sibling, &hash);
+            }
+            idx /= 2;
+        }
+        idx == 1 && hash == *root
     }
 
     /// Number of leaf slots.
@@ -388,6 +439,89 @@ mod tests {
             &old_proof,
             tree.depth()
         ));
+    }
+
+    #[test]
+    fn get_node_returns_internal_nodes() {
+        let mut tree = SszTree::new(4);
+        tree.set_leaf(0, [0xAA; 32]);
+        tree.set_leaf(1, [0xBB; 32]);
+
+        // Internal node at index 2 should be hash of leaves 0 and 1
+        let expected = hash32_concat(&[0xAA; 32], &[0xBB; 32]);
+        assert_eq!(tree.get_node(2), expected);
+
+        // Root (node 1) should also be accessible
+        assert_eq!(tree.get_node(1), tree.root());
+    }
+
+    #[test]
+    fn proof_from_internal_node_verifies() {
+        let mut tree = SszTree::new(8);
+        // Set 8 leaves
+        for i in 0..8u8 {
+            tree.set_leaf(i as usize, [i + 1; 32]);
+        }
+
+        // Node at index 2 is the left child of the root (depth 1)
+        let node_idx = 2;
+        let node_value = tree.get_node(node_idx);
+        let proof = tree.generate_proof_from_node(node_idx);
+        assert_eq!(proof.len(), 1); // depth 1 from root
+
+        // Manually verify: hash(node_value, sibling) should equal root
+        let expected_root = hash32_concat(&node_value, &proof[0]);
+        assert_eq!(expected_root, tree.root());
+
+        // Node at index 4 is at depth 2
+        let node_idx = 4;
+        let node_value = tree.get_node(node_idx);
+        let proof = tree.generate_proof_from_node(node_idx);
+        assert_eq!(proof.len(), 2);
+
+        // Also verifiable via gindex: node_idx IS the gindex
+        assert!(SszTree::verify_proof_gindex(
+            &tree.root(),
+            node_idx as u64,
+            &node_value,
+            &proof,
+        ));
+    }
+
+    #[test]
+    fn proof_from_node_at_various_depths() {
+        let mut tree = SszTree::new(16); // depth 4
+        for i in 0..16u8 {
+            tree.set_leaf(i as usize, [i + 1; 32]);
+        }
+
+        // Leaf (depth 4): proof length 4
+        let leaf_proof = tree.generate_proof_from_node(tree.capacity() + 0);
+        assert_eq!(leaf_proof.len(), 4);
+
+        // One level above leaves (depth 3): proof length 3
+        let mid_proof = tree.generate_proof_from_node(tree.capacity() / 2);
+        assert_eq!(mid_proof.len(), 3);
+
+        // Two levels above (depth 2): proof length 2
+        let upper_proof = tree.generate_proof_from_node(tree.capacity() / 4);
+        assert_eq!(upper_proof.len(), 2);
+
+        // All should be verifiable via gindex
+        for node_idx in [
+            tree.capacity() + 0,
+            tree.capacity() / 2,
+            tree.capacity() / 4,
+        ] {
+            let val = tree.get_node(node_idx);
+            let proof = tree.generate_proof_from_node(node_idx);
+            assert!(SszTree::verify_proof_gindex(
+                &tree.root(),
+                node_idx as u64,
+                &val,
+                &proof,
+            ));
+        }
     }
 
     #[test]
