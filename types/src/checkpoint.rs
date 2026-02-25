@@ -368,6 +368,7 @@ mod tests {
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
             proof_validator_keys: Vec::new(),
+            proof_withdrawal_keys: Vec::new(),
             proof_el_block_number: 0,
         };
 
@@ -490,6 +491,7 @@ mod tests {
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
             proof_validator_keys: Vec::new(),
+            proof_withdrawal_keys: Vec::new(),
             proof_el_block_number: 0,
         };
 
@@ -536,6 +538,7 @@ mod tests {
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
             proof_validator_keys: Vec::new(),
+            proof_withdrawal_keys: Vec::new(),
             proof_el_block_number: 0,
         };
 
@@ -665,6 +668,7 @@ mod tests {
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
             proof_validator_keys: Vec::new(),
+            proof_withdrawal_keys: Vec::new(),
             proof_el_block_number: 0,
         };
 
@@ -716,6 +720,7 @@ mod tests {
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
             proof_validator_keys: Vec::new(),
+            proof_withdrawal_keys: Vec::new(),
             proof_el_block_number: 0,
         };
 
@@ -772,6 +777,7 @@ mod tests {
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
             proof_validator_keys: Vec::new(),
+            proof_withdrawal_keys: Vec::new(),
             proof_el_block_number: 0,
         };
 
@@ -824,6 +830,7 @@ mod tests {
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
             proof_validator_keys: Vec::new(),
+            proof_withdrawal_keys: Vec::new(),
             proof_el_block_number: 0,
         };
 
@@ -921,6 +928,7 @@ mod tests {
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
             proof_validator_keys: Vec::new(),
+            proof_withdrawal_keys: Vec::new(),
             proof_el_block_number: 0,
         };
 

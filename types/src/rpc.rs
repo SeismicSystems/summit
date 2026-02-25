@@ -1,6 +1,40 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ValidatorAccountResponse {
+    pub consensus_public_key: Vec<u8>,
+    pub withdrawal_credentials: [u8; 20],
+    pub balance: u64,
+    pub status: String,
+    pub has_pending_deposit: bool,
+    pub has_pending_withdrawal: bool,
+    pub joining_epoch: u64,
+    pub last_deposit_index: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DepositResponse {
+    pub node_pubkey: [u8; 32],
+    pub consensus_pubkey: Vec<u8>,
+    pub withdrawal_credentials: [u8; 32],
+    pub amount: u64,
+    pub node_signature: Vec<u8>,
+    pub consensus_signature: Vec<u8>,
+    pub index: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PendingWithdrawalResponse {
+    pub withdrawal_index: u64,
+    pub validator_index: u64,
+    pub address: [u8; 20],
+    pub amount: u64,
+    pub pubkey: [u8; 32],
+    pub balance_deduction: u64,
+    pub epoch: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CheckpointRes {
     pub digest: [u8; 32],
     pub epoch: u64,

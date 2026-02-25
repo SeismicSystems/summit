@@ -4,6 +4,7 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, Bytes, U256, address, keccak256};
 use clap::Parser;
+use commonware_codec::DecodeExt;
 use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::http_client::HttpClientBuilder;
@@ -19,13 +20,14 @@ use std::{
 };
 use summit::args::{RunFlags, run_node_local};
 use summit_rpc::{SummitApiClient, SummitProofApiClient};
+use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::reth::Reth;
 use summit_types::ssz_state_tree::SszStateProof;
 use tokio::sync::mpsc;
 use tracing::Level;
 
-/// Compiled bytecode of SszProofVerifier.sol (solc --bin --optimize).
-const SSZ_VERIFIER_BYTECODE: &str = "6080604052348015600e575f5ffd5b5061075e8061001c5f395ff3fe608060405234801561000f575f5ffd5b5060043610610034575f3560e01c80631b361d1314610038578063d07f027b1461005d575b5f5ffd5b61004b610046366004610561565b610070565b60405190815260200160405180910390f35b61004b61006b36600461060b565b610153565b5f5f61007e8a8c8b8b6101be565b90508681146100cc5760405162461bcd60e51b81526020600482015260156024820152741cdd589d1c9959481c1c9bdbd9881a5b9d985b1a59605a1b60448201526064015b60405180910390fd5b5f6100d78888610332565b90506100e28d610414565b92505f6100f1828888886101be565b90508381146101425760405162461bcd60e51b815260206004820152601760248201527f746f702d6c6576656c2070726f6f6620696e76616c696400000000000000000060448201526064016100c3565b5050509a9950505050505050505050565b5f61015d86610414565b90505f61016c858786866101be565b90508181146101b45760405162461bcd60e51b81526020600482015260146024820152731cd8d85b185c881c1c9bdbd9881a5b9d985b1a5960621b60448201526064016100c3565b5095945050505050565b5f84816101ce866001861b610667565b90505f5b84811015610326576101e560028361069a565b5f0361028057600283878784818110610200576102006106ad565b90506020020135604051602001610221929190918252602082015260400190565b60408051601f198184030181529082905261023b916106c1565b602060405180830381855afa158015610256573d5f5f3e3d5ffd5b5050506040513d601f19601f8201168201806040525081019061027991906106d7565b9250610311565b6002868683818110610294576102946106ad565b90506020020135846040516020016102b6929190918252602082015260400190565b60408051601f19818403018152908290526102d0916106c1565b602060405180830381855afa1580156102eb573d5f5f3e3d5ffd5b5050506040513d601f19601f8201168201806040525081019061030e91906106d7565b92505b61031c6002836106ee565b91506001016101d2565b50909695505050505050565b5f8065ff000000ff00600884811b91821664ff000000ff9186901c91821617601090811b67ff000000ff0000009390931666ff000000ff00009290921691909117901c17602081811c63ffffffff1691901b67ffffffff00000000161760c01b9050600284826040516020016103b2929190918252602082015260400190565b60408051601f19818403018152908290526103cc916106c1565b602060405180830381855afa1580156103e7573d5f5f3e3d5ffd5b5050506040513d601f19601f8201168201806040525081019061040a91906106d7565b9150505b92915050565b5f5f5f720f3df6d732807ef1319fb7b8bb8522d0beac026001600160a01b03168460405160200161044791815260200190565b60408051601f1981840301815290829052610461916106c1565b5f60405180830381855afa9150503d805f8114610499576040519150601f19603f3d011682016040523d82523d5f602084013e61049e565b606091505b50915091508180156104b1575080516020145b6104fd5760405162461bcd60e51b815260206004820152601960248201527f626561636f6e20726f6f74206c6f6f6b7570206661696c65640000000000000060448201526064016100c3565b8080602001905181019061051191906106d7565b949350505050565b5f5f83601f840112610529575f5ffd5b50813567ffffffffffffffff811115610540575f5ffd5b6020830191508360208260051b850101111561055a575f5ffd5b9250929050565b5f5f5f5f5f5f5f5f5f5f6101008b8d03121561057b575f5ffd5b8a35995060208b0135985060408b0135975060608b013567ffffffffffffffff8111156105a6575f5ffd5b6105b28d828e01610519565b90985096505060808b0135945060a08b0135935060c08b0135925060e08b013567ffffffffffffffff8111156105e6575f5ffd5b6105f28d828e01610519565b915080935050809150509295989b9194979a5092959850565b5f5f5f5f5f6080868803121561061f575f5ffd5b853594506020860135935060408601359250606086013567ffffffffffffffff81111561064a575f5ffd5b61065688828901610519565b969995985093965092949392505050565b8082018082111561040e57634e487b7160e01b5f52601160045260245ffd5b634e487b7160e01b5f52601260045260245ffd5b5f826106a8576106a8610686565b500690565b634e487b7160e01b5f52603260045260245ffd5b5f82518060208501845e5f920191825250919050565b5f602082840312156106e7575f5ffd5b5051919050565b5f826106fc576106fc610686565b50049056fea2646970667358221220018a63f27dc124efda4c680f863ba5dd3d693d7d45e55e54fe4a5c0c14b74d2f64736f6c637829302e382e33312d646576656c6f702e323032352e31312e31322b636f6d6d69742e3464313362633133005a";
+/// Compiled bytecode of SszProofVerifier.sol (solc --via-ir --optimize --bin).
+const SSZ_VERIFIER_BYTECODE: &str = "608080604052346015576109b5908161001a8239f35b5f80fdfe60806040526004361015610011575f80fd5b5f3560e01c80631b361d131461051c5780637e1899e5146100d75763d07f027b1461003a575f80fd5b346100d35760803660031901126100d3576064356001600160401b0381116100d35761006a9036906004016105b4565b90610087610079600435610811565b9283926024356044356106cd565b0361009757602090604051908152f35b60405162461bcd60e51b81526020600482015260146024820152731cd8d85b185c881c1c9bdbd9881a5b9d985b1a5960621b6044820152606490fd5b5f80fd5b346100d3576101e03660031901126100d3576044356001600160401b0381116100d3576101089036906004016105b4565b9060643560c4356001600160401b0381116100d35761012b9036906004016105b4565b909260e4356001600160401b0381116100d357366023820112156100d35780600401356001600160401b0381116100d35736602482840101116100d35761010435906001600160a01b03821682036100d35761012435906001600160401b03821682036100d357610144359160ff831683036100d3576101643580151581036100d357610184359182151583036100d3576101a435966001600160401b03881688036100d3576101c435946001600160401b03861686036100d3576030036104d7575f602091604051838101916024810135835260446fffffffffffffffffffffffffffffffff199101351660408201526040815261022b606082610698565b604051918291518091835e8101838152039060025afa156104b8575f6020916102558251916108f4565b9382146104d0576001945b82146104c35761027a61027460019a6108f4565b966108f4565b97604051908482019283526bffffffffffffffffffffffff199060601b166040820152604081526102ac606082610698565b604051918291518091835e8101838152039060025afa156104b8575f6020918151956040519084820192835260ff60f81b9060f81b166040820152604081526102f6606082610698565b604051918291518091835e8101838152039060025afa156104b8575f602091815196604051908482019260ff60f81b9060f81b16835260ff60f81b9060f81b1660408201526040815261034a606082610698565b604051918291518091835e8101838152039060025afa156104b8575f6020918151946040519084820192835260408201526040815261038a606082610698565b604051918291518091835e8101838152039060025afa156104b8575f602091815194604051908482019283526040820152604081526103ca606082610698565b604051918291518091835e8101838152039060025afa156104b8575f6020918151936040519084820192835260408201526040815261040a606082610698565b604051918291518091835e8101838152039060025afa156104b8575f602091815160405190848201928352604082015260408152610449606082610698565b604051918291518091835e8101838152039060025afa156104b857610492836104896104b0956104836020996104aa966024355f516106cd565b146105e4565b608435906107bd565b9161049e600435610811565b94859360a435906106cd565b14610628565b604051908152f35b6040513d5f823e3d90fd5b61027a610274839a6108f4565b8194610260565b60405162461bcd60e51b815260206004820152601b60248201527f424c53207075626b6579206d75737420626520343820627974657300000000006044820152606490fd5b346100d3576101003660031901126100d3576064356001600160401b0381116100d35761054d9036906004016105b4565b906084359160e435906001600160401b0382116100d3576104aa61059c856105936020976104836105856104b09836906004016105b4565b9790996024356044356106cd565b60a435906107bd565b916105a8600435610811565b94859360c435906106cd565b9181601f840112156100d3578235916001600160401b0383116100d3576020808501948460051b0101116100d357565b156105eb57565b60405162461bcd60e51b81526020600482015260156024820152741cdd589d1c9959481c1c9bdbd9881a5b9d985b1a59605a1b6044820152606490fd5b1561062f57565b60405162461bcd60e51b815260206004820152601760248201527f746f702d6c6576656c2070726f6f6620696e76616c69640000000000000000006044820152606490fd5b91908110156106845760051b0190565b634e487b7160e01b5f52603260045260245ffd5b90601f801991011681019081106001600160401b038211176106b957604052565b634e487b7160e01b5f52604160045260245ffd5b92906001821b9081018091116107a95791905f915b8183106106f0575050505090565b909192935f602091600187161582146107595761070e868686610674565b356040519084820192835260408201526040815261072d606082610698565b604051918291518091835e8101838152039060025afa156104b85760015f51945b811c930191906106e2565b610764868686610674565b359060405190848201928352604082015260408152610784606082610698565b604051918291518091835e8101838152039060025afa156104b85760015f519461074e565b634e487b7160e01b5f52601160045260245ffd5b5f906107d36001600160401b03602094166108f4565b604051908482019283526040820152604081526107f1606082610698565b604051918291518091835e8101838152039060025afa156104b8575f5190565b5f8091604051602081019182526020815261082d604082610698565b5190720f3df6d732807ef1319fb7b8bb8522d0beac025afa3d156108ec573d906001600160401b0382116106b95760405191610873601f8201601f191660200184610698565b82523d5f602084013e5b806108e1575b1561089c576020818051810103126100d3576020015190565b60405162461bcd60e51b815260206004820152601960248201527f626561636f6e20726f6f74206c6f6f6b7570206661696c6564000000000000006044820152606490fd5b506020815114610883565b60609061087d565b65ffffffffffff8160081c9160081b9166ff000000ff000067ff000000ff00000067ffffffffffff000065ff000000ff00861664ff000000ff85161760101b16941691161760101c16176001600160401b03808260201b169160201c161760c01b9056fea2646970667358221220ebf237720b046236505ca9155aafce7ce0ed26df8aba5d7912b1e46cc251663e64736f6c637829302e382e33312d646576656c6f702e323032352e31312e31322b636f6d6d69742e3464313362633133005a";
 
 /// Genesis validator 0 node public key (from example_genesis.toml).
 const VALIDATOR0_PUBKEY_HEX: &str =
@@ -390,6 +392,103 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // ---------------------------------------------------------------
+            // TEST D: Verify validator account preimage on-chain
+            // ---------------------------------------------------------------
+            println!("\nTEST D: On-chain validator account preimage verification");
+
+            // Query the full validator account from the RPC
+            let validator_node_key = format!("0x{}", VALIDATOR0_PUBKEY_HEX);
+            let account_resp = summit_client
+                .get_validator_account(validator_node_key)
+                .await
+                .expect("getValidatorAccount failed");
+            println!("  balance: {}", account_resp.balance);
+            println!("  status: {}", account_resp.status);
+
+            // Verify the account fields produce the correct leaf_value from the proof
+            use summit_types::ssz_hash::SszHashTreeRoot;
+            let bls_pubkey = commonware_cryptography::bls12381::PublicKey::decode(
+                &*account_resp.consensus_public_key,
+            )
+            .expect("Failed to decode BLS pubkey");
+            let withdrawal_addr = Address::from_slice(&account_resp.withdrawal_credentials);
+            let status_enum = match account_resp.status.as_str() {
+                "Active" => ValidatorStatus::Active,
+                "Inactive" => ValidatorStatus::Inactive,
+                "SubmittedExitRequest" => ValidatorStatus::SubmittedExitRequest,
+                "Joining" => ValidatorStatus::Joining,
+                other => panic!("Unknown validator status: {other}"),
+            };
+            let account = ValidatorAccount {
+                consensus_public_key: bls_pubkey,
+                withdrawal_credentials: withdrawal_addr,
+                balance: account_resp.balance,
+                status: status_enum,
+                has_pending_deposit: account_resp.has_pending_deposit,
+                has_pending_withdrawal: account_resp.has_pending_withdrawal,
+                joining_epoch: account_resp.joining_epoch,
+                last_deposit_index: account_resp.last_deposit_index,
+            };
+            let account_hash = account.hash_tree_root();
+
+            if let SszStateProof::Collection(cp) = &val_proof_resp.proofs[0] {
+                assert_eq!(
+                    account_hash, cp.leaf_value,
+                    "hash_tree_root(account) does not match proof leaf_value"
+                );
+                println!(
+                    "  Account hash matches proof: 0x{}",
+                    alloy::hex::encode(account_hash)
+                );
+
+                let status_u8 = match account_resp.status.as_str() {
+                    "Active" => 0u8,
+                    "Inactive" => 1,
+                    "SubmittedExitRequest" => 2,
+                    "Joining" => 3,
+                    _ => unreachable!(),
+                };
+
+                // verifyValidatorAccount(uint256,uint256,bytes32[],bytes32,uint256,uint256,bytes32[],bytes,address,uint64,uint8,bool,bool,uint64,uint64)
+                let verify_va_selector = &keccak256(
+                    "verifyValidatorAccount(uint256,uint256,bytes32[],bytes32,uint256,uint256,bytes32[],bytes,address,uint64,uint8,bool,bool,uint64,uint64)"
+                )[..4];
+                let calldata = encode_verify_validator_account(
+                    val_timestamp,
+                    cp,
+                    verify_va_selector,
+                    &account_resp.consensus_public_key,
+                    withdrawal_addr,
+                    account_resp.balance,
+                    status_u8,
+                    account_resp.has_pending_deposit,
+                    account_resp.has_pending_withdrawal,
+                    account_resp.joining_epoch,
+                    account_resp.last_deposit_index,
+                );
+                let call_tx = TransactionRequest::default()
+                    .with_to(verifier_address)
+                    .with_input(Bytes::from(calldata));
+                let result = provider
+                    .call(call_tx)
+                    .await
+                    .expect("verifyValidatorAccount call failed");
+                let returned_root: [u8; 32] = result[..32]
+                    .try_into()
+                    .expect("verifyValidatorAccount response not 32 bytes");
+                assert_eq!(
+                    returned_root, val_proof_resp.root,
+                    "verifyValidatorAccount returned wrong root"
+                );
+                println!(
+                    "  verifyValidatorAccount OK (balance={}, status={})",
+                    account_resp.balance, account_resp.status
+                );
+            } else {
+                panic!("Expected Collection proof for validator query");
+            }
+
+            // ---------------------------------------------------------------
             // Done
             // ---------------------------------------------------------------
             println!("\nAll tests passed!");
@@ -493,6 +592,101 @@ fn encode_verify_collection(
     for h in &cp.top_branch {
         data.extend_from_slice(h);
     }
+    data
+}
+
+/// ABI-encode a call to verifyValidatorAccount(uint256,uint256,bytes32[],bytes32,uint256,uint256,bytes32[],bytes,address,uint64,uint8,bool,bool,uint64,uint64).
+#[allow(clippy::too_many_arguments)]
+fn encode_verify_validator_account(
+    timestamp: u64,
+    cp: &summit_types::ssz_state_tree::CollectionProof,
+    selector: &[u8],
+    consensus_pubkey: &[u8], // 48 bytes
+    withdrawal_addr: Address,
+    balance: u64,
+    status: u8,
+    has_pending_deposit: bool,
+    has_pending_withdrawal: bool,
+    joining_epoch: u64,
+    last_deposit_index: u64,
+) -> Vec<u8> {
+    // 15 params total. Dynamic params: subtreeBranch (index 2), topBranch (index 6), consensusPubkey (index 7)
+    let head_size = 15 * 32; // 15 slots in the head
+
+    // Calculate offsets for dynamic data (relative to start of params, not selector)
+    // Dynamic params: subtreeBranch at slot 2, topBranch at slot 6, consensusPubkey at slot 7
+    // Layout after head:
+    //   subtreeBranch data
+    //   topBranch data
+    //   consensusPubkey data
+    let subtree_branch_offset = head_size;
+    let subtree_branch_data_size = 32 + cp.subtree_branch.len() * 32;
+    let top_branch_offset = subtree_branch_offset + subtree_branch_data_size;
+    let top_branch_data_size = 32 + cp.top_branch.len() * 32;
+    let consensus_pubkey_offset = top_branch_offset + top_branch_data_size;
+    // bytes: length (32) + padded data (ceil(48/32)*32 = 64)
+    let consensus_pubkey_data_size = 32 + 64;
+
+    let total_size = 4
+        + head_size
+        + subtree_branch_data_size
+        + top_branch_data_size
+        + consensus_pubkey_data_size;
+
+    let mut data = Vec::with_capacity(total_size);
+    data.extend_from_slice(selector);
+
+    // Slot 0: timestamp (uint256)
+    data.extend_from_slice(&U256::from(timestamp).to_be_bytes::<32>());
+    // Slot 1: itemIndex (uint256)
+    data.extend_from_slice(&U256::from(cp.item_index).to_be_bytes::<32>());
+    // Slot 2: offset to subtreeBranch (dynamic)
+    data.extend_from_slice(&U256::from(subtree_branch_offset).to_be_bytes::<32>());
+    // Slot 3: subtreeRoot (bytes32)
+    data.extend_from_slice(&cp.subtree_root);
+    // Slot 4: collectionLength (uint256)
+    data.extend_from_slice(&U256::from(cp.collection_length).to_be_bytes::<32>());
+    // Slot 5: topLeafIndex (uint256)
+    data.extend_from_slice(&U256::from(cp.top_leaf_index).to_be_bytes::<32>());
+    // Slot 6: offset to topBranch (dynamic)
+    data.extend_from_slice(&U256::from(top_branch_offset).to_be_bytes::<32>());
+    // Slot 7: offset to consensusPubkey (dynamic bytes)
+    data.extend_from_slice(&U256::from(consensus_pubkey_offset).to_be_bytes::<32>());
+    // Slot 8: withdrawalCreds (address, left-padded to 32 bytes)
+    let mut addr_slot = [0u8; 32];
+    addr_slot[12..32].copy_from_slice(withdrawal_addr.as_slice());
+    data.extend_from_slice(&addr_slot);
+    // Slot 9: balance (uint64)
+    data.extend_from_slice(&U256::from(balance).to_be_bytes::<32>());
+    // Slot 10: status (uint8)
+    data.extend_from_slice(&U256::from(status).to_be_bytes::<32>());
+    // Slot 11: hasPendingDeposit (bool)
+    data.extend_from_slice(&U256::from(has_pending_deposit as u64).to_be_bytes::<32>());
+    // Slot 12: hasPendingWithdrawal (bool)
+    data.extend_from_slice(&U256::from(has_pending_withdrawal as u64).to_be_bytes::<32>());
+    // Slot 13: joiningEpoch (uint64)
+    data.extend_from_slice(&U256::from(joining_epoch).to_be_bytes::<32>());
+    // Slot 14: lastDepositIndex (uint64)
+    data.extend_from_slice(&U256::from(last_deposit_index).to_be_bytes::<32>());
+
+    // Dynamic data: subtreeBranch
+    data.extend_from_slice(&U256::from(cp.subtree_branch.len()).to_be_bytes::<32>());
+    for h in &cp.subtree_branch {
+        data.extend_from_slice(h);
+    }
+
+    // Dynamic data: topBranch
+    data.extend_from_slice(&U256::from(cp.top_branch.len()).to_be_bytes::<32>());
+    for h in &cp.top_branch {
+        data.extend_from_slice(h);
+    }
+
+    // Dynamic data: consensusPubkey (bytes)
+    data.extend_from_slice(&U256::from(consensus_pubkey.len()).to_be_bytes::<32>());
+    let mut padded_pubkey = [0u8; 64]; // ceil(48/32)*32 = 64
+    padded_pubkey[..consensus_pubkey.len()].copy_from_slice(consensus_pubkey);
+    data.extend_from_slice(&padded_pubkey);
+
     data
 }
 

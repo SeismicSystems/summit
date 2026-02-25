@@ -262,6 +262,66 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         stake
     }
 
+    pub async fn get_deposit(
+        &self,
+        index: usize,
+    ) -> Option<summit_types::execution_request::DepositRequest> {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetDeposit(index);
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::Deposit(deposit) = res else {
+            unreachable!("request and response variants must match");
+        };
+        deposit
+    }
+
+    pub async fn get_deposit_count(&self) -> usize {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetDepositCount;
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::DepositCount(count) = res else {
+            unreachable!("request and response variants must match");
+        };
+        count
+    }
+
+    pub async fn get_withdrawal(
+        &self,
+        pubkey: [u8; 32],
+    ) -> Option<summit_types::withdrawal::PendingWithdrawal> {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetWithdrawal(pubkey);
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::Withdrawal(withdrawal) = res else {
+            unreachable!("request and response variants must match");
+        };
+        withdrawal
+    }
+
     pub async fn get_state_root(&self) -> ([u8; 32], u64) {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetStateRoot;

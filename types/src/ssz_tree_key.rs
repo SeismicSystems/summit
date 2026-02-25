@@ -14,12 +14,18 @@ pub enum SszStateKey {
     Scalar(usize),
     /// A validator account identified by its 32-byte pubkey.
     Validator([u8; 32]),
+    /// A deposit request at the given queue index.
+    Deposit(usize),
+    /// A pending withdrawal identified by its 32-byte pubkey.
+    Withdrawal([u8; 32]),
 }
 
 /// Parse a human-readable key descriptor into an [`SszStateKey`].
 ///
 /// Scalar keys: `"epoch"`, `"view"`, `"latest_height"`, etc.
 /// Validator keys: `"validator:0xABCD..."` (hex-encoded 32-byte pubkey after colon).
+/// Deposit keys: `"deposit:<index>"` (queue position, e.g. `"deposit:0"`).
+/// Withdrawal keys: `"withdrawal:0xABCD..."` (hex-encoded 32-byte pubkey after colon).
 pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
     match descriptor {
         "epoch" => Ok(SszStateKey::Scalar(ssz_state_tree::EPOCH)),
@@ -44,10 +50,17 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
             ssz_state_tree::FORKCHOICE_FINALIZED_BLOCK_HASH,
         )),
         _ => {
-            // Try "validator:0xHEX..." format
             if let Some(hex_str) = descriptor.strip_prefix("validator:") {
                 let pubkey = parse_hex_pubkey(hex_str)?;
                 Ok(SszStateKey::Validator(pubkey))
+            } else if let Some(index_str) = descriptor.strip_prefix("deposit:") {
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid deposit index: {e}"))?;
+                Ok(SszStateKey::Deposit(index))
+            } else if let Some(hex_str) = descriptor.strip_prefix("withdrawal:") {
+                let pubkey = parse_hex_pubkey(hex_str)?;
+                Ok(SszStateKey::Withdrawal(pubkey))
             } else {
                 Err(format!("unknown key: {descriptor}"))
             }
@@ -91,6 +104,25 @@ mod tests {
         let hex_key = "validator:0202020202020202020202020202020202020202020202020202020202020202";
         let key = parse_key(hex_key).unwrap();
         assert_eq!(key, SszStateKey::Validator([2u8; 32]));
+    }
+
+    #[test]
+    fn parse_deposit_key() {
+        assert_eq!(parse_key("deposit:0").unwrap(), SszStateKey::Deposit(0));
+        assert_eq!(parse_key("deposit:42").unwrap(), SszStateKey::Deposit(42));
+    }
+
+    #[test]
+    fn parse_deposit_key_invalid() {
+        assert!(parse_key("deposit:abc").is_err());
+    }
+
+    #[test]
+    fn parse_withdrawal_key() {
+        let hex_key =
+            "withdrawal:0x0303030303030303030303030303030303030303030303030303030303030303";
+        let key = parse_key(hex_key).unwrap();
+        assert_eq!(key, SszStateKey::Withdrawal([3u8; 32]));
     }
 
     #[test]

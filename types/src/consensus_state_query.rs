@@ -1,7 +1,9 @@
 use crate::account::ValidatorAccount;
 use crate::checkpoint::Checkpoint;
+use crate::execution_request::DepositRequest;
 use crate::ssz_state_tree::SszStateProof;
 use crate::ssz_tree_key::SszStateKey;
+use crate::withdrawal::PendingWithdrawal;
 use crate::{Block, FinalizedHeader, PublicKey};
 use commonware_cryptography::certificate::Scheme;
 use futures::SinkExt;
@@ -18,6 +20,9 @@ pub enum ConsensusStateRequest {
     GetFinalizedHeader(u64),
     GetMinimumStake,
     GetMaximumStake,
+    GetDeposit(usize),
+    GetDepositCount,
+    GetWithdrawal([u8; 32]),
     GetStateRoot,
     GenerateStateProof(Vec<SszStateKey>),
 }
@@ -32,6 +37,9 @@ pub enum ConsensusStateResponse<S: Scheme> {
     FinalizedHeader(Option<FinalizedHeader<S>>),
     MinimumStake(u64),
     MaximumStake(u64),
+    Deposit(Option<DepositRequest>),
+    DepositCount(usize),
+    Withdrawal(Option<PendingWithdrawal>),
     StateRoot {
         root: [u8; 32],
         el_block_number: u64,

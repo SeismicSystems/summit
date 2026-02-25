@@ -17,5 +17,6 @@ pub struct DepositTransactionResponse {
 }
 
 pub use summit_types::rpc::{
-    CheckpointInfoRes, CheckpointRes, FinalizedHeaderRes, StateProofResponse, StateRootResponse,
+    CheckpointInfoRes, CheckpointRes, DepositResponse, FinalizedHeaderRes,
+    PendingWithdrawalResponse, StateProofResponse, StateRootResponse, ValidatorAccountResponse,
 };

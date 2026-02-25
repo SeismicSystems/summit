@@ -5,6 +5,8 @@ pub enum RpcError {
     CheckpointNotFound,
     FinalizedHeaderNotFound,
     ValidatorNotFound,
+    DepositNotFound,
+    WithdrawalNotFound,
     InvalidPublicKey(String),
     GenesisPathError(String),
     IoError(String),
@@ -26,6 +28,12 @@ impl From<RpcError> for ErrorObjectOwned {
             }
             RpcError::ValidatorNotFound => {
                 ErrorObjectOwned::owned(3000, "Validator not found", None::<()>)
+            }
+            RpcError::DepositNotFound => {
+                ErrorObjectOwned::owned(3003, "Deposit not found", None::<()>)
+            }
+            RpcError::WithdrawalNotFound => {
+                ErrorObjectOwned::owned(3004, "Withdrawal not found", None::<()>)
             }
             RpcError::InvalidPublicKey(msg) => {
                 ErrorObjectOwned::owned(3001, "Invalid public key", Some(msg))

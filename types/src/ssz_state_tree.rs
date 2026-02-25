@@ -52,6 +52,14 @@ pub struct SszStateTree {
     validator_tree: SszTree,
     /// Number of active validators (= number of leaves set in the subtree).
     validator_count: usize,
+
+    /// Deposit queue subtree.
+    deposit_tree: SszTree,
+    deposit_count: usize,
+
+    /// Withdrawal queue subtree.
+    withdrawal_tree: SszTree,
+    withdrawal_count: usize,
 }
 
 impl SszStateTree {
@@ -60,6 +68,10 @@ impl SszStateTree {
             top: SszTree::new(NUM_TOP_LEAVES),
             validator_tree: SszTree::new(1),
             validator_count: 0,
+            deposit_tree: SszTree::new(1),
+            deposit_count: 0,
+            withdrawal_tree: SszTree::new(1),
+            withdrawal_count: 0,
         }
     }
 
@@ -151,24 +163,60 @@ impl SszStateTree {
         self.top.set_leaf(VALIDATOR_ACCOUNTS_ROOT, collection_root);
     }
 
-    // --- Non-incremental collection roots ---
+    // --- Deposit queue subtree ---
 
-    /// Recompute deposit queue root from current contents.
-    pub fn update_deposit_queue_root(&mut self, deposits: &VecDeque<DepositRequest>) {
-        let root =
-            collection_root_from(deposits.iter().map(|d| d.hash_tree_root()), deposits.len());
-        self.top.set_leaf(DEPOSIT_QUEUE_ROOT, root);
+    /// Rebuild the deposit queue subtree from current contents.
+    pub fn rebuild_deposits(&mut self, deposits: &VecDeque<DepositRequest>) {
+        let count = deposits.len();
+        let capacity = count.max(1);
+        let mut tree = SszTree::new(capacity);
+        for (i, deposit) in deposits.iter().enumerate() {
+            tree.set_leaf(i, deposit.hash_tree_root());
+        }
+        self.deposit_tree = tree;
+        self.deposit_count = count;
+        self.update_deposit_collection_root();
     }
 
-    /// Recompute withdrawal queue root from current contents.
-    pub fn update_withdrawal_queue_root(&mut self, queue: &WithdrawalQueue) {
+    fn update_deposit_collection_root(&mut self) {
+        let subtree_root = self.deposit_tree.root();
+        let collection_root = mix_in_length(subtree_root, self.deposit_count);
+        self.top.set_leaf(DEPOSIT_QUEUE_ROOT, collection_root);
+    }
+
+    /// Number of deposits in the subtree.
+    pub fn deposit_count(&self) -> usize {
+        self.deposit_count
+    }
+
+    // --- Withdrawal queue subtree ---
+
+    /// Rebuild the withdrawal queue subtree from current contents.
+    pub fn rebuild_withdrawals(&mut self, queue: &WithdrawalQueue) {
         let items: Vec<[u8; 32]> = queue
             .withdrawals_iter()
             .map(|(_, w)| w.hash_tree_root())
             .collect();
-        let len = items.len();
-        let root = collection_root_from(items.into_iter(), len);
-        self.top.set_leaf(WITHDRAWAL_QUEUE_ROOT, root);
+        let count = items.len();
+        let capacity = count.max(1);
+        let mut tree = SszTree::new(capacity);
+        for (i, hash) in items.iter().enumerate() {
+            tree.set_leaf(i, *hash);
+        }
+        self.withdrawal_tree = tree;
+        self.withdrawal_count = count;
+        self.update_withdrawal_collection_root();
+    }
+
+    fn update_withdrawal_collection_root(&mut self) {
+        let subtree_root = self.withdrawal_tree.root();
+        let collection_root = mix_in_length(subtree_root, self.withdrawal_count);
+        self.top.set_leaf(WITHDRAWAL_QUEUE_ROOT, collection_root);
+    }
+
+    /// Number of withdrawals in the subtree.
+    pub fn withdrawal_count(&self) -> usize {
+        self.withdrawal_count
     }
 
     /// Recompute protocol param changes root.
@@ -243,8 +291,8 @@ impl SszStateTree {
         self.rebuild_validators(validator_accounts);
 
         // Other collections
-        self.update_deposit_queue_root(deposit_queue);
-        self.update_withdrawal_queue_root(withdrawal_queue);
+        self.rebuild_deposits(deposit_queue);
+        self.rebuild_withdrawals(withdrawal_queue);
         self.update_protocol_param_changes_root(protocol_param_changes);
         self.update_added_validators_root(added_validators);
         self.update_removed_validators_root(removed_validators);
@@ -280,6 +328,43 @@ impl SszStateTree {
             collection_length: self.validator_count,
             top_leaf_index: VALIDATOR_ACCOUNTS_ROOT,
             top_branch: self.top.generate_proof(VALIDATOR_ACCOUNTS_ROOT),
+        })
+    }
+
+    /// Generate a proof for a deposit at a given queue index.
+    pub fn generate_deposit_proof(&self, index: usize) -> Option<CollectionProof> {
+        if index >= self.deposit_count {
+            return None;
+        }
+        Some(CollectionProof {
+            item_index: index,
+            leaf_value: self.deposit_tree.get_leaf(index),
+            subtree_branch: self.deposit_tree.generate_proof(index),
+            subtree_root: self.deposit_tree.root(),
+            collection_length: self.deposit_count,
+            top_leaf_index: DEPOSIT_QUEUE_ROOT,
+            top_branch: self.top.generate_proof(DEPOSIT_QUEUE_ROOT),
+        })
+    }
+
+    /// Generate a proof for a withdrawal identified by pubkey.
+    pub fn generate_withdrawal_proof(
+        &self,
+        pubkey: &[u8; 32],
+        keys: &[[u8; 32]],
+    ) -> Option<CollectionProof> {
+        let slot = keys.iter().position(|k| k == pubkey)?;
+        if slot >= self.withdrawal_count {
+            return None;
+        }
+        Some(CollectionProof {
+            item_index: slot,
+            leaf_value: self.withdrawal_tree.get_leaf(slot),
+            subtree_branch: self.withdrawal_tree.generate_proof(slot),
+            subtree_root: self.withdrawal_tree.root(),
+            collection_length: self.withdrawal_count,
+            top_leaf_index: WITHDRAWAL_QUEUE_ROOT,
+            top_branch: self.top.generate_proof(WITHDRAWAL_QUEUE_ROOT),
         })
     }
 
@@ -609,8 +694,8 @@ mod tests {
         inc.set_forkchoice_safe_block_hash(&[0xDD; 32]);
         inc.set_forkchoice_finalized_block_hash(&[0xEE; 32]);
         inc.rebuild_validators(&accounts);
-        inc.update_deposit_queue_root(&VecDeque::new());
-        inc.update_withdrawal_queue_root(&WithdrawalQueue::default());
+        inc.rebuild_deposits(&VecDeque::new());
+        inc.rebuild_withdrawals(&WithdrawalQueue::default());
         inc.update_protocol_param_changes_root(&[]);
         inc.update_added_validators_root(&BTreeMap::new());
         inc.update_removed_validators_root(&[]);
@@ -725,5 +810,91 @@ mod tests {
         let proof3 = tree.generate_validator_proof(&pk3, &keys).unwrap();
         assert!(proof3.verify(&root));
         assert!(tree.generate_validator_proof(&pk1, &keys).is_none());
+    }
+
+    #[test]
+    fn deposit_proof_verifies() {
+        use crate::execution_request::DepositRequest;
+        use commonware_cryptography::ed25519;
+
+        let deposit = DepositRequest {
+            node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
+            withdrawal_credentials: [0x01; 32],
+            amount: 32_000_000_000,
+            node_signature: [0xAA; 64],
+            consensus_signature: [0xBB; 96],
+            index: 0,
+        };
+        let mut deposits = VecDeque::new();
+        deposits.push_back(deposit);
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_deposits(&deposits);
+        // Also set a scalar so the root isn't trivial
+        tree.set_epoch(1);
+
+        let root = tree.root();
+        let proof = tree.generate_deposit_proof(0).unwrap();
+        assert!(proof.verify(&root));
+        assert_eq!(proof.top_leaf_index, DEPOSIT_QUEUE_ROOT);
+    }
+
+    #[test]
+    fn deposit_proof_out_of_bounds() {
+        let tree = SszStateTree::new();
+        assert!(tree.generate_deposit_proof(0).is_none());
+    }
+
+    #[test]
+    fn withdrawal_proof_verifies() {
+        use crate::withdrawal::PendingWithdrawal;
+        use alloy_eips::eip4895::Withdrawal;
+
+        let mut queue = WithdrawalQueue::default();
+        let pk1 = [1u8; 32];
+        let pk2 = [2u8; 32];
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([0x11; 20]),
+                amount: 1_000_000_000,
+            },
+            pubkey: pk1,
+            balance_deduction: 1_000_000_000,
+            epoch: 1,
+        });
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 1,
+                validator_index: 1,
+                address: Address::from([0x22; 20]),
+                amount: 2_000_000_000,
+            },
+            pubkey: pk2,
+            balance_deduction: 2_000_000_000,
+            epoch: 1,
+        });
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_withdrawals(&queue);
+        tree.set_epoch(5);
+
+        let root = tree.root();
+        let keys: Vec<[u8; 32]> = queue.withdrawals_iter().map(|(k, _)| *k).collect();
+
+        let proof1 = tree.generate_withdrawal_proof(&pk1, &keys).unwrap();
+        assert!(proof1.verify(&root));
+        assert_eq!(proof1.top_leaf_index, WITHDRAWAL_QUEUE_ROOT);
+
+        let proof2 = tree.generate_withdrawal_proof(&pk2, &keys).unwrap();
+        assert!(proof2.verify(&root));
+    }
+
+    #[test]
+    fn withdrawal_proof_unknown_key() {
+        let tree = SszStateTree::new();
+        assert!(tree.generate_withdrawal_proof(&[99u8; 32], &[]).is_none());
     }
 }
