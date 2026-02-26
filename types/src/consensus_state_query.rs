@@ -37,7 +37,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     StateProof {
         root: [u8; 32],
         el_block_number: u64,
-        proof: Vec<Vec<u8>>,
+        proof: Vec<Vec<Vec<u8>>>,
         values: Vec<Option<Vec<u8>>>,
     },
 }

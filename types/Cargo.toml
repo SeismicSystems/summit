@@ -41,11 +41,19 @@ serde_json = { workspace = true, optional = true }
 trie-db.workspace = true
 hash-db.workspace = true
 memory-db.workspace = true
-reference-trie.workspace = true
 keccak-hasher.workspace = true
+
+# for rlp node codec
+rlp.workspace = true
 
 # for benchmarking
 libc = { version = "0.2.174", optional = true}
+
+[dev-dependencies]
+hex-literal.workspace = true
+alloy-trie.workspace = true
+alloy-rlp.workspace = true
+nybbles.workspace = true
 
 [features]
 bench = ["serde_json"]

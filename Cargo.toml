@@ -45,6 +45,11 @@ alloy-transport-http = { version = "1.0.9", features = ["hyper", "jwt-auth"] }
 alloy-provider = { version = "1.0.9", features = ["hyper", "engine-api","ipc"] }
 alloy-primitives = "1.2.1"
 alloy-transport-ipc = { version = "1.0.9" }
+alloy-trie = "0.9.0"
+alloy-rlp = "0.3.12"
+nybbles = "0.4.0"
+hex-literal = "0.4"
+rlp = "0.5.2"
 url = "2.5"
 
 futures = "0.3.31"
@@ -63,7 +68,6 @@ jsonrpsee = { version = "0.26.0", features = ["http-client"] }
 trie-db = "0.31"
 hash-db = "0.16"
 memory-db = "0.34"
-reference-trie = "0.29"
 keccak-hasher = "0.16"
 
 ethereum_ssz = "0.9.0"

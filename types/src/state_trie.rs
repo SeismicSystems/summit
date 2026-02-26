@@ -1,11 +1,12 @@
 use alloy_primitives::{hex, keccak256};
 use hash_db::Hasher;
 use memory_db::{HashKey, MemoryDB};
-use std::fmt;
-use trie_db::{Trie, TrieDBBuilder, TrieDBMutBuilder, TrieMut};
+use rlp::{Prototype, Rlp};
+use std::{collections::HashMap, fmt};
+use trie_db::{NodeCodec, Recorder, Trie, TrieDBBuilder, TrieDBMutBuilder, TrieMut};
 
 type KeccakHasher = keccak_hasher::KeccakHasher;
-type Layout = reference_trie::ExtensionLayout;
+type Layout = crate::rlp_node_codec::EthLayout;
 type TrieMemDB = MemoryDB<KeccakHasher, HashKey<KeccakHasher>, Vec<u8>>;
 type TrieRoot = <KeccakHasher as Hasher>::Out;
 
@@ -63,36 +64,176 @@ impl StateTrie {
         self.root
     }
 
-    /// Generate a Merkle proof for the given logical keys.
-    pub fn generate_proof(&self, logical_keys: &[&[u8]]) -> Vec<Vec<u8>> {
-        let keys: Vec<Vec<u8>> = logical_keys
-            .iter()
-            .map(|k| keccak256(k).as_slice().to_vec())
-            .collect();
-        let key_refs: Vec<&Vec<u8>> = keys.iter().collect();
-        trie_db::proof::generate_proof::<_, Layout, _, _>(&self.memdb, &self.root, key_refs)
-            .expect("proof generation failed")
+    /// Generate per-key Ethereum-format Merkle proofs for a set of logical keys.
+    ///
+    /// Returns one proof per key, each containing the ordered list of RLP-encoded
+    /// trie nodes from root to the target (compatible with `eth_getProof` and
+    /// `alloy_trie::proof::verify_proof`).
+    pub fn generate_proof(&self, logical_keys: &[&[u8]]) -> Vec<Vec<Vec<u8>>> {
+        let mut per_key_proofs = Vec::with_capacity(logical_keys.len());
+        for logical_key in logical_keys {
+            let key = keccak256(logical_key);
+            let mut recorder = Recorder::<Layout>::new();
+            {
+                let trie = TrieDBBuilder::<Layout>::new(&self.memdb, &self.root)
+                    .with_recorder(&mut recorder)
+                    .build();
+                // Perform the lookup to record all visited nodes
+                let _ = trie.get(key.as_slice()).expect("trie get failed");
+            }
+            let mut key_nodes = Vec::new();
+            for record in recorder.drain() {
+                if !key_nodes.contains(&record.data) {
+                    key_nodes.push(record.data);
+                }
+            }
+            per_key_proofs.push(key_nodes);
+        }
+        per_key_proofs
     }
 
-    /// Verify a Merkle proof for a set of key-value pairs.
+    /// Verify per-key Ethereum-format Merkle proofs for a set of key-value pairs.
     ///
     /// Each item is `(logical_key, Some(value))` for inclusion proofs
     /// or `(logical_key, None)` for exclusion proofs.
+    /// Each item has a corresponding per-key proof (ordered root-to-leaf trie nodes).
     pub fn verify_proof(
         root: &[u8; 32],
-        proof: &[Vec<u8>],
+        per_key_proofs: &[Vec<Vec<u8>>],
         items: &[(&[u8], Option<&[u8]>)],
     ) -> bool {
-        let encoded_items: Vec<(Vec<u8>, Option<Vec<u8>>)> = items
-            .iter()
-            .map(|(key, value)| {
-                let hashed_key = keccak256(key).as_slice().to_vec();
-                let value = value.map(|v| v.to_vec());
-                (hashed_key, value)
-            })
-            .collect();
-        let item_refs: Vec<&(Vec<u8>, Option<Vec<u8>>)> = encoded_items.iter().collect();
-        trie_db::proof::verify_proof::<Layout, _, _, _>(root, proof, item_refs).is_ok()
+        assert_eq!(per_key_proofs.len(), items.len());
+        for (i, &(key, expected_value)) in items.iter().enumerate() {
+            let hashed_key: [u8; 32] = keccak256(key).into();
+            if !verify_mpt_proof(root, &per_key_proofs[i], &hashed_key, expected_value) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Verify an Ethereum-format MPT proof for a single pre-hashed key.
+///
+/// This is the shared verification function used by both Summit consensus state proofs
+/// and Ethereum `eth_getProof` proofs. The `0x6A` precompile calls this directly.
+///
+/// - `root`: the expected trie root hash
+/// - `proof`: list of RLP-encoded trie nodes (any order, may be a superset)
+/// - `hashed_key`: the trie key (already `keccak256`-hashed)
+/// - `expected_value`: `Some(bytes)` for inclusion, `None` for exclusion
+pub fn verify_mpt_proof(
+    root: &[u8; 32],
+    proof: &[impl AsRef<[u8]>],
+    hashed_key: &[u8; 32],
+    expected_value: Option<&[u8]>,
+) -> bool {
+    let node_map: HashMap<[u8; 32], &[u8]> = proof
+        .iter()
+        .map(|n| (<[u8; 32]>::from(keccak256(n.as_ref())), n.as_ref()))
+        .collect();
+    let key_nibbles: Vec<u8> = hashed_key.iter().flat_map(|b| [b >> 4, b & 0x0f]).collect();
+    let got = walk_trie(root, &key_nibbles, &node_map);
+    got.as_deref() == expected_value
+}
+
+/// Walk the trie from root following `key_nibbles`, returning the value if found.
+/// Looks up nodes by hash in `node_map`. Handles inline children recursively.
+fn walk_trie(
+    root: &[u8; 32],
+    key_nibbles: &[u8],
+    node_map: &HashMap<[u8; 32], &[u8]>,
+) -> Option<Vec<u8>> {
+    let root_data = node_map.get(root)?;
+    walk_node(root_data, key_nibbles, 0, node_map)
+}
+
+/// Recursively walk a single trie node, returning the value at `key_nibbles[nibble_idx..]`.
+fn walk_node(
+    node_data: &[u8],
+    key_nibbles: &[u8],
+    nibble_idx: usize,
+    node_map: &HashMap<[u8; 32], &[u8]>,
+) -> Option<Vec<u8>> {
+    let rlp = Rlp::new(node_data);
+    match rlp.prototype().ok()? {
+        Prototype::List(2) => {
+            // Leaf or Extension
+            let path_data = rlp.at(0).ok()?.data().ok()?;
+            let prefix = path_data[0];
+            let is_leaf = prefix & 0x20 != 0;
+            let odd = prefix & 0x10 != 0;
+
+            // Extract path nibbles from hex-prefix encoding
+            let mut path_nibbles = Vec::new();
+            if odd {
+                path_nibbles.push(prefix & 0x0f);
+            }
+            for &byte in &path_data[1..] {
+                path_nibbles.push(byte >> 4);
+                path_nibbles.push(byte & 0x0f);
+            }
+
+            // Check path match
+            if nibble_idx + path_nibbles.len() > key_nibbles.len() {
+                return None; // key not found
+            }
+            if key_nibbles[nibble_idx..nibble_idx + path_nibbles.len()] != path_nibbles[..] {
+                return None; // path diverges
+            }
+            let new_idx = nibble_idx + path_nibbles.len();
+
+            if is_leaf {
+                if new_idx != key_nibbles.len() {
+                    return None; // key is longer than leaf path
+                }
+                Some(rlp.at(1).ok()?.data().ok()?.to_vec())
+            } else {
+                // Extension: follow child reference
+                follow_child(&rlp.at(1).ok()?, key_nibbles, new_idx, node_map)
+            }
+        }
+        Prototype::List(17) => {
+            // Branch node
+            if nibble_idx == key_nibbles.len() {
+                // Value stored at this branch
+                let value_rlp = rlp.at(16).ok()?;
+                if value_rlp.is_empty() {
+                    return None;
+                }
+                return Some(value_rlp.data().ok()?.to_vec());
+            }
+
+            let nibble = key_nibbles[nibble_idx] as usize;
+            let child_rlp = rlp.at(nibble).ok()?;
+            if child_rlp.is_empty() {
+                return None; // no child at this nibble
+            }
+            follow_child(&child_rlp, key_nibbles, nibble_idx + 1, node_map)
+        }
+        Prototype::Data(0) => None, // empty node
+        _ => None,
+    }
+}
+
+/// Follow a child reference — either a 32-byte hash (look up in map) or inline RLP node.
+fn follow_child(
+    child_rlp: &Rlp,
+    key_nibbles: &[u8],
+    nibble_idx: usize,
+    node_map: &HashMap<[u8; 32], &[u8]>,
+) -> Option<Vec<u8>> {
+    match child_rlp.prototype().ok()? {
+        Prototype::Data(32) => {
+            // Hash reference: look up in node map
+            let hash: [u8; 32] = child_rlp.data().ok()?.try_into().ok()?;
+            let child_data = node_map.get(&hash)?;
+            walk_node(child_data, key_nibbles, nibble_idx, node_map)
+        }
+        _ => {
+            // Inline node: decode directly from raw RLP
+            walk_node(child_rlp.as_raw(), key_nibbles, nibble_idx, node_map)
+        }
     }
 }
 
@@ -107,9 +248,12 @@ impl Clone for StateTrie {
 
 impl Default for StateTrie {
     fn default() -> Self {
-        let mut memdb = TrieMemDB::default();
+        // Ethereum's empty node is [0x80] (RLP empty string), not [0x00].
+        // MemoryDB must be initialized with the correct null node so that
+        // lookups for the empty trie root hash (keccak256([0x80])) succeed.
+        let null_node = <crate::rlp_node_codec::RlpNodeCodec as NodeCodec>::empty_node();
+        let mut memdb = TrieMemDB::from_null_node(null_node, null_node.to_vec());
         let mut root = Default::default();
-        // Build an empty trie so the root node is registered in memdb
         TrieDBMutBuilder::<Layout>::new(&mut memdb, &mut root).build();
         Self { memdb, root }
     }
@@ -126,6 +270,16 @@ impl fmt::Debug for StateTrie {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_raw_works() {
+        let mut trie = StateTrie::default();
+        trie.insert_raw(b"key1", b"value1");
+        trie.insert_raw(b"key2", b"value2");
+        assert_eq!(trie.get_raw(b"key1"), Some(b"value1".to_vec()));
+        assert_eq!(trie.get_raw(b"key2"), Some(b"value2".to_vec()));
+        assert_eq!(trie.get_raw(b"absent"), None);
+    }
 
     #[test]
     fn empty_trie_root_is_consistent() {

@@ -45,25 +45,33 @@ sol! {
 
 /// Encode precompile input for the MPT verify precompile at 0x6A.
 ///
-/// Format:
+/// Format (per-key proofs matching the precompile's expected layout):
 ///   root (32 bytes)
 ///   item_count (u32 BE)
-///   per item: keccak256(logical_key) (32) | has_value (1) | [value_len (u32 BE) | value_bytes]
-///   proof_count (u32 BE)
-///   per node:  node_len (u32 BE) | node_bytes
+///   per item:
+///     keccak256(logical_key) (32)
+///     has_value (1)
+///     [value_len (u32 BE) | value_bytes]   — only if has_value == 0x01
+///     proof_node_count (u32 BE)            — number of proof nodes for this key
+///     per node: node_len (u32 BE) | node_bytes
 fn encode_mpt_verify_input(
     root: &[u8; 32],
     logical_keys: &[&[u8]],
     values: &[Option<Vec<u8>>],
-    proof: &[Vec<u8>],
+    per_key_proofs: &[Vec<Vec<u8>>],
 ) -> Vec<u8> {
     assert_eq!(logical_keys.len(), values.len());
+    assert_eq!(logical_keys.len(), per_key_proofs.len());
     let mut buf = Vec::new();
 
     buf.extend_from_slice(root);
     buf.extend_from_slice(&(logical_keys.len() as u32).to_be_bytes());
 
-    for (key, value) in logical_keys.iter().zip(values.iter()) {
+    for ((key, value), proof_nodes) in logical_keys
+        .iter()
+        .zip(values.iter())
+        .zip(per_key_proofs.iter())
+    {
         let hashed = keccak256(key);
         buf.extend_from_slice(hashed.as_slice());
         match value {
@@ -76,12 +84,12 @@ fn encode_mpt_verify_input(
                 buf.push(0x00);
             }
         }
-    }
-
-    buf.extend_from_slice(&(proof.len() as u32).to_be_bytes());
-    for node in proof {
-        buf.extend_from_slice(&(node.len() as u32).to_be_bytes());
-        buf.extend_from_slice(node);
+        // Per-key proof nodes
+        buf.extend_from_slice(&(proof_nodes.len() as u32).to_be_bytes());
+        for node in proof_nodes {
+            buf.extend_from_slice(&(node.len() as u32).to_be_bytes());
+            buf.extend_from_slice(node);
+        }
     }
     buf
 }

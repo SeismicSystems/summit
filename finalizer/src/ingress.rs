@@ -287,7 +287,7 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
     pub async fn generate_state_proof(
         &self,
         keys: Vec<Vec<u8>>,
-    ) -> ([u8; 32], u64, Vec<Vec<u8>>, Vec<Option<Vec<u8>>>) {
+    ) -> ([u8; 32], u64, Vec<Vec<Vec<u8>>>, Vec<Option<Vec<u8>>>) {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GenerateStateProof(keys);
         let _ = self

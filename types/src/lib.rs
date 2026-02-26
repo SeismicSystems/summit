@@ -5,6 +5,7 @@ pub mod checkpoint;
 pub mod consensus_state;
 pub mod consensus_state_query;
 pub mod engine_client;
+pub mod eth_proof;
 pub mod execution_request;
 pub mod genesis;
 pub mod header;
@@ -14,6 +15,7 @@ pub mod network_oracle;
 pub mod protocol_params;
 #[cfg(feature = "e2e")]
 pub mod reth;
+pub mod rlp_node_codec;
 pub mod rpc;
 pub mod scheme;
 pub mod state_trie;
