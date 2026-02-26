@@ -20,7 +20,7 @@ use crate::execution_request::DepositRequest;
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
 use crate::ssz_hash::SszHashTreeRoot;
-use crate::ssz_tree::{SszTree, merkleize, mix_in_length};
+use crate::ssz_tree::{SszTree, mix_in_length};
 use crate::withdrawal::WithdrawalQueue;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -80,6 +80,18 @@ pub struct SszStateTree {
     /// Withdrawal queue subtree.
     withdrawal_tree: SszTree,
     withdrawal_count: usize,
+
+    /// Protocol parameter changes subtree.
+    protocol_param_tree: SszTree,
+    protocol_param_count: usize,
+
+    /// Added validators subtree (flattened across all epochs).
+    added_validator_tree: SszTree,
+    added_validator_count: usize,
+
+    /// Removed validators subtree.
+    removed_validator_tree: SszTree,
+    removed_validator_count: usize,
 }
 
 impl SszStateTree {
@@ -92,6 +104,12 @@ impl SszStateTree {
             deposit_count: 0,
             withdrawal_tree: SszTree::new(1),
             withdrawal_count: 0,
+            protocol_param_tree: SszTree::new(1),
+            protocol_param_count: 0,
+            added_validator_tree: SszTree::new(1),
+            added_validator_count: 0,
+            removed_validator_tree: SszTree::new(1),
+            removed_validator_count: 0,
         }
     }
 
@@ -383,33 +401,81 @@ impl SszStateTree {
         self.withdrawal_count
     }
 
-    /// Recompute protocol param changes root.
-    pub fn update_protocol_param_changes_root(&mut self, params: &[ProtocolParam]) {
-        let root = collection_root_from(params.iter().map(|p| p.hash_tree_root()), params.len());
-        self.top.set_leaf(PROTOCOL_PARAM_CHANGES_ROOT, root);
+    /// Rebuild protocol parameter changes subtree.
+    pub fn rebuild_protocol_params(&mut self, params: &[ProtocolParam]) {
+        let count = params.len();
+        let capacity = count.max(1);
+        let mut tree = SszTree::new(capacity);
+        for (i, param) in params.iter().enumerate() {
+            tree.set_leaf(i, param.hash_tree_root());
+        }
+        self.protocol_param_tree = tree;
+        self.protocol_param_count = count;
+        self.update_protocol_param_collection_root();
     }
 
-    /// Recompute added validators root (flattened across all epochs).
-    pub fn update_added_validators_root(
-        &mut self,
-        validators: &BTreeMap<u64, Vec<AddedValidator>>,
-    ) {
+    fn update_protocol_param_collection_root(&mut self) {
+        let subtree_root = self.protocol_param_tree.root();
+        let collection_root = mix_in_length(subtree_root, self.protocol_param_count);
+        self.top
+            .set_leaf(PROTOCOL_PARAM_CHANGES_ROOT, collection_root);
+    }
+
+    /// Number of protocol parameter changes in the subtree.
+    pub fn protocol_param_count(&self) -> usize {
+        self.protocol_param_count
+    }
+
+    /// Rebuild added validators subtree (flattened across all epochs).
+    pub fn rebuild_added_validators(&mut self, validators: &BTreeMap<u64, Vec<AddedValidator>>) {
         let items: Vec<[u8; 32]> = validators
             .values()
             .flat_map(|v| v.iter().map(|av| av.hash_tree_root()))
             .collect();
-        let len = items.len();
-        let root = collection_root_from(items.into_iter(), len);
-        self.top.set_leaf(ADDED_VALIDATORS_ROOT, root);
+        let count = items.len();
+        let capacity = count.max(1);
+        let mut tree = SszTree::new(capacity);
+        for (i, hash) in items.iter().enumerate() {
+            tree.set_leaf(i, *hash);
+        }
+        self.added_validator_tree = tree;
+        self.added_validator_count = count;
+        self.update_added_validator_collection_root();
     }
 
-    /// Recompute removed validators root.
-    pub fn update_removed_validators_root(&mut self, validators: &[PublicKey]) {
-        let root = collection_root_from(
-            validators.iter().map(|v| v.hash_tree_root()),
-            validators.len(),
-        );
-        self.top.set_leaf(REMOVED_VALIDATORS_ROOT, root);
+    fn update_added_validator_collection_root(&mut self) {
+        let subtree_root = self.added_validator_tree.root();
+        let collection_root = mix_in_length(subtree_root, self.added_validator_count);
+        self.top.set_leaf(ADDED_VALIDATORS_ROOT, collection_root);
+    }
+
+    /// Number of added validators in the subtree.
+    pub fn added_validator_count(&self) -> usize {
+        self.added_validator_count
+    }
+
+    /// Rebuild removed validators subtree.
+    pub fn rebuild_removed_validators(&mut self, validators: &[PublicKey]) {
+        let count = validators.len();
+        let capacity = count.max(1);
+        let mut tree = SszTree::new(capacity);
+        for (i, v) in validators.iter().enumerate() {
+            tree.set_leaf(i, v.hash_tree_root());
+        }
+        self.removed_validator_tree = tree;
+        self.removed_validator_count = count;
+        self.update_removed_validator_collection_root();
+    }
+
+    fn update_removed_validator_collection_root(&mut self) {
+        let subtree_root = self.removed_validator_tree.root();
+        let collection_root = mix_in_length(subtree_root, self.removed_validator_count);
+        self.top.set_leaf(REMOVED_VALIDATORS_ROOT, collection_root);
+    }
+
+    /// Number of removed validators in the subtree.
+    pub fn removed_validator_count(&self) -> usize {
+        self.removed_validator_count
     }
 
     // --- Rebuild from scratch ---
@@ -457,9 +523,9 @@ impl SszStateTree {
         // Other collections
         self.rebuild_deposits(deposit_queue);
         self.rebuild_withdrawals(withdrawal_queue);
-        self.update_protocol_param_changes_root(protocol_param_changes);
-        self.update_added_validators_root(added_validators);
-        self.update_removed_validators_root(removed_validators);
+        self.rebuild_protocol_params(protocol_param_changes);
+        self.rebuild_added_validators(added_validators);
+        self.rebuild_removed_validators(removed_validators);
     }
 
     // --- Proof generation ---
@@ -594,6 +660,28 @@ impl SszStateTree {
         (gindex, node_value, branch)
     }
 
+    /// Generate a proof for a deposit identified by node pubkey.
+    pub fn generate_deposit_proof_by_key(
+        &self,
+        node_pubkey: &PublicKey,
+        deposits: &VecDeque<DepositRequest>,
+    ) -> Option<SszProof> {
+        let index = deposits
+            .iter()
+            .position(|d| &d.node_pubkey == node_pubkey)?;
+        self.generate_deposit_proof(index)
+    }
+
+    /// Generate a proof for a withdrawal identified by validator pubkey.
+    pub fn generate_withdrawal_proof_by_key(
+        &self,
+        pubkey: &[u8; 32],
+        queue: &WithdrawalQueue,
+    ) -> Option<SszProof> {
+        let index = queue.withdrawals_iter().position(|(k, _)| k == pubkey)?;
+        self.generate_withdrawal_proof(index)
+    }
+
     /// Generate a proof for a deposit at a given queue index.
     pub fn generate_deposit_proof(&self, index: usize) -> Option<SszProof> {
         if index >= self.deposit_count {
@@ -611,28 +699,116 @@ impl SszStateTree {
         })
     }
 
-    /// Generate a proof for a withdrawal identified by pubkey.
-    pub fn generate_withdrawal_proof(
-        &self,
-        pubkey: &[u8; 32],
-        keys: &[[u8; 32]],
-    ) -> Option<SszProof> {
-        let slot = keys.iter().position(|k| k == pubkey)?;
-        if slot >= self.withdrawal_count {
+    /// Generate a proof for a withdrawal at a given queue index.
+    pub fn generate_withdrawal_proof(&self, index: usize) -> Option<SszProof> {
+        if index >= self.withdrawal_count {
             return None;
         }
         Some(SszProof {
             gindex: self.compose_collection_gindex(
                 WITHDRAWAL_QUEUE_ROOT,
                 &self.withdrawal_tree,
-                slot,
+                index,
             ),
-            leaf: self.withdrawal_tree.get_leaf(slot),
+            leaf: self.withdrawal_tree.get_leaf(index),
             branch: self.build_collection_branch(
                 WITHDRAWAL_QUEUE_ROOT,
                 &self.withdrawal_tree,
-                slot,
+                index,
                 self.withdrawal_count,
+            ),
+        })
+    }
+
+    /// Generate a proof for a protocol parameter change at a given index.
+    pub fn generate_protocol_param_proof(&self, index: usize) -> Option<SszProof> {
+        if index >= self.protocol_param_count {
+            return None;
+        }
+        Some(SszProof {
+            gindex: self.compose_collection_gindex(
+                PROTOCOL_PARAM_CHANGES_ROOT,
+                &self.protocol_param_tree,
+                index,
+            ),
+            leaf: self.protocol_param_tree.get_leaf(index),
+            branch: self.build_collection_branch(
+                PROTOCOL_PARAM_CHANGES_ROOT,
+                &self.protocol_param_tree,
+                index,
+                self.protocol_param_count,
+            ),
+        })
+    }
+
+    /// Generate a proof for an added validator identified by node key.
+    ///
+    /// Searches the flattened added-validators list (epochs in ascending
+    /// order, then insertion order within each epoch) for a matching
+    /// `node_key` and returns the proof for the first match.
+    pub fn generate_added_validator_proof_by_key(
+        &self,
+        node_key: &PublicKey,
+        added_validators: &BTreeMap<u64, Vec<AddedValidator>>,
+    ) -> Option<SszProof> {
+        let index = added_validators
+            .values()
+            .flat_map(|v| v.iter())
+            .position(|av| &av.node_key == node_key)?;
+        self.generate_added_validator_proof(index)
+    }
+
+    /// Generate a proof for a removed validator identified by node key.
+    ///
+    /// Searches the removed-validators list for a matching key and
+    /// returns the proof for the first match.
+    pub fn generate_removed_validator_proof_by_key(
+        &self,
+        node_key: &PublicKey,
+        removed_validators: &[PublicKey],
+    ) -> Option<SszProof> {
+        let index = removed_validators.iter().position(|k| k == node_key)?;
+        self.generate_removed_validator_proof(index)
+    }
+
+    /// Generate a proof for an added validator at a given flattened index.
+    pub fn generate_added_validator_proof(&self, index: usize) -> Option<SszProof> {
+        if index >= self.added_validator_count {
+            return None;
+        }
+        Some(SszProof {
+            gindex: self.compose_collection_gindex(
+                ADDED_VALIDATORS_ROOT,
+                &self.added_validator_tree,
+                index,
+            ),
+            leaf: self.added_validator_tree.get_leaf(index),
+            branch: self.build_collection_branch(
+                ADDED_VALIDATORS_ROOT,
+                &self.added_validator_tree,
+                index,
+                self.added_validator_count,
+            ),
+        })
+    }
+
+    /// Generate a proof for a removed validator at a given index.
+    pub fn generate_removed_validator_proof(&self, index: usize) -> Option<SszProof> {
+        if index >= self.removed_validator_count {
+            return None;
+        }
+        Some(SszProof {
+            gindex: self.compose_collection_gindex(
+                REMOVED_VALIDATORS_ROOT,
+                &self.removed_validator_tree,
+                index,
+            ),
+            leaf: self.removed_validator_tree.get_leaf(index),
+            branch: self.build_collection_branch(
+                REMOVED_VALIDATORS_ROOT,
+                &self.removed_validator_tree,
+                index,
+                self.removed_validator_count,
             ),
         })
     }
@@ -676,12 +852,6 @@ impl SszProof {
     pub fn verify(&self, state_root: &[u8; 32]) -> bool {
         SszTree::verify_proof_gindex(state_root, self.gindex, &self.leaf, &self.branch)
     }
-}
-
-/// Compute a collection root: `mix_in_length(merkleize(items), length)`.
-fn collection_root_from(items: impl Iterator<Item = [u8; 32]>, length: usize) -> [u8; 32] {
-    let chunks: Vec<[u8; 32]> = items.collect();
-    mix_in_length(merkleize(&chunks), length)
 }
 
 #[cfg(test)]
@@ -911,9 +1081,9 @@ mod tests {
         inc.rebuild_validators(&accounts);
         inc.rebuild_deposits(&VecDeque::new());
         inc.rebuild_withdrawals(&WithdrawalQueue::default());
-        inc.update_protocol_param_changes_root(&[]);
-        inc.update_added_validators_root(&BTreeMap::new());
-        inc.update_removed_validators_root(&[]);
+        inc.rebuild_protocol_params(&[]);
+        inc.rebuild_added_validators(&BTreeMap::new());
+        inc.rebuild_removed_validators(&[]);
 
         // Build via rebuild
         let mut rb = SszStateTree::new();
@@ -1096,19 +1266,18 @@ mod tests {
         tree.set_epoch(5);
 
         let root = tree.root();
-        let keys: Vec<[u8; 32]> = queue.withdrawals_iter().map(|(k, _)| *k).collect();
 
-        let proof1 = tree.generate_withdrawal_proof(&pk1, &keys).unwrap();
+        let proof1 = tree.generate_withdrawal_proof_by_key(&pk1, &queue).unwrap();
         assert!(proof1.verify(&root));
 
-        let proof2 = tree.generate_withdrawal_proof(&pk2, &keys).unwrap();
+        let proof2 = tree.generate_withdrawal_proof_by_key(&pk2, &queue).unwrap();
         assert!(proof2.verify(&root));
     }
 
     #[test]
     fn withdrawal_proof_unknown_key() {
         let tree = SszStateTree::new();
-        assert!(tree.generate_withdrawal_proof(&[99u8; 32], &[]).is_none());
+        assert!(tree.generate_withdrawal_proof(0).is_none());
     }
 
     #[test]
@@ -1681,6 +1850,194 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Collection subtree proof tests ─────────────────────────────────
+
+    #[test]
+    fn protocol_param_proof_verifies() {
+        let params = vec![
+            ProtocolParam::MinimumStake(1_000_000),
+            ProtocolParam::MaximumStake(64_000_000_000),
+            ProtocolParam::MinimumStake(2_000_000),
+        ];
+        let mut tree = SszStateTree::new();
+        tree.rebuild_protocol_params(&params);
+        let root = tree.root();
+
+        for i in 0..params.len() {
+            let proof = tree.generate_protocol_param_proof(i).unwrap();
+            assert_eq!(proof.leaf, params[i].hash_tree_root());
+            assert!(proof.verify(&root), "protocol param proof {i} failed");
+        }
+
+        assert!(tree.generate_protocol_param_proof(params.len()).is_none());
+    }
+
+    #[test]
+    fn added_validator_proof_verifies() {
+        use commonware_cryptography::ed25519;
+        let mut added: BTreeMap<u64, Vec<AddedValidator>> = BTreeMap::new();
+        for epoch in [1u64, 3, 5] {
+            let mut epoch_validators = Vec::new();
+            for seed in 0..3u64 {
+                let node_key = ed25519::PrivateKey::from_seed(epoch * 100 + seed).public_key();
+                let consensus_key =
+                    bls12381::PrivateKey::from_seed(epoch * 100 + seed).public_key();
+                epoch_validators.push(AddedValidator {
+                    node_key,
+                    consensus_key,
+                });
+            }
+            added.insert(epoch, epoch_validators);
+        }
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_added_validators(&added);
+        let root = tree.root();
+
+        // Flattened items
+        let items: Vec<AddedValidator> = added.values().flat_map(|v| v.iter().cloned()).collect();
+
+        for i in 0..items.len() {
+            let proof = tree.generate_added_validator_proof(i).unwrap();
+            assert_eq!(proof.leaf, items[i].hash_tree_root());
+            assert!(proof.verify(&root), "added validator proof {i} failed");
+        }
+
+        assert!(tree.generate_added_validator_proof(items.len()).is_none());
+    }
+
+    #[test]
+    fn removed_validator_proof_verifies() {
+        use commonware_cryptography::ed25519;
+        let removed: Vec<PublicKey> = (0..5u64)
+            .map(|seed| ed25519::PrivateKey::from_seed(seed).public_key())
+            .collect();
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_removed_validators(&removed);
+        let root = tree.root();
+
+        for i in 0..removed.len() {
+            let proof = tree.generate_removed_validator_proof(i).unwrap();
+            assert_eq!(proof.leaf, removed[i].hash_tree_root());
+            assert!(proof.verify(&root), "removed validator proof {i} failed");
+        }
+
+        assert!(
+            tree.generate_removed_validator_proof(removed.len())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn added_validator_proof_by_key() {
+        use commonware_cryptography::ed25519;
+        let mut added: BTreeMap<u64, Vec<AddedValidator>> = BTreeMap::new();
+        for epoch in [1u64, 3] {
+            let mut epoch_validators = Vec::new();
+            for seed in 0..2u64 {
+                let node_key = ed25519::PrivateKey::from_seed(epoch * 100 + seed).public_key();
+                let consensus_key =
+                    bls12381::PrivateKey::from_seed(epoch * 100 + seed).public_key();
+                epoch_validators.push(AddedValidator {
+                    node_key,
+                    consensus_key,
+                });
+            }
+            added.insert(epoch, epoch_validators);
+        }
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_added_validators(&added);
+        let root = tree.root();
+
+        // Look up by node key of the second validator in epoch 3 (flattened index 3)
+        let target_key = &added[&3][1].node_key;
+        let proof = tree
+            .generate_added_validator_proof_by_key(target_key, &added)
+            .unwrap();
+        assert_eq!(proof.leaf, added[&3][1].hash_tree_root());
+        assert!(proof.verify(&root));
+
+        // Unknown key returns None
+        let unknown_key = ed25519::PrivateKey::from_seed(9999).public_key();
+        assert!(
+            tree.generate_added_validator_proof_by_key(&unknown_key, &added)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn removed_validator_proof_by_key() {
+        use commonware_cryptography::ed25519;
+        let removed: Vec<PublicKey> = (0..4u64)
+            .map(|seed| ed25519::PrivateKey::from_seed(seed).public_key())
+            .collect();
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_removed_validators(&removed);
+        let root = tree.root();
+
+        // Look up by key
+        let proof = tree
+            .generate_removed_validator_proof_by_key(&removed[2], &removed)
+            .unwrap();
+        assert_eq!(proof.leaf, removed[2].hash_tree_root());
+        assert!(proof.verify(&root));
+
+        // Unknown key returns None
+        let unknown_key = ed25519::PrivateKey::from_seed(9999).public_key();
+        assert!(
+            tree.generate_removed_validator_proof_by_key(&unknown_key, &removed)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn empty_collection_proofs_return_none() {
+        let tree = SszStateTree::new();
+        assert!(tree.generate_protocol_param_proof(0).is_none());
+        assert!(tree.generate_added_validator_proof(0).is_none());
+        assert!(tree.generate_removed_validator_proof(0).is_none());
+    }
+
+    #[test]
+    fn collection_proof_after_rebuild() {
+        use commonware_cryptography::ed25519;
+        let mut tree = SszStateTree::new();
+
+        // First build
+        let params_v1 = vec![ProtocolParam::MinimumStake(1_000)];
+        tree.rebuild_protocol_params(&params_v1);
+        let root_v1 = tree.root();
+        let proof_v1 = tree.generate_protocol_param_proof(0).unwrap();
+        assert!(proof_v1.verify(&root_v1));
+
+        // Rebuild with different data
+        let params_v2 = vec![
+            ProtocolParam::MinimumStake(2_000),
+            ProtocolParam::MaximumStake(99_000),
+        ];
+        tree.rebuild_protocol_params(&params_v2);
+        let root_v2 = tree.root();
+
+        assert_ne!(root_v1, root_v2);
+        // Old proof should NOT verify against new root
+        assert!(!proof_v1.verify(&root_v2));
+        // New proofs should verify
+        for i in 0..params_v2.len() {
+            let proof = tree.generate_protocol_param_proof(i).unwrap();
+            assert!(proof.verify(&root_v2), "v2 proof {i} failed");
+        }
+
+        // Single-element removed validators
+        let removed = vec![ed25519::PrivateKey::from_seed(42).public_key()];
+        tree.rebuild_removed_validators(&removed);
+        let root_v3 = tree.root();
+        let proof = tree.generate_removed_validator_proof(0).unwrap();
+        assert!(proof.verify(&root_v3));
     }
 
     /// Proofs generated after incremental remove must verify against root.

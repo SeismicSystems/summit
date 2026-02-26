@@ -202,7 +202,7 @@ impl ConsensusState {
             .or_default()
             .push(validator);
         self.ssz_tree
-            .update_added_validators_root(&self.added_validators);
+            .rebuild_added_validators(&self.added_validators);
     }
 
     pub fn get_removed_validators(&self) -> &Vec<PublicKey> {
@@ -212,7 +212,7 @@ impl ConsensusState {
     pub fn set_removed_validators(&mut self, validators: Vec<PublicKey>) {
         self.removed_validators = validators;
         self.ssz_tree
-            .update_removed_validators_root(&self.removed_validators);
+            .rebuild_removed_validators(&self.removed_validators);
     }
 
     pub fn get_forkchoice(&self) -> &ForkchoiceState {
@@ -266,19 +266,19 @@ impl ConsensusState {
     pub fn push_protocol_param_change(&mut self, param: ProtocolParam) {
         self.protocol_param_changes.push(param);
         self.ssz_tree
-            .update_protocol_param_changes_root(&self.protocol_param_changes);
+            .rebuild_protocol_params(&self.protocol_param_changes);
     }
 
     pub fn push_removed_validator(&mut self, pubkey: PublicKey) {
         self.removed_validators.push(pubkey);
         self.ssz_tree
-            .update_removed_validators_root(&self.removed_validators);
+            .rebuild_removed_validators(&self.removed_validators);
     }
 
     pub fn clear_removed_validators(&mut self) {
         self.removed_validators.clear();
         self.ssz_tree
-            .update_removed_validators_root(&self.removed_validators);
+            .rebuild_removed_validators(&self.removed_validators);
     }
 
     pub fn has_removed_validators(&self) -> bool {
@@ -292,7 +292,7 @@ impl ConsensusState {
     pub fn remove_added_validators_for_epoch(&mut self, epoch: u64) -> Option<Vec<AddedValidator>> {
         let validators = self.added_validators.remove(&epoch)?;
         self.ssz_tree
-            .update_added_validators_root(&self.added_validators);
+            .rebuild_added_validators(&self.added_validators);
         Some(validators)
     }
 
@@ -302,7 +302,7 @@ impl ConsensusState {
         {
             validators.remove(pos);
             self.ssz_tree
-                .update_added_validators_root(&self.added_validators);
+                .rebuild_added_validators(&self.added_validators);
             return true;
         }
         false
@@ -578,7 +578,7 @@ impl ConsensusState {
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
         self.ssz_tree
-            .update_protocol_param_changes_root(&self.protocol_param_changes);
+            .rebuild_protocol_params(&self.protocol_param_changes);
         min_or_max_stake_changed
     }
 
