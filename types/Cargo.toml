@@ -38,11 +38,8 @@ bytes.workspace = true
 serde_json = { workspace = true, optional = true }
 
 # for state trie
-trie-db.workspace = true
-hash-db.workspace = true
-memory-db.workspace = true
-reference-trie.workspace = true
-keccak-hasher.workspace = true
+alloy-trie.workspace = true
+nybbles.workspace = true
 
 # for benchmarking
 libc = { version = "0.2.174", optional = true}
@@ -51,3 +48,7 @@ libc = { version = "0.2.174", optional = true}
 bench = ["serde_json"]
 e2e = ["libc", "alloy-genesis", "url"]
 bad-blocks = []
+
+[[bench]]
+name = "mpt_benchmark"
+harness = false

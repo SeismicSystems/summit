@@ -1541,9 +1541,9 @@ mod tests {
     /// Helper: verify a single trie key/value inclusion proof against the current root.
     fn assert_trie_proves(state: &ConsensusState, key: &[u8], value: &[u8]) {
         let trie = state.state_trie();
-        let proof = trie.generate_proof(&[key]);
+        let proofs = trie.generate_proof(&[key]);
         assert!(
-            StateTrie::verify_proof(&trie.root(), &proof, &[(key, Some(value))]),
+            StateTrie::verify_proof(&trie.root(), &proofs[0], key, Some(value)),
             "inclusion proof failed for key {:?}",
             String::from_utf8_lossy(key),
         );
@@ -1552,9 +1552,9 @@ mod tests {
     /// Helper: verify a trie key is absent.
     fn assert_trie_absent(state: &ConsensusState, key: &[u8]) {
         let trie = state.state_trie();
-        let proof = trie.generate_proof(&[key]);
+        let proofs = trie.generate_proof(&[key]);
         assert!(
-            StateTrie::verify_proof(&trie.root(), &proof, &[(key, None)]),
+            StateTrie::verify_proof(&trie.root(), &proofs[0], key, None),
             "exclusion proof failed for key {:?}",
             String::from_utf8_lossy(key),
         );
@@ -2040,20 +2040,30 @@ mod tests {
         let pubkey = [1u8; 32];
         state.set_account(pubkey, create_test_validator_account(1, 32_000_000_000));
 
-        // Prove multiple keys in a single proof
+        // Prove multiple keys in a single call — returns per-key proofs
         let balance_key = state_trie_key::validator_account_balance(&pubkey);
         let trie = state.state_trie();
-        let proof =
+        let proofs =
             trie.generate_proof(&[state_trie_key::EPOCH, state_trie_key::VIEW, &balance_key]);
 
+        let root = trie.root();
         assert!(StateTrie::verify_proof(
-            &trie.root(),
-            &proof,
-            &[
-                (state_trie_key::EPOCH, Some(&10u64.to_be_bytes())),
-                (state_trie_key::VIEW, Some(&20u64.to_be_bytes())),
-                (&balance_key, Some(&32_000_000_000u64.to_be_bytes())),
-            ],
+            &root,
+            &proofs[0],
+            state_trie_key::EPOCH,
+            Some(&10u64.to_be_bytes()),
+        ));
+        assert!(StateTrie::verify_proof(
+            &root,
+            &proofs[1],
+            state_trie_key::VIEW,
+            Some(&20u64.to_be_bytes()),
+        ));
+        assert!(StateTrie::verify_proof(
+            &root,
+            &proofs[2],
+            &balance_key,
+            Some(&32_000_000_000u64.to_be_bytes()),
         ));
     }
 

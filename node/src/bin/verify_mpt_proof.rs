@@ -45,25 +45,32 @@ sol! {
 
 /// Encode precompile input for the MPT verify precompile at 0x6A.
 ///
-/// Format:
+/// Format (per-key proofs):
 ///   root (32 bytes)
 ///   item_count (u32 BE)
-///   per item: keccak256(logical_key) (32) | has_value (1) | [value_len (u32 BE) | value_bytes]
-///   proof_count (u32 BE)
-///   per node:  node_len (u32 BE) | node_bytes
+///   per item:
+///     keccak256(logical_key) (32)
+///     has_value (1) | [value_len (u32 BE) | value_bytes]
+///     proof_node_count (u32 BE)
+///     per node: node_len (u32 BE) | node_bytes
 fn encode_mpt_verify_input(
     root: &[u8; 32],
     logical_keys: &[&[u8]],
     values: &[Option<Vec<u8>>],
-    proof: &[Vec<u8>],
+    per_key_proofs: &[Vec<Vec<u8>>],
 ) -> Vec<u8> {
     assert_eq!(logical_keys.len(), values.len());
+    assert_eq!(logical_keys.len(), per_key_proofs.len());
     let mut buf = Vec::new();
 
     buf.extend_from_slice(root);
     buf.extend_from_slice(&(logical_keys.len() as u32).to_be_bytes());
 
-    for (key, value) in logical_keys.iter().zip(values.iter()) {
+    for ((key, value), proof_nodes) in logical_keys
+        .iter()
+        .zip(values.iter())
+        .zip(per_key_proofs.iter())
+    {
         let hashed = keccak256(key);
         buf.extend_from_slice(hashed.as_slice());
         match value {
@@ -76,12 +83,11 @@ fn encode_mpt_verify_input(
                 buf.push(0x00);
             }
         }
-    }
-
-    buf.extend_from_slice(&(proof.len() as u32).to_be_bytes());
-    for node in proof {
-        buf.extend_from_slice(&(node.len() as u32).to_be_bytes());
-        buf.extend_from_slice(node);
+        buf.extend_from_slice(&(proof_nodes.len() as u32).to_be_bytes());
+        for node in proof_nodes {
+            buf.extend_from_slice(&(node.len() as u32).to_be_bytes());
+            buf.extend_from_slice(node);
+        }
     }
     buf
 }
@@ -254,7 +260,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|v| v.as_ref().map(|b| format!("0x{}", alloy::hex::encode(b))))
                     .collect::<Vec<_>>()
             );
-            println!("  proof nodes: {}", proof_resp.proof.len());
+            let total_proof_nodes: usize = proof_resp.proof.iter().map(|p| p.len()).sum();
+            println!("  proof keys: {}, total proof nodes: {}", proof_resp.proof.len(), total_proof_nodes);
 
             // Build alloy provider (with wallet for TEST C)
             let node0_http_port = handles[0].http_port();

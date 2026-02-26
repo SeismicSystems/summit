@@ -35,6 +35,6 @@ pub struct StateProofResponse {
     /// The EL block number at capture time. The root appears on-chain in EL block
     /// `el_block_number + 1` — query that block's timestamp via the beacon roots contract.
     pub el_block_number: u64,
-    pub proof: Vec<Vec<u8>>,
+    pub proof: Vec<Vec<Vec<u8>>>,
     pub values: Vec<Option<Vec<u8>>>,
 }
