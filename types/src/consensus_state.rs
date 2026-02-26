@@ -322,14 +322,34 @@ impl ConsensusState {
     }
 
     pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
-        self.validator_accounts.insert(pubkey, account);
-        self.ssz_tree.rebuild_validators(&self.validator_accounts);
+        let is_update = self.validator_accounts.contains_key(&pubkey);
+        if is_update {
+            self.validator_accounts.insert(pubkey, account.clone());
+            // Incremental: update only this validator's 8 leaves — O(8 · log n)
+            let slot = self
+                .validator_accounts
+                .keys()
+                .position(|k| k == &pubkey)
+                .expect("key was just inserted");
+            self.ssz_tree.update_validator_at_slot(slot, &account);
+        } else {
+            // Insert into BTreeMap first to determine positional slot
+            self.validator_accounts.insert(pubkey, account.clone());
+            let slot = self
+                .validator_accounts
+                .keys()
+                .position(|k| k == &pubkey)
+                .expect("key was just inserted");
+            self.ssz_tree.insert_validator_at_slot(slot, &account);
+        }
     }
 
     pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
+        // Find slot before removing from BTreeMap
+        let slot = self.validator_accounts.keys().position(|k| k == pubkey);
         let removed = self.validator_accounts.remove(pubkey);
-        if removed.is_some() {
-            self.ssz_tree.rebuild_validators(&self.validator_accounts);
+        if let (Some(slot), Some(_)) = (slot, &removed) {
+            self.ssz_tree.remove_validator_at_slot(slot);
         }
         removed
     }

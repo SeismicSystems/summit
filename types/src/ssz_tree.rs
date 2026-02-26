@@ -94,6 +94,140 @@ impl SszTree {
         }
     }
 
+    /// Set a leaf value without rehashing the path to root.
+    ///
+    /// Use this for bulk leaf writes, followed by `rehash_from` to recompute
+    /// internal nodes in a single bottom-up pass.
+    #[inline]
+    pub fn set_leaf_no_rehash(&mut self, leaf_index: usize, value: [u8; 32]) {
+        self.nodes[self.capacity + leaf_index] = value;
+    }
+
+    /// Bottom-up rehash of all internal nodes from `start_index` level up to root.
+    ///
+    /// `start_index` is the first 1-based node index at the level to start from.
+    /// For example, `capacity / 8` is the per-validator subtree root level.
+    /// Rehashes every node from that level up to and including the root.
+    pub fn rehash_from(&mut self, start_index: usize) {
+        // Walk up levels: start_index..start_index*2 is one level,
+        // parent level is start_index/2..start_index, etc.
+        let mut level_start = start_index;
+        while level_start >= 1 {
+            let level_end = level_start * 2;
+            for i in level_start..level_end {
+                if i * 2 + 1 < self.nodes.len() {
+                    self.nodes[i] = hash32_concat(&self.nodes[2 * i], &self.nodes[2 * i + 1]);
+                }
+            }
+            if level_start == 1 {
+                break;
+            }
+            level_start /= 2;
+        }
+    }
+
+    /// Shift `count` blocks of `block_size` leaves starting at `from_slot` right by 1 block.
+    ///
+    /// Copies all 4 levels of nodes (leaves + 3 internal levels per block).
+    /// Zeros the vacated slot at `from_slot`. Does NOT rehash.
+    pub fn shift_blocks_right(&mut self, from_slot: usize, count: usize, block_size: usize) {
+        if count == 0 {
+            return;
+        }
+        let log_block = block_size.ilog2() as usize; // 3 for block_size=8
+
+        // Shift each level: leaves, then each internal level up to subtree root
+        for level in 0..=log_block {
+            let stride = block_size >> level; // 8, 4, 2, 1
+            let base = self.capacity >> level; // C, C/2, C/4, C/8
+            let src_start = base + from_slot * stride;
+            let src_end = src_start + count * stride;
+            let dst_start = src_start + stride;
+            // Use copy_within for overlapping memmove
+            self.nodes.copy_within(src_start..src_end, dst_start);
+            // Zero the vacated slot
+            for i in src_start..src_start + stride {
+                self.nodes[i] = [0u8; 32];
+            }
+        }
+    }
+
+    /// Shift `count` blocks of `block_size` leaves starting at `from_slot+1` left by 1 block.
+    ///
+    /// Copies all 4 levels. Zeros the last block. Does NOT rehash.
+    pub fn shift_blocks_left(&mut self, from_slot: usize, count: usize, block_size: usize) {
+        if count == 0 {
+            return;
+        }
+        let log_block = block_size.ilog2() as usize;
+
+        for level in 0..=log_block {
+            let stride = block_size >> level;
+            let base = self.capacity >> level;
+            let src_start = base + (from_slot + 1) * stride;
+            let src_end = src_start + count * stride;
+            let dst_start = base + from_slot * stride;
+            self.nodes.copy_within(src_start..src_end, dst_start);
+            // Zero the vacated last block
+            let zero_start = dst_start + count * stride;
+            for i in zero_start..zero_start + stride {
+                self.nodes[i] = [0u8; 32];
+            }
+        }
+    }
+
+    /// Grow the tree to accommodate at least `min_leaves` leaves.
+    ///
+    /// Copies existing leaves to the new tree and does a full bottom-up rehash.
+    /// No-op if the current capacity is sufficient.
+    pub fn grow(&mut self, min_leaves: usize) {
+        if min_leaves <= self.capacity {
+            return;
+        }
+        let new_capacity = min_leaves.next_power_of_two();
+        let new_depth = new_capacity.ilog2() as usize;
+        let mut new_nodes = vec![[0u8; 32]; 2 * new_capacity];
+
+        // Copy existing leaves
+        let old_leaf_start = self.capacity;
+        let old_leaf_end = 2 * self.capacity;
+        let new_leaf_start = new_capacity;
+        new_nodes[new_leaf_start..new_leaf_start + self.capacity]
+            .copy_from_slice(&self.nodes[old_leaf_start..old_leaf_end]);
+
+        self.nodes = new_nodes;
+        self.capacity = new_capacity;
+        self.depth = new_depth;
+
+        // Full bottom-up rehash from leaf parents
+        self.rehash_from(self.capacity / 2);
+    }
+
+    /// Shrink the tree so that its capacity matches `min_leaves.next_power_of_two()`.
+    ///
+    /// Copies existing leaves into the smaller tree and does a full bottom-up rehash.
+    /// No-op if the new capacity would be >= the current capacity.
+    pub fn shrink(&mut self, min_leaves: usize) {
+        let new_capacity = min_leaves.max(1).next_power_of_two();
+        if new_capacity >= self.capacity {
+            return;
+        }
+        let new_depth = new_capacity.ilog2() as usize;
+        let mut new_nodes = vec![[0u8; 32]; 2 * new_capacity];
+
+        // Copy the first new_capacity leaves
+        let old_leaf_start = self.capacity;
+        let new_leaf_start = new_capacity;
+        new_nodes[new_leaf_start..new_leaf_start + new_capacity]
+            .copy_from_slice(&self.nodes[old_leaf_start..old_leaf_start + new_capacity]);
+
+        self.nodes = new_nodes;
+        self.capacity = new_capacity;
+        self.depth = new_depth;
+
+        self.rehash_from(self.capacity / 2);
+    }
+
     /// Generate a Merkle proof for the leaf at `leaf_index`.
     ///
     /// Returns sibling hashes in bottom-up order (from leaf level to root level).

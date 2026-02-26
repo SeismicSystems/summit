@@ -206,6 +206,111 @@ impl SszStateTree {
         );
     }
 
+    /// Update a single validator's fields in-place (incremental).
+    ///
+    /// The validator must already exist at the given `slot`. Only the changed
+    /// leaves are rehashed — O(8 · log n) instead of O(N · 8) for a full rebuild.
+    pub fn update_validator_at_slot(&mut self, slot: usize, account: &ValidatorAccount) {
+        Self::set_validator_fields(&mut self.validator_tree, slot, account);
+        self.update_validator_collection_root();
+    }
+
+    /// Insert a new validator at positional `slot`, shifting existing validators right.
+    ///
+    /// Grows the tree if needed. Copies shifted validators' subtree nodes via memmove
+    /// (no rehash), then writes the new validator's 8 field leaves and rehashes only
+    /// the upper tree. O(N) memcpy + O(N/8) SHA256 instead of O(N*8*log(N*8)).
+    pub fn insert_validator_at_slot(&mut self, slot: usize, account: &ValidatorAccount) {
+        let new_count = self.validator_count + 1;
+        let needed = new_count * VALIDATOR_FIELDS_PER_ACCOUNT;
+        self.validator_tree.grow(needed);
+
+        // Shift validators [slot..count) right by 1 block
+        let to_shift = self.validator_count - slot;
+        self.validator_tree
+            .shift_blocks_right(slot, to_shift, VALIDATOR_FIELDS_PER_ACCOUNT);
+
+        // Write new validator's 8 field leaves (no per-leaf rehash)
+        Self::set_validator_fields_no_rehash(&mut self.validator_tree, slot, account);
+
+        // Rehash from leaf parents up through the entire tree
+        self.validator_tree
+            .rehash_from(self.validator_tree.capacity() / 2);
+
+        self.validator_count = new_count;
+        self.update_validator_collection_root();
+    }
+
+    /// Remove the validator at positional `slot`, shifting subsequent validators left.
+    ///
+    /// O(N) memcpy + O(N/8) SHA256.
+    pub fn remove_validator_at_slot(&mut self, slot: usize) {
+        assert!(slot < self.validator_count, "slot out of range");
+        let to_shift = self.validator_count - slot - 1;
+        self.validator_tree
+            .shift_blocks_left(slot, to_shift, VALIDATOR_FIELDS_PER_ACCOUNT);
+
+        // Zero the last validator's leaves (shift_blocks_left skips when count=0)
+        let last_slot = self.validator_count - 1;
+        let base = last_slot * VALIDATOR_FIELDS_PER_ACCOUNT;
+        for i in 0..VALIDATOR_FIELDS_PER_ACCOUNT {
+            self.validator_tree.set_leaf_no_rehash(base + i, [0u8; 32]);
+        }
+
+        self.validator_count -= 1;
+
+        // Shrink tree if the new count fits in a smaller capacity.
+        // This ensures the tree capacity matches what rebuild_validators would produce.
+        // shrink() does its own rehash, so we only need a separate rehash if not shrinking.
+        let needed = (self.validator_count * VALIDATOR_FIELDS_PER_ACCOUNT).max(1);
+        let target_capacity = needed.next_power_of_two();
+        if target_capacity < self.validator_tree.capacity() {
+            self.validator_tree.shrink(needed);
+        } else {
+            self.validator_tree
+                .rehash_from(self.validator_tree.capacity() / 2);
+        }
+
+        self.update_validator_collection_root();
+    }
+
+    /// Set the 8 field leaves without triggering per-leaf rehash.
+    fn set_validator_fields_no_rehash(tree: &mut SszTree, slot: usize, account: &ValidatorAccount) {
+        let base = slot * VALIDATOR_FIELDS_PER_ACCOUNT;
+        tree.set_leaf_no_rehash(
+            base + VALIDATOR_FIELD_CONSENSUS_PUBKEY,
+            account.consensus_public_key.hash_tree_root(),
+        );
+        tree.set_leaf_no_rehash(
+            base + VALIDATOR_FIELD_WITHDRAWAL_CREDENTIALS,
+            account.withdrawal_credentials.hash_tree_root(),
+        );
+        tree.set_leaf_no_rehash(
+            base + VALIDATOR_FIELD_BALANCE,
+            account.balance.hash_tree_root(),
+        );
+        tree.set_leaf_no_rehash(
+            base + VALIDATOR_FIELD_STATUS,
+            account.status.hash_tree_root(),
+        );
+        tree.set_leaf_no_rehash(
+            base + VALIDATOR_FIELD_HAS_PENDING_DEPOSIT,
+            account.has_pending_deposit.hash_tree_root(),
+        );
+        tree.set_leaf_no_rehash(
+            base + VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL,
+            account.has_pending_withdrawal.hash_tree_root(),
+        );
+        tree.set_leaf_no_rehash(
+            base + VALIDATOR_FIELD_JOINING_EPOCH,
+            account.joining_epoch.hash_tree_root(),
+        );
+        tree.set_leaf_no_rehash(
+            base + VALIDATOR_FIELD_LAST_DEPOSIT_INDEX,
+            account.last_deposit_index.hash_tree_root(),
+        );
+    }
+
     /// Get the positional index of a validator pubkey within sorted keys.
     pub fn get_validator_index(keys: &[[u8; 32]], pubkey: &[u8; 32]) -> Option<usize> {
         keys.iter().position(|k| k == pubkey)
@@ -1113,6 +1218,501 @@ mod tests {
                 assert!(
                     proof.verify(&root),
                     "field proof failed for field {field_idx}"
+                );
+            }
+        }
+    }
+
+    /// Helper: build a tree from accounts using rebuild_validators (the reference path).
+    fn rebuild_tree(accounts: &BTreeMap<[u8; 32], ValidatorAccount>) -> SszStateTree {
+        let mut tree = SszStateTree::new();
+        tree.rebuild_validators(accounts);
+        tree
+    }
+
+    // ── Insert / remove tests ──────────────────────────────────────────
+
+    /// Insert N validators one-by-one and compare against full rebuild.
+    fn assert_incremental_insert_matches_rebuild(count: u64) {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=count).map(|i| make_validator(i)).collect();
+
+        let mut inc_tree = SszStateTree::new();
+        let mut accounts = BTreeMap::new();
+        for (pk, acc) in &validators {
+            accounts.insert(*pk, acc.clone());
+            let slot = accounts.keys().position(|k| k == pk).unwrap();
+            inc_tree.insert_validator_at_slot(slot, acc);
+        }
+
+        let ref_tree = rebuild_tree(&accounts);
+        assert_eq!(
+            inc_tree.root(),
+            ref_tree.root(),
+            "insert: incremental != rebuild after inserting {count} validators",
+        );
+    }
+
+    #[test]
+    fn insert_matches_rebuild_1() {
+        assert_incremental_insert_matches_rebuild(1);
+    }
+
+    #[test]
+    fn insert_matches_rebuild_2() {
+        assert_incremental_insert_matches_rebuild(2);
+    }
+
+    #[test]
+    fn insert_matches_rebuild_7() {
+        assert_incremental_insert_matches_rebuild(7);
+    }
+
+    #[test]
+    fn insert_matches_rebuild_8() {
+        assert_incremental_insert_matches_rebuild(8);
+    }
+
+    #[test]
+    fn insert_matches_rebuild_9() {
+        assert_incremental_insert_matches_rebuild(9);
+    }
+
+    #[test]
+    fn insert_matches_rebuild_16() {
+        assert_incremental_insert_matches_rebuild(16);
+    }
+
+    #[test]
+    fn insert_matches_rebuild_17() {
+        assert_incremental_insert_matches_rebuild(17);
+    }
+
+    #[test]
+    fn insert_matches_rebuild_100() {
+        assert_incremental_insert_matches_rebuild(100);
+    }
+
+    /// Insert a single validator at every possible slot position in a tree
+    /// of size N and verify each matches rebuild.
+    #[test]
+    fn insert_at_every_position() {
+        let base_validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=8u64).map(|i| make_validator(i)).collect();
+        let base_accounts: BTreeMap<[u8; 32], ValidatorAccount> =
+            base_validators.iter().cloned().collect();
+
+        // Insert a new validator — its BTreeMap slot depends on its pubkey,
+        // so we try many seeds to cover different insertion positions.
+        for seed in 100..120u64 {
+            let (new_pk, new_acc) = make_validator(seed);
+            let mut accounts = base_accounts.clone();
+            accounts.insert(new_pk, new_acc.clone());
+            let slot = accounts.keys().position(|k| k == &new_pk).unwrap();
+
+            let mut tree = rebuild_tree(&base_accounts);
+            tree.insert_validator_at_slot(slot, &new_acc);
+
+            let ref_tree = rebuild_tree(&accounts);
+            assert_eq!(
+                tree.root(),
+                ref_tree.root(),
+                "insert seed {seed} at slot {slot}: incremental != rebuild",
+            );
+        }
+    }
+
+    /// Remove every validator one-by-one from a tree and compare each
+    /// intermediate state against a full rebuild.
+    #[test]
+    fn remove_all_one_by_one() {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=10u64).map(|i| make_validator(i)).collect();
+        let mut accounts: BTreeMap<[u8; 32], ValidatorAccount> =
+            validators.iter().cloned().collect();
+        let mut tree = rebuild_tree(&accounts);
+
+        // Remove in BTreeMap order (first key each time) to test slot 0 removal repeatedly
+        while !accounts.is_empty() {
+            let pk = *accounts.keys().next().unwrap();
+            let slot = accounts.keys().position(|k| k == &pk).unwrap();
+            accounts.remove(&pk);
+            tree.remove_validator_at_slot(slot);
+
+            let ref_tree = rebuild_tree(&accounts);
+            assert_eq!(
+                tree.validator_count(),
+                accounts.len(),
+                "count mismatch after removing, {} remaining",
+                accounts.len()
+            );
+            assert_eq!(
+                tree.root(),
+                ref_tree.root(),
+                "remove: incremental != rebuild with {} remaining",
+                accounts.len()
+            );
+        }
+    }
+
+    /// Remove from the last slot each time (shrinking from the end).
+    #[test]
+    fn remove_from_end_one_by_one() {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=10u64).map(|i| make_validator(i)).collect();
+        let mut accounts: BTreeMap<[u8; 32], ValidatorAccount> =
+            validators.iter().cloned().collect();
+        let mut tree = rebuild_tree(&accounts);
+
+        while !accounts.is_empty() {
+            let pk = *accounts.keys().next_back().unwrap();
+            let slot = accounts.len() - 1;
+            accounts.remove(&pk);
+            tree.remove_validator_at_slot(slot);
+
+            let ref_tree = rebuild_tree(&accounts);
+            assert_eq!(
+                tree.root(),
+                ref_tree.root(),
+                "remove from end: incremental != rebuild with {} remaining",
+                accounts.len()
+            );
+        }
+    }
+
+    /// Remove a single validator at every possible slot position.
+    #[test]
+    fn remove_at_every_position() {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=10u64).map(|i| make_validator(i)).collect();
+        let accounts: BTreeMap<[u8; 32], ValidatorAccount> = validators.iter().cloned().collect();
+        let sorted_keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+
+        for slot in 0..sorted_keys.len() {
+            let mut accs = accounts.clone();
+            let mut tree = rebuild_tree(&accs);
+            accs.remove(&sorted_keys[slot]);
+            tree.remove_validator_at_slot(slot);
+
+            let ref_tree = rebuild_tree(&accs);
+            assert_eq!(
+                tree.root(),
+                ref_tree.root(),
+                "remove at slot {slot}/{}: incremental != rebuild",
+                sorted_keys.len()
+            );
+        }
+    }
+
+    /// Removals that cross power-of-two capacity boundaries (shrink triggers).
+    #[test]
+    fn remove_across_capacity_boundaries() {
+        // 9→8 (capacity 128→64 leaves), 5→4 (64→32), 3→2 (32→16), 2→1 (16→8)
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=9u64).map(|i| make_validator(i)).collect();
+        let mut accounts: BTreeMap<[u8; 32], ValidatorAccount> =
+            validators.iter().cloned().collect();
+        let mut tree = rebuild_tree(&accounts);
+
+        while accounts.len() > 1 {
+            // Always remove the last key (end slot)
+            let pk = *accounts.keys().next_back().unwrap();
+            let slot = accounts.len() - 1;
+            accounts.remove(&pk);
+            tree.remove_validator_at_slot(slot);
+
+            let ref_tree = rebuild_tree(&accounts);
+            assert_eq!(
+                tree.root(),
+                ref_tree.root(),
+                "shrink boundary: incremental != rebuild at {} validators",
+                accounts.len()
+            );
+        }
+    }
+
+    /// Insert then remove the same validator — root should match original.
+    #[test]
+    fn insert_remove_round_trip() {
+        for base_count in [1u64, 3, 7, 8, 15, 16] {
+            let validators: Vec<([u8; 32], ValidatorAccount)> =
+                (1..=base_count).map(|i| make_validator(i)).collect();
+            let accounts: BTreeMap<[u8; 32], ValidatorAccount> =
+                validators.iter().cloned().collect();
+            let tree = rebuild_tree(&accounts);
+            let original_root = tree.root();
+
+            let (new_pk, new_acc) = make_validator(99);
+            let mut modified = tree.clone();
+            let mut modified_accounts = accounts.clone();
+            modified_accounts.insert(new_pk, new_acc.clone());
+            let slot = modified_accounts.keys().position(|k| k == &new_pk).unwrap();
+            modified.insert_validator_at_slot(slot, &new_acc);
+
+            assert_ne!(
+                modified.root(),
+                original_root,
+                "root should change after insert (base_count={base_count})"
+            );
+
+            modified_accounts.remove(&new_pk);
+            modified.remove_validator_at_slot(slot);
+
+            assert_eq!(
+                modified.root(),
+                original_root,
+                "round trip failed (base_count={base_count})"
+            );
+        }
+    }
+
+    /// Remove then re-insert the same validator — root should match original.
+    #[test]
+    fn remove_insert_round_trip() {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=8u64).map(|i| make_validator(i)).collect();
+        let accounts: BTreeMap<[u8; 32], ValidatorAccount> = validators.iter().cloned().collect();
+        let sorted_keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+
+        for slot in 0..sorted_keys.len() {
+            let tree = rebuild_tree(&accounts);
+            let original_root = tree.root();
+
+            let pk = sorted_keys[slot];
+            let acc = accounts[&pk].clone();
+
+            let mut modified = tree.clone();
+            modified.remove_validator_at_slot(slot);
+            modified.insert_validator_at_slot(slot, &acc);
+
+            assert_eq!(
+                modified.root(),
+                original_root,
+                "remove+re-insert at slot {slot}: root changed"
+            );
+        }
+    }
+
+    /// Insert two validators, then remove them in reverse order.
+    #[test]
+    fn insert_two_remove_two_round_trip() {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=5u64).map(|i| make_validator(i)).collect();
+        let accounts: BTreeMap<[u8; 32], ValidatorAccount> = validators.iter().cloned().collect();
+        let tree = rebuild_tree(&accounts);
+        let original_root = tree.root();
+
+        let (pk_a, acc_a) = make_validator(50);
+        let (pk_b, acc_b) = make_validator(60);
+
+        let mut modified = tree.clone();
+        let mut modified_accounts = accounts.clone();
+
+        // Insert A
+        modified_accounts.insert(pk_a, acc_a.clone());
+        let slot_a = modified_accounts.keys().position(|k| k == &pk_a).unwrap();
+        modified.insert_validator_at_slot(slot_a, &acc_a);
+
+        // Insert B
+        modified_accounts.insert(pk_b, acc_b.clone());
+        let slot_b = modified_accounts.keys().position(|k| k == &pk_b).unwrap();
+        modified.insert_validator_at_slot(slot_b, &acc_b);
+
+        // Verify intermediate state matches rebuild
+        let ref_tree = rebuild_tree(&modified_accounts);
+        assert_eq!(
+            modified.root(),
+            ref_tree.root(),
+            "after 2 inserts: mismatch"
+        );
+
+        // Remove B then A
+        let slot_b = modified_accounts.keys().position(|k| k == &pk_b).unwrap();
+        modified_accounts.remove(&pk_b);
+        modified.remove_validator_at_slot(slot_b);
+
+        let slot_a = modified_accounts.keys().position(|k| k == &pk_a).unwrap();
+        modified_accounts.remove(&pk_a);
+        modified.remove_validator_at_slot(slot_a);
+
+        assert_eq!(
+            modified.root(),
+            original_root,
+            "insert 2 then remove 2: round trip failed"
+        );
+    }
+
+    /// Insert a validator, then update its balance, verify matches rebuild.
+    #[test]
+    fn insert_then_update_matches_rebuild() {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=5u64).map(|i| make_validator(i)).collect();
+        let mut accounts: BTreeMap<[u8; 32], ValidatorAccount> =
+            validators.iter().cloned().collect();
+        let mut tree = rebuild_tree(&accounts);
+
+        // Insert new validator
+        let (new_pk, mut new_acc) = make_validator(42);
+        accounts.insert(new_pk, new_acc.clone());
+        let slot = accounts.keys().position(|k| k == &new_pk).unwrap();
+        tree.insert_validator_at_slot(slot, &new_acc);
+
+        // Update its balance
+        new_acc.balance = 64_000_000_000;
+        accounts.insert(new_pk, new_acc.clone());
+        tree.update_validator_at_slot(slot, &new_acc);
+
+        let ref_tree = rebuild_tree(&accounts);
+        assert_eq!(
+            tree.root(),
+            ref_tree.root(),
+            "insert + update: incremental != rebuild"
+        );
+    }
+
+    /// Grow from 0 to 20 via incremental inserts, crossing multiple
+    /// capacity doublings (8→16→32→64→128→256 leaves).
+    #[test]
+    fn grow_across_multiple_doublings() {
+        let mut inc_tree = SszStateTree::new();
+        let mut accounts = BTreeMap::new();
+
+        for i in 1..=20u64 {
+            let (pk, acc) = make_validator(i);
+            accounts.insert(pk, acc.clone());
+            let slot = accounts.keys().position(|k| k == &pk).unwrap();
+            inc_tree.insert_validator_at_slot(slot, &acc);
+
+            let ref_tree = rebuild_tree(&accounts);
+            assert_eq!(
+                inc_tree.root(),
+                ref_tree.root(),
+                "grow: mismatch at {i} validators"
+            );
+        }
+    }
+
+    /// Interleaved inserts and removes — random-ish operation sequence.
+    #[test]
+    fn interleaved_insert_remove() {
+        let mut accounts: BTreeMap<[u8; 32], ValidatorAccount> = BTreeMap::new();
+        let mut tree = SszStateTree::new();
+
+        // Insert 5
+        for i in 1..=5u64 {
+            let (pk, acc) = make_validator(i);
+            accounts.insert(pk, acc.clone());
+            let slot = accounts.keys().position(|k| k == &pk).unwrap();
+            tree.insert_validator_at_slot(slot, &acc);
+        }
+
+        // Remove 2nd
+        let pk2 = {
+            let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+            keys[1]
+        };
+        accounts.remove(&pk2);
+        tree.remove_validator_at_slot(1);
+
+        // Insert 3 more
+        for i in 10..=12u64 {
+            let (pk, acc) = make_validator(i);
+            accounts.insert(pk, acc.clone());
+            let slot = accounts.keys().position(|k| k == &pk).unwrap();
+            tree.insert_validator_at_slot(slot, &acc);
+        }
+
+        // Remove first
+        let pk0 = *accounts.keys().next().unwrap();
+        accounts.remove(&pk0);
+        tree.remove_validator_at_slot(0);
+
+        // Remove last
+        let pk_last = *accounts.keys().next_back().unwrap();
+        let last_slot = accounts.len() - 1;
+        accounts.remove(&pk_last);
+        tree.remove_validator_at_slot(last_slot);
+
+        // Insert 2 more
+        for i in 20..=21u64 {
+            let (pk, acc) = make_validator(i);
+            accounts.insert(pk, acc.clone());
+            let slot = accounts.keys().position(|k| k == &pk).unwrap();
+            tree.insert_validator_at_slot(slot, &acc);
+        }
+
+        let ref_tree = rebuild_tree(&accounts);
+        assert_eq!(
+            tree.root(),
+            ref_tree.root(),
+            "interleaved: incremental != rebuild ({} validators)",
+            accounts.len()
+        );
+        assert_eq!(tree.validator_count(), accounts.len());
+    }
+
+    /// Proofs generated after incremental insert must verify against root.
+    #[test]
+    fn proofs_valid_after_insert() {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=5u64).map(|i| make_validator(i)).collect();
+        let mut accounts: BTreeMap<[u8; 32], ValidatorAccount> =
+            validators.iter().cloned().collect();
+        let mut tree = rebuild_tree(&accounts);
+
+        let (new_pk, new_acc) = make_validator(42);
+        accounts.insert(new_pk, new_acc.clone());
+        let slot = accounts.keys().position(|k| k == &new_pk).unwrap();
+        tree.insert_validator_at_slot(slot, &new_acc);
+
+        let root = tree.root();
+        let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+
+        // Verify proofs for every validator (including the newly inserted one)
+        for pk in &keys {
+            for field_idx in 0..VALIDATOR_FIELDS_PER_ACCOUNT {
+                let proof = tree
+                    .generate_validator_field_proof(pk, field_idx, &keys)
+                    .unwrap();
+                assert!(
+                    proof.verify(&root),
+                    "proof failed for pk {:?} field {field_idx} after insert",
+                    &pk[..4]
+                );
+            }
+        }
+    }
+
+    /// Proofs generated after incremental remove must verify against root.
+    #[test]
+    fn proofs_valid_after_remove() {
+        let validators: Vec<([u8; 32], ValidatorAccount)> =
+            (1..=6u64).map(|i| make_validator(i)).collect();
+        let mut accounts: BTreeMap<[u8; 32], ValidatorAccount> =
+            validators.iter().cloned().collect();
+        let mut tree = rebuild_tree(&accounts);
+
+        // Remove the 3rd validator
+        let pk = {
+            let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+            keys[2]
+        };
+        let slot = accounts.keys().position(|k| k == &pk).unwrap();
+        accounts.remove(&pk);
+        tree.remove_validator_at_slot(slot);
+
+        let root = tree.root();
+        let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
+
+        for pk in &keys {
+            for field_idx in 0..VALIDATOR_FIELDS_PER_ACCOUNT {
+                let proof = tree
+                    .generate_validator_field_proof(pk, field_idx, &keys)
+                    .unwrap();
+                assert!(
+                    proof.verify(&root),
+                    "proof failed for pk {:?} field {field_idx} after remove",
+                    &pk[..4]
                 );
             }
         }
