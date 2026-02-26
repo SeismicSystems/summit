@@ -4,8 +4,8 @@ use alloy_primitives::hex;
 use alloy_primitives::{Address, B256, Bloom, Bytes, FixedBytes, U256};
 use alloy_rpc_types_engine::{
     BlobsBundleV1, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV1,
-    ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState, PayloadId, PayloadStatus,
-    PayloadStatusEnum,
+    ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId,
+    PayloadStatus, PayloadStatusEnum,
 };
 use rand::RngCore;
 use std::collections::HashMap;
@@ -467,6 +467,17 @@ impl EngineClient for MockEngineClient {
                     state.next_block_number += 1;
                 }
             }
+        }
+    }
+
+    async fn commit_hash_with_status(
+        &mut self,
+        fork_choice_state: ForkchoiceState,
+    ) -> ForkchoiceUpdated {
+        self.commit_hash(fork_choice_state).await;
+        ForkchoiceUpdated {
+            payload_status: PayloadStatus::new(PayloadStatusEnum::Valid, Some(fork_choice_state.head_block_hash)),
+            payload_id: None,
         }
     }
 }

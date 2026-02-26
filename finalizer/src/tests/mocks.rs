@@ -3,7 +3,8 @@
 use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV1, ExecutionPayloadV2,
-    ExecutionPayloadV3, ForkchoiceState, PayloadId, PayloadStatus, PayloadStatusEnum,
+    ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
+    PayloadStatusEnum,
 };
 use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::{Finalization, Finalize, Proposal};
@@ -136,6 +137,19 @@ impl EngineClient for MockEngineClient {
     }
 
     async fn commit_hash(&mut self, _fork_choice_state: ForkchoiceState) {}
+
+    async fn commit_hash_with_status(
+        &mut self,
+        _fork_choice_state: ForkchoiceState,
+    ) -> ForkchoiceUpdated {
+        ForkchoiceUpdated {
+            payload_status: PayloadStatus {
+                status: PayloadStatusEnum::Valid,
+                latest_valid_hash: Some([0u8; 32].into()),
+            },
+            payload_id: None,
+        }
+    }
 }
 
 /// Minimal mock NetworkOracle
