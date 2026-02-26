@@ -240,7 +240,10 @@ impl<
                         info!("execution client still syncing, waiting 5s...");
                         self.context.sleep(std::time::Duration::from_secs(5)).await;
                     } else {
-                        warn!(?status, "unexpected response to initial forkchoice update, proceeding anyway");
+                        warn!(
+                            ?status,
+                            "unexpected response to initial forkchoice update, proceeding anyway"
+                        );
                         break;
                     }
                 }
