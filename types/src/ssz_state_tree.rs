@@ -447,6 +447,26 @@ impl SszStateTree {
         // leaf 7 remains zero (SSZ padding for 7-field container in 8-leaf subtree)
     }
 
+    /// Incrementally update the tree after a deposit is pushed to the back.
+    ///
+    /// Grows the subtree if needed, sets the 8 field leaves for the new item,
+    /// and recomputes the collection root.
+    pub fn push_deposit(&mut self, deposit: &DepositRequest) {
+        let slot = self.deposit_count;
+        let needed = (slot + 1) * DEPOSIT_FIELDS_PER_ITEM;
+        self.deposit_tree.grow(needed);
+        Self::set_deposit_fields(&mut self.deposit_tree, slot, deposit);
+        self.deposit_count += 1;
+        self.update_deposit_collection_root();
+    }
+
+    /// Incrementally update the tree after a deposit is popped from the front.
+    ///
+    /// Since items shift forward, the subtree is rebuilt from the remaining deposits.
+    pub fn pop_deposit(&mut self, deposits: &VecDeque<DepositRequest>) {
+        self.rebuild_deposits(deposits);
+    }
+
     fn update_deposit_collection_root(&mut self) {
         let subtree_root = self.deposit_tree.root();
         let collection_root = mix_in_length(subtree_root, self.deposit_count);
@@ -602,7 +622,12 @@ impl SszStateTree {
     ///
     /// If the epoch becomes empty, its subtree and epoch-tree leaf are removed.
     /// Otherwise, the epoch's subtree is rebuilt (items shift forward).
-    pub fn pop_withdrawal(&mut self, epoch: u64, popped_pubkey: &[u8; 32], queue: &WithdrawalQueue) {
+    pub fn pop_withdrawal(
+        &mut self,
+        epoch: u64,
+        popped_pubkey: &[u8; 32],
+        queue: &WithdrawalQueue,
+    ) {
         self.withdrawal_pubkey_index.remove(popped_pubkey);
 
         let Ok(epoch_slot) = self.withdrawal_epoch_keys.binary_search(&epoch) else {
@@ -667,8 +692,7 @@ impl SszStateTree {
 
     fn update_withdrawal_collection_root(&mut self) {
         let epoch_count = self.withdrawal_epoch_keys.len();
-        let collection_root =
-            mix_in_length(self.withdrawal_epoch_tree.root(), epoch_count);
+        let collection_root = mix_in_length(self.withdrawal_epoch_tree.root(), epoch_count);
         self.top.set_leaf(WITHDRAWAL_QUEUE_ROOT, collection_root);
     }
 
@@ -1071,8 +1095,7 @@ impl SszStateTree {
         if item_slot >= self.withdrawal_epoch_counts[epoch_slot] {
             return None;
         }
-        let (gindex, node_value, branch) =
-            self.withdrawal_epoch_item_proof(epoch_slot, item_slot);
+        let (gindex, node_value, branch) = self.withdrawal_epoch_item_proof(epoch_slot, item_slot);
         Some(SszProof {
             gindex,
             leaf: node_value,
@@ -1103,8 +1126,13 @@ impl SszStateTree {
 
         let gindex = self.compose_withdrawal_field_gindex(subtree, epoch_slot, leaf_index);
         let leaf = subtree.get_leaf(leaf_index);
-        let branch =
-            self.build_withdrawal_branch_from_leaf(subtree, epoch_slot, leaf_index, per_epoch_count, epoch_count);
+        let branch = self.build_withdrawal_branch_from_leaf(
+            subtree,
+            epoch_slot,
+            leaf_index,
+            per_epoch_count,
+            epoch_count,
+        );
 
         Some(SszProof {
             gindex,
@@ -2016,6 +2044,93 @@ mod tests {
     }
 
     #[test]
+    fn deposit_incremental_push_matches_rebuild() {
+        let d1 = DepositRequest {
+            node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
+            withdrawal_credentials: [0x01; 32],
+            amount: 32_000_000_000,
+            node_signature: [0xAA; 64],
+            consensus_signature: [0xBB; 96],
+            index: 0,
+        };
+        let d2 = DepositRequest {
+            node_pubkey: ed25519::PrivateKey::from_seed(2).public_key(),
+            consensus_pubkey: bls12381::PrivateKey::from_seed(2).public_key(),
+            withdrawal_credentials: [0x02; 32],
+            amount: 64_000_000_000,
+            node_signature: [0xCC; 64],
+            consensus_signature: [0xDD; 96],
+            index: 1,
+        };
+
+        // Incremental: push one by one
+        let mut inc = SszStateTree::new();
+        inc.push_deposit(&d1);
+        inc.push_deposit(&d2);
+
+        // Full rebuild
+        let mut deposits = VecDeque::new();
+        deposits.push_back(d1);
+        deposits.push_back(d2);
+        let mut full = SszStateTree::new();
+        full.rebuild_deposits(&deposits);
+
+        assert_eq!(inc.root(), full.root());
+
+        // Proofs from incremental tree verify
+        let root = inc.root();
+        for i in 0..2 {
+            let proof = inc.generate_deposit_proof(i).unwrap();
+            assert!(proof.verify(&root), "deposit proof {i} failed");
+        }
+    }
+
+    #[test]
+    fn deposit_incremental_pop_matches_rebuild() {
+        let d1 = DepositRequest {
+            node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
+            withdrawal_credentials: [0x01; 32],
+            amount: 32_000_000_000,
+            node_signature: [0xAA; 64],
+            consensus_signature: [0xBB; 96],
+            index: 0,
+        };
+        let d2 = DepositRequest {
+            node_pubkey: ed25519::PrivateKey::from_seed(2).public_key(),
+            consensus_pubkey: bls12381::PrivateKey::from_seed(2).public_key(),
+            withdrawal_credentials: [0x02; 32],
+            amount: 64_000_000_000,
+            node_signature: [0xCC; 64],
+            consensus_signature: [0xDD; 96],
+            index: 1,
+        };
+
+        // Build with 2 deposits
+        let mut deposits = VecDeque::new();
+        deposits.push_back(d1);
+        deposits.push_back(d2.clone());
+        let mut inc = SszStateTree::new();
+        inc.rebuild_deposits(&deposits);
+
+        // Pop front incrementally
+        deposits.pop_front();
+        inc.pop_deposit(&deposits);
+
+        // Compare to full rebuild with just d2
+        let mut full = SszStateTree::new();
+        full.rebuild_deposits(&deposits);
+        assert_eq!(inc.root(), full.root());
+
+        // Proof for remaining deposit verifies
+        let root = inc.root();
+        let proof = inc.generate_deposit_proof(0).unwrap();
+        assert!(proof.verify(&root));
+        assert_eq!(proof.leaf, d2.hash_tree_root());
+    }
+
+    #[test]
     fn withdrawal_field_proof_verifies() {
         let mut queue = WithdrawalQueue::default();
         let pk1 = [1u8; 32];
@@ -2333,16 +2448,37 @@ mod tests {
     fn withdrawal_push_new_epoch_between_existing() {
         // Push epochs 1, 3, then 2 — tests sorted insertion
         let w1 = PendingWithdrawal {
-            inner: Withdrawal { index: 0, validator_index: 0, address: Address::from([0x11; 20]), amount: 1_000_000_000 },
-            pubkey: [1u8; 32], balance_deduction: 1_000_000_000, epoch: 1,
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([0x11; 20]),
+                amount: 1_000_000_000,
+            },
+            pubkey: [1u8; 32],
+            balance_deduction: 1_000_000_000,
+            epoch: 1,
         };
         let w3 = PendingWithdrawal {
-            inner: Withdrawal { index: 1, validator_index: 1, address: Address::from([0x33; 20]), amount: 3_000_000_000 },
-            pubkey: [3u8; 32], balance_deduction: 3_000_000_000, epoch: 3,
+            inner: Withdrawal {
+                index: 1,
+                validator_index: 1,
+                address: Address::from([0x33; 20]),
+                amount: 3_000_000_000,
+            },
+            pubkey: [3u8; 32],
+            balance_deduction: 3_000_000_000,
+            epoch: 3,
         };
         let w2 = PendingWithdrawal {
-            inner: Withdrawal { index: 2, validator_index: 2, address: Address::from([0x22; 20]), amount: 2_000_000_000 },
-            pubkey: [2u8; 32], balance_deduction: 2_000_000_000, epoch: 2,
+            inner: Withdrawal {
+                index: 2,
+                validator_index: 2,
+                address: Address::from([0x22; 20]),
+                amount: 2_000_000_000,
+            },
+            pubkey: [2u8; 32],
+            balance_deduction: 2_000_000_000,
+            epoch: 2,
         };
 
         let mut inc = SszStateTree::new();

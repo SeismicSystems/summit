@@ -46,10 +46,8 @@ pub struct ConsensusState {
     /// Needed for positional index lookups when generating validator proofs.
     pub(crate) proof_validator_keys: Vec<[u8; 32]>,
 
-    /// Frozen snapshot of withdrawal queue pubkeys (sorted) at `capture_state_root()` time.
-    /// Needed for positional index lookups when generating withdrawal proofs.
-    pub(crate) proof_withdrawal_keys: Vec<[u8; 32]>,
-
+    // Withdrawal proof lookup is handled by the pubkey index stored in SszStateTree itself.
+    // The frozen proof_tree contains the withdrawal_pubkey_index from capture time.
     /// Snapshot of `ssz_tree.root()` captured after block execution.
     /// Not serialized — set via `capture_state_root()` in the finalizer after `execute_block`.
     /// Survives finalization mutations (which change the live tree but not this field).
@@ -82,7 +80,7 @@ impl Default for ConsensusState {
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
-            proof_withdrawal_keys: Vec::new(),
+
             state_root: [0u8; 32],
             proof_el_block_number: 0,
         };
@@ -117,7 +115,7 @@ impl ConsensusState {
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
-            proof_withdrawal_keys: Vec::new(),
+
             state_root: [0u8; 32],
             proof_el_block_number: 0,
         };
@@ -383,11 +381,6 @@ impl ConsensusState {
         self.state_root = self.ssz_tree.root();
         self.proof_tree = self.ssz_tree.clone();
         self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
-        self.proof_withdrawal_keys = self
-            .withdrawal_queue
-            .withdrawals_iter()
-            .map(|(k, _)| *k)
-            .collect();
         self.proof_el_block_number = el_block_number;
     }
 
@@ -403,11 +396,6 @@ impl ConsensusState {
         &self.proof_validator_keys
     }
 
-    /// Returns the frozen withdrawal queue pubkeys for proof generation.
-    pub fn proof_withdrawal_keys(&self) -> &[[u8; 32]] {
-        &self.proof_withdrawal_keys
-    }
-
     /// Returns the EL block number at the time the proof tree was captured.
     /// The state root appears on-chain in EL block `proof_el_block_number + 1`.
     pub fn get_proof_el_block_number(&self) -> u64 {
@@ -421,8 +409,8 @@ impl ConsensusState {
 
     // Deposit queue operations
     pub fn push_deposit(&mut self, request: DepositRequest) {
+        self.ssz_tree.push_deposit(&request);
         self.deposit_queue.push_back(request);
-        self.ssz_tree.rebuild_deposits(&self.deposit_queue);
     }
 
     pub fn peek_deposit(&self) -> Option<&DepositRequest> {
@@ -439,7 +427,7 @@ impl ConsensusState {
 
     pub fn pop_deposit(&mut self) -> Option<DepositRequest> {
         let request = self.deposit_queue.pop_front()?;
-        self.ssz_tree.rebuild_deposits(&self.deposit_queue);
+        self.ssz_tree.pop_deposit(&self.deposit_queue);
         Some(request)
     }
 
@@ -450,17 +438,27 @@ impl ConsensusState {
         withdrawal_epoch: u64,
         balance_deduction: u64,
     ) {
+        let pubkey = request.validator_pubkey;
+        let is_merge = self.withdrawal_queue.get_withdrawal(&pubkey).is_some();
         self.withdrawal_queue
             .push_request(request, withdrawal_epoch, balance_deduction);
         // push_request() may increment next_index internally — sync the scalar leaf
         self.ssz_tree
             .set_next_withdrawal_index(self.withdrawal_queue.next_index());
-        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
+        if is_merge {
+            // Fields updated in place — just refresh the existing item's leaves
+            self.ssz_tree
+                .update_withdrawal(self.withdrawal_queue.get_withdrawal(&pubkey).unwrap());
+        } else {
+            // New item appended to the epoch
+            self.ssz_tree
+                .push_withdrawal(self.withdrawal_queue.get_withdrawal(&pubkey).unwrap());
+        }
     }
 
     pub fn push_withdrawal(&mut self, request: PendingWithdrawal) {
-        self.withdrawal_queue.push(request);
-        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
+        self.withdrawal_queue.push(request.clone());
+        self.ssz_tree.push_withdrawal(&request);
     }
 
     pub fn peek_withdrawal(&self, withdrawal_epoch: u64) -> Option<&PendingWithdrawal> {
@@ -469,7 +467,8 @@ impl ConsensusState {
 
     pub fn pop_withdrawal(&mut self, withdrawal_epoch: u64) -> Option<PendingWithdrawal> {
         let w = self.withdrawal_queue.pop(withdrawal_epoch)?;
-        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
+        self.ssz_tree
+            .pop_withdrawal(withdrawal_epoch, &w.pubkey, &self.withdrawal_queue);
         Some(w)
     }
 
@@ -769,7 +768,7 @@ impl Read for ConsensusState {
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
-            proof_withdrawal_keys: Vec::new(),
+
             state_root: [0u8; 32],
             proof_el_block_number: 0,
         };

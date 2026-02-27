@@ -956,8 +956,7 @@ impl<
                             proof_tree.generate_withdrawal_proof_by_key(pubkey)
                         }
                         SszStateKey::WithdrawalField(pubkey, field_index) => {
-                            proof_tree
-                                .generate_withdrawal_field_proof_by_key(pubkey, *field_index)
+                            proof_tree.generate_withdrawal_field_proof_by_key(pubkey, *field_index)
                         }
                         SszStateKey::ProtocolParam(index) => {
                             proof_tree.generate_protocol_param_proof(*index)
