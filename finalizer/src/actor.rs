@@ -964,6 +964,21 @@ impl<
                                 proof_tree.generate_withdrawal_field_proof(i, *field_index)
                             })
                         }
+                        SszStateKey::ProtocolParam(index) => {
+                            proof_tree.generate_protocol_param_proof(*index)
+                        }
+                        SszStateKey::ProtocolParamField(index, field_index) => {
+                            proof_tree.generate_protocol_param_field_proof(*index, *field_index)
+                        }
+                        SszStateKey::AddedValidator(index) => {
+                            proof_tree.generate_added_validator_proof(*index)
+                        }
+                        SszStateKey::AddedValidatorField(index, field_index) => {
+                            proof_tree.generate_added_validator_field_proof(*index, *field_index)
+                        }
+                        SszStateKey::RemovedValidator(index) => {
+                            proof_tree.generate_removed_validator_proof(*index)
+                        }
                     })
                     .collect();
                 let root = self.canonical_state.get_state_root();

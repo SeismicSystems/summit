@@ -24,6 +24,16 @@ pub enum SszStateKey {
     Withdrawal([u8; 32]),
     /// A single field of a pending withdrawal: (pubkey, field_index).
     WithdrawalField([u8; 32], usize),
+    /// A protocol parameter change at the given index.
+    ProtocolParam(usize),
+    /// A single field of a protocol parameter change: (index, field_index).
+    ProtocolParamField(usize, usize),
+    /// An added validator at the given flattened index.
+    AddedValidator(usize),
+    /// A single field of an added validator: (index, field_index).
+    AddedValidatorField(usize, usize),
+    /// A removed validator at the given index.
+    RemovedValidator(usize),
 }
 
 /// Parse a human-readable key descriptor into an [`SszStateKey`].
@@ -95,6 +105,43 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
             } else if let Some(hex_str) = descriptor.strip_prefix("withdrawal:") {
                 let pubkey = parse_hex_pubkey(hex_str)?;
                 Ok(SszStateKey::Withdrawal(pubkey))
+            } else if let Some(rest) = descriptor.strip_prefix("protocol_param_field:") {
+                // Format: "protocol_param_field:<index>:<field_name>"
+                let (index_str, field_name) = rest.rsplit_once(':').ok_or_else(|| {
+                    "protocol_param_field requires format 'protocol_param_field:<index>:<field_name>'"
+                        .to_string()
+                })?;
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid protocol_param index: {e}"))?;
+                let field_index = parse_protocol_param_field_name(field_name)?;
+                Ok(SszStateKey::ProtocolParamField(index, field_index))
+            } else if let Some(index_str) = descriptor.strip_prefix("protocol_param:") {
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid protocol_param index: {e}"))?;
+                Ok(SszStateKey::ProtocolParam(index))
+            } else if let Some(rest) = descriptor.strip_prefix("added_validator_field:") {
+                // Format: "added_validator_field:<index>:<field_name>"
+                let (index_str, field_name) = rest.rsplit_once(':').ok_or_else(|| {
+                    "added_validator_field requires format 'added_validator_field:<index>:<field_name>'"
+                        .to_string()
+                })?;
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid added_validator index: {e}"))?;
+                let field_index = parse_added_validator_field_name(field_name)?;
+                Ok(SszStateKey::AddedValidatorField(index, field_index))
+            } else if let Some(index_str) = descriptor.strip_prefix("added_validator:") {
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid added_validator index: {e}"))?;
+                Ok(SszStateKey::AddedValidator(index))
+            } else if let Some(index_str) = descriptor.strip_prefix("removed_validator:") {
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid removed_validator index: {e}"))?;
+                Ok(SszStateKey::RemovedValidator(index))
             } else {
                 Err(format!("unknown key: {descriptor}"))
             }
@@ -143,6 +190,22 @@ fn parse_withdrawal_field_name(name: &str) -> Result<usize, String> {
         "balance_deduction" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION),
         "epoch" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
         _ => Err(format!("unknown withdrawal field: {name}")),
+    }
+}
+
+fn parse_protocol_param_field_name(name: &str) -> Result<usize, String> {
+    match name {
+        "tag" => Ok(ssz_state_tree::PROTOCOL_PARAM_FIELD_TAG),
+        "value" => Ok(ssz_state_tree::PROTOCOL_PARAM_FIELD_VALUE),
+        _ => Err(format!("unknown protocol_param field: {name}")),
+    }
+}
+
+fn parse_added_validator_field_name(name: &str) -> Result<usize, String> {
+    match name {
+        "node_key" => Ok(ssz_state_tree::ADDED_VALIDATOR_FIELD_NODE_KEY),
+        "consensus_key" => Ok(ssz_state_tree::ADDED_VALIDATOR_FIELD_CONSENSUS_KEY),
+        _ => Err(format!("unknown added_validator field: {name}")),
     }
 }
 
@@ -390,5 +453,78 @@ mod tests {
         let hex_key =
             "withdrawal_field:0x0101010101010101010101010101010101010101010101010101010101010101";
         assert!(parse_key(hex_key).is_err());
+    }
+
+    #[test]
+    fn parse_protocol_param_key() {
+        assert_eq!(
+            parse_key("protocol_param:0").unwrap(),
+            SszStateKey::ProtocolParam(0)
+        );
+        assert_eq!(
+            parse_key("protocol_param:5").unwrap(),
+            SszStateKey::ProtocolParam(5)
+        );
+    }
+
+    #[test]
+    fn parse_protocol_param_field_key() {
+        let key = parse_key("protocol_param_field:0:tag").unwrap();
+        assert_eq!(
+            key,
+            SszStateKey::ProtocolParamField(0, ssz_state_tree::PROTOCOL_PARAM_FIELD_TAG)
+        );
+        let key = parse_key("protocol_param_field:2:value").unwrap();
+        assert_eq!(
+            key,
+            SszStateKey::ProtocolParamField(2, ssz_state_tree::PROTOCOL_PARAM_FIELD_VALUE)
+        );
+    }
+
+    #[test]
+    fn parse_protocol_param_field_unknown_errors() {
+        assert!(parse_key("protocol_param_field:0:nonexistent").is_err());
+    }
+
+    #[test]
+    fn parse_added_validator_key() {
+        assert_eq!(
+            parse_key("added_validator:0").unwrap(),
+            SszStateKey::AddedValidator(0)
+        );
+    }
+
+    #[test]
+    fn parse_added_validator_field_key() {
+        let key = parse_key("added_validator_field:0:node_key").unwrap();
+        assert_eq!(
+            key,
+            SszStateKey::AddedValidatorField(0, ssz_state_tree::ADDED_VALIDATOR_FIELD_NODE_KEY)
+        );
+        let key = parse_key("added_validator_field:1:consensus_key").unwrap();
+        assert_eq!(
+            key,
+            SszStateKey::AddedValidatorField(
+                1,
+                ssz_state_tree::ADDED_VALIDATOR_FIELD_CONSENSUS_KEY
+            )
+        );
+    }
+
+    #[test]
+    fn parse_added_validator_field_unknown_errors() {
+        assert!(parse_key("added_validator_field:0:nonexistent").is_err());
+    }
+
+    #[test]
+    fn parse_removed_validator_key() {
+        assert_eq!(
+            parse_key("removed_validator:0").unwrap(),
+            SszStateKey::RemovedValidator(0)
+        );
+        assert_eq!(
+            parse_key("removed_validator:3").unwrap(),
+            SszStateKey::RemovedValidator(3)
+        );
     }
 }

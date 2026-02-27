@@ -91,6 +91,22 @@ pub const WITHDRAWAL_FIELD_EPOCH: usize = 6;
 /// Number of SSZ leaves per PendingWithdrawal (7 fields → 8 leaves, depth-3 subtree).
 pub const WITHDRAWAL_FIELDS_PER_ITEM: usize = 8;
 
+// --- Protocol parameter field indices (within each param's 2-leaf subtree) ---
+
+pub const PROTOCOL_PARAM_FIELD_TAG: usize = 0;
+pub const PROTOCOL_PARAM_FIELD_VALUE: usize = 1;
+
+/// Number of SSZ leaves per ProtocolParam (2 fields = depth-1 subtree).
+pub const PROTOCOL_PARAM_FIELDS_PER_ITEM: usize = 2;
+
+// --- Added validator field indices (within each added validator's 2-leaf subtree) ---
+
+pub const ADDED_VALIDATOR_FIELD_NODE_KEY: usize = 0;
+pub const ADDED_VALIDATOR_FIELD_CONSENSUS_KEY: usize = 1;
+
+/// Number of SSZ leaves per AddedValidator (2 fields = depth-1 subtree).
+pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 2;
+
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
 pub struct SszStateTree {
@@ -496,16 +512,30 @@ impl SszStateTree {
     }
 
     /// Rebuild protocol parameter changes subtree.
+    ///
+    /// Each protocol param occupies 2 contiguous leaves (tag, value),
+    /// forming a depth-1 per-param sub-subtree, enabling field-level proofs.
     pub fn rebuild_protocol_params(&mut self, params: &[ProtocolParam]) {
         let count = params.len();
-        let capacity = count.max(1);
-        let mut tree = SszTree::new(capacity);
+        let leaf_count = (count * PROTOCOL_PARAM_FIELDS_PER_ITEM).max(1);
+        let mut tree = SszTree::new(leaf_count);
         for (i, param) in params.iter().enumerate() {
-            tree.set_leaf(i, param.hash_tree_root());
+            Self::set_protocol_param_fields(&mut tree, i, param);
         }
         self.protocol_param_tree = tree;
         self.protocol_param_count = count;
         self.update_protocol_param_collection_root();
+    }
+
+    /// Set the 2 field leaves for protocol param at positional slot `i`.
+    fn set_protocol_param_fields(tree: &mut SszTree, slot: usize, param: &ProtocolParam) {
+        let base = slot * PROTOCOL_PARAM_FIELDS_PER_ITEM;
+        let (tag, value) = match param {
+            ProtocolParam::MinimumStake(v) => (0u64, *v),
+            ProtocolParam::MaximumStake(v) => (1u64, *v),
+        };
+        tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
+        tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value.hash_tree_root());
     }
 
     fn update_protocol_param_collection_root(&mut self) {
@@ -521,20 +551,33 @@ impl SszStateTree {
     }
 
     /// Rebuild added validators subtree (flattened across all epochs).
+    ///
+    /// Each added validator occupies 2 contiguous leaves (node_key, consensus_key),
+    /// forming a depth-1 per-item sub-subtree, enabling field-level proofs.
     pub fn rebuild_added_validators(&mut self, validators: &BTreeMap<u64, Vec<AddedValidator>>) {
-        let items: Vec<[u8; 32]> = validators
-            .values()
-            .flat_map(|v| v.iter().map(|av| av.hash_tree_root()))
-            .collect();
+        let items: Vec<&AddedValidator> = validators.values().flat_map(|v| v.iter()).collect();
         let count = items.len();
-        let capacity = count.max(1);
-        let mut tree = SszTree::new(capacity);
-        for (i, hash) in items.iter().enumerate() {
-            tree.set_leaf(i, *hash);
+        let leaf_count = (count * ADDED_VALIDATOR_FIELDS_PER_ITEM).max(1);
+        let mut tree = SszTree::new(leaf_count);
+        for (i, av) in items.iter().enumerate() {
+            Self::set_added_validator_fields(&mut tree, i, av);
         }
         self.added_validator_tree = tree;
         self.added_validator_count = count;
         self.update_added_validator_collection_root();
+    }
+
+    /// Set the 2 field leaves for added validator at positional slot `i`.
+    fn set_added_validator_fields(tree: &mut SszTree, slot: usize, av: &AddedValidator) {
+        let base = slot * ADDED_VALIDATOR_FIELDS_PER_ITEM;
+        tree.set_leaf(
+            base + ADDED_VALIDATOR_FIELD_NODE_KEY,
+            av.node_key.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + ADDED_VALIDATOR_FIELD_CONSENSUS_KEY,
+            av.consensus_key.hash_tree_root(),
+        );
     }
 
     fn update_added_validator_collection_root(&mut self) {
@@ -925,24 +968,69 @@ impl SszStateTree {
     }
 
     /// Generate a proof for a protocol parameter change at a given index.
+    /// Generate a proof for a protocol parameter change at a given index (whole param).
+    ///
+    /// The proof leaf is the per-param subtree root (internal node 1 level
+    /// above the field leaves). The branch is 1 element shorter than a
+    /// field-level proof.
     pub fn generate_protocol_param_proof(&self, index: usize) -> Option<SszProof> {
         if index >= self.protocol_param_count {
             return None;
         }
+        let (gindex, node_value, branch) = self.protocol_param_item_proof(index);
+        Some(SszProof {
+            gindex,
+            leaf: node_value,
+            branch,
+        })
+    }
+
+    /// Generate a proof for a single field of a protocol parameter change.
+    pub fn generate_protocol_param_field_proof(
+        &self,
+        index: usize,
+        field_index: usize,
+    ) -> Option<SszProof> {
+        if index >= self.protocol_param_count || field_index >= PROTOCOL_PARAM_FIELDS_PER_ITEM {
+            return None;
+        }
+        let leaf_index = index * PROTOCOL_PARAM_FIELDS_PER_ITEM + field_index;
         Some(SszProof {
             gindex: self.compose_collection_gindex(
                 PROTOCOL_PARAM_CHANGES_ROOT,
                 &self.protocol_param_tree,
-                index,
+                leaf_index,
             ),
-            leaf: self.protocol_param_tree.get_leaf(index),
+            leaf: self.protocol_param_tree.get_leaf(leaf_index),
             branch: self.build_collection_branch(
                 PROTOCOL_PARAM_CHANGES_ROOT,
                 &self.protocol_param_tree,
-                index,
+                leaf_index,
                 self.protocol_param_count,
             ),
         })
+    }
+
+    /// Internal helper: produce (gindex, node_value, branch) for a whole-param proof.
+    fn protocol_param_item_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
+        let sd = self.protocol_param_tree.depth();
+        let node_index =
+            self.protocol_param_tree.capacity() / PROTOCOL_PARAM_FIELDS_PER_ITEM + slot;
+        let node_value = self.protocol_param_tree.get_node(node_index);
+
+        let td = self.top.depth();
+        let top_gindex = (1u64 << td) + PROTOCOL_PARAM_CHANGES_ROOT as u64;
+        let gindex = (top_gindex << sd) | (slot as u64);
+
+        let mut branch = self
+            .protocol_param_tree
+            .generate_proof_from_node(node_index);
+        let mut length_bytes = [0u8; 32];
+        length_bytes[0..8].copy_from_slice(&(self.protocol_param_count as u64).to_le_bytes());
+        branch.push(length_bytes);
+        branch.extend_from_slice(&self.top.generate_proof(PROTOCOL_PARAM_CHANGES_ROOT));
+
+        (gindex, node_value, branch)
     }
 
     /// Generate a proof for an added validator identified by node key.
@@ -975,25 +1063,83 @@ impl SszStateTree {
         self.generate_removed_validator_proof(index)
     }
 
-    /// Generate a proof for an added validator at a given flattened index.
+    /// Generate a proof for an added validator at a given flattened index (whole item).
+    ///
+    /// The proof leaf is the per-item subtree root (internal node 1 level
+    /// above the field leaves). The branch is 1 element shorter than a
+    /// field-level proof.
     pub fn generate_added_validator_proof(&self, index: usize) -> Option<SszProof> {
         if index >= self.added_validator_count {
             return None;
         }
+        let (gindex, node_value, branch) = self.added_validator_item_proof(index);
+        Some(SszProof {
+            gindex,
+            leaf: node_value,
+            branch,
+        })
+    }
+
+    /// Generate a proof for a single field of an added validator.
+    pub fn generate_added_validator_field_proof(
+        &self,
+        index: usize,
+        field_index: usize,
+    ) -> Option<SszProof> {
+        if index >= self.added_validator_count || field_index >= ADDED_VALIDATOR_FIELDS_PER_ITEM {
+            return None;
+        }
+        let leaf_index = index * ADDED_VALIDATOR_FIELDS_PER_ITEM + field_index;
         Some(SszProof {
             gindex: self.compose_collection_gindex(
                 ADDED_VALIDATORS_ROOT,
                 &self.added_validator_tree,
-                index,
+                leaf_index,
             ),
-            leaf: self.added_validator_tree.get_leaf(index),
+            leaf: self.added_validator_tree.get_leaf(leaf_index),
             branch: self.build_collection_branch(
                 ADDED_VALIDATORS_ROOT,
                 &self.added_validator_tree,
-                index,
+                leaf_index,
                 self.added_validator_count,
             ),
         })
+    }
+
+    /// Generate a field-level proof for an added validator identified by node key.
+    pub fn generate_added_validator_field_proof_by_key(
+        &self,
+        node_key: &PublicKey,
+        field_index: usize,
+        added_validators: &BTreeMap<u64, Vec<AddedValidator>>,
+    ) -> Option<SszProof> {
+        let index = added_validators
+            .values()
+            .flat_map(|v| v.iter())
+            .position(|av| &av.node_key == node_key)?;
+        self.generate_added_validator_field_proof(index, field_index)
+    }
+
+    /// Internal helper: produce (gindex, node_value, branch) for a whole-added-validator proof.
+    fn added_validator_item_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
+        let sd = self.added_validator_tree.depth();
+        let node_index =
+            self.added_validator_tree.capacity() / ADDED_VALIDATOR_FIELDS_PER_ITEM + slot;
+        let node_value = self.added_validator_tree.get_node(node_index);
+
+        let td = self.top.depth();
+        let top_gindex = (1u64 << td) + ADDED_VALIDATORS_ROOT as u64;
+        let gindex = (top_gindex << sd) | (slot as u64);
+
+        let mut branch = self
+            .added_validator_tree
+            .generate_proof_from_node(node_index);
+        let mut length_bytes = [0u8; 32];
+        length_bytes[0..8].copy_from_slice(&(self.added_validator_count as u64).to_le_bytes());
+        branch.push(length_bytes);
+        branch.extend_from_slice(&self.top.generate_proof(ADDED_VALIDATORS_ROOT));
+
+        (gindex, node_value, branch)
     }
 
     /// Generate a proof for a removed validator at a given index.
@@ -1062,10 +1208,12 @@ impl SszProof {
 mod tests {
     use super::*;
     use crate::account::{ValidatorAccount, ValidatorStatus};
-    use crate::withdrawal::WithdrawalQueue;
+    use crate::execution_request::DepositRequest;
+    use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
+    use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_cryptography::Signer;
-    use commonware_cryptography::bls12381;
+    use commonware_cryptography::{bls12381, ed25519};
 
     fn make_validator(seed: u64) -> ([u8; 32], ValidatorAccount) {
         let mut pubkey = [0u8; 32];
@@ -1403,9 +1551,6 @@ mod tests {
 
     #[test]
     fn deposit_proof_verifies() {
-        use crate::execution_request::DepositRequest;
-        use commonware_cryptography::ed25519;
-
         let deposit = DepositRequest {
             node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
             consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
@@ -1436,9 +1581,6 @@ mod tests {
 
     #[test]
     fn withdrawal_proof_verifies() {
-        use crate::withdrawal::PendingWithdrawal;
-        use alloy_eips::eip4895::Withdrawal;
-
         let mut queue = WithdrawalQueue::default();
         let pk1 = [1u8; 32];
         let pk2 = [2u8; 32];
@@ -1486,9 +1628,6 @@ mod tests {
 
     #[test]
     fn deposit_field_proof_verifies() {
-        use crate::execution_request::DepositRequest;
-        use commonware_cryptography::ed25519;
-
         let deposit = DepositRequest {
             node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
             consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
@@ -1530,9 +1669,6 @@ mod tests {
 
     #[test]
     fn deposit_item_proof_leaf_matches_hash_tree_root() {
-        use crate::execution_request::DepositRequest;
-        use commonware_cryptography::ed25519;
-
         let deposit = DepositRequest {
             node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
             consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
@@ -1558,8 +1694,6 @@ mod tests {
         assert!(tree.generate_deposit_field_proof(0, 0).is_none());
 
         // Invalid field index
-        use crate::execution_request::DepositRequest;
-        use commonware_cryptography::ed25519;
 
         let deposit = DepositRequest {
             node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
@@ -1579,9 +1713,6 @@ mod tests {
 
     #[test]
     fn withdrawal_field_proof_verifies() {
-        use crate::withdrawal::PendingWithdrawal;
-        use alloy_eips::eip4895::Withdrawal;
-
         let mut queue = WithdrawalQueue::default();
         let pk1 = [1u8; 32];
         let pk2 = [2u8; 32];
@@ -1639,9 +1770,6 @@ mod tests {
 
     #[test]
     fn withdrawal_item_proof_leaf_matches_hash_tree_root() {
-        use crate::withdrawal::PendingWithdrawal;
-        use alloy_eips::eip4895::Withdrawal;
-
         let withdrawal = PendingWithdrawal {
             inner: Withdrawal {
                 index: 0,
@@ -2265,7 +2393,6 @@ mod tests {
 
     #[test]
     fn added_validator_proof_verifies() {
-        use commonware_cryptography::ed25519;
         let mut added: BTreeMap<u64, Vec<AddedValidator>> = BTreeMap::new();
         for epoch in [1u64, 3, 5] {
             let mut epoch_validators = Vec::new();
@@ -2299,7 +2426,6 @@ mod tests {
 
     #[test]
     fn removed_validator_proof_verifies() {
-        use commonware_cryptography::ed25519;
         let removed: Vec<PublicKey> = (0..5u64)
             .map(|seed| ed25519::PrivateKey::from_seed(seed).public_key())
             .collect();
@@ -2322,7 +2448,6 @@ mod tests {
 
     #[test]
     fn added_validator_proof_by_key() {
-        use commonware_cryptography::ed25519;
         let mut added: BTreeMap<u64, Vec<AddedValidator>> = BTreeMap::new();
         for epoch in [1u64, 3] {
             let mut epoch_validators = Vec::new();
@@ -2360,7 +2485,6 @@ mod tests {
 
     #[test]
     fn removed_validator_proof_by_key() {
-        use commonware_cryptography::ed25519;
         let removed: Vec<PublicKey> = (0..4u64)
             .map(|seed| ed25519::PrivateKey::from_seed(seed).public_key())
             .collect();
@@ -2385,6 +2509,131 @@ mod tests {
     }
 
     #[test]
+    fn protocol_param_field_proof_verifies() {
+        let params = vec![
+            ProtocolParam::MinimumStake(1_000_000),
+            ProtocolParam::MaximumStake(64_000_000_000),
+        ];
+        let mut tree = SszStateTree::new();
+        tree.rebuild_protocol_params(&params);
+        tree.set_epoch(1);
+        let root = tree.root();
+
+        // Verify field proofs for every param, every field
+        for i in 0..params.len() {
+            for field_idx in 0..PROTOCOL_PARAM_FIELDS_PER_ITEM {
+                let proof = tree
+                    .generate_protocol_param_field_proof(i, field_idx)
+                    .unwrap();
+                assert!(
+                    proof.verify(&root),
+                    "protocol param {i} field {field_idx} proof failed"
+                );
+            }
+        }
+
+        // Field proof branch is 1 element longer than whole-item proof
+        let item_proof = tree.generate_protocol_param_proof(0).unwrap();
+        let field_proof = tree
+            .generate_protocol_param_field_proof(0, PROTOCOL_PARAM_FIELD_VALUE)
+            .unwrap();
+        assert_eq!(
+            field_proof.branch.len(),
+            item_proof.branch.len() + 1,
+            "field branch should be 1 longer than item branch"
+        );
+
+        // Out of bounds
+        assert!(tree.generate_protocol_param_field_proof(0, 2).is_none());
+        assert!(
+            tree.generate_protocol_param_field_proof(params.len(), 0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn protocol_param_item_proof_leaf_matches_hash_tree_root() {
+        let params = vec![ProtocolParam::MinimumStake(1_000_000)];
+        let mut tree = SszStateTree::new();
+        tree.rebuild_protocol_params(&params);
+
+        let proof = tree.generate_protocol_param_proof(0).unwrap();
+        assert_eq!(proof.leaf, params[0].hash_tree_root());
+    }
+
+    #[test]
+    fn added_validator_field_proof_verifies() {
+        let mut added: BTreeMap<u64, Vec<AddedValidator>> = BTreeMap::new();
+        for epoch in [1u64, 3] {
+            let mut epoch_validators = Vec::new();
+            for seed in 0..2u64 {
+                let node_key = ed25519::PrivateKey::from_seed(epoch * 100 + seed).public_key();
+                let consensus_key =
+                    bls12381::PrivateKey::from_seed(epoch * 100 + seed).public_key();
+                epoch_validators.push(AddedValidator {
+                    node_key,
+                    consensus_key,
+                });
+            }
+            added.insert(epoch, epoch_validators);
+        }
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_added_validators(&added);
+        tree.set_epoch(1);
+        let root = tree.root();
+
+        let count = added.values().map(|v| v.len()).sum::<usize>();
+
+        // Verify field proofs for every item, every field
+        for i in 0..count {
+            for field_idx in 0..ADDED_VALIDATOR_FIELDS_PER_ITEM {
+                let proof = tree
+                    .generate_added_validator_field_proof(i, field_idx)
+                    .unwrap();
+                assert!(
+                    proof.verify(&root),
+                    "added validator {i} field {field_idx} proof failed"
+                );
+            }
+        }
+
+        // Field proof branch is 1 element longer than whole-item proof
+        let item_proof = tree.generate_added_validator_proof(0).unwrap();
+        let field_proof = tree
+            .generate_added_validator_field_proof(0, ADDED_VALIDATOR_FIELD_NODE_KEY)
+            .unwrap();
+        assert_eq!(
+            field_proof.branch.len(),
+            item_proof.branch.len() + 1,
+            "field branch should be 1 longer than item branch"
+        );
+
+        // Out of bounds
+        assert!(tree.generate_added_validator_field_proof(0, 2).is_none());
+        assert!(
+            tree.generate_added_validator_field_proof(count, 0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn added_validator_item_proof_leaf_matches_hash_tree_root() {
+        let av = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(1).public_key(),
+        };
+        let mut added: BTreeMap<u64, Vec<AddedValidator>> = BTreeMap::new();
+        added.insert(1, vec![av.clone()]);
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_added_validators(&added);
+
+        let proof = tree.generate_added_validator_proof(0).unwrap();
+        assert_eq!(proof.leaf, av.hash_tree_root());
+    }
+
+    #[test]
     fn empty_collection_proofs_return_none() {
         let tree = SszStateTree::new();
         assert!(tree.generate_protocol_param_proof(0).is_none());
@@ -2394,7 +2643,6 @@ mod tests {
 
     #[test]
     fn collection_proof_after_rebuild() {
-        use commonware_cryptography::ed25519;
         let mut tree = SszStateTree::new();
 
         // First build
