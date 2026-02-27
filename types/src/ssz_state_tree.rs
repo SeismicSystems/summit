@@ -19,8 +19,9 @@ use crate::account::ValidatorAccount;
 use crate::execution_request::DepositRequest;
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
-use crate::ssz_hash::SszHashTreeRoot;
+use crate::ssz_hash::{SszHashTreeRoot, hash_fixed_bytes_64, hash_fixed_bytes_96};
 use crate::ssz_tree::{SszTree, mix_in_length};
+use crate::withdrawal::PendingWithdrawal;
 use crate::withdrawal::WithdrawalQueue;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -61,6 +62,34 @@ pub const VALIDATOR_FIELD_LAST_DEPOSIT_INDEX: usize = 7;
 
 /// Number of SSZ fields per ValidatorAccount (8 fields = depth-3 subtree).
 pub const VALIDATOR_FIELDS_PER_ACCOUNT: usize = 8;
+
+// --- Deposit field indices (within each deposit's 8-leaf subtree) ---
+
+pub const DEPOSIT_FIELD_NODE_PUBKEY: usize = 0;
+pub const DEPOSIT_FIELD_CONSENSUS_PUBKEY: usize = 1;
+pub const DEPOSIT_FIELD_WITHDRAWAL_CREDENTIALS: usize = 2;
+pub const DEPOSIT_FIELD_AMOUNT: usize = 3;
+pub const DEPOSIT_FIELD_NODE_SIGNATURE: usize = 4;
+pub const DEPOSIT_FIELD_CONSENSUS_SIGNATURE: usize = 5;
+pub const DEPOSIT_FIELD_INDEX: usize = 6;
+// leaf 7 is unused (zero hash padding for 7-field container in 8-leaf subtree)
+
+/// Number of SSZ leaves per DepositRequest (7 fields → 8 leaves, depth-3 subtree).
+pub const DEPOSIT_FIELDS_PER_ITEM: usize = 8;
+
+// --- Withdrawal field indices (within each withdrawal's 8-leaf subtree) ---
+
+pub const WITHDRAWAL_FIELD_INDEX: usize = 0;
+pub const WITHDRAWAL_FIELD_VALIDATOR_INDEX: usize = 1;
+pub const WITHDRAWAL_FIELD_ADDRESS: usize = 2;
+pub const WITHDRAWAL_FIELD_AMOUNT: usize = 3;
+pub const WITHDRAWAL_FIELD_PUBKEY: usize = 4;
+pub const WITHDRAWAL_FIELD_BALANCE_DEDUCTION: usize = 5;
+pub const WITHDRAWAL_FIELD_EPOCH: usize = 6;
+// leaf 7 is unused (zero hash padding for 7-field container in 8-leaf subtree)
+
+/// Number of SSZ leaves per PendingWithdrawal (7 fields → 8 leaves, depth-3 subtree).
+pub const WITHDRAWAL_FIELDS_PER_ITEM: usize = 8;
 
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
@@ -348,16 +377,47 @@ impl SszStateTree {
     // --- Deposit queue subtree ---
 
     /// Rebuild the deposit queue subtree from current contents.
+    ///
+    /// Each deposit occupies 8 contiguous leaves (one per field), forming
+    /// a depth-3 per-deposit sub-subtree, enabling field-level proofs.
     pub fn rebuild_deposits(&mut self, deposits: &VecDeque<DepositRequest>) {
         let count = deposits.len();
-        let capacity = count.max(1);
-        let mut tree = SszTree::new(capacity);
+        let leaf_count = (count * DEPOSIT_FIELDS_PER_ITEM).max(1);
+        let mut tree = SszTree::new(leaf_count);
         for (i, deposit) in deposits.iter().enumerate() {
-            tree.set_leaf(i, deposit.hash_tree_root());
+            Self::set_deposit_fields(&mut tree, i, deposit);
         }
         self.deposit_tree = tree;
         self.deposit_count = count;
         self.update_deposit_collection_root();
+    }
+
+    /// Set the 8 field leaves for deposit at positional slot `i`.
+    fn set_deposit_fields(tree: &mut SszTree, slot: usize, deposit: &DepositRequest) {
+        let base = slot * DEPOSIT_FIELDS_PER_ITEM;
+        tree.set_leaf(
+            base + DEPOSIT_FIELD_NODE_PUBKEY,
+            deposit.node_pubkey.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + DEPOSIT_FIELD_CONSENSUS_PUBKEY,
+            deposit.consensus_pubkey.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + DEPOSIT_FIELD_WITHDRAWAL_CREDENTIALS,
+            deposit.withdrawal_credentials.hash_tree_root(),
+        );
+        tree.set_leaf(base + DEPOSIT_FIELD_AMOUNT, deposit.amount.hash_tree_root());
+        tree.set_leaf(
+            base + DEPOSIT_FIELD_NODE_SIGNATURE,
+            hash_fixed_bytes_64(&deposit.node_signature),
+        );
+        tree.set_leaf(
+            base + DEPOSIT_FIELD_CONSENSUS_SIGNATURE,
+            hash_fixed_bytes_96(&deposit.consensus_signature),
+        );
+        tree.set_leaf(base + DEPOSIT_FIELD_INDEX, deposit.index.hash_tree_root());
+        // leaf 7 remains zero (SSZ padding for 7-field container in 8-leaf subtree)
     }
 
     fn update_deposit_collection_root(&mut self) {
@@ -374,20 +434,54 @@ impl SszStateTree {
     // --- Withdrawal queue subtree ---
 
     /// Rebuild the withdrawal queue subtree from current contents.
+    ///
+    /// Each withdrawal occupies 8 contiguous leaves (one per field), forming
+    /// a depth-3 per-withdrawal sub-subtree, enabling field-level proofs.
     pub fn rebuild_withdrawals(&mut self, queue: &WithdrawalQueue) {
-        let items: Vec<[u8; 32]> = queue
-            .withdrawals_iter()
-            .map(|(_, w)| w.hash_tree_root())
-            .collect();
+        let items: Vec<&PendingWithdrawal> = queue.withdrawals_iter().map(|(_, w)| w).collect();
         let count = items.len();
-        let capacity = count.max(1);
-        let mut tree = SszTree::new(capacity);
-        for (i, hash) in items.iter().enumerate() {
-            tree.set_leaf(i, *hash);
+        let leaf_count = (count * WITHDRAWAL_FIELDS_PER_ITEM).max(1);
+        let mut tree = SszTree::new(leaf_count);
+        for (i, withdrawal) in items.iter().enumerate() {
+            Self::set_withdrawal_fields(&mut tree, i, withdrawal);
         }
         self.withdrawal_tree = tree;
         self.withdrawal_count = count;
         self.update_withdrawal_collection_root();
+    }
+
+    /// Set the 8 field leaves for withdrawal at positional slot `i`.
+    fn set_withdrawal_fields(tree: &mut SszTree, slot: usize, withdrawal: &PendingWithdrawal) {
+        let base = slot * WITHDRAWAL_FIELDS_PER_ITEM;
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_INDEX,
+            withdrawal.inner.index.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_VALIDATOR_INDEX,
+            withdrawal.inner.validator_index.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_ADDRESS,
+            withdrawal.inner.address.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_AMOUNT,
+            withdrawal.inner.amount.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_PUBKEY,
+            withdrawal.pubkey.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_BALANCE_DEDUCTION,
+            withdrawal.balance_deduction.hash_tree_root(),
+        );
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_EPOCH,
+            withdrawal.epoch.hash_tree_root(),
+        );
+        // leaf 7 remains zero (SSZ padding for 7-field container in 8-leaf subtree)
     }
 
     fn update_withdrawal_collection_root(&mut self) {
@@ -682,42 +776,152 @@ impl SszStateTree {
         self.generate_withdrawal_proof(index)
     }
 
-    /// Generate a proof for a deposit at a given queue index.
+    /// Generate a proof for a deposit at a given queue index (whole deposit).
+    ///
+    /// The proof leaf is the per-deposit subtree root (internal node 3 levels
+    /// above the field leaves). The branch is 3 elements shorter than a
+    /// field-level proof.
     pub fn generate_deposit_proof(&self, index: usize) -> Option<SszProof> {
         if index >= self.deposit_count {
             return None;
         }
+        let (gindex, node_value, branch) = self.deposit_item_proof(index);
         Some(SszProof {
-            gindex: self.compose_collection_gindex(DEPOSIT_QUEUE_ROOT, &self.deposit_tree, index),
-            leaf: self.deposit_tree.get_leaf(index),
+            gindex,
+            leaf: node_value,
+            branch,
+        })
+    }
+
+    /// Generate a proof for a single field of a deposit at a given queue index.
+    pub fn generate_deposit_field_proof(
+        &self,
+        index: usize,
+        field_index: usize,
+    ) -> Option<SszProof> {
+        if index >= self.deposit_count || field_index >= DEPOSIT_FIELDS_PER_ITEM {
+            return None;
+        }
+        let leaf_index = index * DEPOSIT_FIELDS_PER_ITEM + field_index;
+        Some(SszProof {
+            gindex: self.compose_collection_gindex(
+                DEPOSIT_QUEUE_ROOT,
+                &self.deposit_tree,
+                leaf_index,
+            ),
+            leaf: self.deposit_tree.get_leaf(leaf_index),
             branch: self.build_collection_branch(
                 DEPOSIT_QUEUE_ROOT,
                 &self.deposit_tree,
-                index,
+                leaf_index,
                 self.deposit_count,
             ),
         })
     }
 
-    /// Generate a proof for a withdrawal at a given queue index.
+    /// Generate a field-level proof for a deposit identified by node pubkey.
+    pub fn generate_deposit_field_proof_by_key(
+        &self,
+        node_pubkey: &PublicKey,
+        field_index: usize,
+        deposits: &VecDeque<DepositRequest>,
+    ) -> Option<SszProof> {
+        let index = deposits
+            .iter()
+            .position(|d| &d.node_pubkey == node_pubkey)?;
+        self.generate_deposit_field_proof(index, field_index)
+    }
+
+    /// Internal helper: produce (gindex, node_value, branch) for a whole-deposit proof.
+    fn deposit_item_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
+        let sd = self.deposit_tree.depth();
+        let node_index = self.deposit_tree.capacity() / DEPOSIT_FIELDS_PER_ITEM + slot;
+        let node_value = self.deposit_tree.get_node(node_index);
+
+        let td = self.top.depth();
+        let top_gindex = (1u64 << td) + DEPOSIT_QUEUE_ROOT as u64;
+        let gindex = (top_gindex << (sd - 2)) | (slot as u64);
+
+        let mut branch = self.deposit_tree.generate_proof_from_node(node_index);
+        let mut length_bytes = [0u8; 32];
+        length_bytes[0..8].copy_from_slice(&(self.deposit_count as u64).to_le_bytes());
+        branch.push(length_bytes);
+        branch.extend_from_slice(&self.top.generate_proof(DEPOSIT_QUEUE_ROOT));
+
+        (gindex, node_value, branch)
+    }
+
+    /// Generate a proof for a withdrawal at a given queue index (whole withdrawal).
+    ///
+    /// The proof leaf is the per-withdrawal subtree root (internal node 3 levels
+    /// above the field leaves). The branch is 3 elements shorter than a
+    /// field-level proof.
     pub fn generate_withdrawal_proof(&self, index: usize) -> Option<SszProof> {
         if index >= self.withdrawal_count {
             return None;
         }
+        let (gindex, node_value, branch) = self.withdrawal_item_proof(index);
+        Some(SszProof {
+            gindex,
+            leaf: node_value,
+            branch,
+        })
+    }
+
+    /// Generate a proof for a single field of a withdrawal at a given queue index.
+    pub fn generate_withdrawal_field_proof(
+        &self,
+        index: usize,
+        field_index: usize,
+    ) -> Option<SszProof> {
+        if index >= self.withdrawal_count || field_index >= WITHDRAWAL_FIELDS_PER_ITEM {
+            return None;
+        }
+        let leaf_index = index * WITHDRAWAL_FIELDS_PER_ITEM + field_index;
         Some(SszProof {
             gindex: self.compose_collection_gindex(
                 WITHDRAWAL_QUEUE_ROOT,
                 &self.withdrawal_tree,
-                index,
+                leaf_index,
             ),
-            leaf: self.withdrawal_tree.get_leaf(index),
+            leaf: self.withdrawal_tree.get_leaf(leaf_index),
             branch: self.build_collection_branch(
                 WITHDRAWAL_QUEUE_ROOT,
                 &self.withdrawal_tree,
-                index,
+                leaf_index,
                 self.withdrawal_count,
             ),
         })
+    }
+
+    /// Generate a field-level proof for a withdrawal identified by validator pubkey.
+    pub fn generate_withdrawal_field_proof_by_key(
+        &self,
+        pubkey: &[u8; 32],
+        field_index: usize,
+        queue: &WithdrawalQueue,
+    ) -> Option<SszProof> {
+        let index = queue.withdrawals_iter().position(|(k, _)| k == pubkey)?;
+        self.generate_withdrawal_field_proof(index, field_index)
+    }
+
+    /// Internal helper: produce (gindex, node_value, branch) for a whole-withdrawal proof.
+    fn withdrawal_item_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
+        let sd = self.withdrawal_tree.depth();
+        let node_index = self.withdrawal_tree.capacity() / WITHDRAWAL_FIELDS_PER_ITEM + slot;
+        let node_value = self.withdrawal_tree.get_node(node_index);
+
+        let td = self.top.depth();
+        let top_gindex = (1u64 << td) + WITHDRAWAL_QUEUE_ROOT as u64;
+        let gindex = (top_gindex << (sd - 2)) | (slot as u64);
+
+        let mut branch = self.withdrawal_tree.generate_proof_from_node(node_index);
+        let mut length_bytes = [0u8; 32];
+        length_bytes[0..8].copy_from_slice(&(self.withdrawal_count as u64).to_le_bytes());
+        branch.push(length_bytes);
+        branch.extend_from_slice(&self.top.generate_proof(WITHDRAWAL_QUEUE_ROOT));
+
+        (gindex, node_value, branch)
     }
 
     /// Generate a proof for a protocol parameter change at a given index.
@@ -1278,6 +1482,191 @@ mod tests {
     fn withdrawal_proof_unknown_key() {
         let tree = SszStateTree::new();
         assert!(tree.generate_withdrawal_proof(0).is_none());
+    }
+
+    #[test]
+    fn deposit_field_proof_verifies() {
+        use crate::execution_request::DepositRequest;
+        use commonware_cryptography::ed25519;
+
+        let deposit = DepositRequest {
+            node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
+            withdrawal_credentials: [0x01; 32],
+            amount: 32_000_000_000,
+            node_signature: [0xAA; 64],
+            consensus_signature: [0xBB; 96],
+            index: 0,
+        };
+        let mut deposits = VecDeque::new();
+        deposits.push_back(deposit);
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_deposits(&deposits);
+        tree.set_epoch(1);
+
+        let root = tree.root();
+
+        // Verify field proofs for every field
+        for field_idx in 0..DEPOSIT_FIELDS_PER_ITEM {
+            let proof = tree.generate_deposit_field_proof(0, field_idx).unwrap();
+            assert!(
+                proof.verify(&root),
+                "deposit field proof failed for field {field_idx}"
+            );
+        }
+
+        // Field proof branch is 3 elements longer than whole-item proof
+        let item_proof = tree.generate_deposit_proof(0).unwrap();
+        let field_proof = tree
+            .generate_deposit_field_proof(0, DEPOSIT_FIELD_AMOUNT)
+            .unwrap();
+        assert_eq!(
+            field_proof.branch.len(),
+            item_proof.branch.len() + 3,
+            "field branch should be 3 longer than item branch"
+        );
+    }
+
+    #[test]
+    fn deposit_item_proof_leaf_matches_hash_tree_root() {
+        use crate::execution_request::DepositRequest;
+        use commonware_cryptography::ed25519;
+
+        let deposit = DepositRequest {
+            node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
+            withdrawal_credentials: [0x01; 32],
+            amount: 32_000_000_000,
+            node_signature: [0xAA; 64],
+            consensus_signature: [0xBB; 96],
+            index: 0,
+        };
+        let mut deposits = VecDeque::new();
+        deposits.push_back(deposit.clone());
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_deposits(&deposits);
+
+        let proof = tree.generate_deposit_proof(0).unwrap();
+        assert_eq!(proof.leaf, deposit.hash_tree_root());
+    }
+
+    #[test]
+    fn deposit_field_proof_out_of_bounds() {
+        let tree = SszStateTree::new();
+        assert!(tree.generate_deposit_field_proof(0, 0).is_none());
+
+        // Invalid field index
+        use crate::execution_request::DepositRequest;
+        use commonware_cryptography::ed25519;
+
+        let deposit = DepositRequest {
+            node_pubkey: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_pubkey: bls12381::PrivateKey::from_seed(1).public_key(),
+            withdrawal_credentials: [0x01; 32],
+            amount: 32_000_000_000,
+            node_signature: [0xAA; 64],
+            consensus_signature: [0xBB; 96],
+            index: 0,
+        };
+        let mut deposits = VecDeque::new();
+        deposits.push_back(deposit);
+        let mut tree = SszStateTree::new();
+        tree.rebuild_deposits(&deposits);
+        assert!(tree.generate_deposit_field_proof(0, 8).is_none());
+    }
+
+    #[test]
+    fn withdrawal_field_proof_verifies() {
+        use crate::withdrawal::PendingWithdrawal;
+        use alloy_eips::eip4895::Withdrawal;
+
+        let mut queue = WithdrawalQueue::default();
+        let pk1 = [1u8; 32];
+        let pk2 = [2u8; 32];
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([0x11; 20]),
+                amount: 1_000_000_000,
+            },
+            pubkey: pk1,
+            balance_deduction: 1_000_000_000,
+            epoch: 1,
+        });
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 1,
+                validator_index: 1,
+                address: Address::from([0x22; 20]),
+                amount: 2_000_000_000,
+            },
+            pubkey: pk2,
+            balance_deduction: 2_000_000_000,
+            epoch: 1,
+        });
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_withdrawals(&queue);
+        tree.set_epoch(5);
+
+        let root = tree.root();
+
+        // Verify field proofs for every withdrawal, every field
+        for i in 0..2 {
+            for field_idx in 0..WITHDRAWAL_FIELDS_PER_ITEM {
+                let proof = tree.generate_withdrawal_field_proof(i, field_idx).unwrap();
+                assert!(
+                    proof.verify(&root),
+                    "withdrawal {i} field proof failed for field {field_idx}"
+                );
+            }
+        }
+
+        // Field proof branch is 3 elements longer than whole-item proof
+        let item_proof = tree.generate_withdrawal_proof(0).unwrap();
+        let field_proof = tree
+            .generate_withdrawal_field_proof(0, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        assert_eq!(
+            field_proof.branch.len(),
+            item_proof.branch.len() + 3,
+            "field branch should be 3 longer than item branch"
+        );
+    }
+
+    #[test]
+    fn withdrawal_item_proof_leaf_matches_hash_tree_root() {
+        use crate::withdrawal::PendingWithdrawal;
+        use alloy_eips::eip4895::Withdrawal;
+
+        let withdrawal = PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([0x11; 20]),
+                amount: 1_000_000_000,
+            },
+            pubkey: [1u8; 32],
+            balance_deduction: 1_000_000_000,
+            epoch: 1,
+        };
+        let mut queue = WithdrawalQueue::default();
+        queue.push(withdrawal.clone());
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_withdrawals(&queue);
+
+        let proof = tree.generate_withdrawal_proof(0).unwrap();
+        assert_eq!(proof.leaf, withdrawal.hash_tree_root());
+    }
+
+    #[test]
+    fn withdrawal_field_proof_out_of_bounds() {
+        let tree = SszStateTree::new();
+        assert!(tree.generate_withdrawal_field_proof(0, 0).is_none());
     }
 
     #[test]

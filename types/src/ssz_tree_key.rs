@@ -18,8 +18,12 @@ pub enum SszStateKey {
     ValidatorField([u8; 32], usize),
     /// A deposit request at the given queue index.
     Deposit(usize),
+    /// A single field of a deposit request: (queue_index, field_index).
+    DepositField(usize, usize),
     /// A pending withdrawal identified by its 32-byte pubkey.
     Withdrawal([u8; 32]),
+    /// A single field of a pending withdrawal: (pubkey, field_index).
+    WithdrawalField([u8; 32], usize),
 }
 
 /// Parse a human-readable key descriptor into an [`SszStateKey`].
@@ -64,11 +68,30 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
             } else if let Some(hex_str) = descriptor.strip_prefix("validator:") {
                 let pubkey = parse_hex_pubkey(hex_str)?;
                 Ok(SszStateKey::Validator(pubkey))
+            } else if let Some(rest) = descriptor.strip_prefix("deposit_field:") {
+                // Format: "deposit_field:<index>:<field_name>"
+                let (index_str, field_name) = rest.rsplit_once(':').ok_or_else(|| {
+                    "deposit_field requires format 'deposit_field:<index>:<field_name>'".to_string()
+                })?;
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid deposit index: {e}"))?;
+                let field_index = parse_deposit_field_name(field_name)?;
+                Ok(SszStateKey::DepositField(index, field_index))
             } else if let Some(index_str) = descriptor.strip_prefix("deposit:") {
                 let index = index_str
                     .parse::<usize>()
                     .map_err(|e| format!("invalid deposit index: {e}"))?;
                 Ok(SszStateKey::Deposit(index))
+            } else if let Some(rest) = descriptor.strip_prefix("withdrawal_field:") {
+                // Format: "withdrawal_field:0xPUBKEY:<field_name>"
+                let (hex_str, field_name) = rest.rsplit_once(':').ok_or_else(|| {
+                    "withdrawal_field requires format 'withdrawal_field:0xPUBKEY:<field_name>'"
+                        .to_string()
+                })?;
+                let pubkey = parse_hex_pubkey(hex_str)?;
+                let field_index = parse_withdrawal_field_name(field_name)?;
+                Ok(SszStateKey::WithdrawalField(pubkey, field_index))
             } else if let Some(hex_str) = descriptor.strip_prefix("withdrawal:") {
                 let pubkey = parse_hex_pubkey(hex_str)?;
                 Ok(SszStateKey::Withdrawal(pubkey))
@@ -92,6 +115,34 @@ fn parse_validator_field_name(name: &str) -> Result<usize, String> {
         "joining_epoch" => Ok(ssz_state_tree::VALIDATOR_FIELD_JOINING_EPOCH),
         "last_deposit_index" => Ok(ssz_state_tree::VALIDATOR_FIELD_LAST_DEPOSIT_INDEX),
         _ => Err(format!("unknown validator field: {name}")),
+    }
+}
+
+fn parse_deposit_field_name(name: &str) -> Result<usize, String> {
+    match name {
+        "node_pubkey" => Ok(ssz_state_tree::DEPOSIT_FIELD_NODE_PUBKEY),
+        "consensus_pubkey" | "consensus_public_key" => {
+            Ok(ssz_state_tree::DEPOSIT_FIELD_CONSENSUS_PUBKEY)
+        }
+        "withdrawal_credentials" => Ok(ssz_state_tree::DEPOSIT_FIELD_WITHDRAWAL_CREDENTIALS),
+        "amount" => Ok(ssz_state_tree::DEPOSIT_FIELD_AMOUNT),
+        "node_signature" => Ok(ssz_state_tree::DEPOSIT_FIELD_NODE_SIGNATURE),
+        "consensus_signature" => Ok(ssz_state_tree::DEPOSIT_FIELD_CONSENSUS_SIGNATURE),
+        "index" => Ok(ssz_state_tree::DEPOSIT_FIELD_INDEX),
+        _ => Err(format!("unknown deposit field: {name}")),
+    }
+}
+
+fn parse_withdrawal_field_name(name: &str) -> Result<usize, String> {
+    match name {
+        "index" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_INDEX),
+        "validator_index" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_VALIDATOR_INDEX),
+        "address" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_ADDRESS),
+        "amount" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_AMOUNT),
+        "pubkey" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_PUBKEY),
+        "balance_deduction" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION),
+        "epoch" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
+        _ => Err(format!("unknown withdrawal field: {name}")),
     }
 }
 
@@ -234,5 +285,110 @@ mod tests {
     #[test]
     fn parse_wrong_length_errors() {
         assert!(parse_key("validator:0x0101").is_err());
+    }
+
+    #[test]
+    fn parse_deposit_field_key() {
+        let key = parse_key("deposit_field:0:amount").unwrap();
+        assert_eq!(
+            key,
+            SszStateKey::DepositField(0, ssz_state_tree::DEPOSIT_FIELD_AMOUNT)
+        );
+    }
+
+    #[test]
+    fn parse_deposit_field_all_fields() {
+        let fields = [
+            ("node_pubkey", ssz_state_tree::DEPOSIT_FIELD_NODE_PUBKEY),
+            (
+                "consensus_pubkey",
+                ssz_state_tree::DEPOSIT_FIELD_CONSENSUS_PUBKEY,
+            ),
+            (
+                "withdrawal_credentials",
+                ssz_state_tree::DEPOSIT_FIELD_WITHDRAWAL_CREDENTIALS,
+            ),
+            ("amount", ssz_state_tree::DEPOSIT_FIELD_AMOUNT),
+            (
+                "node_signature",
+                ssz_state_tree::DEPOSIT_FIELD_NODE_SIGNATURE,
+            ),
+            (
+                "consensus_signature",
+                ssz_state_tree::DEPOSIT_FIELD_CONSENSUS_SIGNATURE,
+            ),
+            ("index", ssz_state_tree::DEPOSIT_FIELD_INDEX),
+        ];
+        for (name, expected_idx) in fields {
+            let key_str = format!("deposit_field:5:{name}");
+            let key = parse_key(&key_str).unwrap();
+            assert_eq!(
+                key,
+                SszStateKey::DepositField(5, expected_idx),
+                "field: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_deposit_field_unknown_field_errors() {
+        assert!(parse_key("deposit_field:0:nonexistent").is_err());
+    }
+
+    #[test]
+    fn parse_deposit_field_missing_field_errors() {
+        assert!(parse_key("deposit_field:0").is_err());
+    }
+
+    #[test]
+    fn parse_withdrawal_field_key() {
+        let hex_key = "withdrawal_field:0x0303030303030303030303030303030303030303030303030303030303030303:amount";
+        let key = parse_key(hex_key).unwrap();
+        assert_eq!(
+            key,
+            SszStateKey::WithdrawalField([3u8; 32], ssz_state_tree::WITHDRAWAL_FIELD_AMOUNT)
+        );
+    }
+
+    #[test]
+    fn parse_withdrawal_field_all_fields() {
+        let pk_hex = "0101010101010101010101010101010101010101010101010101010101010101";
+        let fields = [
+            ("index", ssz_state_tree::WITHDRAWAL_FIELD_INDEX),
+            (
+                "validator_index",
+                ssz_state_tree::WITHDRAWAL_FIELD_VALIDATOR_INDEX,
+            ),
+            ("address", ssz_state_tree::WITHDRAWAL_FIELD_ADDRESS),
+            ("amount", ssz_state_tree::WITHDRAWAL_FIELD_AMOUNT),
+            ("pubkey", ssz_state_tree::WITHDRAWAL_FIELD_PUBKEY),
+            (
+                "balance_deduction",
+                ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION,
+            ),
+            ("epoch", ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
+        ];
+        for (name, expected_idx) in fields {
+            let key_str = format!("withdrawal_field:0x{pk_hex}:{name}");
+            let key = parse_key(&key_str).unwrap();
+            assert_eq!(
+                key,
+                SszStateKey::WithdrawalField([1u8; 32], expected_idx),
+                "field: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_withdrawal_field_unknown_field_errors() {
+        let hex_key = "withdrawal_field:0x0101010101010101010101010101010101010101010101010101010101010101:nonexistent";
+        assert!(parse_key(hex_key).is_err());
+    }
+
+    #[test]
+    fn parse_withdrawal_field_missing_field_errors() {
+        let hex_key =
+            "withdrawal_field:0x0101010101010101010101010101010101010101010101010101010101010101";
+        assert!(parse_key(hex_key).is_err());
     }
 }

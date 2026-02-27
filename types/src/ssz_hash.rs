@@ -166,7 +166,7 @@ impl SszHashTreeRoot for AddedValidator {
 // --- Helpers ---
 
 /// Hash a 64-byte array as SSZ Vector[uint8, 64] → 2 chunks.
-fn hash_fixed_bytes_64(bytes: &[u8; 64]) -> [u8; 32] {
+pub(crate) fn hash_fixed_bytes_64(bytes: &[u8; 64]) -> [u8; 32] {
     let mut chunk0 = [0u8; 32];
     let mut chunk1 = [0u8; 32];
     chunk0.copy_from_slice(&bytes[0..32]);
@@ -175,7 +175,7 @@ fn hash_fixed_bytes_64(bytes: &[u8; 64]) -> [u8; 32] {
 }
 
 /// Hash a 96-byte array as SSZ Vector[uint8, 96] → 3 chunks padded to 4.
-fn hash_fixed_bytes_96(bytes: &[u8; 96]) -> [u8; 32] {
+pub(crate) fn hash_fixed_bytes_96(bytes: &[u8; 96]) -> [u8; 32] {
     let mut chunks = [[0u8; 32]; 3];
     chunks[0].copy_from_slice(&bytes[0..32]);
     chunks[1].copy_from_slice(&bytes[32..64]);

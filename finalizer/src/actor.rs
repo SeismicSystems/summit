@@ -949,10 +949,20 @@ impl<
                                 self.canonical_state.proof_validator_keys(),
                             ),
                         SszStateKey::Deposit(index) => proof_tree.generate_deposit_proof(*index),
+                        SszStateKey::DepositField(index, field_index) => {
+                            proof_tree.generate_deposit_field_proof(*index, *field_index)
+                        }
                         SszStateKey::Withdrawal(pubkey) => {
                             let keys = self.canonical_state.proof_withdrawal_keys();
                             let index = keys.iter().position(|k| k == pubkey);
                             index.and_then(|i| proof_tree.generate_withdrawal_proof(i))
+                        }
+                        SszStateKey::WithdrawalField(pubkey, field_index) => {
+                            let keys = self.canonical_state.proof_withdrawal_keys();
+                            let index = keys.iter().position(|k| k == pubkey);
+                            index.and_then(|i| {
+                                proof_tree.generate_withdrawal_field_proof(i, *field_index)
+                            })
                         }
                     })
                     .collect();
