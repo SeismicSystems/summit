@@ -141,11 +141,15 @@ A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by 
 
 All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 
-- **`u64` scalars**: Little-endian encoded, zero-padded to 32 bytes.
-- **`bool`**: `0x01` or `0x00`, zero-padded to 32 bytes.
-- **`[u8; 32]` (hashes, pubkeys)**: Used directly as the leaf value.
-- **BLS public key (96 bytes)**: `SHA256(SHA256(bytes[0..64]) || SHA256(bytes[64..96] || zeros[0..32]))`.
-- **Ed25519 signature (64 bytes)**: `SHA256(bytes[0..32] || bytes[32..64])`.
+- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum/maximum_stake, validator_index, balance_deduction.
+- **`bool`**: `0x01` or `0x00`, zero-padded to 32 bytes. Used by: has_pending_deposit, has_pending_withdrawal.
+- **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3), zero-padded to 32 bytes.
+- **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal).
+- **`Address` (20 bytes)**: Zero-padded to 32 bytes. Used by: withdrawal_credentials (validator), address (withdrawal).
+- **Ed25519 public key (32 bytes)**: Used directly as the leaf value. Used by: node_pubkey (deposit), node_key (added validator), removed validator pubkeys.
+- **BLS public key (48 bytes)**: `SHA256(bytes[0..32] || pad(bytes[32..48]))` — 2 chunks hashed. Used by: consensus_pubkey (validator, deposit), consensus_key (added validator).
+- **Ed25519 signature (64 bytes)**: `SHA256(bytes[0..32] || bytes[32..64])` — 2 chunks hashed. Used by: node_signature (deposit).
+- **BLS signature (96 bytes)**: `merkleize(bytes[0..32], bytes[32..64], bytes[64..96])` — 3 chunks merkleized. Used by: consensus_signature (deposit).
 
 ## Tree Updates
 

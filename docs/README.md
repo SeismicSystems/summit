@@ -11,7 +11,6 @@ This documentation is designed to provide auditors and developers with a compreh
 - **[Staking and Participating](./staking-and-participating.md)** - How to become a validator
 - **[Deposits and Withdrawals](./deposits-and-withdrawals.md)** - Internal state management for deposits and withdrawals
 - **[Checkpointing](./checkpointing.md)** - Checkpoint creation, loading, and verification
-- **[Consensus State Proofs](./consensus-state-proofs.md)** - MPT over consensus state, on-chain root publication, and proof verification
 - **[SSZ Merklization](./ssz-merklization.md)** - SSZ binary Merkle tree structure, incremental update optimizations, and proof format
 
 ## Quick Reference
