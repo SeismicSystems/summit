@@ -333,6 +333,117 @@ This is called after `execute_block` in the finalizer. The frozen `proof_tree` i
 
 The state root appears on-chain in EL block `proof_el_block_number + 1`.
 
+## RPC API
+
+Two JSON-RPC endpoints on the `SummitProofApi`:
+
+### `getStateRoot`
+
+Returns the current state root and the EL block number it was captured at.
+
+```json
+// Request
+{"jsonrpc":"2.0","method":"getStateRoot","params":[],"id":1}
+
+// Response
+{
+  "root": "0x...",
+  "el_block_number": 42
+}
+```
+
+The state root appears on-chain in EL block `el_block_number + 1`.
+
+### `getStateProof`
+
+Takes a list of key strings and returns the state root, EL block number, and an `SszProof` for each key.
+
+```json
+// Request
+{"jsonrpc":"2.0","method":"getStateProof","params":[["epoch","validator:0xABCD..."]],"id":1}
+
+// Response
+{
+  "root": "0x...",
+  "el_block_number": 42,
+  "proofs": [
+    { "gindex": 32, "leaf": "0x...", "branch": ["0x...", ...] },
+    { "gindex": 1408, "leaf": "0x...", "branch": ["0x...", ...] }
+  ]
+}
+```
+
+### Key Format
+
+Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
+
+**Scalar fields** — use the field name directly:
+
+| Key | Field |
+|-----|-------|
+| `epoch` | Current epoch |
+| `view` | Current view |
+| `latest_height` | Latest finalized block height |
+| `head_digest` | Head block digest |
+| `epoch_genesis_hash` | Genesis hash for current epoch |
+| `validator_minimum_stake` | Minimum validator stake |
+| `validator_maximum_stake` | Maximum validator stake |
+| `next_withdrawal_index` | Next withdrawal index |
+| `forkchoice_head_block_hash` | Forkchoice head hash |
+| `forkchoice_safe_block_hash` | Forkchoice safe hash |
+| `forkchoice_finalized_block_hash` | Forkchoice finalized hash |
+
+**Validator proofs** — by hex-encoded 32-byte pubkey:
+
+| Key Format | Example | Proves |
+|------------|---------|--------|
+| `validator:<pubkey>` | `validator:0xABCD...` | Whole account |
+| `validator_field:<pubkey>:<field>` | `validator_field:0xABCD...:balance` | Single field |
+
+Validator field names: `consensus_pubkey`, `withdrawal_credentials`, `balance`, `status`, `has_pending_deposit`, `has_pending_withdrawal`, `joining_epoch`, `last_deposit_index`.
+
+**Deposit proofs** — by queue index:
+
+| Key Format | Example | Proves |
+|------------|---------|--------|
+| `deposit:<index>` | `deposit:0` | Whole deposit |
+| `deposit_field:<index>:<field>` | `deposit_field:0:amount` | Single field |
+
+Deposit field names: `node_pubkey`, `consensus_pubkey`, `withdrawal_credentials`, `amount`, `node_signature`, `consensus_signature`, `index`.
+
+**Withdrawal proofs** — by hex-encoded 32-byte pubkey:
+
+| Key Format | Example | Proves |
+|------------|---------|--------|
+| `withdrawal:<pubkey>` | `withdrawal:0xABCD...` | Whole withdrawal |
+| `withdrawal_field:<pubkey>:<field>` | `withdrawal_field:0xABCD...:amount` | Single field |
+
+Withdrawal field names: `index`, `validator_index`, `address`, `amount`, `pubkey`, `balance_deduction`, `epoch`.
+
+**Protocol parameter proofs** — by index:
+
+| Key Format | Example | Proves |
+|------------|---------|--------|
+| `protocol_param:<index>` | `protocol_param:0` | Whole param |
+| `protocol_param_field:<index>:<field>` | `protocol_param_field:0:tag` | Single field |
+
+Protocol param field names: `tag`, `value`.
+
+**Added validator proofs** — by flattened index:
+
+| Key Format | Example | Proves |
+|------------|---------|--------|
+| `added_validator:<index>` | `added_validator:0` | Whole added validator |
+| `added_validator_field:<index>:<field>` | `added_validator_field:0:node_key` | Single field |
+
+Added validator field names: `node_key`, `consensus_key`.
+
+**Removed validator proofs** — by index:
+
+| Key Format | Example | Proves |
+|------------|---------|--------|
+| `removed_validator:<index>` | `removed_validator:0` | Removed validator pubkey |
+
 ## Future Work
 
 ### Deferred Tree Updates
