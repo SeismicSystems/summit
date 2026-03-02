@@ -143,6 +143,7 @@ prom = [
   "http",
   "eyre",
   "procfs",
+  "summit-types/prom",
 ]
 tokio-console = ["console-subscriber"]
 jemalloc = ["dep:tikv-jemalloc-ctl"]

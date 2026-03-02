@@ -10,6 +10,8 @@ use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{bls12381, sha256};
+#[cfg(feature = "prom")]
+use metrics::histogram;
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Debug)]
@@ -320,6 +322,9 @@ impl ConsensusState {
     }
 
     pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         let is_update = self.validator_accounts.contains_key(&pubkey);
         if is_update {
             self.validator_accounts.insert(pubkey, account.clone());
@@ -340,15 +345,25 @@ impl ConsensusState {
                 .expect("key was just inserted");
             self.ssz_tree.insert_validator_at_slot(slot, &account);
         }
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_set_account_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         // Find slot before removing from BTreeMap
         let slot = self.validator_accounts.keys().position(|k| k == pubkey);
         let removed = self.validator_accounts.remove(pubkey);
         if let (Some(slot), Some(_)) = (slot, &removed) {
             self.ssz_tree.remove_validator_at_slot(slot);
         }
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_remove_account_micros").record(start.elapsed().as_micros() as f64);
+
         removed
     }
 
@@ -378,10 +393,16 @@ impl ConsensusState {
     /// that was just processed. The state root will appear on-chain in EL
     /// block `el_block_number + 1`.
     pub fn capture_state_root(&mut self, el_block_number: u64) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         self.state_root = self.ssz_tree.root();
         self.proof_tree = self.ssz_tree.clone();
         self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
         self.proof_el_block_number = el_block_number;
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_capture_state_root_micros").record(start.elapsed().as_micros() as f64);
     }
 
     /// Returns the frozen tree snapshot for proof generation.
@@ -409,8 +430,14 @@ impl ConsensusState {
 
     // Deposit queue operations
     pub fn push_deposit(&mut self, request: DepositRequest) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         self.ssz_tree.push_deposit(&request);
         self.deposit_queue.push_back(request);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_push_deposit_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn peek_deposit(&self) -> Option<&DepositRequest> {
@@ -426,8 +453,15 @@ impl ConsensusState {
     }
 
     pub fn pop_deposit(&mut self) -> Option<DepositRequest> {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         let request = self.deposit_queue.pop_front()?;
         self.ssz_tree.pop_deposit(&self.deposit_queue);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_pop_deposit_micros").record(start.elapsed().as_micros() as f64);
+
         Some(request)
     }
 
@@ -438,6 +472,9 @@ impl ConsensusState {
         withdrawal_epoch: u64,
         balance_deduction: u64,
     ) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         let pubkey = request.validator_pubkey;
         let is_merge = self.withdrawal_queue.get_withdrawal(&pubkey).is_some();
         self.withdrawal_queue
@@ -454,11 +491,20 @@ impl ConsensusState {
             self.ssz_tree
                 .push_withdrawal(self.withdrawal_queue.get_withdrawal(&pubkey).unwrap());
         }
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_push_withdrawal_request_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn push_withdrawal(&mut self, request: PendingWithdrawal) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         self.withdrawal_queue.push(request.clone());
         self.ssz_tree.push_withdrawal(&request);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_push_withdrawal_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn peek_withdrawal(&self, withdrawal_epoch: u64) -> Option<&PendingWithdrawal> {
@@ -466,9 +512,16 @@ impl ConsensusState {
     }
 
     pub fn pop_withdrawal(&mut self, withdrawal_epoch: u64) -> Option<PendingWithdrawal> {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         let w = self.withdrawal_queue.pop(withdrawal_epoch)?;
         self.ssz_tree
             .pop_withdrawal(withdrawal_epoch, &w.pubkey, &self.withdrawal_queue);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_pop_withdrawal_micros").record(start.elapsed().as_micros() as f64);
+
         Some(w)
     }
 
@@ -585,6 +638,9 @@ impl ConsensusState {
     ///
     /// Called on deserialization and when bulk-replacing state (e.g. `set_validator_accounts`).
     pub fn rebuild_ssz_tree(&mut self) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
         self.ssz_tree.rebuild(
             self.epoch,
             self.view,
@@ -609,6 +665,9 @@ impl ConsensusState {
         // after deserialization or bulk reset.
         self.state_root = self.ssz_tree.root();
         self.proof_tree = self.ssz_tree.clone();
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_rebuild_tree_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
