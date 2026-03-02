@@ -51,7 +51,3 @@ prom = ["metrics"]
 bench = ["serde_json"]
 e2e = ["libc", "alloy-genesis", "url"]
 bad-blocks = []
-
-[[bench]]
-name = "ssz_vs_mpt"
-harness = false
