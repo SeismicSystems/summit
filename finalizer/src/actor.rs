@@ -1108,7 +1108,6 @@ async fn execute_block<
                 height = block.height(),
                 "execution client returned SYNCING, sending forkchoice update to trigger sync and retrying..."
             );
-            engine_client.commit_hash(state.forkchoice).await;
 
             context.sleep(std::time::Duration::from_secs(5)).await;
             continue;
