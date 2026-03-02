@@ -51,11 +51,6 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
     fn commit_hash(
         &mut self,
         fork_choice_state: ForkchoiceState,
-    ) -> impl Future<Output = ()> + Send;
-
-    fn commit_hash_with_status(
-        &mut self,
-        fork_choice_state: ForkchoiceState,
     ) -> impl Future<Output = ForkchoiceUpdated> + Send;
 }
 
@@ -181,28 +176,7 @@ impl EngineClient for RethEngineClient {
         }
     }
 
-    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
-        let _ = match self
-            .provider
-            .fork_choice_updated_v3(fork_choice_state, None)
-            .await
-        {
-            Ok(res) => res,
-            Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
-                self.provider
-                    .fork_choice_updated_v3(fork_choice_state, None)
-                    .await
-                    .expect("Failed to get payload after reconnect")
-            }
-            Err(_) => panic!("Unable to get a response"),
-        };
-    }
-
-    async fn commit_hash_with_status(
-        &mut self,
-        fork_choice_state: ForkchoiceState,
-    ) -> ForkchoiceUpdated {
+    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
         match self
             .provider
             .fork_choice_updated_v3(fork_choice_state, None)
@@ -355,28 +329,7 @@ impl EngineClient for BadBlockEngineClient {
         }
     }
 
-    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
-        let _ = match self
-            .provider
-            .fork_choice_updated_v3(fork_choice_state, None)
-            .await
-        {
-            Ok(res) => res,
-            Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
-                self.provider
-                    .fork_choice_updated_v3(fork_choice_state, None)
-                    .await
-                    .expect("Failed to get payload after reconnect")
-            }
-            Err(_) => panic!("Unable to get a response"),
-        };
-    }
-
-    async fn commit_hash_with_status(
-        &mut self,
-        fork_choice_state: ForkchoiceState,
-    ) -> ForkchoiceUpdated {
+    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
         match self
             .provider
             .fork_choice_updated_v3(fork_choice_state, None)
@@ -483,17 +436,7 @@ pub mod benchmarking {
                 .unwrap()
         }
 
-        async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
-            self.provider
-                .fork_choice_updated_v3(fork_choice_state, None)
-                .await
-                .unwrap();
-        }
-
-        async fn commit_hash_with_status(
-            &mut self,
-            fork_choice_state: ForkchoiceState,
-        ) -> ForkchoiceUpdated {
+        async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
             self.provider
                 .fork_choice_updated_v3(fork_choice_state, None)
                 .await

@@ -8,7 +8,7 @@ use alloy_rpc_types_engine::{
     PayloadStatus, PayloadStatusEnum,
 };
 use rand::RngCore;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use summit_types::{Block, EngineClient};
 
@@ -39,6 +39,10 @@ struct MockEngineState {
     // For testing
     force_invalid: bool,
     should_fail: bool,
+
+    // Response override queues
+    check_payload_overrides: VecDeque<PayloadStatus>,
+    commit_hash_overrides: VecDeque<ForkchoiceUpdated>,
 }
 
 impl MockEngineClient {
@@ -202,6 +206,31 @@ impl MockEngineClient {
         let mut state = self.state.lock().unwrap();
         state.should_fail = should_fail;
     }
+
+    /// Queue SYNCING responses for check_payload. After these are consumed,
+    /// check_payload falls back to normal behavior.
+    #[allow(unused)]
+    pub fn queue_check_payload_syncing(&self, count: usize) {
+        let mut state = self.state.lock().unwrap();
+        for _ in 0..count {
+            state
+                .check_payload_overrides
+                .push_back(PayloadStatus::new(PayloadStatusEnum::Syncing, None));
+        }
+    }
+
+    /// Queue SYNCING responses for commit_hash. After these are consumed,
+    /// commit_hash falls back to normal behavior.
+    #[allow(unused)]
+    pub fn queue_commit_hash_syncing(&self, count: usize) {
+        let mut state = self.state.lock().unwrap();
+        for _ in 0..count {
+            state.commit_hash_overrides.push_back(ForkchoiceUpdated {
+                payload_status: PayloadStatus::new(PayloadStatusEnum::Syncing, None),
+                payload_id: None,
+            });
+        }
+    }
 }
 
 impl MockEngineState {
@@ -226,6 +255,8 @@ impl MockEngineState {
             validated_blocks: HashMap::new(),
             force_invalid: false,
             should_fail: false,
+            check_payload_overrides: VecDeque::new(),
+            commit_hash_overrides: VecDeque::new(),
         }
     }
 
@@ -385,6 +416,10 @@ impl EngineClient for MockEngineClient {
     async fn check_payload(&mut self, block: &Block) -> PayloadStatus {
         let mut state = self.state.lock().unwrap();
 
+        if let Some(override_status) = state.check_payload_overrides.pop_front() {
+            return override_status;
+        }
+
         if state.force_invalid {
             return PayloadStatus::new(
                 PayloadStatusEnum::Invalid {
@@ -418,8 +453,12 @@ impl EngineClient for MockEngineClient {
         status
     }
 
-    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
+    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
         let mut state = self.state.lock().unwrap();
+
+        if let Some(override_response) = state.commit_hash_overrides.pop_front() {
+            return override_response;
+        }
 
         // Update current head
         state.current_head = fork_choice_state.head_block_hash;
@@ -468,15 +507,12 @@ impl EngineClient for MockEngineClient {
                 }
             }
         }
-    }
 
-    async fn commit_hash_with_status(
-        &mut self,
-        fork_choice_state: ForkchoiceState,
-    ) -> ForkchoiceUpdated {
-        self.commit_hash(fork_choice_state).await;
         ForkchoiceUpdated {
-            payload_status: PayloadStatus::new(PayloadStatusEnum::Valid, Some(fork_choice_state.head_block_hash)),
+            payload_status: PayloadStatus::new(
+                PayloadStatusEnum::Valid,
+                Some(fork_choice_state.head_block_hash),
+            ),
             payload_id: None,
         }
     }

@@ -170,7 +170,7 @@ fn test_validator_exit_triggers_cancellation() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_exit".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {

@@ -152,7 +152,7 @@ fn test_orphaned_block_processed_when_parent_arrives() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_orphaned".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -233,7 +233,7 @@ fn test_multiple_forks_tracked() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_forks".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -315,7 +315,7 @@ fn test_dead_fork_block_discarded() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_dead_fork".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -413,7 +413,7 @@ fn test_fork_states_pruned_after_finalization() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_prune_forks".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -530,7 +530,7 @@ fn test_orphaned_blocks_pruned_after_finalization() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_prune_orphans".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -639,7 +639,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_reuse".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -744,7 +744,7 @@ fn test_competing_fork_pruned_on_finalization() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_compete".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {

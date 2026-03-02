@@ -163,7 +163,7 @@ fn test_get_latest_epoch() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_epoch".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -274,7 +274,7 @@ fn test_get_epoch_genesis_hash() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_epoch_hash".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -371,7 +371,7 @@ fn test_get_aux_data_from_canonical_chain() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_aux_data".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
@@ -442,7 +442,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_aux_invalid".to_string(),
-            engine_client: MockEngineClient,
+            engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
