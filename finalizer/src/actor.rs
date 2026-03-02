@@ -232,12 +232,12 @@ impl<
                     "sending initial forkchoice update to execution client, waiting for sync..."
                 );
                 loop {
-                    let status = self.engine_client.commit_hash_with_status(forkchoice).await;
+                    let status = self.engine_client.commit_hash(forkchoice).await;
                     if status.is_valid() {
                         info!("execution client synced to checkpoint head, ready to replay blocks");
                         break;
                     } else if status.is_syncing() {
-                        info!("execution client still syncing, waiting 5s...");
+                        warn!("execution client still syncing, waiting 5s...");
                         self.context.sleep(std::time::Duration::from_secs(5)).await;
                     } else {
                         warn!(
@@ -1100,7 +1100,22 @@ async fn execute_block<
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
-    let payload_status = engine_client.check_payload(block).await;
+    let payload_status = loop {
+        let status = engine_client.check_payload(block).await;
+
+        if status.is_syncing() {
+            error!(
+                height = block.height(),
+                "execution client returned SYNCING, sending forkchoice update to trigger sync and retrying..."
+            );
+            engine_client.commit_hash(state.forkchoice).await;
+
+            context.sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        }
+        break status;
+    };
+
     let new_height = block.height();
 
     #[cfg(feature = "prom")]
@@ -1111,57 +1126,66 @@ async fn execute_block<
 
     // Validate block against execution layer state
     // Note: withdrawals are validated in the application layer before voting
-    if payload_status.is_valid() && state.forkchoice.head_block_hash == block.eth_parent_hash() {
-        let eth_hash = block.eth_block_hash();
-        let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
-        info!(
-            new_height,
-            epoch = state.epoch,
-            tx_count,
-            eth_hash = hex(&eth_hash),
-            "committing block to execution layer"
-        );
+    let parent_matches = state.forkchoice.head_block_hash == block.eth_parent_hash();
 
-        state.forkchoice.head_block_hash = eth_hash.into();
+    match (payload_status.is_valid(), parent_matches) {
+        (true, true) => {
+            let eth_hash = block.eth_block_hash();
+            let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
+            info!(
+                new_height,
+                epoch = state.epoch,
+                tx_count,
+                eth_hash = hex(&eth_hash),
+                "committing block to execution layer"
+            );
 
-        // Parse execution requests
-        #[cfg(feature = "prom")]
-        let parse_requests_start = Instant::now();
-        parse_execution_requests(
-            context,
-            block,
-            new_height,
-            state,
-            protocol_version_digest,
-            consts,
-        )
-        .await;
+            state.forkchoice.head_block_hash = eth_hash.into();
 
-        #[cfg(feature = "prom")]
-        {
-            let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
-            histogram!("parse_execution_requests_duration_millis").record(parse_requests_duration);
+            // Parse execution requests
+            #[cfg(feature = "prom")]
+            let parse_requests_start = Instant::now();
+            parse_execution_requests(
+                context,
+                block,
+                new_height,
+                state,
+                protocol_version_digest,
+                consts,
+            )
+            .await;
+
+            #[cfg(feature = "prom")]
+            {
+                let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
+                histogram!("parse_execution_requests_duration_millis")
+                    .record(parse_requests_duration);
+            }
+
+            // Add validators that deposited to the validator set
+            #[cfg(feature = "prom")]
+            let process_requests_start = Instant::now();
+            process_execution_requests(context, block, new_height, state, consts).await;
+            #[cfg(feature = "prom")]
+            {
+                let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
+                histogram!("process_execution_requests_duration_millis")
+                    .record(process_requests_duration);
+            }
         }
-
-        // Add validators that deposited to the validator set
-        #[cfg(feature = "prom")]
-        let process_requests_start = Instant::now();
-        process_execution_requests(context, block, new_height, state, consts).await;
-        #[cfg(feature = "prom")]
-        {
-            let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
-            histogram!("process_execution_requests_duration_millis")
-                .record(process_requests_duration);
+        (true, false) => {
+            warn!(
+                new_height,
+                "payload valid but parent hash mismatch, not executing"
+            );
         }
-    } else {
-        let payload_valid = payload_status.is_valid();
-        let parent_matches = state.forkchoice.head_block_hash == block.eth_parent_hash();
-        warn!(
-            new_height,
-            payload_valid,
-            parent_matches,
-            "block validation failed, not executing but keeping in chain"
-        );
+        (false, _) => {
+            warn!(
+                new_height,
+                ?payload_status,
+                "payload invalid, not executing but keeping in chain"
+            );
+        }
     }
 
     state.set_latest_height(new_height);
