@@ -293,7 +293,7 @@ impl SszStateTree {
     ///
     /// Grows the tree if needed. Copies shifted validators' subtree nodes via memmove
     /// (no rehash), then writes the new validator's 8 field leaves and rehashes only
-    /// the upper tree. O(N) memcpy + O(N/8) SHA256 instead of O(N*8*log(N*8)).
+    /// the new slot's subtree plus upper ancestors. O(N) memcpy + O(N/8) SHA256.
     pub fn insert_validator_at_slot(&mut self, slot: usize, account: &ValidatorAccount) {
         let new_count = self.validator_count + 1;
         let needed = new_count * VALIDATOR_FIELDS_PER_ACCOUNT;
@@ -307,9 +307,20 @@ impl SszStateTree {
         // Write new validator's 8 field leaves (no per-leaf rehash)
         Self::set_validator_fields_no_rehash(&mut self.validator_tree, slot, account);
 
-        // Rehash from leaf parents up through the entire tree
+        // Rehash only the new validator's subtree (3 internal levels above its 8 leaves)
         self.validator_tree
-            .rehash_from(self.validator_tree.capacity() / 2);
+            .rehash_block(slot, VALIDATOR_FIELDS_PER_ACCOUNT);
+
+        // Rehash upper levels from the affected position upward.
+        // shift_blocks_right already copied the per-validator subtree nodes (4 levels),
+        // so only levels above the subtree root need recomputation.
+        let subtree_root_level =
+            self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT;
+        let affected_node = subtree_root_level + slot;
+        let parent_level = subtree_root_level / 2;
+        let parent_node = affected_node / 2;
+        self.validator_tree
+            .rehash_from_position(parent_level, parent_node);
 
         self.validator_count = new_count;
         self.update_validator_collection_root();
@@ -317,32 +328,48 @@ impl SszStateTree {
 
     /// Remove the validator at positional `slot`, shifting subsequent validators left.
     ///
-    /// O(N) memcpy + O(N/8) SHA256.
+    /// O(N) memcpy + O(N/8) SHA256 for the shift, then partial rehash of upper levels.
     pub fn remove_validator_at_slot(&mut self, slot: usize) {
         assert!(slot < self.validator_count, "slot out of range");
         let to_shift = self.validator_count - slot - 1;
         self.validator_tree
             .shift_blocks_left(slot, to_shift, VALIDATOR_FIELDS_PER_ACCOUNT);
 
-        // Zero the last validator's leaves (shift_blocks_left skips when count=0)
-        let last_slot = self.validator_count - 1;
-        let base = last_slot * VALIDATOR_FIELDS_PER_ACCOUNT;
-        for i in 0..VALIDATOR_FIELDS_PER_ACCOUNT {
-            self.validator_tree.set_leaf_no_rehash(base + i, [0u8; 32]);
+        if to_shift == 0 {
+            // Edge case: removing the last validator. shift_blocks_left was a no-op.
+            // Zero the slot's leaves and rehash its subtree manually.
+            let base = slot * VALIDATOR_FIELDS_PER_ACCOUNT;
+            for i in 0..VALIDATOR_FIELDS_PER_ACCOUNT {
+                self.validator_tree.set_leaf_no_rehash(base + i, [0u8; 32]);
+            }
+            self.validator_tree
+                .rehash_block(slot, VALIDATOR_FIELDS_PER_ACCOUNT);
+        } else {
+            // shift_blocks_left zeros the vacated last block with [0u8; 32] at all levels,
+            // but internal nodes should be ZERO_HASHES. Rehash the vacated block's subtree.
+            let vacated_slot = self.validator_count - 1;
+            self.validator_tree
+                .rehash_block(vacated_slot, VALIDATOR_FIELDS_PER_ACCOUNT);
         }
 
         self.validator_count -= 1;
 
         // Shrink tree if the new count fits in a smaller capacity.
-        // This ensures the tree capacity matches what rebuild_validators would produce.
-        // shrink() does its own rehash, so we only need a separate rehash if not shrinking.
+        // shrink() does its own full rehash, so we only need partial rehash if not shrinking.
         let needed = (self.validator_count * VALIDATOR_FIELDS_PER_ACCOUNT).max(1);
         let target_capacity = needed.next_power_of_two();
         if target_capacity < self.validator_tree.capacity() {
             self.validator_tree.shrink(needed);
         } else {
+            // shift_blocks_left copied all 4 per-validator subtree levels, so only
+            // levels above the subtree root need recomputation from the affected slot.
+            let subtree_root_level =
+                self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT;
+            let affected_node = subtree_root_level + slot;
+            let parent_level = subtree_root_level / 2;
+            let parent_node = affected_node / 2;
             self.validator_tree
-                .rehash_from(self.validator_tree.capacity() / 2);
+                .rehash_from_position(parent_level, parent_node);
         }
 
         self.update_validator_collection_root();

@@ -126,6 +126,49 @@ impl SszTree {
         }
     }
 
+    /// Rehash internal nodes for a single block of `block_size` leaves at `slot`.
+    ///
+    /// Computes the `log2(block_size)` internal levels above the block's leaves.
+    /// Used after writing leaves with `set_leaf_no_rehash` to fix up only one
+    /// block's subtree without touching the rest of the tree.
+    pub fn rehash_block(&mut self, slot: usize, block_size: usize) {
+        let log_block = block_size.ilog2() as usize;
+        for level in 1..=log_block {
+            let stride = block_size >> level;
+            let base = self.capacity >> level;
+            let start = base + slot * stride;
+            for i in start..start + stride {
+                self.nodes[i] = hash32_concat(&self.nodes[2 * i], &self.nodes[2 * i + 1]);
+            }
+        }
+    }
+
+    /// Bottom-up rehash starting at `level_start`, but only nodes at index >= `from_node`.
+    ///
+    /// At each level, rehashes from `from_node` (or its ancestor) to the end of the level,
+    /// then moves up. This is used after block shifts where only a suffix of the tree
+    /// is invalidated above the per-block subtree level.
+    pub fn rehash_from_position(&mut self, level_start: usize, from_node: usize) {
+        if level_start == 0 {
+            return;
+        }
+        let mut ls = level_start;
+        let mut from = from_node;
+        loop {
+            let level_end = ls * 2;
+            for i in from..level_end {
+                if i * 2 + 1 < self.nodes.len() {
+                    self.nodes[i] = hash32_concat(&self.nodes[2 * i], &self.nodes[2 * i + 1]);
+                }
+            }
+            if ls <= 1 {
+                break;
+            }
+            from /= 2;
+            ls /= 2;
+        }
+    }
+
     /// Shift `count` blocks of `block_size` leaves starting at `from_slot` right by 1 block.
     ///
     /// Copies all 4 levels of nodes (leaves + 3 internal levels per block).
