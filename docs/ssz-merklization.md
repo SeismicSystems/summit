@@ -9,13 +9,13 @@ Summit maintains an SSZ binary Merkle tree over its consensus state and commits 
 │       Summit Node        │
 │                          │
 │  ConsensusState          │       Engine API           ┌───────────────┐
-│  ├─ epoch                │  ──────────────────────▶   │     Reth      │
+│  ├─ epoch                │  ──────────────────────▶  │     Reth      │
 │  ├─ validator_accounts   │  parent_beacon_block_root  │               │
 │  ├─ deposit_queue        │  = ssz_tree.root()         │  EIP-4788     │
 │  ├─ withdrawal_queue     │                            │  Contract     │
 │  └─ ssz_tree ────┐       │                            │  stores root  │
-│                  SSZ      │                            │  by timestamp │
-│              Merkle Tree  │                            │               │
+│                  SSZ    │                            │  by timestamp │
+│              Merkle Tree│                            │               │
 └──────────────│───────────┘                            └───────┬───────┘
                │                                                │
                │                                                │
@@ -23,7 +23,7 @@ Summit maintains an SSZ binary Merkle tree over its consensus state and commits 
          │ RPC: get   │                                  │  On-chain   │
          │ StateProof │                                  │  Solidity   │
          │ (root +    │                                  │  contract   │
-         │  gindex +  │  ────────── proof ──────────▶    │  verifies   │
+         │  gindex +  │  ────────── proof ──────────▶   │  verifies   │
          │  branch)   │                                  │  SSZ proof  │
          └────────────┘                                  └─────────────┘
 ```
