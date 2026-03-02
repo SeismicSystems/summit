@@ -14,8 +14,8 @@ Summit maintains an SSZ binary Merkle tree over its consensus state and commits 
 │  ├─ deposit_queue        │  = ssz_tree.root()         │  EIP-4788     │
 │  ├─ withdrawal_queue     │                            │  Contract     │
 │  └─ ssz_tree ────┐       │                            │  stores root  │
-│                  SSZ    │                            │  by timestamp │
-│              Merkle Tree│                            │               │
+│                  SSZ     │                            │  by timestamp │
+│              Merkle Tree │                            │               │
 └──────────────│───────────┘                            └───────┬───────┘
                │                                                │
                │                                                │
