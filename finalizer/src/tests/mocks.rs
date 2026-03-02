@@ -6,8 +6,6 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
     PayloadStatusEnum,
 };
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::{Finalization, Finalize, Proposal};
 use commonware_consensus::types::{Epoch, Round, View};
@@ -16,6 +14,8 @@ use commonware_cryptography::{Signer as _, ed25519};
 use commonware_math::algebra::Random;
 use commonware_parallel::Sequential;
 use commonware_utils::ordered::{BiMap, Map};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{Block, Digest, EngineClient, PublicKey};
 

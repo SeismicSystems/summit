@@ -224,7 +224,10 @@ fn test_initial_startup_sync_waits_for_valid() {
 
         // Verify the block was processed by checking the height advanced
         let height = mailbox.get_latest_height().await;
-        assert_eq!(height, 6, "finalizer should have processed block after sync");
+        assert_eq!(
+            height, 6,
+            "finalizer should have processed block after sync"
+        );
 
         context.auditor().state()
     });
@@ -285,7 +288,10 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
         context.sleep(Duration::from_millis(100)).await;
 
         let height = mailbox.get_latest_height().await;
-        assert_eq!(height, 1, "block should be processed immediately with zero forkchoice head");
+        assert_eq!(
+            height, 1,
+            "block should be processed immediately with zero forkchoice head"
+        );
 
         context.auditor().state()
     });
@@ -509,7 +515,10 @@ fn test_checkpoint_startup_full_flow() {
         context.sleep(Duration::from_secs(7)).await;
 
         let height = mailbox.get_latest_height().await;
-        assert_eq!(height, 6, "first block after checkpoint should be processed");
+        assert_eq!(
+            height, 6,
+            "first block after checkpoint should be processed"
+        );
 
         // Send second block — no more SYNCING, should be immediate
         let block7 = create_test_block(block6.digest(), 7, 7, 6002);
