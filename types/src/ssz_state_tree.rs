@@ -314,8 +314,7 @@ impl SszStateTree {
         // Rehash upper levels from the affected position upward.
         // shift_blocks_right already copied the per-validator subtree nodes (4 levels),
         // so only levels above the subtree root need recomputation.
-        let subtree_root_level =
-            self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT;
+        let subtree_root_level = self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT;
         let affected_node = subtree_root_level + slot;
         let parent_level = subtree_root_level / 2;
         let parent_node = affected_node / 2;
@@ -363,8 +362,7 @@ impl SszStateTree {
         } else {
             // shift_blocks_left copied all 4 per-validator subtree levels, so only
             // levels above the subtree root need recomputation from the affected slot.
-            let subtree_root_level =
-                self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT;
+            let subtree_root_level = self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT;
             let affected_node = subtree_root_level + slot;
             let parent_level = subtree_root_level / 2;
             let parent_node = affected_node / 2;
