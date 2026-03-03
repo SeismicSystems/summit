@@ -367,7 +367,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         rpc_port: (3030 + (node * 10)) as u16,
         worker_threads: 2,
         log_level: "debug".into(),
-        db_prefix: format!("{node}-quarts"),
+        db_prefix: format!("{node}"),
         genesis_path: "./example_genesis.toml".into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(feature = "bench")]
