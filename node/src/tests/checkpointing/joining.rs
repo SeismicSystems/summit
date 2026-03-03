@@ -91,7 +91,7 @@ fn test_single_engine_with_checkpoint() {
         let namespace = String::from("_SEISMIC_BFT");
         let engine_client = engine_client_network.create_client(uid.clone());
 
-        let latest_height = consensus_state.latest_height;
+        let latest_height = consensus_state.get_latest_height();
 
         let config = get_default_engine_config(
             engine_client,
@@ -280,10 +280,10 @@ fn test_node_joins_later_with_checkpoint() {
 
         // This corresponds to snapshotting Reth
         let consensus_state = ConsensusState::try_from(&checkpoint).unwrap();
-        let from_block = consensus_state.latest_height + 1;
-        let eth_hash = consensus_state.forkchoice.head_block_hash.into();
+        let from_block = consensus_state.get_latest_height() + 1;
+        let eth_hash = consensus_state.get_forkchoice().head_block_hash.into();
 
-        engine_client.load_checkpoint(consensus_state.latest_height, eth_hash);
+        engine_client.load_checkpoint(consensus_state.get_latest_height(), eth_hash);
 
         let config = get_default_engine_config(
             engine_client,
@@ -359,6 +359,8 @@ fn test_node_joins_later_with_checkpoint() {
                 .verify_consensus(Some(from_block), Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     });
@@ -515,10 +517,10 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
 
         // This corresponds to snapshotting Reth
         let consensus_state = ConsensusState::try_from(&checkpoint).unwrap();
-        let from_block = consensus_state.latest_height + 1;
-        let eth_hash = consensus_state.forkchoice.head_block_hash.into();
+        let from_block = consensus_state.get_latest_height() + 1;
+        let eth_hash = consensus_state.get_forkchoice().head_block_hash.into();
 
-        engine_client.load_checkpoint(consensus_state.latest_height, eth_hash);
+        engine_client.load_checkpoint(consensus_state.get_latest_height(), eth_hash);
 
         let config = get_default_engine_config(
             engine_client,
@@ -591,14 +593,14 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         }
 
         // Check that all validators (including the joining validator) stored the same checkpoints
-        let mut reference_mailbox = consensus_state_queries.remove(&0).unwrap();
+        let mut reference_mailbox = consensus_state_queries.get(&0).unwrap().clone();
         let mut reference_digests = Vec::with_capacity(end_epoch as usize);
         for epoch in 0..end_epoch {
             let (ckpt, _) = reference_mailbox.get_checkpoint(epoch).await.unwrap();
             reference_digests.push(ckpt.digest);
         }
         for i in 1..n {
-            let mut mailbox = consensus_state_queries.remove(&i).unwrap();
+            let mut mailbox = consensus_state_queries.get(&i).unwrap().clone();
             // Only check starting from epoch 1 because the joining node won't have
             // a checkpoint for epoch 0
             for j in 1..end_epoch {
@@ -613,6 +615,8 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
                 .verify_consensus(Some(from_block), Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     });

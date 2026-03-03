@@ -102,6 +102,28 @@ pub fn create_test_finalizer_mailbox(
                         let _ = response
                             .send(ConsensusStateResponse::MaximumStake(state.maximum_stake));
                     }
+                    ConsensusStateRequest::GetStateRoot => {
+                        let _ = response.send(ConsensusStateResponse::StateRoot {
+                            root: [0; 32],
+                            el_block_number: 0,
+                        });
+                    }
+                    ConsensusStateRequest::GetDeposit(_) => {
+                        let _ = response.send(ConsensusStateResponse::Deposit(None));
+                    }
+                    ConsensusStateRequest::GetDepositCount => {
+                        let _ = response.send(ConsensusStateResponse::DepositCount(0));
+                    }
+                    ConsensusStateRequest::GetWithdrawal(_) => {
+                        let _ = response.send(ConsensusStateResponse::Withdrawal(None));
+                    }
+                    ConsensusStateRequest::GenerateStateProof(_keys) => {
+                        let _ = response.send(ConsensusStateResponse::StateProof {
+                            root: [0; 32],
+                            el_block_number: 0,
+                            proofs: vec![],
+                        });
+                    }
                 },
                 _ => {}
             }

@@ -16,4 +16,7 @@ pub struct DepositTransactionResponse {
     pub deposit_data_root: [u8; 32],
 }
 
-pub use summit_types::rpc::{CheckpointInfoRes, CheckpointRes, FinalizedHeaderRes};
+pub use summit_types::rpc::{
+    CheckpointInfoRes, CheckpointRes, DepositResponse, FinalizedHeaderRes,
+    PendingWithdrawalResponse, StateProofResponse, StateRootResponse, ValidatorAccountResponse,
+};

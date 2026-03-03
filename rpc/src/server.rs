@@ -1,8 +1,9 @@
-use crate::api::SummitApiServer;
+use crate::api::{SummitApiServer, SummitProofApiServer};
 use crate::error::RpcError;
 use crate::types::{
-    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, FinalizedHeaderRes,
-    PublicKeysResponse,
+    CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
+    FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse, StateProofResponse,
+    StateRootResponse, ValidatorAccountResponse,
 };
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
@@ -19,6 +20,7 @@ use summit_types::{
     execution_request::{DepositRequest, compute_deposit_data_root},
 };
 
+#[derive(Clone)]
 pub struct SummitRpcServer {
     key_store_path: String,
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
@@ -168,6 +170,36 @@ impl SummitApiServer for SummitRpcServer {
         }
     }
 
+    async fn get_validator_account(
+        &self,
+        public_key: String,
+    ) -> RpcResult<ValidatorAccountResponse> {
+        let key_bytes = from_hex_formatted(&public_key)
+            .ok_or_else(|| RpcError::InvalidPublicKey("Invalid hex format".to_string()))?;
+
+        let public_key = PublicKey::decode(&*key_bytes)
+            .map_err(|_| RpcError::InvalidPublicKey("Unable to decode public key".to_string()))?;
+
+        let account = self
+            .finalizer_mailbox
+            .get_validator_account(public_key)
+            .await;
+
+        match account {
+            Some(a) => Ok(ValidatorAccountResponse {
+                consensus_public_key: AsRef::<[u8]>::as_ref(&a.consensus_public_key).to_vec(),
+                withdrawal_credentials: a.withdrawal_credentials.0.0,
+                balance: a.balance,
+                status: format!("{:?}", a.status),
+                has_pending_deposit: a.has_pending_deposit,
+                has_pending_withdrawal: a.has_pending_withdrawal,
+                joining_epoch: a.joining_epoch,
+                last_deposit_index: a.last_deposit_index,
+            }),
+            None => Err(RpcError::ValidatorNotFound.into()),
+        }
+    }
+
     async fn get_deposit_signature(
         &self,
         amount: u64,
@@ -250,5 +282,85 @@ impl SummitApiServer for SummitRpcServer {
     async fn get_maximum_stake(&self) -> RpcResult<u64> {
         let maximum_stake = self.finalizer_mailbox.get_maximum_stake().await;
         Ok(maximum_stake)
+    }
+
+    async fn get_deposit(&self, index: usize) -> RpcResult<DepositResponse> {
+        let deposit = self.finalizer_mailbox.get_deposit(index).await;
+        match deposit {
+            Some(d) => Ok(DepositResponse {
+                node_pubkey: d
+                    .node_pubkey
+                    .as_ref()
+                    .try_into()
+                    .expect("ed25519 key is 32 bytes"),
+                consensus_pubkey: AsRef::<[u8]>::as_ref(&d.consensus_pubkey).to_vec(),
+                withdrawal_credentials: d.withdrawal_credentials,
+                amount: d.amount,
+                node_signature: d.node_signature.to_vec(),
+                consensus_signature: d.consensus_signature.to_vec(),
+                index: d.index,
+            }),
+            None => Err(RpcError::DepositNotFound.into()),
+        }
+    }
+
+    async fn get_deposit_count(&self) -> RpcResult<usize> {
+        let count = self.finalizer_mailbox.get_deposit_count().await;
+        Ok(count)
+    }
+
+    async fn get_pending_withdrawal(
+        &self,
+        public_key: String,
+    ) -> RpcResult<PendingWithdrawalResponse> {
+        let key_bytes = from_hex_formatted(&public_key)
+            .ok_or_else(|| RpcError::InvalidPublicKey("Invalid hex format".to_string()))?;
+
+        let pubkey: [u8; 32] = key_bytes
+            .try_into()
+            .map_err(|_| RpcError::InvalidPublicKey("pubkey must be 32 bytes".to_string()))?;
+
+        let withdrawal = self.finalizer_mailbox.get_withdrawal(pubkey).await;
+        match withdrawal {
+            Some(w) => Ok(PendingWithdrawalResponse {
+                withdrawal_index: w.inner.index,
+                validator_index: w.inner.validator_index,
+                address: w.inner.address.0.0,
+                amount: w.inner.amount,
+                pubkey: w.pubkey,
+                balance_deduction: w.balance_deduction,
+                epoch: w.epoch,
+            }),
+            None => Err(RpcError::WithdrawalNotFound.into()),
+        }
+    }
+}
+
+#[async_trait]
+impl SummitProofApiServer for SummitRpcServer {
+    async fn get_state_root(&self) -> RpcResult<StateRootResponse> {
+        let (root, el_block_number) = self.finalizer_mailbox.get_state_root().await;
+        Ok(StateRootResponse {
+            root,
+            el_block_number,
+        })
+    }
+
+    async fn get_state_proof(&self, keys: Vec<String>) -> RpcResult<StateProofResponse> {
+        let parsed_keys = keys
+            .iter()
+            .map(|k| summit_types::ssz_tree_key::parse_key(k).map_err(RpcError::InvalidKey))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let (root, el_block_number, proofs) = self
+            .finalizer_mailbox
+            .generate_state_proof(parsed_keys)
+            .await;
+
+        Ok(StateProofResponse {
+            root,
+            el_block_number,
+            proofs,
+        })
     }
 }

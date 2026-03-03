@@ -35,6 +35,8 @@ use summit_types::execution_request::{DepositRequest, ExecutionRequest, Withdraw
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::protocol_params::ProtocolParam;
 use summit_types::scheme::EpochTransition;
+use summit_types::ssz_state_tree::SszProof;
+use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::utils::{
     is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
     parse_withdrawal_credentials,
@@ -128,17 +130,17 @@ impl<
         // If we want to load a checkpoint, we have to make sure that the DB is cleared.
         let state = if let Some(state) = db.get_latest_consensus_state().await {
             info!(
-                epoch = state.epoch,
-                height = state.latest_height,
-                num_validators = state.validator_accounts.len(),
+                epoch = state.get_epoch(),
+                height = state.get_latest_height(),
+                num_validators = state.num_validators(),
                 "loaded consensus state from database"
             );
             state
         } else {
             info!(
-                epoch = cfg.initial_state.epoch,
-                height = cfg.initial_state.latest_height,
-                num_validators = cfg.initial_state.validator_accounts.len(),
+                epoch = cfg.initial_state.get_epoch(),
+                height = cfg.initial_state.get_latest_height(),
+                num_validators = cfg.initial_state.num_validators(),
                 epoch_num_of_blocks = cfg.protocol_consts.epoch_num_of_blocks,
                 "using provided initial state (no state found in database)"
             );
@@ -210,12 +212,12 @@ impl<
             .map(|(node_key, _)| node_key.clone())
             .collect();
         self.oracle
-            .track(self.canonical_state.epoch, network_keys)
+            .track(self.canonical_state.get_epoch(), network_keys)
             .await;
 
         self.orchestrator_mailbox
             .report(Message::Enter(EpochTransition {
-                epoch: Epoch::new(self.canonical_state.epoch),
+                epoch: Epoch::new(self.canonical_state.get_epoch()),
                 validator_keys: active_validators,
             }))
             .await;
@@ -300,10 +302,10 @@ impl<
                             // the epoch genesis hash from the finalizer.
                             // Since the finalizer increments `self.canonical_state.epoch` before sending the message to the
                             // orchestrator, the finalizer should never receive a GetEpochGenesisHash request for the wrong epoch.
-                            if epoch != self.canonical_state.epoch {
-                                error!("Finalizer received epoch genesis hash request from a diffent epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.epoch, epoch);
+                            if epoch != self.canonical_state.get_epoch() {
+                                error!("Finalizer received epoch genesis hash request from a diffent epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.get_epoch(), epoch);
                             }
-                            let _ = response.send(self.canonical_state.epoch_genesis_hash);
+                            let _ = response.send(self.canonical_state.get_epoch_genesis_hash());
                         },
                         FinalizerMessage::QueryState { request, response } => {
                             self.handle_consensus_state_query(request, response).await;
@@ -375,10 +377,9 @@ impl<
         #[cfg(debug_assertions)]
         self.height_gauge.set(height as i64);
 
-        self.canonical_state.forkchoice.safe_block_hash =
-            self.canonical_state.forkchoice.head_block_hash;
-        self.canonical_state.forkchoice.finalized_block_hash =
-            self.canonical_state.forkchoice.head_block_hash;
+        self.canonical_state.set_forkchoice_safe_and_finalized(
+            self.canonical_state.get_forkchoice().head_block_hash,
+        );
 
         // Prune fork states at or below finalized height
         let total_forks = self.fork_states.len();
@@ -403,7 +404,7 @@ impl<
         }
 
         self.engine_client
-            .commit_hash(self.canonical_state.forkchoice)
+            .commit_hash(*self.canonical_state.get_forkchoice())
             .await;
 
         #[cfg(feature = "prom")]
@@ -421,7 +422,11 @@ impl<
         let new_height = block.height();
         self.height_notify_up_to(new_height, block_digest);
         ack_tx.acknowledge();
-        info!(new_height, self.canonical_state.epoch, "executed block");
+        info!(
+            new_height,
+            epoch = self.canonical_state.get_epoch(),
+            "executed block"
+        );
 
         let new_height = block.height();
         let mut epoch_change = false; // Store finalizes checkpoint to database
@@ -441,7 +446,7 @@ impl<
             #[cfg(feature = "prom")]
             let header_start = Instant::now();
             self.db
-                .store_finalized_header(self.canonical_state.epoch, &finalized_header)
+                .store_finalized_header(self.canonical_state.get_epoch(), &finalized_header)
                 .await;
             #[cfg(feature = "prom")]
             {
@@ -476,9 +481,9 @@ impl<
             // The only case where the pending checkpoint doesn't exist here is if the node checkpointed.
             // The checkpoint is created at the penultimate block of the epoch, and finalized at the last
             // block. So if a node checkpoints, it will start at the height of the penultimate block.
-            if let Some(checkpoint) = &self.canonical_state.pending_checkpoint.take() {
+            if let Some(checkpoint) = &self.canonical_state.take_pending_checkpoint() {
                 debug!(
-                    epoch = self.canonical_state.epoch,
+                    epoch = self.canonical_state.get_epoch(),
                     checkpoint_digest = ?checkpoint.digest,
                     "storing finalized checkpoint to database"
                 );
@@ -486,7 +491,7 @@ impl<
                 let checkpoint_start = Instant::now();
                 self.db
                     .store_finalized_checkpoint(
-                        self.canonical_state.epoch,
+                        self.canonical_state.get_epoch(),
                         checkpoint,
                         block.clone(),
                     )
@@ -499,19 +504,20 @@ impl<
             }
 
             // Increment epoch
-            self.canonical_state.epoch += 1;
+            let next_epoch = self.canonical_state.get_epoch() + 1;
+            self.canonical_state.set_epoch(next_epoch);
             // Set the epoch genesis hash for the next epoch
-            self.canonical_state.epoch_genesis_hash = block.digest().0;
+            self.canonical_state
+                .set_epoch_genesis_hash(block.digest().0);
 
             let active_count = self.canonical_state.get_active_validators().len();
             let joining_count = self
                 .canonical_state
-                .validator_accounts
-                .values()
-                .filter(|a| a.status == ValidatorStatus::Joining)
+                .validator_accounts_iter()
+                .filter(|(_, a)| a.status == ValidatorStatus::Joining)
                 .count();
             info!(
-                epoch = self.canonical_state.epoch,
+                epoch = self.canonical_state.get_epoch(),
                 active_validators = active_count,
                 joining_validators = joining_count,
                 "transitioned to new epoch"
@@ -520,7 +526,7 @@ impl<
             #[cfg(feature = "prom")]
             let consensus_state_start = Instant::now();
             self.db
-                .store_consensus_state(self.canonical_state.epoch, &self.canonical_state)
+                .store_consensus_state(self.canonical_state.get_epoch(), &self.canonical_state)
                 .await;
             #[cfg(feature = "prom")]
             {
@@ -545,11 +551,11 @@ impl<
             }
 
             // Clear the added and removed validators
+            let current_epoch = self.canonical_state.get_epoch();
             self.canonical_state
-                .added_validators
-                .remove(&self.canonical_state.epoch);
-            if !self.canonical_state.removed_validators.is_empty() {
-                self.canonical_state.removed_validators.clear();
+                .remove_added_validators_for_epoch(current_epoch);
+            if self.canonical_state.has_removed_validators() {
+                self.canonical_state.clear_removed_validators();
             }
 
             // Create the list of validators for the p2p network for the next epoch.
@@ -560,21 +566,21 @@ impl<
                 .map(|(node_key, _)| node_key.clone())
                 .collect();
             self.oracle
-                .track(self.canonical_state.epoch, network_keys)
+                .track(self.canonical_state.get_epoch(), network_keys)
                 .await;
 
             // Send the new validator list to the orchestrator and start the Simplex engine
             // for the new epoch
             let active_validators = self.canonical_state.get_active_validators();
             debug!(
-                epoch = self.canonical_state.epoch,
+                epoch = self.canonical_state.get_epoch(),
                 num_active_validators = active_validators.len(),
                 "signaling orchestrator to enter new epoch"
             );
 
             self.orchestrator_mailbox
                 .report(Message::Enter(EpochTransition {
-                    epoch: Epoch::new(self.canonical_state.epoch),
+                    epoch: Epoch::new(self.canonical_state.get_epoch()),
                     validator_keys: active_validators,
                 }))
                 .await;
@@ -584,17 +590,19 @@ impl<
         if epoch_change {
             // Shut down the Simplex engine for the old epoch
             debug!(
-                old_epoch = self.canonical_state.epoch - 1,
+                old_epoch = self.canonical_state.get_epoch() - 1,
                 "signaling orchestrator to exit old epoch"
             );
             self.orchestrator_mailbox
-                .report(Message::Exit(Epoch::new(self.canonical_state.epoch - 1)))
+                .report(Message::Exit(Epoch::new(
+                    self.canonical_state.get_epoch() - 1,
+                )))
                 .await;
         }
         let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(
             new_height,
-            epoch = self.canonical_state.epoch,
+            epoch = self.canonical_state.get_epoch(),
             tx_count,
             "finalized block"
         );
@@ -609,7 +617,7 @@ impl<
             let block_digest = block.digest();
 
             // Ignore blocks at or below canonical height
-            if height <= self.canonical_state.latest_height {
+            if height <= self.canonical_state.get_latest_height() {
                 debug!(
                     height,
                     "ignoring notarized block at or below canonical height"
@@ -618,17 +626,17 @@ impl<
             }
 
             // Find and clone parent state: either canonical (if parent was finalized) or a fork state
-            let parent_state = if height == self.canonical_state.latest_height + 1 {
+            let parent_state = if height == self.canonical_state.get_latest_height() + 1 {
                 // Parent should be the canonical block (was finalized)
                 // Verify parent digest matches canonical head (skip check at genesis)
-                if self.canonical_state.latest_height > 0
-                    && parent_digest != self.canonical_state.head_digest
+                if self.canonical_state.get_latest_height() > 0
+                    && parent_digest != self.canonical_state.get_head_digest()
                 {
                     // Block is on a dead fork, discard it
                     debug!(
                         height,
                         ?parent_digest,
-                        canonical_head = ?self.canonical_state.head_digest,
+                        canonical_head = ?self.canonical_state.get_head_digest(),
                         "discarding notarized block on dead fork (parent mismatch with canonical)"
                     );
                     continue;
@@ -691,9 +699,9 @@ impl<
             // Commit this fork to reth so validators can build/verify blocks on top of it
             // Keep the canonical finalized chain unchanged by using canonical finalized hash
             let fork_forkchoice = ForkchoiceState {
-                head_block_hash: fork_state.forkchoice.head_block_hash,
-                safe_block_hash: self.canonical_state.forkchoice.finalized_block_hash,
-                finalized_block_hash: self.canonical_state.forkchoice.finalized_block_hash,
+                head_block_hash: fork_state.get_forkchoice().head_block_hash,
+                safe_block_hash: self.canonical_state.get_forkchoice().finalized_block_hash,
+                finalized_block_hash: self.canonical_state.get_forkchoice().finalized_block_hash,
             };
             self.engine_client.commit_hash(fork_forkchoice).await;
 
@@ -783,7 +791,7 @@ impl<
             // The pending_checkpoint should have been set when processing the penultimate block.
             // If it's None, we can't propose the last block (e.g., node restarted from checkpoint).
             // Return None to let another validators propose/validate this block.
-            let Some(checkpoint) = &state.pending_checkpoint else {
+            let Some(checkpoint) = state.get_pending_checkpoint() else {
                 warn!(
                     height,
                     "pending_checkpoint is None at last block of epoch, aborting aux data request"
@@ -803,38 +811,40 @@ impl<
                 };
 
             // Only submit withdrawals at the end of an epoch
-            let current_epoch = state.epoch;
+            let current_epoch = state.get_epoch();
             let ready_withdrawals = state
                 .get_withdrawals_for_epoch(current_epoch)
-                .map(|queue| queue.iter().cloned().collect())
-                .unwrap_or_default();
-            let next_epoch = state.epoch + 1;
+                .into_iter()
+                .cloned()
+                .collect();
+            let next_epoch = state.get_epoch() + 1;
 
             BlockAuxData {
-                epoch: state.epoch,
+                epoch: state.get_epoch(),
                 withdrawals: ready_withdrawals,
                 checkpoint_hash: Some(checkpoint_hash),
                 header_hash: prev_header_hash,
                 // The block proposer needs the validators that will be added in the next epoch
                 added_validators: state
-                    .added_validators
-                    .get(&next_epoch)
+                    .get_added_validators(next_epoch)
                     .cloned()
                     .unwrap_or_default(),
-                removed_validators: state.removed_validators.clone(),
-                forkchoice: state.forkchoice,
+                removed_validators: state.get_removed_validators().clone(),
+                forkchoice: *state.get_forkchoice(),
                 withdrawal_credentials,
+                state_root: state.get_state_root(),
             }
         } else {
             BlockAuxData {
-                epoch: state.epoch,
+                epoch: state.get_epoch(),
                 withdrawals: vec![],
                 checkpoint_hash: None,
                 header_hash: [0; 32].into(),
                 added_validators: vec![],
                 removed_validators: vec![],
-                forkchoice: state.forkchoice,
+                forkchoice: *state.get_forkchoice(),
                 withdrawal_credentials,
+                state_root: state.get_state_root(),
             }
         };
         trace!(
@@ -873,22 +883,19 @@ impl<
                 let mut key_bytes = [0u8; 32];
                 key_bytes.copy_from_slice(&public_key);
 
-                let balance = self
-                    .canonical_state
-                    .validator_accounts
-                    .get(&key_bytes)
-                    .map(|account| account.balance + account.pending_withdrawal_amount);
+                let balance = self.canonical_state.get_account(&key_bytes).map(|account| {
+                    account.balance
+                        + self
+                            .canonical_state
+                            .get_pending_withdrawal_amount(&key_bytes)
+                });
                 let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
             }
             ConsensusStateRequest::GetValidatorAccount(public_key) => {
                 let mut key_bytes = [0u8; 32];
                 key_bytes.copy_from_slice(&public_key);
 
-                let account = self
-                    .canonical_state
-                    .validator_accounts
-                    .get(&key_bytes)
-                    .cloned();
+                let account = self.canonical_state.get_account(&key_bytes).cloned();
                 let _ = sender.send(ConsensusStateResponse::ValidatorAccount(account));
             }
             ConsensusStateRequest::GetFinalizedHeader(epoch) => {
@@ -903,31 +910,107 @@ impl<
                 let stake = self.canonical_state.get_maximum_stake();
                 let _ = sender.send(ConsensusStateResponse::MaximumStake(stake));
             }
+            ConsensusStateRequest::GetDeposit(index) => {
+                let deposit = self.canonical_state.get_deposit(index).cloned();
+                let _ = sender.send(ConsensusStateResponse::Deposit(deposit));
+            }
+            ConsensusStateRequest::GetDepositCount => {
+                let count = self.canonical_state.deposit_count();
+                let _ = sender.send(ConsensusStateResponse::DepositCount(count));
+            }
+            ConsensusStateRequest::GetWithdrawal(pubkey) => {
+                let withdrawal = self.canonical_state.get_withdrawal(&pubkey).cloned();
+                let _ = sender.send(ConsensusStateResponse::Withdrawal(withdrawal));
+            }
+            ConsensusStateRequest::GetStateRoot => {
+                let root = self.canonical_state.get_state_root();
+                let el_block_number = self.canonical_state.get_proof_el_block_number();
+                let _ = sender.send(ConsensusStateResponse::StateRoot {
+                    root,
+                    el_block_number,
+                });
+            }
+            ConsensusStateRequest::GenerateStateProof(keys) => {
+                let proof_tree = self.canonical_state.proof_tree();
+                let proofs: Vec<SszProof> = keys
+                    .iter()
+                    .filter_map(|key| match key {
+                        SszStateKey::Scalar(leaf_index) => {
+                            Some(proof_tree.generate_scalar_proof(*leaf_index))
+                        }
+                        SszStateKey::Validator(pubkey) => proof_tree.generate_validator_proof(
+                            pubkey,
+                            self.canonical_state.proof_validator_keys(),
+                        ),
+                        SszStateKey::ValidatorField(pubkey, field_index) => proof_tree
+                            .generate_validator_field_proof(
+                                pubkey,
+                                *field_index,
+                                self.canonical_state.proof_validator_keys(),
+                            ),
+                        SszStateKey::Deposit(index) => proof_tree.generate_deposit_proof(*index),
+                        SszStateKey::DepositField(index, field_index) => {
+                            proof_tree.generate_deposit_field_proof(*index, *field_index)
+                        }
+                        SszStateKey::Withdrawal(pubkey) => {
+                            proof_tree.generate_withdrawal_proof_by_key(pubkey)
+                        }
+                        SszStateKey::WithdrawalField(pubkey, field_index) => {
+                            proof_tree.generate_withdrawal_field_proof_by_key(pubkey, *field_index)
+                        }
+                        SszStateKey::ProtocolParam(index) => {
+                            proof_tree.generate_protocol_param_proof(*index)
+                        }
+                        SszStateKey::ProtocolParamField(index, field_index) => {
+                            proof_tree.generate_protocol_param_field_proof(*index, *field_index)
+                        }
+                        SszStateKey::AddedValidator(index) => {
+                            proof_tree.generate_added_validator_proof(*index)
+                        }
+                        SszStateKey::AddedValidatorField(index, field_index) => {
+                            proof_tree.generate_added_validator_field_proof(*index, *field_index)
+                        }
+                        SszStateKey::RemovedValidator(index) => {
+                            proof_tree.generate_removed_validator_proof(*index)
+                        }
+                    })
+                    .collect();
+                let root = self.canonical_state.get_state_root();
+                let el_block_number = self.canonical_state.get_proof_el_block_number();
+                let _ = sender.send(ConsensusStateResponse::StateProof {
+                    root,
+                    el_block_number,
+                    proofs,
+                });
+            }
         }
     }
 
     fn update_validator_committee(&mut self, stake_changed: bool) -> bool {
         // Add and remove validators for the next epoch
         let mut validator_exit = false;
-        let next_epoch = self.canonical_state.epoch + 1;
-        if self
-            .canonical_state
-            .added_validators
-            .contains_key(&next_epoch)
-            || !self.canonical_state.removed_validators.is_empty()
+        let next_epoch = self.canonical_state.get_epoch() + 1;
+        if self.canonical_state.has_added_validators(next_epoch)
+            || !self.canonical_state.get_removed_validators().is_empty()
         {
             // Activate validators for the coming epoch.
-            if let Some(added_validators) = self.canonical_state.added_validators.get(&next_epoch) {
-                for validator in added_validators {
+            // Clone to release the immutable borrow on canonical_state so we can call set_account.
+            if let Some(added_validators) = self
+                .canonical_state
+                .get_added_validators(next_epoch)
+                .cloned()
+            {
+                for validator in &added_validators {
                     let key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
-                    let account = self
+                    let mut account = self
                         .canonical_state
-                        .validator_accounts
-                        .get_mut(&key_bytes)
+                        .get_account(&key_bytes)
                         .expect(
                             "only validators with accounts are added to the added_validators queue",
-                        );
+                        )
+                        .clone();
                     account.status = ValidatorStatus::Active;
+                    self.canonical_state.set_account(key_bytes, account);
                     info!(
                         next_epoch,
                         validator = hex::encode(key_bytes),
@@ -936,7 +1019,8 @@ impl<
                 }
             }
 
-            for key in self.canonical_state.removed_validators.iter() {
+            let removed_validators = self.canonical_state.get_removed_validators().clone();
+            for key in &removed_validators {
                 // Check if this node exits the validator set
                 if key == &self.node_public_key {
                     validator_exit = true;
@@ -944,8 +1028,9 @@ impl<
                 }
 
                 let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key_bytes) {
+                if let Some(mut account) = self.canonical_state.get_account(&key_bytes).cloned() {
                     account.status = ValidatorStatus::Inactive;
+                    self.canonical_state.set_account(key_bytes, account);
                     info!(
                         next_epoch,
                         validator = hex::encode(key_bytes),
@@ -960,15 +1045,14 @@ impl<
             // In case the min or max stake parameters changed, we check that the balance of
             // all validators is in the allowed range [min_stake, max_stake]
             // Withdrawals happen at the end of the current epoch (last block)
-            let withdrawal_epoch = self.canonical_state.epoch + 1;
+            let withdrawal_epoch = self.canonical_state.get_epoch() + 1;
 
             let validators_to_process: Vec<([u8; 32], u64, Address)> = self
                 .canonical_state
-                .validator_accounts
-                .iter()
+                .validator_accounts_iter()
                 .filter_map(|(key, acc)| {
-                    if acc.balance < self.canonical_state.validator_minimum_stake
-                        || acc.balance > self.canonical_state.validator_maximum_stake
+                    if acc.balance < self.canonical_state.get_minimum_stake()
+                        || acc.balance > self.canonical_state.get_maximum_stake()
                     {
                         Some((*key, acc.balance, acc.withdrawal_credentials))
                     } else {
@@ -978,20 +1062,20 @@ impl<
                 .collect();
 
             for (key, balance, withdrawal_credentials) in validators_to_process {
-                if balance < self.canonical_state.validator_minimum_stake {
+                if balance < self.canonical_state.get_minimum_stake() {
                     // Remove the validator from the committee and withdraw the full balance
                     // Update account first: move balance to pending_withdrawal_amount
-                    if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
+                    if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
                         account.status = ValidatorStatus::Inactive;
                         account.balance = 0;
-                        account.pending_withdrawal_amount += balance;
                         account.has_pending_withdrawal = true;
+                        self.canonical_state.set_account(key, account);
                     }
 
                     info!(
                         validator = hex::encode(key),
                         balance,
-                        min_stake = self.canonical_state.validator_minimum_stake,
+                        min_stake = self.canonical_state.get_minimum_stake(),
                         "validator below minimum stake, scheduling full withdrawal"
                     );
 
@@ -1003,23 +1087,23 @@ impl<
                     self.canonical_state.push_withdrawal_request(
                         withdrawal_request,
                         withdrawal_epoch,
-                        true, // subtract_balance
+                        balance,
                     );
-                } else if balance > self.canonical_state.validator_maximum_stake {
+                } else if balance > self.canonical_state.get_maximum_stake() {
                     // Withdraw the portion of the balance exceeding `validator_maximum_stake`
-                    let excess_amount = balance - self.canonical_state.validator_maximum_stake;
+                    let excess_amount = balance - self.canonical_state.get_maximum_stake();
 
-                    // Move excess from balance to pending_withdrawal_amount
-                    if let Some(account) = self.canonical_state.validator_accounts.get_mut(&key) {
+                    // Move excess from balance
+                    if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
                         account.balance -= excess_amount;
-                        account.pending_withdrawal_amount += excess_amount;
                         account.has_pending_withdrawal = true;
+                        self.canonical_state.set_account(key, account);
                     }
 
                     info!(
                         validator = hex::encode(key),
                         balance,
-                        max_stake = self.canonical_state.validator_maximum_stake,
+                        max_stake = self.canonical_state.get_maximum_stake(),
                         excess_amount,
                         "validator above maximum stake, scheduling partial withdrawal"
                     );
@@ -1032,7 +1116,7 @@ impl<
                     self.canonical_state.push_withdrawal_request(
                         withdrawal_request,
                         withdrawal_epoch,
-                        true, // subtract_balance
+                        excess_amount,
                     );
                 }
             }
@@ -1070,6 +1154,7 @@ async fn execute_block<
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
+
     let payload_status = engine_client.check_payload(block).await;
     let new_height = block.height();
 
@@ -1081,18 +1166,20 @@ async fn execute_block<
 
     // Validate block against execution layer state
     // Note: withdrawals are validated in the application layer before voting
-    if payload_status.is_valid() && state.forkchoice.head_block_hash == block.eth_parent_hash() {
+    if payload_status.is_valid()
+        && state.get_forkchoice().head_block_hash == block.eth_parent_hash()
+    {
         let eth_hash = block.eth_block_hash();
         let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(
             new_height,
-            epoch = state.epoch,
+            epoch = state.get_epoch(),
             tx_count,
             eth_hash = hex(&eth_hash),
             "committing block to execution layer"
         );
 
-        state.forkchoice.head_block_hash = eth_hash.into();
+        state.set_forkchoice_head(eth_hash.into());
 
         // Parse execution requests
         #[cfg(feature = "prom")]
@@ -1125,7 +1212,7 @@ async fn execute_block<
         }
     } else {
         let payload_valid = payload_status.is_valid();
-        let parent_matches = state.forkchoice.head_block_hash == block.eth_parent_hash();
+        let parent_matches = state.get_forkchoice().head_block_hash == block.eth_parent_hash();
         warn!(
             new_height,
             payload_valid,
@@ -1136,8 +1223,8 @@ async fn execute_block<
 
     state.set_latest_height(new_height);
     state.set_view(block.view());
-    state.head_digest = block.digest();
-    assert_eq!(block.epoch(), state.epoch);
+    state.set_head_digest(block.digest());
+    assert_eq!(block.epoch(), state.get_epoch());
 
     // Periodically persist state to database as a blob
     // We build the checkpoint one height before the epoch end which
@@ -1149,11 +1236,11 @@ async fn execute_block<
         let checkpoint = Checkpoint::new(state);
         debug!(
             new_height,
-            epoch = state.epoch,
+            epoch = state.get_epoch(),
             checkpoint_digest = ?checkpoint.digest,
             "created checkpoint at penultimate block of epoch"
         );
-        state.pending_checkpoint = Some(checkpoint);
+        state.set_pending_checkpoint(Some(checkpoint));
 
         #[cfg(feature = "prom")]
         {
@@ -1170,6 +1257,11 @@ async fn execute_block<
             .record(total_block_processing_duration);
         counter!("blocks_processed_total").increment(1);
     }
+
+    // Freeze the trie root so that subsequent finalization mutations
+    // (epoch transitions, forkchoice updates) don't alter the captured value.
+    let el_block_number = block.payload.payload_inner.payload_inner.block_number;
+    state.capture_state_root(el_block_number);
 }
 
 async fn parse_execution_requests<
@@ -1183,7 +1275,7 @@ async fn parse_execution_requests<
     consts: &ProtocolConsts,
 ) {
     // Combine any pending execution requests with the current block's requests
-    let mut all_requests = std::mem::take(&mut state.pending_execution_requests);
+    let mut all_requests = state.take_pending_execution_requests();
     all_requests.extend(block.execution_requests.iter().cloned());
 
     for request_bytes in &all_requests {
@@ -1197,16 +1289,16 @@ async fn parse_execution_requests<
                             state,
                             protocol_version_digest,
                             new_height,
-                            state.validator_minimum_stake,
-                            state.validator_maximum_stake,
+                            state.get_minimum_stake(),
+                            state.get_maximum_stake(),
                         ) {
                             // Mark account as having a pending deposit
                             let validator_pubkey: [u8; 32] =
                                 deposit_request.node_pubkey.as_ref().try_into().unwrap();
-                            if let Some(account) =
-                                state.validator_accounts.get_mut(&validator_pubkey)
+                            if let Some(mut account) = state.get_account(&validator_pubkey).cloned()
                             {
                                 account.has_pending_deposit = true;
+                                state.set_account(validator_pubkey, account);
                             } else {
                                 // Create account early with Inactive status for new validators
                                 let withdrawal_credentials = match parse_withdrawal_credentials(
@@ -1225,7 +1317,6 @@ async fn parse_execution_requests<
                                     consensus_public_key: deposit_request.consensus_pubkey.clone(),
                                     withdrawal_credentials,
                                     balance: 0, // Balance will be set when deposit is processed
-                                    pending_withdrawal_amount: 0,
                                     status: ValidatorStatus::Inactive,
                                     has_pending_deposit: true,
                                     has_pending_withdrawal: false,
@@ -1260,12 +1351,12 @@ async fn parse_execution_requests<
                                 amount: deposit_request.amount,
                             };
                             let withdrawal_epoch =
-                                state.epoch + consts.validator_withdrawal_num_epochs;
+                                state.get_epoch() + consts.validator_withdrawal_num_epochs;
 
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
                                 withdrawal_epoch,
-                                false, // subtract_balance: deposit was never credited to balance
+                                0, // deposit was never credited to balance
                             );
                         }
                     }
@@ -1324,18 +1415,14 @@ async fn parse_execution_requests<
 
                             // If the validator is in the warm-up phase after depositing the stake
                             // and before joining the committee, then the onboarding is aborted
-                            if account.joining_epoch > state.epoch {
+                            if account.joining_epoch > state.get_epoch() {
                                 // Cancel validator's pending activation
-                                if let Some(validators) =
-                                    state.added_validators.get_mut(&account.joining_epoch)
-                                    && let Some(pos) =
-                                        validators.iter().position(|v| v.node_key == public_key)
+                                if state.remove_added_validator(account.joining_epoch, &public_key)
                                 {
-                                    validators.remove(pos);
                                     info!(
                                         validator = ?public_key,
                                         activation_epoch = account.joining_epoch,
-                                        current_epoch = state.epoch,
+                                        current_epoch = state.get_epoch(),
                                         "cancelled pending validator activation due to withdrawal request"
                                     );
                                 }
@@ -1347,37 +1434,36 @@ async fn parse_execution_requests<
                                 // which can be properly reflected in the header.
                                 info!(
                                     validator = hex::encode(withdrawal_request.validator_pubkey),
-                                    current_epoch = state.epoch,
+                                    current_epoch = state.get_epoch(),
                                     "buffering withdrawal request for active validator on last block of epoch"
                                 );
-                                state.pending_execution_requests.push(request_bytes.clone());
+                                state.push_pending_execution_request(request_bytes.clone());
                                 continue;
                             } else {
                                 // Validator is already active - add to removed_validators
-                                state.removed_validators.push(public_key);
+                                state.push_removed_validator(public_key);
                                 account.status = ValidatorStatus::SubmittedExitRequest;
                             }
 
-                            // Move balance to pending_withdrawal_amount
+                            // Move balance out
                             account.balance = 0;
-                            account.pending_withdrawal_amount += remaining_balance;
                             account.has_pending_withdrawal = true;
                             state.set_account(withdrawal_request.validator_pubkey, account);
 
                             // The withdrawal will be completed in `validator_withdrawal_num_epochs` epochs
                             let withdrawal_epoch =
-                                state.epoch + consts.validator_withdrawal_num_epochs;
+                                state.get_epoch() + consts.validator_withdrawal_num_epochs;
                             info!(
                                 validator = hex::encode(withdrawal_request.validator_pubkey),
                                 amount = remaining_balance,
                                 withdrawal_epoch,
-                                current_epoch = state.epoch,
+                                current_epoch = state.get_epoch(),
                                 "scheduled full withdrawal for validator"
                             );
                             state.push_withdrawal_request(
                                 withdrawal_request.clone(),
                                 withdrawal_epoch,
-                                true, // subtract_balance
+                                remaining_balance,
                             );
                         }
                     }
@@ -1387,7 +1473,7 @@ async fn parse_execution_requests<
                         match ProtocolParam::try_from(protocol_param_request) {
                             Ok(protocol_param) => {
                                 info!("Adding protocol param change: {protocol_param:?}");
-                                state.protocol_param_changes.push(protocol_param);
+                                state.push_protocol_param_change(protocol_param);
                             }
                             Err(e) => {
                                 warn!("Failed to parse protocol param request: {e}");
@@ -1418,7 +1504,7 @@ async fn process_execution_requests<
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
 
                 // Account should always exist (created early in parse_execution_requests)
-                let Some(account) = state.validator_accounts.get_mut(&node_pubkey_bytes) else {
+                let Some(mut account) = state.get_account(&node_pubkey_bytes).cloned() else {
                     warn!("Deposit request has no corresponding account, skipping: {request:?}");
                     continue;
                 };
@@ -1431,25 +1517,26 @@ async fn process_execution_requests<
                     let new_balance = request.amount;
 
                     // Revalidate in case stake bounds changed since deposit was parsed
-                    if new_balance < state.validator_minimum_stake
-                        || new_balance > state.validator_maximum_stake
+                    if new_balance < state.get_minimum_stake()
+                        || new_balance > state.get_maximum_stake()
                     {
                         info!(
                             "New validator deposit {} outside valid range [{}, {}], initiating refund: {request:?}",
                             new_balance,
-                            state.validator_minimum_stake,
-                            state.validator_maximum_stake
+                            state.get_minimum_stake(),
+                            state.get_maximum_stake()
                         );
                         let withdrawal_request = WithdrawalRequest {
                             source_address: account.withdrawal_credentials,
                             validator_pubkey: node_pubkey_bytes,
                             amount: request.amount,
                         };
-                        let withdrawal_epoch = state.epoch + consts.validator_withdrawal_num_epochs;
+                        let withdrawal_epoch =
+                            state.get_epoch() + consts.validator_withdrawal_num_epochs;
                         state.push_withdrawal_request(
                             withdrawal_request,
                             withdrawal_epoch,
-                            false, // subtract_balance: deposit was never credited
+                            0, // deposit was never credited
                         );
                         // Remove the inactive account since validator won't be joining
                         state.remove_account(&node_pubkey_bytes);
@@ -1457,13 +1544,13 @@ async fn process_execution_requests<
                     }
 
                     // Activate the new validator
-                    let activation_epoch = state.epoch + consts.validator_num_warm_up_epochs;
-                    // Clone the consensus key before add_validator since it needs &mut state
+                    let activation_epoch = state.get_epoch() + consts.validator_num_warm_up_epochs;
                     let consensus_key = account.consensus_public_key.clone();
                     account.balance = new_balance;
                     account.status = ValidatorStatus::Joining;
                     account.joining_epoch = activation_epoch;
                     account.last_deposit_index = request.index;
+                    state.set_account(node_pubkey_bytes, account);
 
                     state.add_validator(
                         activation_epoch,
@@ -1477,7 +1564,7 @@ async fn process_execution_requests<
                         validator = hex::encode(node_pubkey_bytes),
                         balance = new_balance,
                         activation_epoch,
-                        current_epoch = state.epoch,
+                        current_epoch = state.get_epoch(),
                         "processing new validator deposit"
                     );
 
@@ -1488,9 +1575,10 @@ async fn process_execution_requests<
                         gauge.set(request.amount as i64);
                         context.register(
                             format!(
-                                "<creds>{}</creds><pubkey>{}</pubkey>_deposit_validator_balance",
+                                "<creds>{}</creds><pubkey>{}</pubkey>_<index>{}</index>_deposit_validator_balance",
                                 hex::encode(request.withdrawal_credentials),
-                                hex::encode(request.node_pubkey.encode())
+                                hex::encode(request.node_pubkey.encode()),
+                                request.index,
                             ),
                             "Validator balance",
                             gauge,
@@ -1501,8 +1589,8 @@ async fn process_execution_requests<
                     let new_balance = account.balance + request.amount;
 
                     // Check if new balance would be within valid range
-                    if new_balance >= state.validator_minimum_stake
-                        && new_balance <= state.validator_maximum_stake
+                    if new_balance >= state.get_minimum_stake()
+                        && new_balance <= state.get_maximum_stake()
                     {
                         info!(
                             validator = hex::encode(node_pubkey_bytes),
@@ -1512,26 +1600,30 @@ async fn process_execution_requests<
                             "processing top-up deposit for existing validator"
                         );
                         account.balance = new_balance;
+                        state.set_account(node_pubkey_bytes, account);
                     } else {
                         // Invalid: new balance outside range, initiate immediate withdrawal
                         info!(
                             "Top-up deposit would result in balance {} outside valid range [{}, {}], initiating immediate withdrawal: {request:?}",
                             new_balance,
-                            state.validator_minimum_stake,
-                            state.validator_maximum_stake
+                            state.get_minimum_stake(),
+                            state.get_maximum_stake()
                         );
                         let withdrawal_request = WithdrawalRequest {
                             source_address: account.withdrawal_credentials,
                             validator_pubkey: node_pubkey_bytes,
                             amount: request.amount,
                         };
-                        let withdrawal_epoch = state.epoch + consts.validator_withdrawal_num_epochs;
+                        let withdrawal_epoch =
+                            state.get_epoch() + consts.validator_withdrawal_num_epochs;
 
                         state.push_withdrawal_request(
                             withdrawal_request,
                             withdrawal_epoch,
-                            false, // subtract_balance: top-up deposit was never credited to balance
+                            0, // top-up deposit was never credited to balance
                         );
+                        // Persist the has_pending_deposit = false change
+                        state.set_account(node_pubkey_bytes, account);
                     }
                 }
             }
@@ -1547,29 +1639,26 @@ async fn process_execution_requests<
         );
     }
     for withdrawal in &block.payload.payload_inner.withdrawals {
-        let current_epoch = state.epoch;
+        let current_epoch = state.get_epoch();
         let pending_withdrawal = state.pop_withdrawal(current_epoch);
         // these checks should never fail. we have to make sure that these withdrawals are
         // verified when the block is verified. it is too late when the block is committed.
         let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
         assert_eq!(pending_withdrawal.inner, *withdrawal);
 
-        // If subtract_balance is false, this is an immediate refund of a rejected deposit.
+        // If balance_deduction is 0, this is an immediate refund of a rejected deposit.
         // No account modifications needed - the money was never part of the account.
         // Note: if a deposit request with an invalid amount (below minimum or above maximum stake) was submitted,
         // a withdrawal request will be initiated immediately, without creating a validator account.
         // These are the cases where we process a withdrawal request without having a validator account
         // stored in the consensus state.
-        if !pending_withdrawal.subtract_balance {
+        if pending_withdrawal.balance_deduction == 0 {
             continue;
         }
 
-        // For subtract_balance = true, the money was moved from balance to pending_withdrawal_amount
-        // at creation time. Now we subtract from pending_withdrawal_amount.
+        // For balance_deduction > 0, the money was moved from balance when the withdrawal
+        // was created. The balance_deduction is tracked on the PendingWithdrawal in the queue.
         if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned() {
-            account.pending_withdrawal_amount = account
-                .pending_withdrawal_amount
-                .saturating_sub(withdrawal.amount);
             account.has_pending_withdrawal = false;
 
             #[cfg(debug_assertions)]
@@ -1578,17 +1667,18 @@ async fn process_execution_requests<
                 gauge.set(account.balance as i64);
                 context.register(
                     format!(
-                        "<creds>{}</creds><pubkey>{}</pubkey>_withdrawal_validator_balance",
+                        "<creds>{}</creds><pubkey>{}</pubkey><height>{}</height>_withdrawal_validator_balance",
                         hex::encode(account.withdrawal_credentials),
-                        hex::encode(pending_withdrawal.pubkey)
+                        hex::encode(pending_withdrawal.pubkey),
+                        state.get_latest_height(),
                     ),
                     "Validator balance",
                     gauge,
                 );
             }
 
-            // If both balance and pending_withdrawal_amount are 0, remove the validator account.
-            if account.balance == 0 && account.pending_withdrawal_amount == 0 {
+            // If balance is 0, remove the validator account.
+            if account.balance == 0 {
                 info!(
                     validator = hex::encode(pending_withdrawal.pubkey),
                     "removing validator account after full withdrawal"
@@ -1612,7 +1702,7 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
 ) -> bool {
     // Check if validator already exists
     let validator_pubkey: [u8; 32] = deposit_request.node_pubkey.as_ref().try_into().unwrap();
-    let account = state.validator_accounts.get(&validator_pubkey);
+    let account = state.get_account(&validator_pubkey);
     let existing_balance = account.map(|acc| acc.balance).unwrap_or(0);
 
     // Check for pending deposit or withdrawal (only if account exists)

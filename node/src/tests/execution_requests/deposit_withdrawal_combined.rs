@@ -215,6 +215,8 @@ fn test_deposit_and_withdrawal_request_single() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     })
 }
@@ -464,6 +466,8 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     })
 }
@@ -476,6 +480,8 @@ fn test_deposit_blocked_by_pending_withdrawal() {
     // - Genesis validators start with 32 ETH each
     // - Submit withdrawal at block 3, then deposit at block 4
     // - Withdrawal should be processed, deposit should be rejected and refunded
+    // - Because both target the same validator, the refund is merged into the
+    //   existing pending withdrawal (32 + 5 = 37 ETH), producing a single withdrawal
     let n = 5;
     let min_stake = 32_000_000_000;
     let max_stake = 100_000_000_000;
@@ -575,7 +581,7 @@ fn test_deposit_blocked_by_pending_withdrawal() {
 
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
@@ -639,17 +645,15 @@ fn test_deposit_blocked_by_pending_withdrawal() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        // Verify withdrawal occurred and rejected deposit was refunded
-        // Two withdrawals expected:
-        // 1. Original withdrawal of 32 ETH (min_stake)
-        // 2. Refund of rejected deposit of 5 ETH (deposit_amount)
+        // Verify withdrawal occurred and rejected deposit was refunded.
+        // The refund is merged into the existing withdrawal for the same validator,
+        // producing a single withdrawal of 32 + 5 = 37 ETH.
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
 
         let epoch_withdrawals = withdrawals.get(&withdrawal_height).unwrap();
-        assert_eq!(epoch_withdrawals.len(), 2);
-        assert_eq!(epoch_withdrawals[0].amount, min_stake);
-        assert_eq!(epoch_withdrawals[1].amount, deposit_amount);
+        assert_eq!(epoch_withdrawals.len(), 1);
+        assert_eq!(epoch_withdrawals[0].amount, min_stake + deposit_amount);
 
         let validator0_client_id = format!("validator_{}", validators[0].0);
         assert!(
@@ -657,6 +661,8 @@ fn test_deposit_blocked_by_pending_withdrawal() {
                 .verify_consensus_skip(None, Some(stop_height), &[&validator0_client_id])
                 .is_ok()
         );
+
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -766,7 +772,7 @@ fn test_withdrawal_blocked_by_pending_deposit() {
 
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
@@ -851,6 +857,8 @@ fn test_withdrawal_blocked_by_pending_deposit() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     })
@@ -967,7 +975,7 @@ fn test_deposit_and_withdrawal_same_block() {
 
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
@@ -1051,6 +1059,8 @@ fn test_deposit_and_withdrawal_same_block() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     })

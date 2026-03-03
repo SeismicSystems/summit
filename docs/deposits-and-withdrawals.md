@@ -50,17 +50,17 @@ Withdrawals are parsed in `parse_execution_requests` and processed when included
 
 | Scenario | When Parsed | When Processed |
 |----------|-------------|----------------|
-| User-initiated | Move balance to pending, set flag | Subtract from pending, clear flag |
-| Below min stake | Move balance to pending, set flag | Subtract from pending, clear flag |
-| Above max stake | Move excess to pending, set flag | Subtract from pending, clear flag |
-| Failed deposit refund | Create refund withdrawal | No account changes |
-| Top-up exceeds range | Create refund withdrawal | No account changes |
+| User-initiated | Set balance to 0, set flag | Clear flag, remove account if balance is 0 |
+| Below min stake | Set balance to 0, set flag | Clear flag, remove account if balance is 0 |
+| Above max stake | Subtract excess from balance, set flag | Clear flag |
+| Failed deposit refund | Create refund withdrawal (or merge into existing) | No account changes |
+| Top-up exceeds range | Create refund withdrawal (or merge into existing) | No account changes |
 | New deposit invalid | Create refund withdrawal, remove account | No account changes |
 
 ### User-Initiated Withdrawal
 
-1. **Parsing**: Balance moved from `balance` to `pending_withdrawal_amount`, `has_pending_withdrawal = true`. Validator added to `removed_validators`.
-2. **Processing**: `pending_withdrawal_amount` reduced, flag cleared. Account removed if both `balance` and `pending_withdrawal_amount` are zero.
+1. **Parsing**: `balance` set to 0, `has_pending_withdrawal = true`. The withdrawn amount is tracked as `balance_deduction` on the `PendingWithdrawal` in the queue. Validator added to `removed_validators`.
+2. **Processing**: Flag cleared. Account removed if `balance` is zero.
 
 ### Stake Bound Violations
 
@@ -70,7 +70,9 @@ When `validator_min_stake` or `validator_max_stake` parameters change:
 
 ### Refund Withdrawals
 
-Refund withdrawals have `subtract_balance = false` because the deposited funds were never credited to the account. These do not set `has_pending_withdrawal` and do not block future operations.
+Refund withdrawals have `balance_deduction = 0` because the deposited funds were never credited to the account. These do not set `has_pending_withdrawal` and do not block future operations.
+
+If the validator already has a pending withdrawal (e.g., a user-initiated exit), the refund is merged into it: the refund amount is added to the existing withdrawal's `amount`, while `balance_deduction` remains unchanged (the refund portion contributes 0). This produces a single withdrawal covering both the original balance and the refunded deposit.
 
 ### Invalid Withdrawal Credentials
 
@@ -79,6 +81,16 @@ Withdrawal credentials must be in Eth1 format: `0x01` prefix + 11 zero bytes + 2
 If withdrawal credentials cannot be parsed:
 - **New validator deposit**: Deposit is ignored, funds are lost
 - **Refund withdrawal**: Refund cannot be created, funds are lost
+
+## Withdrawal Queue and Merging
+
+The `WithdrawalQueue` stores at most one pending withdrawal per validator (keyed by pubkey). Each withdrawal tracks:
+- `amount`: the total withdrawal amount (included in the block as an EIP-4895 withdrawal)
+- `balance_deduction`: the amount that was moved out of the validator's `balance` when the withdrawal was created. This is used by the RPC `getValidatorBalance` endpoint to include pending withdrawal funds in the reported balance.
+
+When a new withdrawal is pushed for a validator that already has a pending entry, the amounts and balance deductions are merged into the existing entry, keeping the original scheduled epoch. This ensures that refund withdrawals (which bypass the `has_pending_withdrawal` guard) do not create duplicate queue entries.
+
+User-initiated withdrawals are still limited to one at a time via the `has_pending_withdrawal` flag on the account. The merging behavior only applies to system-initiated withdrawals (deposit refunds, stake bounds enforcement) that target a validator with an existing pending withdrawal.
 
 ## Withdrawal Deferral at Epoch Boundaries
 
@@ -93,7 +105,7 @@ Deferred requests are stored in `pending_execution_requests` and processed at th
 - There are two parameters that govern the staking amount: `validator_min_stake` and `validator_max_stake`. The balance of a validator must always be in range `[validator_min_stake, validator_max_stake]`.
 - Any deposit request with resulting balance outside `[validator_min_stake, validator_max_stake]` will be rejected and refunded.
 - A validator can only have one pending deposit request at a time. Subsequent deposit requests will be ignored.
-- A validator can only have one pending withdrawal request at a time. Subsequent withdrawal requests will be ignored.
+- A validator can only have one pending withdrawal entry in the queue at a time. User-initiated withdrawal requests are ignored if one is already pending. System-initiated withdrawals (deposit refunds, stake bounds enforcement) are merged into the existing entry.
 - A validator cannot submit a deposit request while a withdrawal request is pending, and vice versa.
 - If a withdrawal request is submitted while a validator is in the onboarding phase, then the onboarding phase is aborted, and the withdrawal request will be processed `VALIDATOR_WITHDRAWAL_NUM_EPOCHS` epochs later.
 - No partial withdrawals. If a withdrawal request with amount `amount < balance` is submitted, the full `balance` will be withdrawn.

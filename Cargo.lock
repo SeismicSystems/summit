@@ -2498,6 +2498,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ethereum_hashing"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aa93f58bb1eb3d1e556e4f408ef1dac130bad01ac37db4e7ade45de40d1c86a"
+dependencies = [
+ "cpufeatures",
+ "ring",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "ethereum_serde_utils"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6213,9 +6224,11 @@ dependencies = [
  "commonware-runtime",
  "commonware-utils",
  "dirs 6.0.0",
+ "ethereum_hashing",
  "ethereum_ssz",
  "futures",
  "libc",
+ "metrics",
  "rand 0.8.5",
  "serde",
  "serde_json",

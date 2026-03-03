@@ -178,6 +178,8 @@ fn test_deposit_request_single() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     });
 }
@@ -302,8 +304,8 @@ fn test_deposit_request_top_up() {
         // Set the validator balance to 0, min stake to 10 ETH, max stake to 50 ETH
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
-        initial_state.validator_minimum_stake = minimum_stake; // 32 ETH in gwei
-        initial_state.validator_maximum_stake = maximum_stake; // 40 ETH in gwei
+        initial_state.set_minimum_stake(minimum_stake); // 32 ETH in gwei
+        initial_state.set_maximum_stake(maximum_stake); // 40 ETH in gwei
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -713,7 +715,7 @@ fn test_deposit_greater_than_max_stake_rejected() {
             .build();
 
         let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         // Create instances
         let mut public_keys = HashSet::new();
@@ -1001,6 +1003,8 @@ fn test_deposit_request_invalid_node_signature() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     });
 }
@@ -1196,6 +1200,8 @@ fn test_deposit_request_invalid_consensus_signature() {
                 .is_ok()
         );
 
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
         context.auditor().state()
     });
 }
@@ -1301,7 +1307,7 @@ fn test_duplicate_deposit_blocked() {
             .build();
 
         let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
-        initial_state.validator_maximum_stake = max_stake;
+        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();

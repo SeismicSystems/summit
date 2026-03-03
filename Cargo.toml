@@ -60,6 +60,7 @@ console-subscriber = "0.4"
 pin-project = "1.1.10"
 jsonrpsee = { version = "0.26.0", features = ["http-client"] }
 
+ethereum_hashing = { version = "0.8", features = ["zero_hash_cache"] }
 ethereum_ssz = "0.9.0"
 ethereum_ssz_derive = "0.9.0"
 serde = { version = "1.0.219", features = ["derive"] }

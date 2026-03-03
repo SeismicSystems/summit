@@ -34,6 +34,7 @@ pub struct Header {
     pub block_value: U256,
     pub added_validators: Vec<AddedValidator>,
     pub removed_validators: Vec<PublicKey>,
+    pub parent_beacon_block_root: [u8; 32],
     // precomputed digest of this header
     pub digest: Digest,
 }
@@ -53,6 +54,7 @@ impl Header {
         block_value: U256,
         added_validators: Vec<AddedValidator>,
         removed_validators: Vec<PublicKey>,
+        parent_beacon_block_root: [u8; 32],
     ) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(&parent);
@@ -80,6 +82,7 @@ impl Header {
             .collect();
         hasher.update(&removed_validators_bytes.as_ssz_bytes());
         hasher.update(&view.to_be_bytes());
+        hasher.update(&parent_beacon_block_root);
         let digest = hasher.finalize();
 
         Self {
@@ -95,6 +98,7 @@ impl Header {
             block_value,
             added_validators,
             removed_validators,
+            parent_beacon_block_root,
             digest,
         }
     }
@@ -109,7 +113,7 @@ impl ssz::Encode for Header {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
+        let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 6 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash, parent_beacon_block_root
             + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
             + <U256 as ssz::Encode>::ssz_fixed_len() // block_value
             + <Vec<u8> as ssz::Encode>::ssz_fixed_len() * 2; // added_validators, removed_validators offsets
@@ -168,13 +172,14 @@ impl ssz::Encode for Header {
         encoder.append(&checkpoint_hash);
         encoder.append(&prev_epoch_header_hash);
         encoder.append(&self.block_value);
+        encoder.append(&self.parent_beacon_block_root);
         encoder.append(&added_validators_bytes);
         encoder.append(&removed_validators_bytes);
         encoder.finalize();
     }
 
     fn ssz_bytes_len(&self) -> usize {
-        let fixed_size = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 5 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash
+        let fixed_size = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 6 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash, parent_beacon_block_root
             + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
             + <U256 as ssz::Encode>::ssz_fixed_len(); // block_value
 
@@ -206,6 +211,7 @@ impl ssz::Decode for Header {
         builder.register_type::<[u8; 32]>()?; // checkpoint_hash
         builder.register_type::<[u8; 32]>()?; // prev_epoch_header_hash
         builder.register_type::<U256>()?; // block_value
+        builder.register_type::<[u8; 32]>()?; // parent_beacon_block_root
         builder.register_type::<Vec<u8>>()?; // added_validators (raw bytes)
         builder.register_type::<Vec<u8>>()?; // removed_validators (raw bytes)
 
@@ -221,6 +227,7 @@ impl ssz::Decode for Header {
         let checkpoint_hash: [u8; 32] = decoder.decode_next()?;
         let prev_epoch_header_hash: [u8; 32] = decoder.decode_next()?;
         let block_value: U256 = decoder.decode_next()?;
+        let parent_beacon_block_root: [u8; 32] = decoder.decode_next()?;
         let added_validators_bytes: Vec<u8> = decoder.decode_next()?;
         let removed_validators_bytes: Vec<u8> = decoder.decode_next()?;
 
@@ -278,6 +285,7 @@ impl ssz::Decode for Header {
             block_value,
             added_validators,
             removed_validators,
+            parent_beacon_block_root,
         ))
     }
 }
@@ -530,6 +538,7 @@ mod test {
             U256::ZERO,
             added_validators,
             removed_validators,
+            [0u8; 32],
         );
 
         let encoded = header.encode();
@@ -554,6 +563,7 @@ mod test {
             U256::ZERO,
             added_validators,
             removed_validators,
+            [0u8; 32],
         );
 
         let proposal = Proposal {
@@ -608,6 +618,7 @@ mod test {
             U256::ZERO,
             added_validators,
             removed_validators,
+            [0u8; 32],
         );
 
         // Create a finalization with wrong payload
@@ -662,6 +673,7 @@ mod test {
             U256::ZERO,
             added_validators,
             removed_validators,
+            [0u8; 32],
         );
 
         let proposal = Proposal {

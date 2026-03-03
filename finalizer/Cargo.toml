@@ -42,7 +42,7 @@ prometheus-client = "0.24.0"
 metrics = { version = "0.24.0", optional = true }
 
 [features]
-prom = ["metrics"]
+prom = ["metrics", "summit-types/prom"]
 bench = ["summit-types/bench"]
 
 [[bench]]

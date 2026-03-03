@@ -178,7 +178,7 @@ fn test_checkpoint_verification_fixed_committee() {
 
         let checkpoint_state =
             ConsensusState::try_from(&raw_checkpoint).expect("failed to parse consensus state");
-        let checkpoint_epoch = checkpoint_state.epoch;
+        let checkpoint_epoch = checkpoint_state.get_epoch();
         assert!(
             checkpoint_epoch >= num_epochs - 1,
             "expected checkpoint at epoch >= {}, got {}",
@@ -230,6 +230,8 @@ fn test_checkpoint_verification_fixed_committee() {
             ),
             "expected NonContiguousEpochs for epoch 1, got: {err}"
         );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     });
@@ -420,7 +422,7 @@ fn test_checkpoint_verification_dynamic_committee() {
 
         let checkpoint_state =
             ConsensusState::try_from(&raw_checkpoint).expect("failed to parse consensus state");
-        let checkpoint_epoch = checkpoint_state.epoch;
+        let checkpoint_epoch = checkpoint_state.get_epoch();
         assert!(
             checkpoint_epoch >= 3,
             "expected checkpoint at epoch >= 3, got {}",
@@ -451,6 +453,9 @@ fn test_checkpoint_verification_dynamic_committee() {
         // Verify the full checkpoint chain with dynamic validator set
         checkpoint::verify_checkpoint_chain(&genesis, &finalized_headers, &raw_checkpoint)
             .expect("checkpoint verification with dynamic committee failed");
+
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[withdrawing_idx])
+            .await;
 
         context.auditor().state()
     });

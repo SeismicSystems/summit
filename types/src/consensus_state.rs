@@ -3,46 +3,70 @@ use crate::checkpoint::Checkpoint;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
-use crate::withdrawal::PendingWithdrawal;
+use crate::ssz_state_tree::SszStateTree;
+use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use crate::{Digest, PublicKey};
-use alloy_eips::eip4895::Withdrawal;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{bls12381, sha256};
+#[cfg(feature = "prom")]
+use metrics::histogram;
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Debug)]
 pub struct ConsensusState {
-    pub epoch: u64,
-    pub view: u64,
-    pub latest_height: u64,
-    pub head_digest: Digest,
-    pub next_withdrawal_index: u64,
-    pub deposit_queue: VecDeque<DepositRequest>,
-    pub withdrawal_queue: BTreeMap<u64, VecDeque<PendingWithdrawal>>, // epoch -> withdrawals
-    pub validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
-    pub protocol_param_changes: Vec<ProtocolParam>,
-    pub pending_checkpoint: Option<Checkpoint>,
-    pub added_validators: BTreeMap<u64, Vec<AddedValidator>>,
-    pub removed_validators: Vec<PublicKey>,
+    pub(crate) epoch: u64,
+    pub(crate) view: u64,
+    pub(crate) latest_height: u64,
+    pub(crate) head_digest: Digest,
+    pub(crate) deposit_queue: VecDeque<DepositRequest>,
+    pub(crate) withdrawal_queue: WithdrawalQueue,
+    pub(crate) validator_accounts: BTreeMap<[u8; 32], ValidatorAccount>,
+    pub(crate) protocol_param_changes: Vec<ProtocolParam>,
+    pub(crate) pending_checkpoint: Option<Checkpoint>,
+    pub(crate) added_validators: BTreeMap<u64, Vec<AddedValidator>>,
+    pub(crate) removed_validators: Vec<PublicKey>,
     /// Execution requests that need to be deferred. Currently this only applies to
     /// withdrawal requests received in the last block of an epoch.
-    pub pending_execution_requests: Vec<alloy_primitives::Bytes>,
-    pub forkchoice: ForkchoiceState,
-    pub epoch_genesis_hash: [u8; 32],
-    pub validator_minimum_stake: u64, // in gwei
-    pub validator_maximum_stake: u64, // in gwei
+    pub(crate) pending_execution_requests: Vec<alloy_primitives::Bytes>,
+    pub(crate) forkchoice: ForkchoiceState,
+    pub(crate) epoch_genesis_hash: [u8; 32],
+    pub(crate) validator_minimum_stake: u64, // in gwei
+    pub(crate) validator_maximum_stake: u64, // in gwei
+
+    /// In-memory SSZ binary Merkle tree over the entire consensus state.
+    /// Not serialized — rebuilt from data fields on deserialization.
+    pub(crate) ssz_tree: SszStateTree,
+
+    /// Frozen snapshot of `ssz_tree` at `capture_state_root()` time.
+    /// Proofs are generated from this tree so they verify against the on-chain root.
+    /// Not serialized — rebuilt alongside `ssz_tree`.
+    pub(crate) proof_tree: SszStateTree,
+
+    /// Frozen snapshot of validator pubkeys (sorted) at `capture_state_root()` time.
+    /// Needed for positional index lookups when generating validator proofs.
+    pub(crate) proof_validator_keys: Vec<[u8; 32]>,
+
+    // Withdrawal proof lookup is handled by the pubkey index stored in SszStateTree itself.
+    // The frozen proof_tree contains the withdrawal_pubkey_index from capture time.
+    /// Snapshot of `ssz_tree.root()` captured after block execution.
+    /// Not serialized — set via `capture_state_root()` in the finalizer after `execute_block`.
+    /// Survives finalization mutations (which change the live tree but not this field).
+    pub(crate) state_root: [u8; 32],
+
+    /// The EL (Reth) block number at the time `capture_state_root()` was called.
+    /// The state root appears on-chain in EL block `proof_el_block_number + 1`.
+    pub(crate) proof_el_block_number: u64,
 }
 
 impl Default for ConsensusState {
     fn default() -> Self {
-        Self {
+        let mut s = Self {
             epoch: 0,
             view: 0,
             latest_height: 0,
             head_digest: sha256::Digest([0u8; 32]),
-            next_withdrawal_index: 0,
             deposit_queue: Default::default(),
             withdrawal_queue: Default::default(),
             protocol_param_changes: Default::default(),
@@ -55,7 +79,15 @@ impl Default for ConsensusState {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
-        }
+            ssz_tree: SszStateTree::default(),
+            proof_tree: SszStateTree::default(),
+            proof_validator_keys: Vec::new(),
+
+            state_root: [0u8; 32],
+            proof_el_block_number: 0,
+        };
+        s.rebuild_ssz_tree();
+        s
     }
 }
 
@@ -65,14 +97,32 @@ impl ConsensusState {
         validator_minimum_stake: u64,
         validator_maximum_stake: u64,
     ) -> Self {
-        Self {
+        let mut s = Self {
+            epoch: 0,
+            view: 0,
+            latest_height: 0,
+            head_digest: (*forkchoice.head_block_hash).into(),
+            deposit_queue: Default::default(),
+            withdrawal_queue: Default::default(),
+            protocol_param_changes: Default::default(),
+            validator_accounts: Default::default(),
+            pending_checkpoint: None,
+            added_validators: Default::default(),
+            removed_validators: Vec::new(),
+            pending_execution_requests: Vec::new(),
             forkchoice,
             epoch_genesis_hash: forkchoice.head_block_hash.into(),
-            head_digest: (*forkchoice.head_block_hash).into(),
             validator_minimum_stake,
             validator_maximum_stake,
-            ..Default::default()
-        }
+            ssz_tree: SszStateTree::default(),
+            proof_tree: SszStateTree::default(),
+            proof_validator_keys: Vec::new(),
+
+            state_root: [0u8; 32],
+            proof_el_block_number: 0,
+        };
+        s.rebuild_ssz_tree();
+        s
     }
 
     // State variable operations
@@ -82,6 +132,7 @@ impl ConsensusState {
 
     pub fn set_epoch(&mut self, epoch: u64) {
         self.epoch = epoch;
+        self.ssz_tree.set_epoch(epoch);
     }
 
     pub fn get_view(&self) -> u64 {
@@ -90,6 +141,7 @@ impl ConsensusState {
 
     pub fn set_view(&mut self, view: u64) {
         self.view = view;
+        self.ssz_tree.set_view(view);
     }
 
     pub fn get_latest_height(&self) -> u64 {
@@ -98,10 +150,11 @@ impl ConsensusState {
 
     pub fn set_latest_height(&mut self, height: u64) {
         self.latest_height = height;
+        self.ssz_tree.set_latest_height(height);
     }
 
     pub fn get_next_withdrawal_index(&self) -> u64 {
-        self.next_withdrawal_index
+        self.withdrawal_queue.next_index()
     }
 
     pub fn get_head_digest(&self) -> Digest {
@@ -116,10 +169,14 @@ impl ConsensusState {
         self.validator_maximum_stake
     }
 
-    fn get_and_increment_withdrawal_index(&mut self) -> u64 {
-        let current = self.next_withdrawal_index;
-        self.next_withdrawal_index += 1;
-        current
+    pub fn set_minimum_stake(&mut self, stake: u64) {
+        self.validator_minimum_stake = stake;
+        self.ssz_tree.set_validator_minimum_stake(stake);
+    }
+
+    pub fn set_maximum_stake(&mut self, stake: u64) {
+        self.validator_maximum_stake = stake;
+        self.ssz_tree.set_validator_maximum_stake(stake);
     }
 
     pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
@@ -127,7 +184,8 @@ impl ConsensusState {
     }
 
     pub fn set_next_withdrawal_index(&mut self, index: u64) {
-        self.next_withdrawal_index = index;
+        self.withdrawal_queue.set_next_index(index);
+        self.ssz_tree.set_next_withdrawal_index(index);
     }
 
     pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
@@ -143,6 +201,8 @@ impl ConsensusState {
             .entry(epoch)
             .or_default()
             .push(validator);
+        self.ssz_tree
+            .rebuild_added_validators(&self.added_validators);
     }
 
     pub fn get_removed_validators(&self) -> &Vec<PublicKey> {
@@ -151,6 +211,8 @@ impl ConsensusState {
 
     pub fn set_removed_validators(&mut self, validators: Vec<PublicKey>) {
         self.removed_validators = validators;
+        self.ssz_tree
+            .rebuild_removed_validators(&self.removed_validators);
     }
 
     pub fn get_forkchoice(&self) -> &ForkchoiceState {
@@ -159,6 +221,12 @@ impl ConsensusState {
 
     pub fn set_forkchoice(&mut self, forkchoice: ForkchoiceState) {
         self.forkchoice = forkchoice;
+        self.ssz_tree
+            .set_forkchoice_head_block_hash(&forkchoice.head_block_hash.0);
+        self.ssz_tree
+            .set_forkchoice_safe_block_hash(&forkchoice.safe_block_hash.0);
+        self.ssz_tree
+            .set_forkchoice_finalized_block_hash(&forkchoice.finalized_block_hash.0);
     }
 
     pub fn get_epoch_genesis_hash(&self) -> [u8; 32] {
@@ -167,6 +235,85 @@ impl ConsensusState {
 
     pub fn set_epoch_genesis_hash(&mut self, hash: [u8; 32]) {
         self.epoch_genesis_hash = hash;
+        self.ssz_tree.set_epoch_genesis_hash(&hash);
+    }
+
+    pub fn get_head_digest_ref(&self) -> &Digest {
+        &self.head_digest
+    }
+
+    pub fn set_head_digest(&mut self, digest: Digest) {
+        self.head_digest = digest;
+        self.ssz_tree.set_head_digest(&digest.0);
+    }
+
+    pub fn set_forkchoice_head(&mut self, hash: alloy_primitives::B256) {
+        self.forkchoice.head_block_hash = hash;
+        self.ssz_tree.set_forkchoice_head_block_hash(&hash.0);
+    }
+
+    pub fn set_forkchoice_safe_and_finalized(&mut self, hash: alloy_primitives::B256) {
+        self.forkchoice.safe_block_hash = hash;
+        self.forkchoice.finalized_block_hash = hash;
+        self.ssz_tree.set_forkchoice_safe_block_hash(&hash.0);
+        self.ssz_tree.set_forkchoice_finalized_block_hash(&hash.0);
+    }
+
+    pub fn take_pending_checkpoint(&mut self) -> Option<Checkpoint> {
+        self.pending_checkpoint.take()
+    }
+
+    pub fn push_protocol_param_change(&mut self, param: ProtocolParam) {
+        self.protocol_param_changes.push(param);
+        self.ssz_tree
+            .rebuild_protocol_params(&self.protocol_param_changes);
+    }
+
+    pub fn push_removed_validator(&mut self, pubkey: PublicKey) {
+        self.removed_validators.push(pubkey);
+        self.ssz_tree
+            .rebuild_removed_validators(&self.removed_validators);
+    }
+
+    pub fn clear_removed_validators(&mut self) {
+        self.removed_validators.clear();
+        self.ssz_tree
+            .rebuild_removed_validators(&self.removed_validators);
+    }
+
+    pub fn has_removed_validators(&self) -> bool {
+        !self.removed_validators.is_empty()
+    }
+
+    pub fn has_added_validators(&self, epoch: u64) -> bool {
+        self.added_validators.contains_key(&epoch)
+    }
+
+    pub fn remove_added_validators_for_epoch(&mut self, epoch: u64) -> Option<Vec<AddedValidator>> {
+        let validators = self.added_validators.remove(&epoch)?;
+        self.ssz_tree
+            .rebuild_added_validators(&self.added_validators);
+        Some(validators)
+    }
+
+    pub fn remove_added_validator(&mut self, epoch: u64, pubkey: &PublicKey) -> bool {
+        if let Some(validators) = self.added_validators.get_mut(&epoch)
+            && let Some(pos) = validators.iter().position(|v| v.node_key == *pubkey)
+        {
+            validators.remove(pos);
+            self.ssz_tree
+                .rebuild_added_validators(&self.added_validators);
+            return true;
+        }
+        false
+    }
+
+    pub fn take_pending_execution_requests(&mut self) -> Vec<alloy_primitives::Bytes> {
+        std::mem::take(&mut self.pending_execution_requests)
+    }
+
+    pub fn push_pending_execution_request(&mut self, request: alloy_primitives::Bytes) {
+        self.pending_execution_requests.push(request);
     }
 
     // Account operations
@@ -175,24 +322,147 @@ impl ConsensusState {
     }
 
     pub fn set_account(&mut self, pubkey: [u8; 32], account: ValidatorAccount) {
-        self.validator_accounts.insert(pubkey, account);
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        let is_update = self.validator_accounts.contains_key(&pubkey);
+        if is_update {
+            self.validator_accounts.insert(pubkey, account.clone());
+            // Incremental: update only this validator's 8 leaves — O(8 · log n)
+            let slot = self
+                .validator_accounts
+                .keys()
+                .position(|k| k == &pubkey)
+                .expect("key was just inserted");
+            self.ssz_tree.update_validator_at_slot(slot, &account);
+        } else {
+            // Insert into BTreeMap first to determine positional slot
+            self.validator_accounts.insert(pubkey, account.clone());
+            let slot = self
+                .validator_accounts
+                .keys()
+                .position(|k| k == &pubkey)
+                .expect("key was just inserted");
+            self.ssz_tree.insert_validator_at_slot(slot, &account);
+        }
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_set_account_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn remove_account(&mut self, pubkey: &[u8; 32]) -> Option<ValidatorAccount> {
-        self.validator_accounts.remove(pubkey)
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        // Find slot before removing from BTreeMap
+        let slot = self.validator_accounts.keys().position(|k| k == pubkey);
+        let removed = self.validator_accounts.remove(pubkey);
+        if let (Some(slot), Some(_)) = (slot, &removed) {
+            self.ssz_tree.remove_validator_at_slot(slot);
+        }
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_remove_account_micros").record(start.elapsed().as_micros() as f64);
+
+        removed
+    }
+
+    pub fn num_validators(&self) -> usize {
+        self.validator_accounts.len()
+    }
+
+    pub fn validator_accounts_iter(&self) -> impl Iterator<Item = (&[u8; 32], &ValidatorAccount)> {
+        self.validator_accounts.iter()
+    }
+
+    pub fn set_validator_accounts(&mut self, accounts: BTreeMap<[u8; 32], ValidatorAccount>) {
+        self.validator_accounts = accounts;
+        self.rebuild_ssz_tree();
+    }
+
+    /// Returns a reference to the live SSZ state tree.
+    pub fn ssz_tree(&self) -> &SszStateTree {
+        &self.ssz_tree
+    }
+
+    /// Snapshot the current tree root and freeze a proof-able copy.
+    /// Called after `execute_block` so that subsequent finalization mutations
+    /// don't alter the captured value or the proof tree.
+    ///
+    /// `el_block_number` is the Reth block number from the execution payload
+    /// that was just processed. The state root will appear on-chain in EL
+    /// block `el_block_number + 1`.
+    pub fn capture_state_root(&mut self, el_block_number: u64) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        self.state_root = self.ssz_tree.root();
+        self.proof_tree = self.ssz_tree.clone();
+        self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
+        self.proof_el_block_number = el_block_number;
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_capture_state_root_micros").record(start.elapsed().as_micros() as f64);
+    }
+
+    /// Returns the frozen tree snapshot for proof generation.
+    /// Proofs from this tree verify against the on-chain `parent_beacon_block_root`.
+    pub fn proof_tree(&self) -> &SszStateTree {
+        &self.proof_tree
+    }
+
+    /// Returns the frozen validator pubkeys (sorted) for proof generation.
+    /// Needed for positional index lookups when generating validator proofs.
+    pub fn proof_validator_keys(&self) -> &[[u8; 32]] {
+        &self.proof_validator_keys
+    }
+
+    /// Returns the EL block number at the time the proof tree was captured.
+    /// The state root appears on-chain in EL block `proof_el_block_number + 1`.
+    pub fn get_proof_el_block_number(&self) -> u64 {
+        self.proof_el_block_number
+    }
+
+    /// Returns the state root captured by `capture_state_root()`.
+    pub fn get_state_root(&self) -> [u8; 32] {
+        self.state_root
     }
 
     // Deposit queue operations
     pub fn push_deposit(&mut self, request: DepositRequest) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        self.ssz_tree.push_deposit(&request);
         self.deposit_queue.push_back(request);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_push_deposit_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn peek_deposit(&self) -> Option<&DepositRequest> {
         self.deposit_queue.front()
     }
 
+    pub fn get_deposit(&self, index: usize) -> Option<&DepositRequest> {
+        self.deposit_queue.get(index)
+    }
+
+    pub fn deposit_count(&self) -> usize {
+        self.deposit_queue.len()
+    }
+
     pub fn pop_deposit(&mut self) -> Option<DepositRequest> {
-        self.deposit_queue.pop_front()
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        let request = self.deposit_queue.pop_front()?;
+        self.ssz_tree.pop_deposit(&self.deposit_queue);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_pop_deposit_micros").record(start.elapsed().as_micros() as f64);
+
+        Some(request)
     }
 
     // Withdrawal queue operations
@@ -200,66 +470,83 @@ impl ConsensusState {
         &mut self,
         request: WithdrawalRequest,
         withdrawal_epoch: u64,
-        subtract_balance: bool,
+        balance_deduction: u64,
     ) {
-        let withdrawal_index = self.get_and_increment_withdrawal_index();
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
 
-        let pending_withdrawal = PendingWithdrawal {
-            inner: Withdrawal {
-                index: withdrawal_index,
-                validator_index: 0,
-                address: request.source_address,
-                amount: request.amount,
-            },
-            pubkey: request.validator_pubkey,
-            subtract_balance,
-        };
+        let pubkey = request.validator_pubkey;
+        let is_merge = self.withdrawal_queue.get_withdrawal(&pubkey).is_some();
+        self.withdrawal_queue
+            .push_request(request, withdrawal_epoch, balance_deduction);
+        // push_request() may increment next_index internally — sync the scalar leaf
+        self.ssz_tree
+            .set_next_withdrawal_index(self.withdrawal_queue.next_index());
+        if is_merge {
+            // Fields updated in place — just refresh the existing item's leaves
+            self.ssz_tree
+                .update_withdrawal(self.withdrawal_queue.get_withdrawal(&pubkey).unwrap());
+        } else {
+            // New item appended to the epoch
+            self.ssz_tree
+                .push_withdrawal(self.withdrawal_queue.get_withdrawal(&pubkey).unwrap());
+        }
 
-        self.push_withdrawal(pending_withdrawal, withdrawal_epoch);
+        #[cfg(feature = "prom")]
+        histogram!("ssz_push_withdrawal_request_micros").record(start.elapsed().as_micros() as f64);
     }
 
-    pub fn push_withdrawal(&mut self, request: PendingWithdrawal, withdrawal_epoch: u64) {
-        self.withdrawal_queue
-            .entry(withdrawal_epoch)
-            .or_default()
-            .push_back(request);
+    pub fn push_withdrawal(&mut self, request: PendingWithdrawal) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        self.withdrawal_queue.push(request.clone());
+        self.ssz_tree.push_withdrawal(&request);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_push_withdrawal_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn peek_withdrawal(&self, withdrawal_epoch: u64) -> Option<&PendingWithdrawal> {
-        self.withdrawal_queue
-            .get(&withdrawal_epoch)
-            .and_then(|queue| queue.front())
+        self.withdrawal_queue.peek(withdrawal_epoch)
     }
 
     pub fn pop_withdrawal(&mut self, withdrawal_epoch: u64) -> Option<PendingWithdrawal> {
-        if let Some(queue) = self.withdrawal_queue.get_mut(&withdrawal_epoch) {
-            let withdrawal = queue.pop_front();
-            // Remove the epoch entry if the queue is now empty
-            if queue.is_empty() {
-                self.withdrawal_queue.remove(&withdrawal_epoch);
-            }
-            withdrawal
-        } else {
-            None
-        }
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        let w = self.withdrawal_queue.pop(withdrawal_epoch)?;
+        self.ssz_tree
+            .pop_withdrawal(withdrawal_epoch, &w.pubkey, &self.withdrawal_queue);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_pop_withdrawal_micros").record(start.elapsed().as_micros() as f64);
+
+        Some(w)
+    }
+
+    pub fn get_withdrawal(&self, pubkey: &[u8; 32]) -> Option<&PendingWithdrawal> {
+        self.withdrawal_queue.get_withdrawal(pubkey)
     }
 
     /// Get all pending withdrawals for a specific epoch
-    pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Option<&VecDeque<PendingWithdrawal>> {
-        self.withdrawal_queue.get(&epoch)
+    pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Vec<&PendingWithdrawal> {
+        self.withdrawal_queue.get_for_epoch(epoch)
     }
 
     /// Get the number of pending withdrawals for a specific epoch
     pub fn get_withdrawal_count_for_epoch(&self, epoch: u64) -> usize {
-        self.withdrawal_queue
-            .get(&epoch)
-            .map(|queue| queue.len())
-            .unwrap_or(0)
+        self.withdrawal_queue.count_for_epoch(epoch)
     }
 
     /// Get all epochs that have pending withdrawals
     pub fn get_epochs_with_withdrawals(&self) -> Vec<u64> {
-        self.withdrawal_queue.keys().copied().collect()
+        self.withdrawal_queue.epochs_with_withdrawals()
+    }
+
+    /// Get the pending withdrawal amount (balance_deduction) for a specific validator.
+    pub fn get_pending_withdrawal_amount(&self, pubkey: &[u8; 32]) -> u64 {
+        self.withdrawal_queue.balance_deduction_for(pubkey)
     }
 
     pub fn get_validator_keys(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
@@ -331,15 +618,56 @@ impl ConsensusState {
             match param {
                 ProtocolParam::MinimumStake(min_stake) => {
                     self.validator_minimum_stake = min_stake;
+                    self.ssz_tree.set_validator_minimum_stake(min_stake);
                     min_or_max_stake_changed = true;
                 }
                 ProtocolParam::MaximumStake(max_stake) => {
                     self.validator_maximum_stake = max_stake;
+                    self.ssz_tree.set_validator_maximum_stake(max_stake);
                     min_or_max_stake_changed = true;
                 }
             }
         }
+        // Protocol param changes have been consumed — update the (now empty) collection root
+        self.ssz_tree
+            .rebuild_protocol_params(&self.protocol_param_changes);
         min_or_max_stake_changed
+    }
+
+    /// Rebuild the entire SSZ state tree from scratch.
+    ///
+    /// Called on deserialization and when bulk-replacing state (e.g. `set_validator_accounts`).
+    pub fn rebuild_ssz_tree(&mut self) {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        self.ssz_tree.rebuild(
+            self.epoch,
+            self.view,
+            self.latest_height,
+            &self.head_digest.0,
+            &self.epoch_genesis_hash,
+            self.validator_minimum_stake,
+            self.validator_maximum_stake,
+            self.withdrawal_queue.next_index(),
+            &self.forkchoice.head_block_hash.0,
+            &self.forkchoice.safe_block_hash.0,
+            &self.forkchoice.finalized_block_hash.0,
+            &self.validator_accounts,
+            &self.deposit_queue,
+            &self.withdrawal_queue,
+            &self.protocol_param_changes,
+            &self.added_validators,
+            &self.removed_validators,
+        );
+
+        // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
+        // after deserialization or bulk reset.
+        self.state_root = self.ssz_tree.root();
+        self.proof_tree = self.ssz_tree.clone();
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_rebuild_tree_micros").record(start.elapsed().as_micros() as f64);
     }
 
     pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
@@ -356,15 +684,9 @@ impl EncodeSize for ConsensusState {
         8 // epoch
         + 8 // view
         + 8 // latest_height
-        + 8 // next_withdrawal_index
         + 4 // deposit_queue length
         + self.deposit_queue.iter().map(|req| req.encode_size()).sum::<usize>()
-        + 4 // withdrawal_queue epoch count
-        + self.withdrawal_queue.values().map(|queue| {
-            8 // epoch (u64)
-            + 4 // queue length (u32)
-            + queue.iter().map(|req| req.encode_size()).sum::<usize>()
-        }).sum::<usize>()
+        + self.withdrawal_queue.encode_size()
         + 4 // protocol_param_changes length
         + self.protocol_param_changes.iter().map(|param| param.encode_size()).sum::<usize>()
         + 4 // validator_accounts length
@@ -394,7 +716,6 @@ impl Read for ConsensusState {
         let epoch = buf.get_u64();
         let view = buf.get_u64();
         let latest_height = buf.get_u64();
-        let next_withdrawal_index = buf.get_u64();
 
         let deposit_queue_len = buf.get_u32() as usize;
         let mut deposit_queue = VecDeque::with_capacity(deposit_queue_len);
@@ -402,17 +723,7 @@ impl Read for ConsensusState {
             deposit_queue.push_back(DepositRequest::read_cfg(buf, &())?);
         }
 
-        let withdrawal_queue_epoch_count = buf.get_u32() as usize;
-        let mut withdrawal_queue = BTreeMap::new();
-        for _ in 0..withdrawal_queue_epoch_count {
-            let epoch = buf.get_u64();
-            let queue_len = buf.get_u32() as usize;
-            let mut queue = VecDeque::with_capacity(queue_len);
-            for _ in 0..queue_len {
-                queue.push_back(PendingWithdrawal::read_cfg(buf, &())?);
-            }
-            withdrawal_queue.insert(epoch, queue);
-        }
+        let withdrawal_queue = WithdrawalQueue::read_cfg(buf, &())?;
 
         let protocol_param_changes_len = buf.get_u32() as usize;
         let mut protocol_param_changes = Vec::with_capacity(protocol_param_changes_len);
@@ -496,12 +807,11 @@ impl Read for ConsensusState {
         let validator_minimum_stake = buf.get_u64();
         let validator_maximum_stake = buf.get_u64();
 
-        Ok(Self {
+        let mut state = Self {
             epoch,
             view,
             latest_height,
             head_digest,
-            next_withdrawal_index,
             deposit_queue,
             withdrawal_queue,
             protocol_param_changes,
@@ -514,7 +824,15 @@ impl Read for ConsensusState {
             epoch_genesis_hash,
             validator_minimum_stake,
             validator_maximum_stake,
-        })
+            ssz_tree: SszStateTree::default(),
+            proof_tree: SszStateTree::default(),
+            proof_validator_keys: Vec::new(),
+
+            state_root: [0u8; 32],
+            proof_el_block_number: 0,
+        };
+        state.rebuild_ssz_tree();
+        Ok(state)
     }
 }
 
@@ -523,21 +841,13 @@ impl Write for ConsensusState {
         buf.put_u64(self.epoch);
         buf.put_u64(self.view);
         buf.put_u64(self.latest_height);
-        buf.put_u64(self.next_withdrawal_index);
 
         buf.put_u32(self.deposit_queue.len() as u32);
         for request in &self.deposit_queue {
             request.write(buf);
         }
 
-        buf.put_u32(self.withdrawal_queue.len() as u32);
-        for (epoch, queue) in &self.withdrawal_queue {
-            buf.put_u64(*epoch);
-            buf.put_u32(queue.len() as u32);
-            for request in queue {
-                request.write(buf);
-            }
-        }
+        self.withdrawal_queue.write(buf);
 
         buf.put_u32(self.protocol_param_changes.len() as u32);
         for param in &self.protocol_param_changes {
@@ -613,6 +923,7 @@ mod tests {
     use crate::PublicKey;
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
+    use crate::ssz_state_tree;
     use crate::withdrawal::PendingWithdrawal;
 
     use alloy_eips::eip4895::Withdrawal;
@@ -639,7 +950,7 @@ mod tests {
         }
     }
 
-    fn create_test_withdrawal(index: u64, amount: u64) -> PendingWithdrawal {
+    fn create_test_withdrawal(index: u64, amount: u64, epoch: u64) -> PendingWithdrawal {
         PendingWithdrawal {
             inner: Withdrawal {
                 index,
@@ -648,7 +959,8 @@ mod tests {
                 amount,
             },
             pubkey: [index as u8; 32],
-            subtract_balance: true,
+            balance_deduction: amount,
+            epoch,
         }
     }
 
@@ -658,7 +970,6 @@ mod tests {
             consensus_public_key: consensus_key.public_key(),
             withdrawal_credentials: Address::from([index as u8; 20]),
             balance,
-            pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
             has_pending_deposit: false,
             has_pending_withdrawal: false,
@@ -678,16 +989,16 @@ mod tests {
         assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
-            decoded_state.next_withdrawal_index,
-            original_state.next_withdrawal_index
+            decoded_state.get_next_withdrawal_index(),
+            original_state.get_next_withdrawal_index()
         );
         assert_eq!(
             decoded_state.deposit_queue.len(),
             original_state.deposit_queue.len()
         );
         assert_eq!(
-            decoded_state.withdrawal_queue.len(),
-            original_state.withdrawal_queue.len()
+            decoded_state.withdrawal_queue,
+            original_state.withdrawal_queue
         );
         assert_eq!(
             decoded_state.validator_accounts.len(),
@@ -703,27 +1014,27 @@ mod tests {
     fn test_serialization_deserialization_populated() {
         let mut original_state = ConsensusState::default();
 
-        original_state.epoch = 7;
-        original_state.view = 123;
+        original_state.set_epoch(7);
+        original_state.set_view(123);
         original_state.set_latest_height(42);
-        original_state.next_withdrawal_index = 5;
-        original_state.epoch_genesis_hash = [42u8; 32];
+        original_state.set_next_withdrawal_index(5);
+        original_state.set_epoch_genesis_hash([42u8; 32]);
 
         let deposit1 = create_test_deposit_request(1, 32000000000);
         let deposit2 = create_test_deposit_request(2, 16000000000);
         original_state.push_deposit(deposit1);
         original_state.push_deposit(deposit2);
 
-        let withdrawal1 = create_test_withdrawal(1, 16000000000);
-        let withdrawal2 = create_test_withdrawal(2, 24000000000);
-        original_state.push_withdrawal(withdrawal1, 10); // epoch 10
-        original_state.push_withdrawal(withdrawal2, 11); // epoch 11
+        let withdrawal1 = create_test_withdrawal(1, 16000000000, 10);
+        let withdrawal2 = create_test_withdrawal(2, 24000000000, 11);
+        original_state.push_withdrawal(withdrawal1);
+        original_state.push_withdrawal(withdrawal2);
 
         // Add protocol param changes
-        original_state.protocol_param_changes.push(
+        original_state.push_protocol_param_change(
             crate::protocol_params::ProtocolParam::MinimumStake(40_000_000_000),
         );
-        original_state.protocol_param_changes.push(
+        original_state.push_protocol_param_change(
             crate::protocol_params::ProtocolParam::MaximumStake(80_000_000_000),
         );
 
@@ -769,8 +1080,8 @@ mod tests {
         assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
-            decoded_state.next_withdrawal_index,
-            original_state.next_withdrawal_index
+            decoded_state.get_next_withdrawal_index(),
+            original_state.get_next_withdrawal_index()
         );
         assert_eq!(
             decoded_state.epoch_genesis_hash,
@@ -782,16 +1093,16 @@ mod tests {
         assert_eq!(decoded_state.deposit_queue[1].amount, 16000000000);
 
         // Check withdrawal_queue - should have 2 epochs with withdrawals
-        assert_eq!(decoded_state.withdrawal_queue.len(), 2);
+        assert_eq!(decoded_state.withdrawal_queue.num_epochs(), 2);
 
         // Check epoch 10 withdrawal
-        let epoch10_withdrawals = decoded_state.get_withdrawals_for_epoch(10).unwrap();
+        let epoch10_withdrawals = decoded_state.get_withdrawals_for_epoch(10);
         assert_eq!(epoch10_withdrawals.len(), 1);
         assert_eq!(epoch10_withdrawals[0].inner.index, 1);
         assert_eq!(epoch10_withdrawals[0].inner.amount, 16000000000);
 
         // Check epoch 11 withdrawal
-        let epoch11_withdrawals = decoded_state.get_withdrawals_for_epoch(11).unwrap();
+        let epoch11_withdrawals = decoded_state.get_withdrawals_for_epoch(11);
         assert_eq!(epoch11_withdrawals.len(), 1);
         assert_eq!(epoch11_withdrawals[0].inner.index, 2);
         assert_eq!(epoch11_withdrawals[0].inner.amount, 24000000000);
@@ -842,28 +1153,24 @@ mod tests {
     fn test_encode_size_accuracy() {
         let mut state = ConsensusState::default();
 
-        state.epoch = 3;
-        state.view = 456;
+        state.set_epoch(3);
+        state.set_view(456);
         state.set_latest_height(42);
-        state.next_withdrawal_index = 5;
+        state.set_next_withdrawal_index(5);
 
         let deposit = create_test_deposit_request(1, 32000000000);
         state.push_deposit(deposit);
 
-        let withdrawal = create_test_withdrawal(1, 16000000000);
-        state.push_withdrawal(withdrawal, 5); // epoch 5
+        let withdrawal = create_test_withdrawal(1, 16000000000, 5);
+        state.push_withdrawal(withdrawal);
 
         // Add protocol param changes
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MinimumStake(
-                50_000_000_000,
-            ));
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MaximumStake(
-                100_000_000_000,
-            ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
+            50_000_000_000,
+        ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MaximumStake(
+            100_000_000_000,
+        ));
 
         let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
@@ -899,21 +1206,15 @@ mod tests {
         let mut state = ConsensusState::default();
 
         // Add various protocol param changes
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MinimumStake(
-                32_000_000_000,
-            ));
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MaximumStake(
-                64_000_000_000,
-            ));
-        state
-            .protocol_param_changes
-            .push(crate::protocol_params::ProtocolParam::MinimumStake(
-                40_000_000_000,
-            ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
+            32_000_000_000,
+        ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MaximumStake(
+            64_000_000_000,
+        ));
+        state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
+            40_000_000_000,
+        ));
 
         let mut encoded = state.encode();
         let decoded_state = ConsensusState::decode(&mut encoded).expect("Failed to decode");
@@ -983,18 +1284,18 @@ mod tests {
     fn test_try_from_checkpoint() {
         // Create a populated ConsensusState
         let mut original_state = ConsensusState::default();
-        original_state.epoch = 5;
-        original_state.view = 789;
+        original_state.set_epoch(5);
+        original_state.set_view(789);
         original_state.set_latest_height(100);
-        original_state.next_withdrawal_index = 42;
-        original_state.epoch_genesis_hash = [99u8; 32];
+        original_state.set_next_withdrawal_index(42);
+        original_state.set_epoch_genesis_hash([99u8; 32]);
 
         // Add some data
         let deposit = create_test_deposit_request(1, 32000000000);
         original_state.push_deposit(deposit);
 
-        let withdrawal = create_test_withdrawal(1, 16000000000);
-        original_state.push_withdrawal(withdrawal, 7); // epoch 7
+        let withdrawal = create_test_withdrawal(1, 16000000000, 7);
+        original_state.push_withdrawal(withdrawal);
 
         let pubkey = [1u8; 32];
         let account = create_test_validator_account(1, 32000000000);
@@ -1013,8 +1314,8 @@ mod tests {
         assert_eq!(restored_state.view, original_state.view);
         assert_eq!(restored_state.latest_height, original_state.latest_height);
         assert_eq!(
-            restored_state.next_withdrawal_index,
-            original_state.next_withdrawal_index
+            restored_state.get_next_withdrawal_index(),
+            original_state.get_next_withdrawal_index()
         );
         assert_eq!(
             restored_state.epoch_genesis_hash,
@@ -1025,8 +1326,8 @@ mod tests {
             original_state.deposit_queue.len()
         );
         assert_eq!(
-            restored_state.withdrawal_queue.len(),
-            original_state.withdrawal_queue.len()
+            restored_state.withdrawal_queue,
+            original_state.withdrawal_queue
         );
         assert_eq!(
             restored_state.validator_accounts.len(),
@@ -1035,11 +1336,583 @@ mod tests {
 
         // Check specific values
         assert_eq!(restored_state.deposit_queue[0].amount, 32000000000);
-        let epoch7_withdrawals = restored_state.get_withdrawals_for_epoch(7).unwrap();
+        let epoch7_withdrawals = restored_state.get_withdrawals_for_epoch(7);
         assert_eq!(epoch7_withdrawals[0].inner.amount, 16000000000);
 
         let restored_account = restored_state.get_account(&pubkey).unwrap();
         assert_eq!(restored_account.balance, 32000000000);
         assert_eq!(restored_account.last_deposit_index, 1);
+    }
+
+    // ---- SSZ state tree integration tests ----
+
+    #[test]
+    fn test_ssz_scalar_setters_update_root() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+
+        state.set_epoch(10);
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        let r1 = state.ssz_tree().root();
+        state.set_view(99);
+        assert_ne!(state.ssz_tree().root(), r1);
+
+        let r2 = state.ssz_tree().root();
+        state.set_latest_height(500);
+        assert_ne!(state.ssz_tree().root(), r2);
+
+        let r3 = state.ssz_tree().root();
+        state.set_head_digest(sha256::Digest([0xAB; 32]));
+        assert_ne!(state.ssz_tree().root(), r3);
+
+        let r4 = state.ssz_tree().root();
+        state.set_epoch_genesis_hash([0xCD; 32]);
+        assert_ne!(state.ssz_tree().root(), r4);
+
+        let r5 = state.ssz_tree().root();
+        state.set_minimum_stake(16_000_000_000);
+        assert_ne!(state.ssz_tree().root(), r5);
+
+        let r6 = state.ssz_tree().root();
+        state.set_maximum_stake(64_000_000_000);
+        assert_ne!(state.ssz_tree().root(), r6);
+
+        let r7 = state.ssz_tree().root();
+        state.set_next_withdrawal_index(42);
+        assert_ne!(state.ssz_tree().root(), r7);
+    }
+
+    #[test]
+    fn test_ssz_scalar_proof_verifies() {
+        let mut state = ConsensusState::default();
+        state.set_epoch(10);
+        state.set_view(99);
+
+        let tree = state.ssz_tree();
+        let root = tree.root();
+        let proof = tree.generate_scalar_proof(ssz_state_tree::EPOCH);
+        assert!(proof.verify(&root));
+
+        let proof_view = tree.generate_scalar_proof(ssz_state_tree::VIEW);
+        assert!(proof_view.verify(&root));
+    }
+
+    #[test]
+    fn test_ssz_forkchoice_updates() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+
+        let fcs = ForkchoiceState {
+            head_block_hash: [0x11; 32].into(),
+            safe_block_hash: [0x22; 32].into(),
+            finalized_block_hash: [0x33; 32].into(),
+        };
+        state.set_forkchoice(fcs);
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        let r1 = state.ssz_tree().root();
+
+        // Partial setters
+        state.set_forkchoice_head([0xAA; 32].into());
+        assert_ne!(state.ssz_tree().root(), r1);
+
+        let r2 = state.ssz_tree().root();
+        state.set_forkchoice_safe_and_finalized([0xBB; 32].into());
+        assert_ne!(state.ssz_tree().root(), r2);
+    }
+
+    #[test]
+    fn test_ssz_validator_account_lifecycle() {
+        let mut state = ConsensusState::default();
+        let pubkey = [1u8; 32];
+        let account = create_test_validator_account(1, 32_000_000_000);
+
+        let root_before = state.ssz_tree().root();
+
+        // Insert
+        state.set_account(pubkey, account.clone());
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        // Verify proof
+        let tree = state.ssz_tree();
+        let root = tree.root();
+        let keys = [pubkey];
+        let proof = tree.generate_validator_proof(&pubkey, &keys).unwrap();
+        assert!(proof.verify(&root));
+
+        // Update balance
+        let mut updated = account.clone();
+        updated.balance = 48_000_000_000;
+        state.set_account(pubkey, updated);
+        assert_ne!(state.ssz_tree().root(), root);
+
+        // Remove
+        let root_with_account = state.ssz_tree().root();
+        state.remove_account(&pubkey);
+        assert_ne!(state.ssz_tree().root(), root_with_account);
+
+        // Validator proof should return None for removed pubkey
+        assert!(
+            state
+                .ssz_tree()
+                .generate_validator_proof(&pubkey, &[])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_ssz_deposit_queue_operations() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+
+        let deposit = create_test_deposit_request(1, 32_000_000_000);
+        state.push_deposit(deposit.clone());
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        let root_with_deposit = state.ssz_tree().root();
+
+        // Pop deposit changes root
+        let popped = state.pop_deposit().unwrap();
+        assert_eq!(popped.amount, 32_000_000_000);
+        assert_ne!(state.ssz_tree().root(), root_with_deposit);
+    }
+
+    #[test]
+    fn test_ssz_withdrawal_queue_operations() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+
+        let withdrawal = create_test_withdrawal(1, 16_000_000_000, 5);
+        state.push_withdrawal(withdrawal);
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        let root_with_withdrawal = state.ssz_tree().root();
+
+        // Pop withdrawal changes root
+        let popped = state.pop_withdrawal(5).unwrap();
+        assert_eq!(popped.inner.amount, 16_000_000_000);
+        assert_ne!(state.ssz_tree().root(), root_with_withdrawal);
+    }
+
+    #[test]
+    fn test_ssz_added_removed_validators() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+
+        let validator = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(10).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(10).public_key(),
+        };
+
+        // add_validator changes root
+        state.add_validator(5, validator.clone());
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        let root_with_added = state.ssz_tree().root();
+
+        // remove_added_validators_for_epoch changes root
+        state.remove_added_validators_for_epoch(5);
+        assert_ne!(state.ssz_tree().root(), root_with_added);
+
+        // push_removed_validator / clear_removed_validators
+        let removed_pk = ed25519::PrivateKey::from_seed(20).public_key();
+        let r1 = state.ssz_tree().root();
+        state.push_removed_validator(removed_pk);
+        assert_ne!(state.ssz_tree().root(), r1);
+
+        let r2 = state.ssz_tree().root();
+        state.clear_removed_validators();
+        assert_ne!(state.ssz_tree().root(), r2);
+    }
+
+    #[test]
+    fn test_ssz_protocol_param_changes() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+
+        state.push_protocol_param_change(ProtocolParam::MinimumStake(40_000_000_000));
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        let r1 = state.ssz_tree().root();
+        state.push_protocol_param_change(ProtocolParam::MaximumStake(80_000_000_000));
+        assert_ne!(state.ssz_tree().root(), r1);
+
+        // apply_protocol_parameter_changes consumes them
+        let changed = state.apply_protocol_parameter_changes();
+        assert!(changed);
+        assert_eq!(state.get_minimum_stake(), 40_000_000_000);
+        assert_eq!(state.get_maximum_stake(), 80_000_000_000);
+    }
+
+    #[test]
+    fn test_ssz_rebuild_matches_incremental() {
+        let mut state = ConsensusState::default();
+
+        // Build up state incrementally through setters
+        state.set_epoch(7);
+        state.set_view(42);
+        state.set_latest_height(100);
+        state.set_head_digest(sha256::Digest([0xAB; 32]));
+        state.set_epoch_genesis_hash([0xCD; 32]);
+        state.set_minimum_stake(16_000_000_000);
+        state.set_maximum_stake(64_000_000_000);
+        state.set_next_withdrawal_index(5);
+        state.set_forkchoice(ForkchoiceState {
+            head_block_hash: [0x11; 32].into(),
+            safe_block_hash: [0x22; 32].into(),
+            finalized_block_hash: [0x33; 32].into(),
+        });
+
+        let pubkey = [1u8; 32];
+        state.set_account(pubkey, create_test_validator_account(1, 32_000_000_000));
+
+        let deposit = create_test_deposit_request(1, 32_000_000_000);
+        state.push_deposit(deposit);
+
+        let withdrawal = create_test_withdrawal(1, 16_000_000_000, 5);
+        state.push_withdrawal(withdrawal);
+
+        let incremental_root = state.ssz_tree().root();
+
+        // Rebuild from scratch
+        state.rebuild_ssz_tree();
+        let rebuilt_root = state.ssz_tree().root();
+
+        assert_eq!(incremental_root, rebuilt_root);
+    }
+
+    #[test]
+    fn test_ssz_root_survives_serialization_roundtrip() {
+        let mut state = ConsensusState::default();
+
+        state.set_epoch(5);
+        state.set_view(99);
+        state.set_latest_height(200);
+        state.set_next_withdrawal_index(10);
+        state.set_epoch_genesis_hash([0xFF; 32]);
+        state.set_forkchoice(ForkchoiceState {
+            head_block_hash: [0xAA; 32].into(),
+            safe_block_hash: [0xBB; 32].into(),
+            finalized_block_hash: [0xCC; 32].into(),
+        });
+
+        let pubkey = [1u8; 32];
+        state.set_account(pubkey, create_test_validator_account(1, 32_000_000_000));
+
+        let deposit = create_test_deposit_request(1, 32_000_000_000);
+        state.push_deposit(deposit);
+
+        let withdrawal = create_test_withdrawal(1, 16_000_000_000, 7);
+        state.push_withdrawal(withdrawal);
+
+        let original_root = state.ssz_tree().root();
+
+        // Round-trip through serialization
+        let mut encoded = state.encode();
+        let decoded = ConsensusState::decode(&mut encoded).unwrap();
+
+        assert_eq!(decoded.ssz_tree().root(), original_root);
+    }
+
+    #[test]
+    fn test_ssz_set_validator_accounts_rebuilds() {
+        let mut state = ConsensusState::default();
+        state.set_epoch(3);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+
+        let root_before = state.ssz_tree().root();
+
+        // Bulk replace validator accounts
+        let mut new_accounts = BTreeMap::new();
+        new_accounts.insert([2u8; 32], create_test_validator_account(2, 64_000_000_000));
+        new_accounts.insert([3u8; 32], create_test_validator_account(3, 48_000_000_000));
+        state.set_validator_accounts(new_accounts);
+
+        assert_ne!(state.ssz_tree().root(), root_before);
+
+        // New validators have proofs
+        let tree = state.ssz_tree();
+        let root = tree.root();
+        let keys = [[2u8; 32], [3u8; 32]];
+        let proof = tree.generate_validator_proof(&[2u8; 32], &keys).unwrap();
+        assert!(proof.verify(&root));
+
+        // Old validator is gone
+        assert!(tree.generate_validator_proof(&[1u8; 32], &keys).is_none());
+    }
+
+    #[test]
+    fn test_ssz_clone_independence() {
+        let mut state = ConsensusState::default();
+        state.set_epoch(5);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+
+        let cloned = state.clone();
+        let root_before = cloned.ssz_tree().root();
+
+        // Mutate original
+        state.set_epoch(99);
+        state.set_account([2u8; 32], create_test_validator_account(2, 64_000_000_000));
+
+        // Clone is unaffected
+        assert_eq!(cloned.ssz_tree().root(), root_before);
+    }
+
+    #[test]
+    fn test_ssz_capture_and_proof_tree() {
+        let mut state = ConsensusState::default();
+        state.set_epoch(5);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+
+        // Capture state root
+        state.capture_state_root(100);
+        let captured_root = state.get_state_root();
+        assert_eq!(captured_root, state.proof_tree().root());
+        assert_eq!(state.get_proof_el_block_number(), 100);
+
+        // Mutate the live tree
+        state.set_epoch(99);
+        assert_ne!(state.ssz_tree().root(), captured_root);
+
+        // Proof tree is still frozen at the captured state
+        assert_eq!(state.proof_tree().root(), captured_root);
+
+        // Proof still verifies against captured root
+        let proof = state
+            .proof_tree()
+            .generate_validator_proof(&[1u8; 32], state.proof_validator_keys())
+            .unwrap();
+        assert!(proof.verify(&captured_root));
+    }
+
+    #[test]
+    fn test_ssz_push_withdrawal_request_keeps_next_index_in_sync() {
+        use crate::execution_request::WithdrawalRequest;
+
+        let mut state = ConsensusState::default();
+        state.set_epoch(1);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+
+        // push_withdrawal_request internally calls WithdrawalQueue::push_request
+        // which increments next_index. The SSZ tree's NEXT_WITHDRAWAL_INDEX leaf
+        // must stay in sync.
+        let request = WithdrawalRequest {
+            source_address: alloy_primitives::Address::from([0xAA; 20]),
+            validator_pubkey: [1u8; 32],
+            amount: 16_000_000_000,
+        };
+        state.push_withdrawal_request(request, 5, 16_000_000_000);
+
+        let incremental_root = state.ssz_tree().root();
+
+        // Rebuild must produce the same root
+        state.rebuild_ssz_tree();
+        let rebuilt_root = state.ssz_tree().root();
+
+        assert_eq!(
+            incremental_root, rebuilt_root,
+            "push_withdrawal_request must keep NEXT_WITHDRAWAL_INDEX in sync with rebuild"
+        );
+    }
+
+    /// Simulate the full block execution lifecycle and check that
+    /// incremental SSZ tree matches rebuild at every step.
+    #[test]
+    fn test_ssz_full_block_lifecycle_matches_rebuild() {
+        use crate::execution_request::WithdrawalRequest;
+        use crate::header::AddedValidator;
+        use crate::protocol_params::ProtocolParam;
+        use commonware_cryptography::Signer;
+
+        // Derive valid Ed25519 pubkeys from seeds
+        let ed_keys: Vec<ed25519::PrivateKey> = (1..=5u64)
+            .map(|i| ed25519::PrivateKey::from_seed(i))
+            .collect();
+        let pubkeys: Vec<[u8; 32]> = ed_keys
+            .iter()
+            .map(|k| k.public_key().as_ref().try_into().unwrap())
+            .collect();
+
+        // --- Genesis setup (mimics get_initial_state in args.rs) ---
+        let forkchoice = ForkchoiceState {
+            head_block_hash: [0xAA; 32].into(),
+            safe_block_hash: [0xAA; 32].into(),
+            finalized_block_hash: [0xAA; 32].into(),
+        };
+        let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 32_000_000_000);
+
+        // Add 4 genesis validators (like the testnet)
+        for i in 0..4 {
+            state.set_account(
+                pubkeys[i],
+                create_test_validator_account(i as u64 + 1, 32_000_000_000),
+            );
+        }
+
+        // Check: after genesis setup, incremental matches rebuild
+        let genesis_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            genesis_root,
+            state.ssz_tree().root(),
+            "genesis: incremental != rebuild"
+        );
+
+        // --- Simulate execute_block for height 1 ---
+        state.set_forkchoice_head([0xBB; 32].into());
+        state.set_latest_height(1);
+        state.set_view(1);
+        state.set_head_digest([0xCC; 32].into());
+        state.capture_state_root(100);
+
+        let block1_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            block1_root,
+            state.ssz_tree().root(),
+            "block 1: incremental != rebuild"
+        );
+
+        // --- Simulate finalization (forkchoice update after capture) ---
+        state.set_forkchoice_safe_and_finalized([0xBB; 32].into());
+
+        let post_finalization_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            post_finalization_root,
+            state.ssz_tree().root(),
+            "post-finalization: incremental != rebuild"
+        );
+
+        // --- Simulate execute_block for height 2 (with a deposit) ---
+        state.set_forkchoice_head([0xDD; 32].into());
+
+        // Push a deposit request
+        let deposit = create_test_deposit_request(1, 32_000_000_000);
+        state.push_deposit(deposit);
+
+        state.set_latest_height(2);
+        state.set_view(2);
+        state.set_head_digest([0xEE; 32].into());
+        state.capture_state_root(101);
+
+        let block2_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            block2_root,
+            state.ssz_tree().root(),
+            "block 2: incremental != rebuild"
+        );
+
+        // --- Simulate execute_block for height 3 (pop deposit, push withdrawal) ---
+        state.set_forkchoice_head([0xFF; 32].into());
+
+        // Pop the deposit
+        let _ = state.pop_deposit();
+
+        // Process the deposit: create a new validator
+        let new_pubkey = pubkeys[4];
+        let mut new_account = create_test_validator_account(5, 32_000_000_000);
+        new_account.status = ValidatorStatus::Joining;
+        new_account.joining_epoch = 2;
+        state.set_account(new_pubkey, new_account);
+
+        // Add to added_validators
+        let node_key = ed_keys[4].public_key();
+        let consensus_key = bls12381::PrivateKey::from_seed(5).public_key();
+        state.add_validator(
+            2,
+            AddedValidator {
+                node_key,
+                consensus_key,
+            },
+        );
+
+        state.set_latest_height(3);
+        state.set_view(3);
+        state.set_head_digest([0x11; 32].into());
+        state.capture_state_root(102);
+
+        let block3_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            block3_root,
+            state.ssz_tree().root(),
+            "block 3: incremental != rebuild"
+        );
+
+        // --- Simulate epoch transition ---
+        // Apply protocol param changes (none in this case)
+        state.apply_protocol_parameter_changes();
+
+        // Activate the joining validator
+        let mut account = state.get_account(&new_pubkey).unwrap().clone();
+        account.status = ValidatorStatus::Active;
+        state.set_account(new_pubkey, account);
+
+        // Clear added/removed validators
+        state.remove_added_validators_for_epoch(2);
+        state.clear_removed_validators();
+
+        // Increment epoch
+        state.set_epoch(2);
+        state.set_epoch_genesis_hash([0x22; 32]);
+
+        let epoch_transition_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            epoch_transition_root,
+            state.ssz_tree().root(),
+            "epoch transition: incremental != rebuild"
+        );
+
+        // --- Simulate withdrawal request ---
+        let wr = WithdrawalRequest {
+            source_address: alloy_primitives::Address::from([0xAA; 20]),
+            validator_pubkey: pubkeys[0],
+            amount: 32_000_000_000,
+        };
+        state.push_withdrawal_request(wr, 4, 32_000_000_000);
+
+        // Mark validator as exiting
+        let mut account = state.get_account(&pubkeys[0]).unwrap().clone();
+        account.balance = 0;
+        account.has_pending_withdrawal = true;
+        account.status = ValidatorStatus::Inactive;
+        state.set_account(pubkeys[0], account);
+
+        state.push_removed_validator(ed_keys[0].public_key());
+
+        let withdrawal_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            withdrawal_root,
+            state.ssz_tree().root(),
+            "withdrawal: incremental != rebuild"
+        );
+
+        // --- Simulate protocol param change ---
+        state.push_protocol_param_change(ProtocolParam::MinimumStake(16_000_000_000));
+        state.apply_protocol_parameter_changes();
+
+        let param_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            param_root,
+            state.ssz_tree().root(),
+            "protocol param: incremental != rebuild"
+        );
+
+        // --- Remove validator account ---
+        state.remove_account(&pubkeys[0]);
+
+        let remove_root = state.ssz_tree().root();
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            remove_root,
+            state.ssz_tree().root(),
+            "remove validator: incremental != rebuild"
+        );
     }
 }

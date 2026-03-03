@@ -466,7 +466,7 @@ impl<
                         current,
                         withdrawals,
                         aux_data.withdrawal_credentials,
-                        Some(parent.1.0.into()),
+                        Some(aux_data.state_root.into()),
                     )
                     .await
             }
@@ -509,6 +509,7 @@ impl<
             aux_data.header_hash,
             aux_data.added_validators,
             aux_data.removed_validators,
+            aux_data.state_root,
         );
 
         #[cfg(feature = "prom")]
@@ -559,6 +560,16 @@ fn handle_verify(block: &Block, parent: Block, epoch_length: u64, aux_data: &Blo
     }
     if block.timestamp() <= parent.timestamp() {
         warn!("block timestamp not increasing");
+        return false;
+    }
+
+    // Validate consensus trie state root
+    if block.header.parent_beacon_block_root != aux_data.state_root {
+        warn!(
+            expected = ?aux_data.state_root,
+            actual = ?block.header.parent_beacon_block_root,
+            "parent_beacon_block_root mismatch"
+        );
         return false;
     }
 

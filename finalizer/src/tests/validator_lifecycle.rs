@@ -17,7 +17,7 @@ use commonware_runtime::{Clock, Metrics, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::channel::mpsc as futures_mpsc;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::time::Duration;
 use summit_syncer::Update;
@@ -81,6 +81,7 @@ fn create_test_block_with_epoch(
         [0u8; 32].into(),
         Vec::new(),
         Vec::new(),
+        [0u8; 32],
     )
 }
 
@@ -101,7 +102,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
             consensus_public_key: consensus_pubkey,
             withdrawal_credentials: Address::from([i as u8; 20]),
             balance: 32_000_000_000,
-            pending_withdrawal_amount: 0,
             status: ValidatorStatus::Active,
             has_pending_deposit: false,
             has_pending_withdrawal: false,
@@ -113,29 +113,14 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
         validator_accounts.insert(key_bytes, account);
     }
 
-    ConsensusState {
-        epoch: 0,
-        view: 0,
-        latest_height: 0,
-        head_digest: genesis_hash.into(),
-        next_withdrawal_index: 0,
-        deposit_queue: VecDeque::new(),
-        withdrawal_queue: BTreeMap::new(),
-        validator_accounts,
-        protocol_param_changes: Vec::new(),
-        pending_checkpoint: None,
-        added_validators: BTreeMap::new(),
-        removed_validators: Vec::new(),
-        pending_execution_requests: Vec::new(),
-        forkchoice: ForkchoiceState {
-            head_block_hash: genesis_hash.into(),
-            safe_block_hash: genesis_hash.into(),
-            finalized_block_hash: genesis_hash.into(),
-        },
-        epoch_genesis_hash: genesis_hash,
-        validator_minimum_stake: 32_000_000_000,
-        validator_maximum_stake: 64_000_000_000,
-    }
+    let forkchoice = ForkchoiceState {
+        head_block_hash: genesis_hash.into(),
+        safe_block_hash: genesis_hash.into(),
+        finalized_block_hash: genesis_hash.into(),
+    };
+    let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 64_000_000_000);
+    state.set_validator_accounts(validator_accounts);
+    state
 }
 
 #[test]
@@ -157,7 +142,7 @@ fn test_validator_exit_triggers_cancellation() {
 
         // Create initial state with the node marked for removal
         let mut initial_state = create_test_initial_state(genesis_hash);
-        initial_state.removed_validators.push(node_pubkey.clone());
+        initial_state.push_removed_validator(node_pubkey.clone());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);

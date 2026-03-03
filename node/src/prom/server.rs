@@ -53,6 +53,7 @@ impl MetricServer {
         // Describe metrics after recorder installation
         describe_db_metrics();
         describe_static_file_metrics();
+        describe_ssz_metrics();
         Collector::default().describe();
         describe_memory_stats();
         describe_io_stats();
@@ -143,6 +144,47 @@ fn describe_static_file_metrics() {
     describe_gauge!(
         "static_files.segment_entries",
         "The number of entries for a static file segment"
+    );
+}
+
+fn describe_ssz_metrics() {
+    use metrics::describe_histogram;
+
+    describe_histogram!(
+        "ssz_rebuild_tree_micros",
+        "Time to fully rebuild the SSZ state tree from scratch (microseconds)"
+    );
+    describe_histogram!(
+        "ssz_set_account_micros",
+        "Time to insert or update a validator account in the SSZ tree (microseconds)"
+    );
+    describe_histogram!(
+        "ssz_remove_account_micros",
+        "Time to remove a validator account from the SSZ tree (microseconds)"
+    );
+    describe_histogram!(
+        "ssz_push_deposit_micros",
+        "Time to push a deposit into the SSZ deposit subtree (microseconds)"
+    );
+    describe_histogram!(
+        "ssz_pop_deposit_micros",
+        "Time to pop a deposit and rebuild the SSZ deposit subtree (microseconds)"
+    );
+    describe_histogram!(
+        "ssz_push_withdrawal_request_micros",
+        "Time to push a withdrawal request into the SSZ withdrawal subtree (microseconds)"
+    );
+    describe_histogram!(
+        "ssz_push_withdrawal_micros",
+        "Time to push a withdrawal into the SSZ withdrawal subtree (microseconds)"
+    );
+    describe_histogram!(
+        "ssz_pop_withdrawal_micros",
+        "Time to pop a withdrawal from the SSZ withdrawal subtree (microseconds)"
+    );
+    describe_histogram!(
+        "ssz_capture_state_root_micros",
+        "Time to snapshot the SSZ tree for proof generation (microseconds)"
     );
 }
 

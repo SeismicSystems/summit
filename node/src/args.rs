@@ -682,7 +682,6 @@ fn get_initial_state(
                 consensus_public_key: validator.consensus_public_key.clone(),
                 withdrawal_credentials: validator.withdrawal_credentials,
                 balance: validator_minimum_stake,
-                pending_withdrawal_amount: 0,
                 status: ValidatorStatus::Active,
                 has_pending_deposit: false,
                 has_pending_withdrawal: false,
@@ -694,7 +693,7 @@ fn get_initial_state(
                 // index 0 as well.
                 last_deposit_index: 0,
             };
-            state.validator_accounts.insert(pubkey_bytes, account);
+            state.set_account(pubkey_bytes, account);
         }
         state
     })
@@ -750,9 +749,9 @@ where
             .expect("failed to create consensus state from checkpoint");
 
         info!(
-            epoch = consensus_state.epoch,
-            height = consensus_state.latest_height,
-            num_validators = consensus_state.validator_accounts.len(),
+            epoch = consensus_state.get_epoch(),
+            height = consensus_state.get_latest_height(),
+            num_validators = consensus_state.num_validators(),
             checkpoint_path = %path.display(),
             "loaded checkpoint from file"
         );
@@ -826,9 +825,9 @@ where
 
         if let Some(ref state) = consensus_state {
             info!(
-                epoch = state.epoch,
-                height = state.latest_height,
-                num_validators = state.validator_accounts.len(),
+                epoch = state.get_epoch(),
+                height = state.get_latest_height(),
+                num_validators = state.num_validators(),
                 has_last_block = last_block.is_some(),
                 has_finalized_header = header.is_some(),
                 has_verification_headers = finalized_headers_chain.is_some(),

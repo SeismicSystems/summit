@@ -37,6 +37,11 @@ path = "src/bin/sync_from_genesis.rs"
 required-features = ["e2e"]
 
 [[bin]]
+name = "verify-consensus-state-proof"
+path = "src/bin/verify_consensus_state_proof.rs"
+required-features = ["e2e"]
+
+[[bin]]
 name = "execute-blocks"
 path = "src/bin/execute_blocks.rs"
 required-features = ["bench"]
@@ -138,6 +143,7 @@ prom = [
   "http",
   "eyre",
   "procfs",
+  "summit-types/prom",
 ]
 tokio-console = ["console-subscriber"]
 jemalloc = ["dep:tikv-jemalloc-ctl"]

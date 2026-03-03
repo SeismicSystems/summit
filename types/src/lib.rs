@@ -16,6 +16,10 @@ pub mod protocol_params;
 pub mod reth;
 pub mod rpc;
 pub mod scheme;
+pub mod ssz_hash;
+pub mod ssz_state_tree;
+pub mod ssz_tree;
+pub mod ssz_tree_key;
 pub mod utils;
 pub mod withdrawal;
 
@@ -46,6 +50,7 @@ pub struct BlockAuxData {
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
     pub withdrawal_credentials: Address,
+    pub state_root: [u8; 32],
 }
 
 pub use commonware_cryptography::bls12381;

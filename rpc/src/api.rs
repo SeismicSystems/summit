@@ -1,6 +1,7 @@
 use crate::types::{
-    CheckpointInfoRes, CheckpointRes, DepositTransactionResponse, FinalizedHeaderRes,
-    PublicKeysResponse,
+    CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
+    FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse, StateProofResponse,
+    StateRootResponse, ValidatorAccountResponse,
 };
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
@@ -34,6 +35,12 @@ pub trait SummitApi {
     #[method(name = "getValidatorBalance")]
     async fn get_validator_balance(&self, public_key: String) -> RpcResult<u64>;
 
+    #[method(name = "getValidatorAccount")]
+    async fn get_validator_account(
+        &self,
+        public_key: String,
+    ) -> RpcResult<ValidatorAccountResponse>;
+
     #[method(name = "getDepositSignature")]
     async fn get_deposit_signature(
         &self,
@@ -46,6 +53,27 @@ pub trait SummitApi {
 
     #[method(name = "getMaximumStake")]
     async fn get_maximum_stake(&self) -> RpcResult<u64>;
+
+    #[method(name = "getDeposit")]
+    async fn get_deposit(&self, index: usize) -> RpcResult<DepositResponse>;
+
+    #[method(name = "getDepositCount")]
+    async fn get_deposit_count(&self) -> RpcResult<usize>;
+
+    #[method(name = "getPendingWithdrawal")]
+    async fn get_pending_withdrawal(
+        &self,
+        public_key: String,
+    ) -> RpcResult<PendingWithdrawalResponse>;
+}
+
+#[rpc(server, client)]
+pub trait SummitProofApi {
+    #[method(name = "getStateRoot")]
+    async fn get_state_root(&self) -> RpcResult<StateRootResponse>;
+
+    #[method(name = "getStateProof")]
+    async fn get_state_proof(&self, keys: Vec<String>) -> RpcResult<StateProofResponse>;
 }
 
 #[rpc(server, client)]

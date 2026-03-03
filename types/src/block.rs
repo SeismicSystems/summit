@@ -46,6 +46,7 @@ impl Block {
         prev_epoch_header_hash: Digest,
         added_validators: Vec<AddedValidator>,
         removed_validators: Vec<PublicKey>,
+        parent_beacon_block_root: [u8; 32],
     ) -> Self {
         let payload_ssz = payload.as_ssz_bytes();
         let mut hasher = Sha256::new();
@@ -80,6 +81,7 @@ impl Block {
             block_value,
             added_validators,
             removed_validators,
+            parent_beacon_block_root,
         );
 
         Self {
@@ -141,6 +143,7 @@ impl Block {
             block_value: U256::ZERO,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
+            parent_beacon_block_root: [0; 32],
             digest: genesis_hash.into(),
         };
         Self {
@@ -199,7 +202,6 @@ impl ssz::Encode for Block {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        // All three fields are variable-length, so we only need offsets
         let offset = ssz::BYTES_PER_LENGTH_OFFSET * 3; // 3 variable-length fields
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
@@ -371,6 +373,7 @@ mod test {
             [0u8; 32].into(),
             added_validators,
             removed_validators,
+            [0u8; 32],
         );
 
         let encoded = block.encode();
@@ -420,6 +423,7 @@ mod test {
             [0u8; 32].into(),
             added_validators,
             removed_validators,
+            [0u8; 32],
         );
 
         let encoded = block.encode();
