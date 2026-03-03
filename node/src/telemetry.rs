@@ -1,4 +1,4 @@
-//! Custom telemetry initialization for Summit production nodes.
+//! Custom telemetry initialization.
 //!
 //! Replaces `commonware_runtime::tokio::telemetry::init()` to support
 //! an additional file-based layer for critical events.
