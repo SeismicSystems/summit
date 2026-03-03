@@ -88,7 +88,7 @@ fn test_single_engine_with_checkpoint() {
         // Configure engine with the checkpoint
         let public_key = key_store.node_key.public_key();
         let uid = format!("validator_{public_key}");
-        let namespace = String::from("_SEISMIC_BFT");
+        let namespace = String::from("_SUMMIT");
         let engine_client = engine_client_network.create_client(uid.clone());
 
         let latest_height = consensus_state.get_latest_height();
@@ -211,7 +211,7 @@ fn test_node_joins_later_with_checkpoint() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -274,7 +274,7 @@ fn test_node_joins_later_with_checkpoint() {
 
         // Configure engine
         let uid = format!("validator_{public_key}");
-        let namespace = String::from("_SEISMIC_BFT");
+        let namespace = String::from("_SUMMIT");
 
         let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -448,7 +448,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -511,7 +511,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
 
         // Configure engine
         let uid = format!("validator_{public_key}");
-        let namespace = String::from("_SEISMIC_BFT");
+        let namespace = String::from("_SUMMIT");
 
         let engine_client = engine_client_network.create_client(uid.clone());
 

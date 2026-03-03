@@ -109,7 +109,7 @@ fn test_added_validators_at_epoch_boundary() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -333,7 +333,7 @@ fn test_removed_validators_at_epoch_boundary() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 

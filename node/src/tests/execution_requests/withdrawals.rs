@@ -116,7 +116,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -332,7 +332,7 @@ fn test_duplicate_withdrawal_blocked() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -508,7 +508,7 @@ fn test_withdrawal_wrong_source_address_rejected() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -685,7 +685,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -880,7 +880,7 @@ fn test_withdrawal_during_onboarding_aborts() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -1096,7 +1096,7 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
             if idx == last_idx {
                 withdrawn_validator_uid = uid.clone();
             }
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -1329,7 +1329,7 @@ fn test_stake_bounds_skips_zero_balance_validator() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 

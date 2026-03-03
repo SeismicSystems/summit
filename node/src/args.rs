@@ -217,6 +217,7 @@ impl Command {
         let executor = tokio::Runner::new(cfg);
 
         executor.start(|context| async move {
+            let context = context.with_label("summit_cw");
             let (genesis_tx, genesis_rx) = oneshot::channel();
 
             let cancel_token = CancellationToken::new();
@@ -454,6 +455,7 @@ pub fn run_node_local(
     checkpoint_parent_block: Option<Block>,
 ) -> Handle<()> {
     context.spawn(async move |context| {
+        let context = context.with_label("summit_cw");
         let key_store = expect_key_store(&flags.key_store_path);
 
         let (genesis_tx, genesis_rx) = oneshot::channel();

@@ -300,8 +300,8 @@ mod tests {
         // Check the response body
         let body = response.text().await.unwrap();
         let body_contains = [
-            "seismic_bft_process_cpu_seconds_total",
-            "seismic_bft_process_start_time_seconds",
+            "summit_process_cpu_seconds_total",
+            "summit_process_start_time_seconds",
         ];
         for key in body_contains {
             if !body.contains(key) {

@@ -93,7 +93,7 @@ fn test_protocol_param_max_stake() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -329,7 +329,7 @@ fn test_protocol_param_stake_update_committee() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 

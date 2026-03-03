@@ -88,7 +88,7 @@ fn test_deposit_request_single() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -317,7 +317,7 @@ fn test_deposit_request_top_up() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -525,7 +525,7 @@ fn test_deposit_less_than_min_stake_rejected() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -725,7 +725,7 @@ fn test_deposit_greater_than_max_stake_rejected() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -904,7 +904,7 @@ fn test_deposit_request_invalid_node_signature() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -1099,7 +1099,7 @@ fn test_deposit_request_invalid_consensus_signature() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -1316,7 +1316,7 @@ fn test_duplicate_deposit_blocked() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
