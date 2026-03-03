@@ -7,7 +7,7 @@ use std::path::Path;
 use tracing::Level;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
-    Layer as _, Registry, filter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    Layer as _, Registry, filter, fmt, layer::SubscriberExt, util::SubscriberInitExt as _,
 };
 
 /// Guard that must be held alive for the process lifetime.
@@ -56,11 +56,13 @@ pub fn init(level: Level, critical_log_dir: Option<&Path>) -> CriticalLogGuard {
         (None, None)
     };
 
-    Registry::default()
+    // Use try_init so callers that already have a global subscriber (e.g. testnet
+    // spawning multiple nodes in one process) don't panic.
+    let _ = Registry::default()
         .with(env_filter)
         .with(stdout_layer)
         .with(file_layer)
-        .init();
+        .try_init();
 
     CriticalLogGuard { _guard: guard }
 }

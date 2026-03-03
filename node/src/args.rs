@@ -631,7 +631,7 @@ pub fn run_node_local(
                 .parse::<SocketAddr>()
                 .unwrap();
             let stop_signal = context.stopped();
-            let config = MetricServerConfig::new(listen_addr, hooks, None);
+            let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
             MetricServer::new(config).serve(stop_signal).await.unwrap();
         }
 

@@ -16,7 +16,7 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256};
 use clap::Parser;
 use commonware_codec::DecodeExt;
-use commonware_runtime::{Clock, Metrics as _, Runner as _, Spawner as _, tokio as cw_tokio};
+use commonware_runtime::{Clock, Runner as _, Spawner as _, tokio as cw_tokio};
 use commonware_utils::from_hex_formatted;
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::core::ClientError;
@@ -26,7 +26,6 @@ use std::time::Duration;
 use std::{
     fs,
     io::{BufRead as _, BufReader, Write as _},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     str::FromStr as _,
     thread::JoinHandle,
@@ -88,17 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     executor.start(|context| {
         async move {
-            // Configure telemetry
-            let log_level = Level::from_str("info").expect("Invalid log level");
-            cw_tokio::telemetry::init(
-                context.with_label("metrics"),
-                cw_tokio::telemetry::Logging {
-                    level: log_level,
-                    json: false,
-                },
-                Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 6969)),
-                None,
-            );
+            let _critical_log_guard = summit::telemetry::init(Level::INFO, None);
 
             // Vec to hold all the join handles
             let mut handles = VecDeque::new();
