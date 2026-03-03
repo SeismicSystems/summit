@@ -1121,66 +1121,57 @@ async fn execute_block<
 
     // Validate block against execution layer state
     // Note: withdrawals are validated in the application layer before voting
-    let parent_matches = state.forkchoice.head_block_hash == block.eth_parent_hash();
+    if payload_status.is_valid() {
+        let eth_hash = block.eth_block_hash();
+        let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
+        info!(
+            new_height,
+            epoch = state.epoch,
+            tx_count,
+            eth_hash = hex(&eth_hash),
+            "committing block to execution layer"
+        );
 
-    match (payload_status.is_valid(), parent_matches) {
-        (true, true) => {
-            let eth_hash = block.eth_block_hash();
-            let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
-            info!(
-                new_height,
-                epoch = state.epoch,
-                tx_count,
-                eth_hash = hex(&eth_hash),
-                "committing block to execution layer"
-            );
+        state.forkchoice.head_block_hash = eth_hash.into();
 
-            state.forkchoice.head_block_hash = eth_hash.into();
+        // Parse execution requests
+        #[cfg(feature = "prom")]
+        let parse_requests_start = Instant::now();
+        parse_execution_requests(
+            context,
+            block,
+            new_height,
+            state,
+            protocol_version_digest,
+            consts,
+        )
+        .await;
 
-            // Parse execution requests
-            #[cfg(feature = "prom")]
-            let parse_requests_start = Instant::now();
-            parse_execution_requests(
-                context,
-                block,
-                new_height,
-                state,
-                protocol_version_digest,
-                consts,
-            )
-            .await;
-
-            #[cfg(feature = "prom")]
-            {
-                let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
-                histogram!("parse_execution_requests_duration_millis")
-                    .record(parse_requests_duration);
-            }
-
-            // Add validators that deposited to the validator set
-            #[cfg(feature = "prom")]
-            let process_requests_start = Instant::now();
-            process_execution_requests(context, block, new_height, state, consts).await;
-            #[cfg(feature = "prom")]
-            {
-                let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
-                histogram!("process_execution_requests_duration_millis")
-                    .record(process_requests_duration);
-            }
+        #[cfg(feature = "prom")]
+        {
+            let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
+            histogram!("parse_execution_requests_duration_millis").record(parse_requests_duration);
         }
-        (true, false) => {
-            warn!(
-                new_height,
-                "payload valid but parent hash mismatch, not executing"
-            );
+
+        // Add validators that deposited to the validator set
+        #[cfg(feature = "prom")]
+        let process_requests_start = Instant::now();
+        process_execution_requests(context, block, new_height, state, consts).await;
+        #[cfg(feature = "prom")]
+        {
+            let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
+            histogram!("process_execution_requests_duration_millis")
+                .record(process_requests_duration);
         }
-        (false, _) => {
-            warn!(
-                new_height,
-                ?payload_status,
-                "payload invalid, not executing but keeping in chain"
-            );
-        }
+    } else {
+        let payload_valid = payload_status.is_valid();
+        let parent_matches = state.forkchoice.head_block_hash == block.eth_parent_hash();
+        warn!(
+            new_height,
+            payload_valid,
+            parent_matches,
+            "block validation failed, not executing but keeping in chain"
+        );
     }
 
     state.set_latest_height(new_height);
