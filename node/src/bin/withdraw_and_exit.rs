@@ -32,7 +32,8 @@ use std::{
     thread::JoinHandle,
 };
 use summit::args::{RunFlags, run_node_local};
-use summit::engine::{BLOCKS_PER_EPOCH, VALIDATOR_WITHDRAWAL_NUM_EPOCHS};
+use summit::engine::VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+use summit_types::genesis::Genesis;
 use summit_rpc::SummitApiClient;
 use summit_types::PublicKey;
 use summit_types::reth::Reth;
@@ -85,6 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_storage_directory(storage_dir)
         .with_catch_panics(false);
     let executor = cw_tokio::Runner::new(cfg);
+
+    let genesis = Genesis::load_from_file("./example_genesis.toml")
+        .expect("Failed to load genesis file");
+    let blocks_per_epoch = genesis.blocks_per_epoch;
 
     executor.start(|context| {
         async move {
@@ -241,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("failed to send deposit transaction");
 
             // Wait for all nodes to continue making progress
-            let end_height = BLOCKS_PER_EPOCH * (VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 1);
+            let end_height = blocks_per_epoch * (VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 1);
             println!(
                 "Waiting for all {} nodes to reach height {}",
                 NUM_NODES, end_height

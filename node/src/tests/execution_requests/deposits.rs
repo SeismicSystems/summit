@@ -69,7 +69,7 @@ fn test_deposit_request_single() {
 
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
-        let stop_height = BLOCKS_PER_EPOCH + 1;
+        let stop_height = DEFAULT_BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests);
 
@@ -280,15 +280,15 @@ fn test_deposit_request_top_up() {
         let deposit_block_height3 = 20;
 
         let deposit_process_height2 =
-            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height2 / BLOCKS_PER_EPOCH);
+            utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, deposit_block_height2 / DEFAULT_BLOCKS_PER_EPOCH);
         let _withdrawal_height2 =
-            deposit_process_height2 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+            deposit_process_height2 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * DEFAULT_BLOCKS_PER_EPOCH;
 
         // Because we already check in `parse_execution_requests` if the deposit will
         // make the validator balance invalid.
         let deposit_process_height3 = deposit_block_height3;
         let withdrawal_height3 =
-            deposit_process_height3 + (VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 1) * BLOCKS_PER_EPOCH - 1;
+            deposit_process_height3 + (VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
 
         let stop_height = withdrawal_height3 + 1;
         let mut execution_requests_map = HashMap::new();
@@ -499,9 +499,9 @@ fn test_deposit_less_than_min_stake_rejected() {
         let deposit_block_height = 5;
 
         let deposit_process_height =
-            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height / BLOCKS_PER_EPOCH);
+            utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, deposit_block_height / DEFAULT_BLOCKS_PER_EPOCH);
         let withdrawal_height =
-            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * DEFAULT_BLOCKS_PER_EPOCH;
 
         let stop_height = withdrawal_height + 1;
         let mut execution_requests_map = HashMap::new();
@@ -700,9 +700,9 @@ fn test_deposit_greater_than_max_stake_rejected() {
         let deposit_block_height = 5;
 
         let deposit_process_height =
-            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height / BLOCKS_PER_EPOCH);
+            utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, deposit_block_height / DEFAULT_BLOCKS_PER_EPOCH);
         let withdrawal_height =
-            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * DEFAULT_BLOCKS_PER_EPOCH;
 
         let stop_height = withdrawal_height + 1;
         let mut execution_requests_map = HashMap::new();
@@ -883,9 +883,9 @@ fn test_deposit_request_invalid_node_signature() {
 
         let deposit_block_height = 5;
         let deposit_process_height =
-            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height / BLOCKS_PER_EPOCH);
+            utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, deposit_block_height / DEFAULT_BLOCKS_PER_EPOCH);
         let withdrawal_height =
-            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * DEFAULT_BLOCKS_PER_EPOCH;
         let stop_height = withdrawal_height + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests);
@@ -1076,9 +1076,9 @@ fn test_deposit_request_invalid_consensus_signature() {
 
         let deposit_block_height = 5;
         let deposit_process_height =
-            utils::last_block_in_epoch(BLOCKS_PER_EPOCH, deposit_block_height / BLOCKS_PER_EPOCH);
+            utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, deposit_block_height / DEFAULT_BLOCKS_PER_EPOCH);
         let withdrawal_height =
-            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * BLOCKS_PER_EPOCH;
+            deposit_process_height + VALIDATOR_WITHDRAWAL_NUM_EPOCHS * DEFAULT_BLOCKS_PER_EPOCH;
         let stop_height = withdrawal_height + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests);
@@ -1290,7 +1290,7 @@ fn test_duplicate_deposit_blocked() {
         // First deposit at block 3, second at block 4 (both before processing at block 9)
         let deposit_block_height1 = 3;
         let deposit_block_height2 = 4;
-        let stop_height = BLOCKS_PER_EPOCH + 1;
+        let stop_height = DEFAULT_BLOCKS_PER_EPOCH + 1;
 
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height1, requests1);

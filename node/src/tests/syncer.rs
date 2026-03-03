@@ -1,4 +1,5 @@
-use crate::engine::{BLOCKS_PER_EPOCH, Engine};
+use crate::engine::Engine;
+use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 use crate::test_harness::common;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -177,7 +178,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
         engine.start(pending, recovered, resolver, orchestrator, broadcast);
 
         // Poll metrics
-        let stop_height = 2 * BLOCKS_PER_EPOCH;
+        let stop_height = 2 * DEFAULT_BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();
@@ -400,7 +401,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         engine.start(pending, recovered, resolver, orchestrator, broadcast);
 
         // Poll metrics
-        let stop_height = 2 * BLOCKS_PER_EPOCH;
+        let stop_height = 2 * DEFAULT_BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();

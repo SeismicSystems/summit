@@ -1,4 +1,5 @@
-use crate::engine::{BLOCKS_PER_EPOCH, Engine};
+use crate::engine::Engine;
+use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 use crate::test_harness::common;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
@@ -75,7 +76,7 @@ fn test_checkpoint_created() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let stop_height = BLOCKS_PER_EPOCH;
+        let stop_height = DEFAULT_BLOCKS_PER_EPOCH;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
         let initial_state =
@@ -145,7 +146,7 @@ fn test_checkpoint_created() {
                     let height = value.parse::<u64>().unwrap();
                     // Height should be the last block of an epoch
                     if height > 0 {
-                        assert_eq!((height + 1) % BLOCKS_PER_EPOCH, 0);
+                        assert_eq!((height + 1) % DEFAULT_BLOCKS_PER_EPOCH, 0);
                     }
                     state_stored.insert(metric.to_string());
                 }
@@ -160,7 +161,7 @@ fn test_checkpoint_created() {
                 if metric.ends_with("finalized_header_stored") {
                     let height = value.parse::<u64>().unwrap();
                     // Height should be the last block of an epoch
-                    assert_eq!((height + 1) % BLOCKS_PER_EPOCH, 0);
+                    assert_eq!((height + 1) % DEFAULT_BLOCKS_PER_EPOCH, 0);
                     header_stored.insert(metric.to_string());
                 }
                 if header_stored.len() as u32 >= n
@@ -268,7 +269,7 @@ fn test_previous_header_hash_matches() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let stop_height = BLOCKS_PER_EPOCH + 1;
+        let stop_height = DEFAULT_BLOCKS_PER_EPOCH + 1;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
         let initial_state =
@@ -350,12 +351,12 @@ fn test_previous_header_hash_matches() {
                     let validator_id =
                         common::extract_validator_id(metric).expect("failed to parse validator id");
 
-                    if utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height)
-                        && height <= BLOCKS_PER_EPOCH
+                    if utils::is_last_block_of_epoch(DEFAULT_BLOCKS_PER_EPOCH, height)
+                        && height <= DEFAULT_BLOCKS_PER_EPOCH
                     {
                         // This is the first time the finalized header is written to disk
                         first_header_stored.insert(validator_id, header);
-                    } else if utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height) {
+                    } else if utils::is_last_block_of_epoch(DEFAULT_BLOCKS_PER_EPOCH, height) {
                         // This is the second time the finalized header is written to disk
                         if let Some(header_from_prev_epoch) = first_header_stored.get(&validator_id)
                         {
@@ -364,7 +365,7 @@ fn test_previous_header_hash_matches() {
                             second_header_stored.insert(validator_id);
                         }
                     } else {
-                        assert!(utils::is_last_block_of_epoch(BLOCKS_PER_EPOCH, height));
+                        assert!(utils::is_last_block_of_epoch(DEFAULT_BLOCKS_PER_EPOCH, height));
                     }
                 }
                 // There is an edge case where not all validators write a finalized header to disk.

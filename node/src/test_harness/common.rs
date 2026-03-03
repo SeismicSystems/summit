@@ -1,6 +1,8 @@
 use commonware_cryptography::{Hasher, Sha256, Signer, bls12381};
 use commonware_math::algebra::Random;
 
+pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 10;
+
 use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
@@ -575,6 +577,7 @@ where
         checkpoint_last_block: None,
         checkpoint_finalized_header: None,
         archive_mode: false,
+        blocks_per_epoch: DEFAULT_BLOCKS_PER_EPOCH,
     }
 }
 

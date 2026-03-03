@@ -30,7 +30,7 @@ use std::{
     thread::JoinHandle,
 };
 use summit::args::{RunFlags, run_node_local};
-use summit::engine::BLOCKS_PER_EPOCH;
+use summit_types::genesis::Genesis;
 use summit_rpc::SummitApiClient;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
@@ -81,6 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_storage_directory(storage_dir)
         .with_catch_panics(false);
     let executor = cw_tokio::Runner::new(cfg);
+
+    let genesis = Genesis::load_from_file("./example_genesis.toml")
+        .expect("Failed to load genesis file");
+    let blocks_per_epoch = genesis.blocks_per_epoch;
 
     executor.start(|context| {
         async move {
@@ -235,7 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("failed to send protocol params transaction");
 
             // Wait for nodes to process the transaction and make some progress
-            let target_height = BLOCKS_PER_EPOCH + 1;
+            let target_height = blocks_per_epoch + 1;
             println!(
                 "Waiting for all {} nodes to reach height {} (to ensure protocol param change is processed)",
                 NUM_NODES, target_height

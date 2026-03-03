@@ -59,12 +59,6 @@ const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 3;
 pub const VALIDATOR_NUM_WARM_UP_EPOCHS: u64 = 2;
 // Number of epochs after a withdrawal request until the payout
 pub const VALIDATOR_WITHDRAWAL_NUM_EPOCHS: u64 = 2;
-#[cfg(all(feature = "e2e", not(debug_assertions)))]
-pub const BLOCKS_PER_EPOCH: u64 = 50;
-#[cfg(debug_assertions)]
-pub const BLOCKS_PER_EPOCH: u64 = 10;
-#[cfg(all(not(debug_assertions), not(feature = "e2e")))]
-const BLOCKS_PER_EPOCH: u64 = 10000;
 const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 //
 
@@ -118,9 +112,6 @@ where
     MultisigScheme: Scheme<summit_types::Digest, PublicKey = S::PublicKey>,
 {
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
-        #[cfg(any(debug_assertions, feature = "e2e"))]
-        let blocks_per_epoch = BLOCKS_PER_EPOCH;
-        #[cfg(all(not(debug_assertions), not(feature = "e2e")))]
         let blocks_per_epoch = cfg.blocks_per_epoch;
 
         let page_cache = CacheRef::new(
