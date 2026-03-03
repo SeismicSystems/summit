@@ -3,6 +3,7 @@
 //! Replaces `commonware_runtime::tokio::telemetry::init()` to support
 //! an additional file-based layer for critical events.
 
+use logroller::{LogRollerBuilder, Rotation, RotationSize};
 use std::path::Path;
 use tracing::Level;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -36,10 +37,13 @@ pub fn init(level: Level, critical_log_dir: Option<&Path>) -> CriticalLogGuard {
 
     // Critical file layer (optional)
     let (file_layer, guard) = if let Some(dir) = critical_log_dir {
-        std::fs::create_dir_all(dir).expect("Failed to create critical log directory");
+        let appender = LogRollerBuilder::new(dir, Path::new("critical.log"))
+            .rotation(Rotation::SizeBased(RotationSize::MB(100)))
+            .max_keep_files(5)
+            .build()
+            .expect("Failed to create critical log appender");
 
-        let file_appender = tracing_appender::rolling::daily(dir, "critical");
-        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        let (non_blocking, guard) = tracing_appender::non_blocking(appender);
 
         let layer = fmt::layer()
             .with_writer(non_blocking)
