@@ -30,7 +30,7 @@ fn test_checkpoint_verification_fixed_committee() {
     // and verifies the checkpoint chain cryptographically.
     let n = 5;
     let num_epochs = 3u64;
-    let namespace = "_SEISMIC_BFT";
+    let namespace = "_SUMMIT";
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -243,7 +243,7 @@ fn test_checkpoint_verification_dynamic_committee() {
     // then verifies the checkpoint chain handles added/removed validators correctly.
     let n = 5;
     let min_stake = 32_000_000_000u64;
-    let namespace = "_SEISMIC_BFT";
+    let namespace = "_SUMMIT";
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),

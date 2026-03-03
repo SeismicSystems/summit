@@ -85,7 +85,7 @@ impl PrometheusRecorder {
 
         // Build metrics stack
         Stack::new(recorder)
-            .push(PrefixLayer::new("seismic-bft"))
+            .push(PrefixLayer::new("summit"))
             .install()
             .wrap_err("Couldn't set metrics recorder.")?;
 

@@ -34,6 +34,9 @@ struct Args {
     /// Path to the log directory
     #[arg(long)]
     pub log_dir: Option<String>,
+    /// Path to the critical error log directory
+    #[arg(long)]
+    pub critical_log_dir: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,22 +66,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         async move {
             // Configure telemetry (skip if tokio-console is enabled)
             #[cfg(not(feature = "tokio-console"))]
-            {
-                use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-                use std::str::FromStr as _;
-                use tracing::Level;
-
-                let log_level = Level::from_str("info").expect("Invalid log level");
-                tokio::telemetry::init(
-                    context.with_label("metrics"),
-                    tokio::telemetry::Logging {
-                        level: log_level,
-                        json: false,
-                    },
-                    Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 6969)),
-                    None,
-                );
-            }
+            let _critical_log_guard = summit::telemetry::init(
+                tracing::Level::INFO,
+                args.critical_log_dir.as_ref().map(std::path::Path::new),
+            );
 
             // Vector to hold all the join handles
             let mut handles = Vec::new();
@@ -198,7 +189,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         rpc_port: (3030 + (node * 10)) as u16,
         worker_threads: 2,
         log_level: "debug".into(),
-        db_prefix: format!("{node}-quarts"),
+        db_prefix: format!("{node}"),
         genesis_path: "./example_genesis.toml".into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(feature = "bench")]
@@ -208,5 +199,6 @@ fn get_node_flags(node: usize) -> RunFlags {
         ip: None,
         archive_mode: false,
         bootstrappers: None,
+        critical_log_dir: None,
     }
 }

@@ -114,7 +114,7 @@ fn test_deposit_and_withdrawal_request_single() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -345,7 +345,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -590,7 +590,7 @@ fn test_deposit_blocked_by_pending_withdrawal() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -781,7 +781,7 @@ fn test_withdrawal_blocked_by_pending_deposit() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -984,7 +984,7 @@ fn test_deposit_and_withdrawal_same_block() {
             public_keys.insert(public_key.clone());
 
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 

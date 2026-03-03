@@ -196,7 +196,7 @@ pub fn run_until_height(
 
             // Configure engine
             let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SEISMIC_BFT");
+            let namespace = String::from("_SUMMIT");
 
             let engine_client = engine_client_network.create_client(uid.clone());
 
@@ -568,7 +568,7 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 /// * `engine_client` - Generic engine client implementing the EngineClient trait
 /// * `partition_prefix` - String identifier for partitioning (typically validator ID)
 /// * `genesis_hash` - 32-byte array representing the genesis block hash
-/// * `namespace` - String namespace identifier (typically "_SEISMIC_BFT")
+/// * `namespace` - String namespace identifier (typically "_SUMMIT")
 /// * `signer` - Private key for signing operations
 /// * `participants` - Vector of participant public keys
 ///

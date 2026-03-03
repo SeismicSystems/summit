@@ -146,6 +146,11 @@ pub struct RunFlags {
     /// Path to a TOML file containing bootstrapper nodes (pubkey and address) for syncing
     #[arg(long)]
     pub bootstrappers: Option<String>,
+
+    /// Directory for critical event log files (daily rotation).
+    /// When set, events emitted with target "critical" are written to files in this directory.
+    #[arg(long)]
+    pub critical_log_dir: Option<String>,
 }
 
 impl Command {
@@ -212,6 +217,7 @@ impl Command {
         let executor = tokio::Runner::new(cfg);
 
         executor.start(|context| async move {
+            let context = context.with_label("summit_cw");
             let (genesis_tx, genesis_rx) = oneshot::channel();
 
             let cancel_token = CancellationToken::new();
@@ -322,22 +328,16 @@ impl Command {
                 network_committee.sort();
             }
 
-            // Configure telemetry
+            // Configure telemetry with optional critical file logger
             let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
-            tokio::telemetry::init(
-                context.with_label("telemetry"),
-                tokio::telemetry::Logging {
-                    level: log_level,
-                    json: false,
-                },
-                Some(SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-                    flags.prom_port + 1,
-                )),
-                None,
-            );
+            let critical_log_dir = flags
+                .critical_log_dir
+                .as_ref()
+                .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
+            let _critical_log_guard =
+                crate::telemetry::init(log_level, critical_log_dir.as_deref());
 
-            // Start prometheus endpoint
+            // Start prometheus endpoint (merges Summit + commonware runtime metrics)
             #[cfg(feature = "prom")]
             {
                 use crate::prom::hooks::Hooks;
@@ -349,7 +349,7 @@ impl Command {
                 let listen_addr = format!("{}:{}", flags.prom_ip, flags.prom_port)
                     .parse::<SocketAddr>()
                     .unwrap();
-                let config = MetricServerConfig::new(listen_addr, hooks);
+                let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
                 let stop_signal = context.stopped();
                 MetricServer::new(config).serve(stop_signal).await.unwrap();
             }
@@ -455,6 +455,7 @@ pub fn run_node_local(
     checkpoint_parent_block: Option<Block>,
 ) -> Handle<()> {
     context.spawn(async move |context| {
+        let context = context.with_label("summit_cw");
         let key_store = expect_key_store(&flags.key_store_path);
 
         let (genesis_tx, genesis_rx) = oneshot::channel();
@@ -632,7 +633,7 @@ pub fn run_node_local(
                 .parse::<SocketAddr>()
                 .unwrap();
             let stop_signal = context.stopped();
-            let config = MetricServerConfig::new(listen_addr, hooks);
+            let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
             MetricServer::new(config).serve(stop_signal).await.unwrap();
         }
 

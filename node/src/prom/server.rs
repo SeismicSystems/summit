@@ -2,7 +2,7 @@ use crate::prom::{
     hooks::{Hook, Hooks},
     recorder::install_prometheus_recorder,
 };
-use commonware_runtime::signal::Signal;
+use commonware_runtime::{Metrics as _, signal::Signal, tokio::Context};
 use eyre::WrapErr;
 use futures::FutureExt;
 use http::{HeaderValue, Response, header::CONTENT_TYPE};
@@ -12,39 +12,49 @@ use reth_metrics::metrics::Unit;
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
 /// Configuration for the [`MetricServer`]
-#[derive(Debug)]
 pub struct MetricServerConfig {
     listen_addr: SocketAddr,
     hooks: Hooks,
+    /// Optional commonware runtime context for merging runtime metrics into the response.
+    cw_context: Option<Context>,
 }
 
 impl MetricServerConfig {
     /// Create a new [`MetricServerConfig`] with the given configuration
-    pub const fn new(listen_addr: SocketAddr, hooks: Hooks) -> Self {
-        Self { listen_addr, hooks }
+    pub fn new(listen_addr: SocketAddr, hooks: Hooks, cw_context: Option<Context>) -> Self {
+        Self {
+            listen_addr,
+            hooks,
+            cw_context,
+        }
     }
 }
 
 /// [`MetricServer`] responsible for serving the metrics endpoint
-#[derive(Debug)]
 pub struct MetricServer {
     config: MetricServerConfig,
 }
 
 impl MetricServer {
     /// Create a new [`MetricServer`] with the given configuration
-    pub const fn new(config: MetricServerConfig) -> Self {
+    pub fn new(config: MetricServerConfig) -> Self {
         Self { config }
     }
 
     /// Spawns the metrics server
     pub async fn serve(&self, stop_signal: Signal) -> eyre::Result<()> {
-        let MetricServerConfig { listen_addr, hooks } = &self.config;
+        let MetricServerConfig {
+            listen_addr,
+            hooks,
+            cw_context,
+        } = &self.config;
 
         let hooks = hooks.clone();
+        let cw_context = cw_context.clone();
         self.start_endpoint(
             *listen_addr,
             Arc::new(move || hooks.iter().for_each(|hook| hook())),
+            cw_context,
             stop_signal,
         )
         .await
@@ -65,6 +75,7 @@ impl MetricServer {
         &self,
         listen_addr: SocketAddr,
         hook: Arc<F>,
+        cw_context: Option<Context>,
         stop_signal: Signal,
     ) -> eyre::Result<()> {
         let listener = tokio::net::TcpListener::bind(listen_addr)
@@ -83,9 +94,14 @@ impl MetricServer {
 
                         let handle = install_prometheus_recorder();
                         let hook = hook.clone();
+                        let cw_context = cw_context.clone();
                         let service = tower::service_fn(move |_| {
                             (hook)();
-                            let metrics = handle.handle().render();
+                            let mut metrics = handle.handle().render();
+                            if let Some(ref ctx) = cw_context {
+                                metrics.push('\n');
+                                metrics.push_str(&ctx.encode());
+                            }
                             let mut response = Response::new(metrics);
                             response
                                 .headers_mut()
@@ -269,7 +285,7 @@ mod tests {
         let hooks = Hooks::builder().build();
 
         let listen_addr = get_random_available_addr();
-        let config = MetricServerConfig::new(listen_addr, hooks);
+        let config = MetricServerConfig::new(listen_addr, hooks, None);
 
         let stopper = Stopper::new();
         let signal = stopper.stopped();
@@ -284,8 +300,8 @@ mod tests {
         // Check the response body
         let body = response.text().await.unwrap();
         let body_contains = [
-            "seismic_bft_process_cpu_seconds_total",
-            "seismic_bft_process_start_time_seconds",
+            "summit_process_cpu_seconds_total",
+            "summit_process_start_time_seconds",
         ];
         for key in body_contains {
             if !body.contains(key) {
