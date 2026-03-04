@@ -41,6 +41,7 @@ use tracing::Level;
 
 const NUM_NODES: u16 = 4;
 const GENESIS_PATH: &str = "./example_genesis.toml";
+const E2E_BLOCKS_PER_EPOCH: u64 = 50;
 const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000;
 
 #[allow(unused)]
@@ -87,8 +88,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_catch_panics(false);
     let executor = cw_tokio::Runner::new(cfg);
 
-    let genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
+    let mut genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
+    genesis.blocks_per_epoch = E2E_BLOCKS_PER_EPOCH;
     let blocks_per_epoch = genesis.blocks_per_epoch;
+
+    // Write modified genesis for nodes to use
+    fs::create_dir_all(&data_dir_path).expect("Failed to create data directory");
+    let e2e_genesis_path = data_dir_path.join("genesis.toml");
+    let genesis_str = toml::to_string_pretty(&genesis).expect("Failed to serialize genesis");
+    fs::write(&e2e_genesis_path, genesis_str).expect("Failed to write e2e genesis");
+    let e2e_genesis_path_str = e2e_genesis_path.to_str().unwrap().to_string();
 
     executor.start(|context| {
         async move {
@@ -158,7 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 handles.push_back(reth);
 
                 #[allow(unused_mut)]
-                let mut flags = get_node_flags(x.into());
+                let mut flags = get_node_flags(x.into(), &e2e_genesis_path_str);
 
                 #[cfg(feature = "bench")]
                 {
@@ -243,7 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 let mut all_ready = true;
                 for idx in 0..(NUM_NODES - 1) {
-                    let rpc_port = get_node_flags(idx as usize).rpc_port;
+                    let rpc_port = get_node_flags(idx as usize, &e2e_genesis_path_str).rpc_port;
                     match get_latest_height(rpc_port).await {
                         Ok(height) => {
                             if height < end_height {
@@ -291,7 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 actual_difference, expected_difference);
 
             // Check that the validator was removed from the consensus state
-            let rpc_port = get_node_flags(0).rpc_port;
+            let rpc_port = get_node_flags(0, &e2e_genesis_path_str).rpc_port;
             let validator_balance = get_validator_balance(rpc_port, "f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226".to_string()).await;
             if let Err(e) = validator_balance {
                 // Parse the JSON-RPC error
@@ -376,7 +385,7 @@ async fn get_validator_balance(
     Ok(balance)
 }
 
-fn get_node_flags(node: usize) -> RunFlags {
+fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
     let path = format!("testnet/node{node}/");
 
     RunFlags {
@@ -390,7 +399,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         worker_threads: 2,
         log_level: "debug".into(),
         db_prefix: format!("{node}"),
-        genesis_path: GENESIS_PATH.into(),
+        genesis_path: genesis_path.into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(feature = "bench")]
         bench_block_dir: None,
