@@ -8,14 +8,15 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
 };
 use commonware_consensus::Reporter;
+use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
 use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
 use commonware_runtime::{Clock, Metrics, Runner as _};
-use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
+use commonware_utils::{NZU64, NZUsize};
 use futures::channel::mpsc as futures_mpsc;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -181,6 +182,7 @@ fn test_initial_startup_sync_waits_for_valid() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
@@ -249,6 +251,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
@@ -317,6 +320,7 @@ fn test_execute_block_retries_on_syncing() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
@@ -400,6 +404,7 @@ fn test_notarized_block_retries_on_syncing() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
@@ -474,6 +479,7 @@ fn test_checkpoint_startup_full_flow() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 

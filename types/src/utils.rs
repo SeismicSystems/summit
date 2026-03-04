@@ -1,6 +1,6 @@
 use alloy_primitives::Address;
 use anyhow::{Context, Result, anyhow};
-use commonware_consensus::types::Epoch;
+use commonware_consensus::types::{Epoch, Epocher, Height};
 use dirs::home_dir;
 use std::{path::PathBuf, str::FromStr};
 
@@ -60,6 +60,27 @@ pub fn is_last_block_in_epoch(epoch_length: u64, height: u64) -> Option<Epoch> {
     } else {
         None
     }
+}
+
+/// Returns true if `height` is the first block in its epoch.
+pub fn epocher_is_first_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
+    epocher
+        .containing(Height::new(height))
+        .is_some_and(|info| info.first() == info.height())
+}
+
+/// Returns true if `height` is the last block in its epoch.
+pub fn epocher_is_last_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
+    epocher
+        .containing(Height::new(height))
+        .is_some_and(|info| info.last() == info.height())
+}
+
+/// Returns true if `height` is the penultimate (second-to-last) block in its epoch.
+pub fn epocher_is_penultimate_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
+    epocher
+        .containing(Height::new(height))
+        .is_some_and(|info| info.last() == Height::new(height + 1))
 }
 
 pub fn parse_withdrawal_credentials(withdrawal_credentials: [u8; 32]) -> Result<Address> {
