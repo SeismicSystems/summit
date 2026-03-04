@@ -2,8 +2,8 @@ pub mod args;
 pub mod config;
 pub mod engine;
 mod keys;
-pub mod telemetry;
 mod nat;
+pub mod telemetry;
 #[cfg(any(test, feature = "e2e"))]
 pub mod test_harness;
 #[cfg(test)]

@@ -222,6 +222,32 @@ impl<
             }))
             .await;
 
+        // Send initial forkchoice to the execution client so it knows the chain
+        // head and can start P2P sync. Then wait for sync to complete before
+        // replaying any blocks. Without this, catch-up blocks fail because the
+        // execution client doesn't have them yet.
+        {
+            let forkchoice = self.canonical_state.get_forkchoice();
+            if !forkchoice.head_block_hash.is_zero() {
+                info!(
+                    head = %forkchoice.head_block_hash,
+                    "sending initial forkchoice update to execution client, waiting for sync..."
+                );
+                loop {
+                    let status = self.engine_client.commit_hash(*forkchoice).await;
+                    if status.is_valid() {
+                        info!("execution client synced to checkpoint head, ready to replay blocks");
+                        break;
+                    } else if status.is_syncing() {
+                        warn!("execution client still syncing, waiting 5s...");
+                        self.context.sleep(std::time::Duration::from_secs(5)).await;
+                    } else {
+                        panic!("finalizer started with invalid forkchoice");
+                    }
+                }
+            }
+        }
+
         loop {
             if self.validator_exit
                 && is_first_block_of_epoch(
@@ -1154,8 +1180,21 @@ async fn execute_block<
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
+    let payload_status = loop {
+        let status = engine_client.check_payload(block).await;
 
-    let payload_status = engine_client.check_payload(block).await;
+        if status.is_syncing() {
+            error!(
+                height = block.height(),
+                "execution client returned SYNCING, sending forkchoice update to trigger sync and retrying..."
+            );
+
+            context.sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        }
+        break status;
+    };
+
     let new_height = block.height();
 
     #[cfg(feature = "prom")]
@@ -1166,9 +1205,7 @@ async fn execute_block<
 
     // Validate block against execution layer state
     // Note: withdrawals are validated in the application layer before voting
-    if payload_status.is_valid()
-        && state.get_forkchoice().head_block_hash == block.eth_parent_hash()
-    {
+    if payload_status.is_valid() {
         let eth_hash = block.eth_block_hash();
         let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(

@@ -2,3 +2,4 @@
 .idea/
 testnet/
 .vscode/*
+.nvim.lua
