@@ -6,8 +6,8 @@ mod withdrawals;
 
 // Shared imports for all execution request tests
 pub(crate) use crate::engine::{Engine, VALIDATOR_WITHDRAWAL_NUM_EPOCHS};
-pub(crate) use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 pub(crate) use crate::test_harness::common;
+pub(crate) use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 pub(crate) use crate::test_harness::common::{
     SimulatedOracle, get_default_engine_config, get_initial_state,
 };

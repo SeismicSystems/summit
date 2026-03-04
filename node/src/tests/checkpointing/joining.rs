@@ -1,6 +1,6 @@
 use crate::engine::Engine;
-use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 use crate::test_harness::common;
+use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_cryptography::Signer;

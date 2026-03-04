@@ -32,9 +32,9 @@ use std::{
 };
 use summit::args::{RunFlags, run_node_local};
 use summit::engine::VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-use summit_types::genesis::Genesis;
 use summit_rpc::SummitApiClient;
 use summit_types::PublicKey;
+use summit_types::genesis::Genesis;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
 use tracing::Level;
@@ -87,8 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_catch_panics(false);
     let executor = cw_tokio::Runner::new(cfg);
 
-    let genesis = Genesis::load_from_file(GENESIS_PATH)
-        .expect("Failed to load genesis file");
+    let genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
     let blocks_per_epoch = genesis.blocks_per_epoch;
 
     executor.start(|context| {

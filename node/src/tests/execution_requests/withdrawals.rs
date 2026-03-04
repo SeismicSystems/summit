@@ -1062,11 +1062,13 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
         // If the request was processed immediately in epoch 0, withdrawal would happen here:
         let immediate_withdrawal_epoch =
             (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let immediate_withdrawal_height = (immediate_withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let immediate_withdrawal_height =
+            (immediate_withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
 
         // Since the request is deferred to epoch 1, withdrawal should happen here instead:
         let deferred_withdrawal_epoch = 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let deferred_withdrawal_height = (deferred_withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let deferred_withdrawal_height =
+            (deferred_withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
 
         // Verify our expectations are different (deferral should delay the withdrawal)
         assert!(
