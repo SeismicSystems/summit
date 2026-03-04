@@ -98,6 +98,9 @@ impl Genesis {
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let file_string = std::fs::read_to_string(path)?;
         let genesis: Genesis = toml::from_str(&file_string)?;
+        if genesis.blocks_per_epoch == 0 {
+            return Err("blocks_per_epoch must be greater than 0".into());
+        }
         Ok(genesis)
     }
 
@@ -169,6 +172,7 @@ mod tests {
     fn test_loading_genesis() {
         let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         assert_eq!(genesis.validator_count(), 4);
+        assert_eq!(genesis.blocks_per_epoch, 50);
 
         let keys = genesis.get_validator_keys().unwrap();
         assert_eq!(keys.len(), 4);

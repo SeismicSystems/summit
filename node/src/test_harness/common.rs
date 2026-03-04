@@ -1,8 +1,6 @@
 use commonware_cryptography::{Hasher, Sha256, Signer, bls12381};
 use commonware_math::algebra::Random;
 
-pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 10;
-
 use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
@@ -37,6 +35,8 @@ use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::MultisigScheme;
 use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
 use tokio::sync::mpsc;
+
+pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 10;
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 

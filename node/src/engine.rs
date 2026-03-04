@@ -266,7 +266,7 @@ where
                 namespace: cfg.namespace.as_bytes().to_vec(),
                 muxer_size: cfg.mailbox_size,
                 mailbox_size: cfg.mailbox_size,
-                blocks_per_epoch: blocks_per_epoch,
+                blocks_per_epoch,
                 partition_prefix: cfg.partition_prefix.clone(),
                 leader_timeout: cfg.leader_timeout,
                 notarization_timeout: cfg.notarization_timeout,
@@ -319,7 +319,7 @@ where
             sync_epoch = sync_start.epoch,
             sync_view = sync_start.view,
             num_validators,
-            blocks_per_epoch = blocks_per_epoch,
+            blocks_per_epoch,
             "engine initialized"
         );
 
