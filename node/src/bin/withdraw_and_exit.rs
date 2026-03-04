@@ -40,6 +40,7 @@ use tokio::sync::mpsc;
 use tracing::Level;
 
 const NUM_NODES: u16 = 4;
+const GENESIS_PATH: &str = "./example_genesis.toml";
 const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000;
 
 #[allow(unused)]
@@ -86,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_catch_panics(false);
     let executor = cw_tokio::Runner::new(cfg);
 
-    let genesis = Genesis::load_from_file("./example_genesis.toml")
+    let genesis = Genesis::load_from_file(GENESIS_PATH)
         .expect("Failed to load genesis file");
     let blocks_per_epoch = genesis.blocks_per_epoch;
 
@@ -390,7 +391,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         worker_threads: 2,
         log_level: "debug".into(),
         db_prefix: format!("{node}"),
-        genesis_path: "./example_genesis.toml".into(),
+        genesis_path: GENESIS_PATH.into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(feature = "bench")]
         bench_block_dir: None,
