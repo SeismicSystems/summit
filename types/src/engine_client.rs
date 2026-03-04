@@ -21,7 +21,8 @@ use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
 use alloy_rpc_types_engine::{
-    ExecutionPayloadEnvelopeV4, ForkchoiceState, PayloadAttributes, PayloadId, PayloadStatus,
+    ExecutionPayloadEnvelopeV4, ForkchoiceState, ForkchoiceUpdated, PayloadAttributes, PayloadId,
+    PayloadStatus,
 };
 use tracing::{error, warn};
 
@@ -50,7 +51,7 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
     fn commit_hash(
         &mut self,
         fork_choice_state: ForkchoiceState,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = ForkchoiceUpdated> + Send;
 }
 
 #[derive(Clone)]
@@ -175,8 +176,8 @@ impl EngineClient for RethEngineClient {
         }
     }
 
-    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
-        let _ = match self
+    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
+        match self
             .provider
             .fork_choice_updated_v3(fork_choice_state, None)
             .await
@@ -187,10 +188,10 @@ impl EngineClient for RethEngineClient {
                 self.provider
                     .fork_choice_updated_v3(fork_choice_state, None)
                     .await
-                    .expect("Failed to get payload after reconnect")
+                    .expect("Failed to commit hash after reconnect")
             }
             Err(_) => panic!("Unable to get a response"),
-        };
+        }
     }
 }
 
@@ -328,8 +329,8 @@ impl EngineClient for BadBlockEngineClient {
         }
     }
 
-    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
-        let _ = match self
+    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
+        match self
             .provider
             .fork_choice_updated_v3(fork_choice_state, None)
             .await
@@ -340,10 +341,10 @@ impl EngineClient for BadBlockEngineClient {
                 self.provider
                     .fork_choice_updated_v3(fork_choice_state, None)
                     .await
-                    .expect("Failed to get payload after reconnect")
+                    .expect("Failed to commit hash after reconnect")
             }
             Err(_) => panic!("Unable to get a response"),
-        };
+        }
     }
 }
 
@@ -357,7 +358,7 @@ pub mod benchmarking {
     use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
     use alloy_rpc_types_engine::{
         ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3,
-        ForkchoiceState, PayloadId, PayloadStatus,
+        ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
     };
     use alloy_transport_ipc::IpcConnect;
     use serde::{Deserialize, Serialize};
@@ -435,11 +436,11 @@ pub mod benchmarking {
                 .unwrap()
         }
 
-        async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) {
+        async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
             self.provider
                 .fork_choice_updated_v3(fork_choice_state, None)
                 .await
-                .unwrap();
+                .unwrap()
         }
     }
 
