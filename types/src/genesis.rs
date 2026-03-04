@@ -42,6 +42,8 @@ pub struct Genesis {
     pub validator_minimum_stake: u64,
     /// Maximum validator stake in gwei
     pub validator_maximum_stake: u64,
+    /// Number of blocks in each epoch
+    pub blocks_per_epoch: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -89,13 +89,13 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let requests3 = common::execution_requests_to_requests(execution_requests3);
 
         // Create execution requests map (add deposit to block 5)
-        // The deposit request will processed after 10 blocks because `BLOCKS_PER_EPOCH`
-        // is set to 10 in debug mode.
+        // The deposit request will processed after 10 blocks because `DEFAULT_BLOCKS_PER_EPOCH`
+        // is set to 10.
         // The withdrawal request should be added after block 10, otherwise it will be ignored, because
         // the account doesn't exist yet.
         let deposit_block_height = 5;
         let withdrawal_block_height = 11;
-        let stop_height = withdrawal_block_height + BLOCKS_PER_EPOCH + 1;
+        let stop_height = withdrawal_block_height + DEFAULT_BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -205,8 +205,8 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // to the execution layer.
         assert_eq!(withdrawals.len(), 1);
         let withdrawal_epoch =
-            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");
@@ -310,8 +310,8 @@ fn test_duplicate_withdrawal_blocked() {
         let withdrawal_block_height1 = 3;
         let withdrawal_block_height2 = 4;
         let withdrawal_epoch =
-            (withdrawal_block_height1 / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
+            (withdrawal_block_height1 / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
         let stop_height = withdrawal_height + 1;
 
         let mut execution_requests_map = HashMap::new();
@@ -487,8 +487,8 @@ fn test_withdrawal_wrong_source_address_rejected() {
         let withdrawal_block_height = 3;
         // Calculate when withdrawal would have been processed if it were valid
         let withdrawal_epoch =
-            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
         let stop_height = withdrawal_height + 1;
 
         let mut execution_requests_map = HashMap::new();
@@ -664,8 +664,8 @@ fn test_withdrawal_nonexistent_validator_ignored() {
         // Submit withdrawal at block 3
         let withdrawal_block_height = 3;
         let withdrawal_epoch =
-            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
         let stop_height = withdrawal_height + 1;
 
         let mut execution_requests_map = HashMap::new();
@@ -859,8 +859,8 @@ fn test_withdrawal_during_onboarding_aborts() {
         // Withdrawal epoch = epoch when withdrawal is submitted + VALIDATOR_WITHDRAWAL_NUM_EPOCHS
         // = 1 + 2 = 3
         let withdrawal_epoch =
-            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1; // Block 39
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1; // Block 39
         let stop_height = withdrawal_height + 1;
 
         let mut execution_requests_map = HashMap::new();
@@ -1054,19 +1054,19 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
         let execution_requests = vec![ExecutionRequest::Withdrawal(withdrawal.clone())];
         let requests = common::execution_requests_to_requests(execution_requests);
 
-        // Submit withdrawal on block 9 (last block of epoch 0, since BLOCKS_PER_EPOCH=10)
-        let withdrawal_block_height = BLOCKS_PER_EPOCH - 1; // Block 9
+        // Submit withdrawal on block 9 (last block of epoch 0, since DEFAULT_BLOCKS_PER_EPOCH=10)
+        let withdrawal_block_height = DEFAULT_BLOCKS_PER_EPOCH - 1; // Block 9
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(withdrawal_block_height, requests);
 
         // If the request was processed immediately in epoch 0, withdrawal would happen here:
         let immediate_withdrawal_epoch =
-            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let immediate_withdrawal_height = (immediate_withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let immediate_withdrawal_height = (immediate_withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
 
         // Since the request is deferred to epoch 1, withdrawal should happen here instead:
         let deferred_withdrawal_epoch = 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let deferred_withdrawal_height = (deferred_withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1;
+        let deferred_withdrawal_height = (deferred_withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
 
         // Verify our expectations are different (deferral should delay the withdrawal)
         assert!(
@@ -1301,11 +1301,11 @@ fn test_stake_bounds_skips_zero_balance_validator() {
 
         // User withdrawal: epoch 0 + 2 = epoch 2, processed at last block of epoch 2
         let withdrawal_epoch =
-            (withdrawal_block_height / BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * BLOCKS_PER_EPOCH - 1; // block 29
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1; // block 29
 
         // Spurious withdrawal from bug would be at epoch 1 (block 19)
-        let spurious_height = 2 * BLOCKS_PER_EPOCH - 1; // block 19
+        let spurious_height = 2 * DEFAULT_BLOCKS_PER_EPOCH - 1; // block 19
 
         let stop_height = withdrawal_height + 1; // block 30
 
