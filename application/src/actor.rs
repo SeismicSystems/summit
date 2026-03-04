@@ -15,7 +15,7 @@ use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
 use commonware_consensus::simplex::scheme::Scheme;
-use commonware_consensus::types::{Round, View};
+use commonware_consensus::types::{Epoch, Epocher, Round, View};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
 use std::marker::PhantomData;
@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
 use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
-use summit_types::{Block, BlockAuxData, Digest, EngineClient, utils};
+use summit_types::{Block, BlockAuxData, Digest, EngineClient};
 
 pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
@@ -38,13 +38,14 @@ pub struct Actor<
     P: PublicKey,
     K: Signer,
     V: Variant,
+    ES: Epocher,
 > {
     context: ContextCell<R>,
     mailbox: mpsc::Receiver<Message>,
     engine_client: C,
     built_block: Arc<Mutex<Option<(Block, Round)>>>,
     genesis_hash: [u8; 32],
-    epoch_num_of_blocks: u64,
+    epocher: ES,
     cancellation_token: CancellationToken,
     _scheme_marker: PhantomData<S>,
     _key_marker: PhantomData<P>,
@@ -59,9 +60,10 @@ impl<
     P: PublicKey,
     K: Signer,
     V: Variant,
-> Actor<R, C, S, P, K, V>
+    ES: Epocher,
+> Actor<R, C, S, P, K, V, ES>
 {
-    pub async fn new(context: R, cfg: ApplicationConfig<C>) -> (Self, Mailbox<P>) {
+    pub async fn new(context: R, cfg: ApplicationConfig<C, ES>) -> (Self, Mailbox<P>) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
 
         let genesis_hash = cfg.genesis_hash;
@@ -73,7 +75,7 @@ impl<
                 engine_client: cfg.engine_client,
                 built_block: Arc::new(Mutex::new(None)),
                 genesis_hash,
-                epoch_num_of_blocks: cfg.epoch_num_of_blocks,
+                epocher: cfg.epocher,
                 cancellation_token: cfg.cancellation_token,
                 _scheme_marker: PhantomData,
                 _key_marker: PhantomData,
@@ -231,6 +233,7 @@ impl<
                             self.context.with_label("verify").spawn({
                                 let mut syncer = syncer.clone();
                                 let mut finalizer_clone = finalizer.clone();
+                                let epocher = self.epocher.clone();
                                 move |_| async move {
                                     let requester = try_join(parent_request, block_request);
                                     select! {
@@ -275,7 +278,7 @@ impl<
                                                     histogram!("handle_verify_aux_data_duration_millis").record(aux_data_duration);
                                                 }
 
-                                                if handle_verify(&block, parent, self.epoch_num_of_blocks, &aux_data) {
+                                                if handle_verify(&block, parent, &epocher, &aux_data) {
                                                     // persist valid block
                                                     syncer.verified(round, block).await;
 
@@ -422,8 +425,11 @@ impl<
         // Special case: If the parent block is the last block in the epoch,
         // re-propose it as to not produce any blocks that will be cut out
         // by the epoch transition.
-        let last_in_epoch = utils::last_block_in_epoch(self.epoch_num_of_blocks, aux_data.epoch);
-        if parent_block.height() == last_in_epoch {
+        let last_in_epoch = self
+            .epocher
+            .last(Epoch::new(aux_data.epoch))
+            .expect("epoch should exist");
+        if parent_block.height() == last_in_epoch.get() {
             debug!(round = ?round, digest = ?parent_block.digest(), "re-proposed parent block at epoch boundary");
             return Ok(parent_block);
         }
@@ -535,18 +541,26 @@ impl<
     P: PublicKey,
     K: Signer,
     V: Variant,
-> Drop for Actor<R, C, S, P, K, V>
+    ES: Epocher,
+> Drop for Actor<R, C, S, P, K, V, ES>
 {
     fn drop(&mut self) {
         self.cancellation_token.cancel();
     }
 }
 
-fn handle_verify(block: &Block, parent: Block, epoch_length: u64, aux_data: &BlockAuxData) -> bool {
+fn handle_verify<ES: Epocher>(
+    block: &Block,
+    parent: Block,
+    epocher: &ES,
+    aux_data: &BlockAuxData,
+) -> bool {
     // You can only re-propose the same block if it's the last height in the epoch.
     if parent.digest() == block.digest() {
-        let last_in_epoch = utils::last_block_in_epoch(epoch_length, aux_data.epoch);
-        return block.height() == last_in_epoch;
+        let last_in_epoch = epocher
+            .last(Epoch::new(aux_data.epoch))
+            .expect("epoch should exist");
+        return block.height() == last_in_epoch.get();
     }
 
     // Basic structural validation

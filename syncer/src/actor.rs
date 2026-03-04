@@ -11,7 +11,7 @@ use commonware_broadcast::{Broadcaster, buffered};
 use commonware_codec::{Decode, Encode};
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::simplex::types::{Finalization, Notarization};
-use commonware_consensus::types::{Epoch, Height, Round, View, ViewDelta};
+use commonware_consensus::types::{Epoch, Epocher, Height, Round, View, ViewDelta};
 use commonware_consensus::{Block, Reporter};
 use commonware_cryptography::PublicKey;
 use commonware_cryptography::certificate::Scheme as CertificateScheme;
@@ -54,7 +54,6 @@ use tracing::{debug, error, info, warn};
 
 use commonware_cryptography::certificate::Provider;
 use summit_types::Digest;
-use summit_types::utils;
 
 /// The key used to store the last processed height in the metadata store.
 const LATEST_KEY: U64 = U64::new(0xFF);
@@ -100,13 +99,14 @@ struct BlockSubscription<B: Block> {
 /// finalization for a block that is ahead of its current view, it will request the missing blocks
 /// from its peers. This ensures that the actor can catch up to the rest of the network if it falls
 /// behind.
-pub struct Actor<E, B, P, FC, FB, T, A = Exact>
+pub struct Actor<E, B, P, FC, FB, ES, T, A = Exact>
 where
     E: CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
     B: Block<Commitment = Digest>,
     P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
     FC: Certificates<Commitment = B::Commitment, Scheme = P::Scheme>,
     FB: Blocks<Block = B>,
+    ES: Epocher,
     T: Strategy,
     A: Acknowledgement,
 {
@@ -120,8 +120,8 @@ where
     // ---------- Configuration ----------
     // Provider for epoch-specific signing schemes
     provider: P,
-    // Epoch length (in blocks)
-    epoch_length: u64,
+    // Epocher for determining epoch boundaries
+    epocher: ES,
     // Minimum number of views to retain temporary data after the application processes a block
     view_retention_timeout: ViewDelta,
     // Maximum number of blocks to repair at once
@@ -162,13 +162,14 @@ where
     processed_height: Gauge,
 }
 
-impl<E, B, P, FC, FB, T, A> Actor<E, B, P, FC, FB, T, A>
+impl<E, B, P, FC, FB, ES, T, A> Actor<E, B, P, FC, FB, ES, T, A>
 where
     E: CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
     B: Block<Commitment = Digest>,
     P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
     FC: Certificates<Commitment = B::Commitment, Scheme = P::Scheme>,
     FB: Blocks<Block = B>,
+    ES: Epocher,
     T: Strategy,
     A: Acknowledgement,
 {
@@ -177,7 +178,7 @@ where
         context: E,
         finalizations_by_height: FC,
         finalized_blocks: FB,
-        config: Config<B, P, T>,
+        config: Config<B, P, ES, T>,
     ) -> (Self, Mailbox<P::Scheme, B>) {
         // Initialize cache
         let prunable_config = cache::Config {
@@ -231,7 +232,7 @@ where
                     context: ContextCell::new(context),
                     mailbox,
                     provider: config.scheme_provider,
-                    epoch_length: config.epoch_length,
+                    epocher: config.epocher,
                     view_retention_timeout: config.view_retention_timeout,
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
@@ -260,7 +261,7 @@ where
                     context: ContextCell::new(context),
                     mailbox,
                     provider: config.scheme_provider,
-                    epoch_length: config.epoch_length,
+                    epocher: config.epocher,
                     view_retention_timeout: config.view_retention_timeout,
                     max_repair: config.max_repair,
                     block_codec_config: config.block_codec_config,
@@ -711,7 +712,7 @@ where
                                 },
                                 Request::Finalized { height } => {
                                     let height = Height::new(height);
-                                    let epoch = utils::epoch(self.epoch_length, height.get());
+                                    let epoch = self.epocher.containing(height).expect("height should be in a valid epoch").epoch();
                                     let Some(scheme) = self.get_scheme_certificate_verifier(epoch) else {
                                         response.send_lossy(false);
                                         continue;
@@ -858,7 +859,11 @@ where
         let (height, commitment) = (block.height(), block.commitment());
         let (ack, ack_waiter) = A::handle();
 
-        if utils::is_last_block_of_epoch(self.epoch_length, next_height.get()) {
+        if self
+            .epocher
+            .containing(next_height)
+            .is_some_and(|info| info.last() == info.height())
+        {
             let Some(finalization) = self.get_finalization_by_height(next_height).await else {
                 // The last block of an epoch will always have an explicit finalization certificate
                 // The finalizer requires it for storing the finalized header.

@@ -1,3 +1,4 @@
+use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_runtime::buffer::paged::CacheRef;
 use std::marker::PhantomData;
@@ -26,6 +27,7 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub oracle: O,
     pub orchestrator_mailbox: OrchestratorMailbox,
     pub protocol_consts: ProtocolConsts,
+    pub epocher: FixedEpocher,
     pub validator_max_withdrawals_per_block: usize,
     pub page_cache: CacheRef,
     pub genesis_hash: [u8; 32],

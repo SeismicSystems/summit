@@ -1,8 +1,9 @@
+use commonware_consensus::types::Epocher;
 use summit_types::EngineClient;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
-pub struct ApplicationConfig<C: EngineClient> {
+pub struct ApplicationConfig<C: EngineClient, ES: Epocher> {
     pub engine_client: C,
 
     /// Number of messages from consensus to hold in our backlog
@@ -13,7 +14,8 @@ pub struct ApplicationConfig<C: EngineClient> {
 
     pub genesis_hash: [u8; 32],
 
-    pub epoch_num_of_blocks: u64,
+    /// Epocher for determining epoch boundaries.
+    pub epocher: ES,
 
     pub cancellation_token: CancellationToken,
 }

@@ -8,7 +8,7 @@ use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::Reporter;
 use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::Finalization;
-use commonware_consensus::types::Epoch;
+use commonware_consensus::types::{Epoch, Epocher, FixedEpocher, Height};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
@@ -37,10 +37,7 @@ use summit_types::protocol_params::ProtocolParam;
 use summit_types::scheme::EpochTransition;
 use summit_types::ssz_state_tree::SszProof;
 use summit_types::ssz_tree_key::SszStateKey;
-use summit_types::utils::{
-    is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
-    parse_withdrawal_credentials,
-};
+use summit_types::utils::parse_withdrawal_credentials;
 use summit_types::{
     AddedValidator, Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature,
 };
@@ -80,6 +77,7 @@ pub struct Finalizer<
     orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block>>>,
 
     genesis_hash: [u8; 32],
+    epocher: FixedEpocher,
     protocol_consts: ProtocolConsts,
     protocol_version_digest: Digest,
     oracle: O,
@@ -178,6 +176,7 @@ impl<
                 fork_states: BTreeMap::new(),
                 orphaned_blocks: BTreeMap::new(),
                 genesis_hash: cfg.genesis_hash,
+                epocher: cfg.epocher,
                 protocol_consts: cfg.protocol_consts,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
                 node_public_key: cfg.node_public_key,
@@ -250,10 +249,10 @@ impl<
 
         loop {
             if self.validator_exit
-                && is_first_block_of_epoch(
-                    self.protocol_consts.epoch_num_of_blocks,
-                    self.canonical_state.get_latest_height(),
-                )
+                && self
+                    .epocher
+                    .containing(Height::new(self.canonical_state.get_latest_height()))
+                    .is_some_and(|info| info.first() == info.height())
             {
                 // If the validator was removed from the committee, trigger coordinated shutdown
                 info!("Validator no longer on the committee, shutting down");
@@ -395,6 +394,7 @@ impl<
                 &block,
                 &mut self.canonical_state,
                 &self.protocol_consts,
+                &self.epocher,
                 self.protocol_version_digest,
             )
             .await;
@@ -456,7 +456,11 @@ impl<
 
         let new_height = block.height();
         let mut epoch_change = false; // Store finalizes checkpoint to database
-        if is_last_block_of_epoch(self.protocol_consts.epoch_num_of_blocks, new_height) {
+        if self
+            .epocher
+            .containing(Height::new(new_height))
+            .is_some_and(|info| info.last() == info.height())
+        {
             // The syncer will always send the last block of an epoch together with
             // the finalization.
             let finalization = finalization
@@ -709,6 +713,7 @@ impl<
                 &block,
                 &mut fork_state,
                 &self.protocol_consts,
+                &self.epocher,
                 self.protocol_version_digest,
             )
             .await;
@@ -812,7 +817,10 @@ impl<
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
-        let is_last = is_last_block_of_epoch(self.protocol_consts.epoch_num_of_blocks, height);
+        let is_last = self
+            .epocher
+            .containing(Height::new(height))
+            .is_some_and(|info| info.last() == info.height());
         let aux_data = if is_last {
             // The pending_checkpoint should have been set when processing the penultimate block.
             // If it's None, we can't propose the last block (e.g., node restarted from checkpoint).
@@ -1166,12 +1174,14 @@ impl<
 async fn execute_block<
     C: EngineClient,
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    ES: Epocher,
 >(
     engine_client: &mut C,
     context: &ContextCell<R>,
     block: &Block,
     state: &mut ConsensusState,
     consts: &ProtocolConsts,
+    epocher: &ES,
     protocol_version_digest: Digest,
 ) {
     #[cfg(feature = "prom")]
@@ -1228,6 +1238,7 @@ async fn execute_block<
             state,
             protocol_version_digest,
             consts,
+            epocher,
         )
         .await;
 
@@ -1240,7 +1251,7 @@ async fn execute_block<
         // Add validators that deposited to the validator set
         #[cfg(feature = "prom")]
         let process_requests_start = Instant::now();
-        process_execution_requests(context, block, new_height, state, consts).await;
+        process_execution_requests(context, block, new_height, state, consts, epocher).await;
         #[cfg(feature = "prom")]
         {
             let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
@@ -1267,7 +1278,10 @@ async fn execute_block<
     // We build the checkpoint one height before the epoch end which
     // allows the validators to sign the checkpoint hash in the last block
     // of the epoch
-    if is_penultimate_block_of_epoch(consts.epoch_num_of_blocks, new_height) {
+    if epocher
+        .containing(Height::new(new_height))
+        .is_some_and(|info| info.last() == Height::new(new_height + 1))
+    {
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
         let checkpoint = Checkpoint::new(state);
@@ -1303,6 +1317,7 @@ async fn execute_block<
 
 async fn parse_execution_requests<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    ES: Epocher,
 >(
     #[allow(unused)] context: &ContextCell<R>,
     block: &Block,
@@ -1310,6 +1325,7 @@ async fn parse_execution_requests<
     state: &mut ConsensusState,
     protocol_version_digest: Digest,
     consts: &ProtocolConsts,
+    epocher: &ES,
 ) {
     // Combine any pending execution requests with the current block's requests
     let mut all_requests = state.take_pending_execution_requests();
@@ -1463,7 +1479,9 @@ async fn parse_execution_requests<
                                         "cancelled pending validator activation due to withdrawal request"
                                     );
                                 }
-                            } else if is_last_block_of_epoch(consts.epoch_num_of_blocks, new_height)
+                            } else if epocher
+                                .containing(Height::new(new_height))
+                                .is_some_and(|info| info.last() == info.height())
                             {
                                 // On the last block of an epoch, buffer the withdrawal request
                                 // to be processed at the penultimate block of the next epoch.
@@ -1528,14 +1546,19 @@ async fn parse_execution_requests<
 
 async fn process_execution_requests<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    ES: Epocher,
 >(
     #[allow(unused)] context: &ContextCell<R>,
     block: &Block,
     new_height: u64,
     state: &mut ConsensusState,
     consts: &ProtocolConsts,
+    epocher: &ES,
 ) {
-    if is_penultimate_block_of_epoch(consts.epoch_num_of_blocks, new_height) {
+    if epocher
+        .containing(Height::new(new_height))
+        .is_some_and(|info| info.last() == Height::new(new_height + 1))
+    {
         for _ in 0..consts.validator_onboarding_limit_per_block {
             if let Some(request) = state.pop_deposit() {
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();

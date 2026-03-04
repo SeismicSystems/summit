@@ -8,14 +8,15 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
 };
 use commonware_consensus::Reporter;
+use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
 use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
 use commonware_runtime::{Clock, Metrics, Runner as _};
-use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
+use commonware_utils::{NZU64, NZUsize};
 use futures::channel::mpsc as futures_mpsc;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -157,6 +158,7 @@ fn test_get_latest_epoch() {
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
+            epocher: FixedEpocher::new(NZU64!(epoch_num_of_blocks)),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
@@ -268,6 +270,7 @@ fn test_get_epoch_genesis_hash() {
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
+            epocher: FixedEpocher::new(NZU64!(epoch_num_of_blocks)),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
@@ -365,6 +368,7 @@ fn test_get_aux_data_from_canonical_chain() {
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
+            epocher: FixedEpocher::new(NZU64!(10)),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
@@ -436,6 +440,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
+            epocher: FixedEpocher::new(NZU64!(10)),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
             genesis_hash,
