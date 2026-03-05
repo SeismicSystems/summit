@@ -18,6 +18,7 @@ use std::{
 };
 use summit::args::{RunFlags, run_node_local};
 use summit_rpc::{SummitApiClient, SummitProofApiClient};
+use summit_types::genesis::Genesis;
 use summit_types::reth::Reth;
 
 use tokio::sync::mpsc;
@@ -32,6 +33,8 @@ const VALIDATOR0_PUBKEY_HEX: &str =
     "1be3cb06d7cc347602421fb73838534e4b54934e28959de98906d120d0799ef2";
 
 const NUM_NODES: u16 = 4;
+const GENESIS_PATH: &str = "./example_genesis.toml";
+const E2E_BLOCKS_PER_EPOCH: u64 = 50;
 
 /// EIP-4788 beacon roots contract address.
 const BEACON_ROOTS_ADDRESS: Address = address!("000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
@@ -69,6 +72,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_storage_directory(storage_dir)
         .with_catch_panics(false);
     let executor = cw_tokio::Runner::new(cfg);
+
+    let mut genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
+    genesis.blocks_per_epoch = E2E_BLOCKS_PER_EPOCH;
+
+    // Write modified genesis for nodes to use
+    fs::create_dir_all(&data_dir_path).expect("Failed to create data directory");
+    let e2e_genesis_path = data_dir_path.join("genesis.toml");
+    let genesis_str = toml::to_string_pretty(&genesis).expect("Failed to serialize genesis");
+    fs::write(&e2e_genesis_path, genesis_str).expect("Failed to write e2e genesis");
+    let e2e_genesis_path_str = e2e_genesis_path.to_str().unwrap().to_string();
 
     let node_runtimes = executor.start(|context| {
         async move {
@@ -120,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Node {} rpc address: {}", x, reth.http_port());
                 handles.push_back(reth);
 
-                let flags = get_node_flags(x.into());
+                let flags = get_node_flags(x.into(), &e2e_genesis_path_str);
                 let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
                 let data_dir_clone = args.data_dir.clone();
                 let thread = std::thread::spawn(move || {
@@ -158,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Wait for state
             // ---------------------------------------------------------------
             println!("Waiting for state...");
-            let summit_rpc_port = get_node_flags(0).rpc_port;
+            let summit_rpc_port = get_node_flags(0, &e2e_genesis_path_str).rpc_port;
             loop {
                 match get_latest_height(summit_rpc_port).await {
                     Ok(h) if h > 0 => {
@@ -525,7 +538,7 @@ fn encode_verify(
     data
 }
 
-fn get_node_flags(node: usize) -> RunFlags {
+fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
     let path = format!("testnet/node{node}/");
     RunFlags {
         archive_mode: false,
@@ -538,7 +551,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         worker_threads: 2,
         log_level: "debug".into(),
         db_prefix: format!("{node}"),
-        genesis_path: "./example_genesis.toml".into(),
+        genesis_path: genesis_path.into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(feature = "bench")]
         bench_block_dir: None,
