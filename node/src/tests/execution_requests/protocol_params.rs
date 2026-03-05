@@ -71,10 +71,10 @@ fn test_protocol_param_max_stake() {
         let requests1 = common::execution_requests_to_requests(execution_requests1);
 
         // Create execution requests map (add deposit to block 5)
-        // The protocol param request will be processed after 10 blocks because `BLOCKS_PER_EPOCH`
-        // is set to 10 in debug mode.
+        // The protocol param request will be processed after 10 blocks because `DEFAULT_BLOCKS_PER_EPOCH`
+        // is set to 10.
         let protocol_param_block_height1 = 5;
-        let stop_height = BLOCKS_PER_EPOCH + 1;
+        let stop_height = DEFAULT_BLOCKS_PER_EPOCH + 1;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(protocol_param_block_height1, requests1);
 
@@ -302,7 +302,7 @@ fn test_protocol_param_stake_update_committee() {
         let deposit_block_height = 3;
         let protocol_param_block_height1 = 5;
         let protocol_param_block_height2 = 6;
-        let stop_height = BLOCKS_PER_EPOCH * 2 + 1; // Block 21 (need to reach block 19 for withdrawals)
+        let stop_height = DEFAULT_BLOCKS_PER_EPOCH * 2 + 1; // Block 21 (need to reach block 19 for withdrawals)
 
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests_deposits);

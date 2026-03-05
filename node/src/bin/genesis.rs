@@ -16,6 +16,7 @@ pub struct GenesisConfig {
     skip_timeout_views: u64,
     max_message_size_bytes: u64,
     namespace: String,
+    blocks_per_epoch: u64,
     pub validators: Vec<GenesisValidator>,
 }
 

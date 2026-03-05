@@ -36,6 +36,8 @@ use summit_types::scheme::MultisigScheme;
 use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
 use tokio::sync::mpsc;
 
+pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 10;
+
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
 pub async fn link_validators<E: Clock>(
@@ -615,6 +617,7 @@ where
         checkpoint_last_block: None,
         checkpoint_finalized_header: None,
         archive_mode: false,
+        blocks_per_epoch: DEFAULT_BLOCKS_PER_EPOCH,
     }
 }
 

@@ -7,7 +7,7 @@ use super::*;
 /// next epoch so that light clients and syncers can track validator set changes.
 ///
 /// Test setup:
-/// - BLOCKS_PER_EPOCH = 10, VALIDATOR_NUM_WARM_UP_EPOCHS = 2
+/// - DEFAULT_BLOCKS_PER_EPOCH = 10, VALIDATOR_NUM_WARM_UP_EPOCHS = 2
 /// - Submit deposit at block 5 (epoch 0)
 /// - Validator's joining_epoch = 0 + 2 = 2
 /// - At block 19 (last block of epoch 1), header should contain the validator
@@ -82,7 +82,7 @@ fn test_added_validators_at_epoch_boundary() {
         // Deposit is processed at the end of epoch 0 (block 9)
         // joining_epoch = 0 + 2 = 2
         //
-        // With BLOCKS_PER_EPOCH = 10:
+        // With DEFAULT_BLOCKS_PER_EPOCH = 10:
         // - Epoch 0: blocks 0-9, last block = 9
         // - Epoch 1: blocks 10-19, last block = 19
         // - Epoch 2: blocks 20-29, last block = 29
@@ -91,7 +91,7 @@ fn test_added_validators_at_epoch_boundary() {
         // joining in epoch 2 (next_epoch).
         //
         // We need to run until block 20 to ensure block 19's header is finalized.
-        let last_block_epoch_1 = utils::last_block_in_epoch(BLOCKS_PER_EPOCH, 1); // block 19
+        let last_block_epoch_1 = utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 1); // block 19
         let stop_height = last_block_epoch_1 + 1; // block 20
 
         let mut execution_requests_map = HashMap::new();
@@ -229,7 +229,7 @@ fn test_added_validators_at_epoch_boundary() {
 /// list. The header at the last block of an epoch must include validators being removed.
 ///
 /// Test setup:
-/// - BLOCKS_PER_EPOCH = 10
+/// - DEFAULT_BLOCKS_PER_EPOCH = 10
 /// - Genesis validator submits withdrawal at block 5 (epoch 0)
 /// - At block 9 (last block of epoch 0), header should contain the validator in removed_validators
 #[test_traced("INFO")]
@@ -308,14 +308,14 @@ fn test_removed_validators_at_epoch_boundary() {
         // The validator will be added to removed_validators immediately
         let withdrawal_block_height = 5;
 
-        // With BLOCKS_PER_EPOCH = 10:
+        // With DEFAULT_BLOCKS_PER_EPOCH = 10:
         // - Epoch 0: blocks 0-9, last block = 9
         //
         // At the last block of epoch 0 (block 9), the header should include the
         // withdrawing validator in removed_validators.
         //
         // We need to run until block 10 to ensure block 9's header is finalized.
-        let last_block_epoch_0 = utils::last_block_in_epoch(BLOCKS_PER_EPOCH, 0); // block 9
+        let last_block_epoch_0 = utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0); // block 9
         let stop_height = last_block_epoch_0 + 1; // block 10
 
         let mut execution_requests_map = HashMap::new();

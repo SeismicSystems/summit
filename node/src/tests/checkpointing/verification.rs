@@ -1,5 +1,6 @@
-use crate::engine::{BLOCKS_PER_EPOCH, Engine};
+use crate::engine::Engine;
 use crate::test_harness::common;
+use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use alloy_primitives::Address;
@@ -94,6 +95,7 @@ fn test_checkpoint_verification_fixed_committee() {
             namespace: namespace.to_string(),
             validator_minimum_stake: 32_000_000_000,
             validator_maximum_stake: 32_000_000_000,
+            blocks_per_epoch: common::DEFAULT_BLOCKS_PER_EPOCH,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -106,7 +108,7 @@ fn test_checkpoint_verification_fixed_committee() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let stop_height = num_epochs * BLOCKS_PER_EPOCH;
+        let stop_height = num_epochs * DEFAULT_BLOCKS_PER_EPOCH;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
         let initial_state =
@@ -307,6 +309,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             namespace: namespace.to_string(),
             validator_minimum_stake: min_stake,
             validator_maximum_stake: min_stake,
+            blocks_per_epoch: common::DEFAULT_BLOCKS_PER_EPOCH,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -344,7 +347,7 @@ fn test_checkpoint_verification_dynamic_committee() {
         execution_requests_map.insert(5u64, deposit_requests);
         execution_requests_map.insert(15u64, withdrawal_requests);
 
-        let stop_height = BLOCKS_PER_EPOCH * 4;
+        let stop_height = DEFAULT_BLOCKS_PER_EPOCH * 4;
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)

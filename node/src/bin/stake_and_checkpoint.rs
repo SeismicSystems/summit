@@ -37,11 +37,14 @@ use summit_types::PROTOCOL_VERSION;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::DepositRequest;
+use summit_types::genesis::Genesis;
 use summit_types::reth::Reth;
 use tokio::sync::mpsc;
 use tracing::Level;
 
 const NUM_NODES: u16 = 4;
+const GENESIS_PATH: &str = "./example_genesis.toml";
+const E2E_BLOCKS_PER_EPOCH: u64 = 50;
 const VALIDATOR_MINIMUM_STAKE: u64 = 32_000_000_000;
 
 struct NodeRuntime {
@@ -92,6 +95,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_storage_directory(storage_dir)
         .with_catch_panics(false);
     let executor = cw_tokio::Runner::new(cfg);
+
+    let mut genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
+    genesis.blocks_per_epoch = E2E_BLOCKS_PER_EPOCH;
+
+    // Write modified genesis for nodes to use
+    fs::create_dir_all(&data_dir_path).expect("Failed to create data directory");
+    let e2e_genesis_path = data_dir_path.join("genesis.toml");
+    let genesis_str = toml::to_string_pretty(&genesis).expect("Failed to serialize genesis");
+    fs::write(&e2e_genesis_path, genesis_str).expect("Failed to write e2e genesis");
+    let e2e_genesis_path_str = e2e_genesis_path.to_str().unwrap().to_string();
 
     let node_runtimes = executor.start(|context| {
         async move {
@@ -162,7 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 handles.push_back(reth);
 
                 #[allow(unused_mut)]
-                let mut flags = get_node_flags(x.into());
+                let mut flags = get_node_flags(x.into(), &e2e_genesis_path_str);
 
                 #[cfg(feature = "bench")]
                 {
@@ -297,7 +310,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Waiting for nodes to reach checkpoint height {}",
                 args.checkpoint_height
             );
-            let node0_rpc_port = get_node_flags(0).rpc_port;
+            let node0_rpc_port = get_node_flags(0, &e2e_genesis_path_str).rpc_port;
             loop {
                 match get_latest_height(node0_rpc_port).await {
                     Ok(height) if height >= args.checkpoint_height => {
@@ -471,7 +484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Start the 4th consensus node with checkpoint
             #[allow(unused_mut)]
-            let mut flags = get_node_flags(x.into());
+            let mut flags = get_node_flags(x.into(), &e2e_genesis_path_str);
 
             #[cfg(feature = "bench")]
             {
@@ -533,7 +546,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Wait for node4 to start up and sync to near the current height
             println!("Waiting for node4 (joining node) to start and sync...");
-            let node4_rpc_port = get_node_flags(x as usize).rpc_port;
+            let node4_rpc_port = get_node_flags(x as usize, &e2e_genesis_path_str).rpc_port;
             let target_sync_height = args.stop_height.saturating_sub(10);
             loop {
                 match get_latest_height(node4_rpc_port).await {
@@ -561,7 +574,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 //for idx in 0..num_nodes {
                 // Skip node0
                 for idx in 1..num_nodes {
-                    let rpc_port = get_node_flags(idx as usize).rpc_port;
+                    let rpc_port = get_node_flags(idx as usize, &e2e_genesis_path_str).rpc_port;
                     match get_latest_height(rpc_port).await {
                         Ok(height) => {
                             if height < args.stop_height {
@@ -664,7 +677,7 @@ async fn get_latest_checkpoint(
     }
 }
 
-fn get_node_flags(node: usize) -> RunFlags {
+fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
     let path = format!("testnet/node{node}/");
 
     RunFlags {
@@ -678,7 +691,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         worker_threads: 2,
         log_level: "debug".into(),
         db_prefix: format!("{node}"),
-        genesis_path: "./example_genesis.toml".into(),
+        genesis_path: genesis_path.into(),
         engine_ipc_path: format!("/tmp/reth_engine_api{node}.ipc"),
         #[cfg(feature = "bench")]
         bench_block_dir: None,
