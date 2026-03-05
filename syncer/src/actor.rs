@@ -713,7 +713,11 @@ where
                                 },
                                 Request::Finalized { height } => {
                                     let height = Height::new(height);
-                                    let epoch = self.epocher.containing(height).expect("height should be in a valid epoch").epoch();
+                                    let Some(bounds) = self.epocher.containing(height) else {
+                                        response.send_lossy(false);
+                                        continue;
+                                    };
+                                    let epoch = bounds.epoch();
                                     let Some(scheme) = self.get_scheme_certificate_verifier(epoch) else {
                                         response.send_lossy(false);
                                         continue;
