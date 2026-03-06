@@ -1,5 +1,6 @@
 use commonware_cryptography::{Hasher, Sha256, Signer, bls12381};
 use commonware_math::algebra::Random;
+use std::num::NonZeroU64;
 
 use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
@@ -340,7 +341,12 @@ pub fn get_initial_state(
             safe_block_hash: genesis_hash,
             finalized_block_hash: genesis_hash,
         };
-        let mut state = ConsensusState::new(forkchoice, balance, balance);
+        let mut state = ConsensusState::new(
+            forkchoice,
+            balance,
+            balance,
+            NonZeroU64::new(DEFAULT_BLOCKS_PER_EPOCH).unwrap(),
+        );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for ((node_pubkey, consensus_pubkey), address) in committee.iter().zip(addresses.iter()) {
             let pubkey_bytes: [u8; 32] = node_pubkey

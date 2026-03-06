@@ -2,7 +2,7 @@ use crate::config::EngineConfig;
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::scheme::Scheme;
-use commonware_consensus::types::{FixedEpocher, ViewDelta};
+use commonware_consensus::types::ViewDelta;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
@@ -24,6 +24,7 @@ use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox, ProtocolConsts};
 use summit_syncer::{SyncCheckpoint, SyncStart};
+use summit_types::dynamic_epocher::DynamicEpocher;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
 use summit_types::{Block, EngineClient, PublicKey};
@@ -70,7 +71,7 @@ pub struct Engine<
 > {
     context: E,
     application:
-        summit_application::Actor<E, C, MultisigScheme, S::PublicKey, S, MinPk, FixedEpocher>,
+        summit_application::Actor<E, C, MultisigScheme, S::PublicKey, S, MinPk, DynamicEpocher>,
     buffer: buffered::Engine<E, S::PublicKey, Block>,
     buffer_mailbox: buffered::Mailbox<S::PublicKey, Block>,
     #[allow(clippy::type_complexity)]
@@ -87,7 +88,7 @@ pub struct Engine<
             >,
         >,
         immutable::Archive<E, summit_types::Digest, Block>,
-        FixedEpocher,
+        DynamicEpocher,
         Sequential,
         Exact,
     >,
@@ -99,7 +100,7 @@ pub struct Engine<
         O,
         summit_application::Mailbox<S::PublicKey>,
         Sequential,
-        FixedEpocher,
+        DynamicEpocher,
     >,
     oracle: O,
     node_public_key: PublicKey,
@@ -133,7 +134,7 @@ where
             SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
 
         let cancellation_token = CancellationToken::new();
-        let epocher = FixedEpocher::new(NZU64!(blocks_per_epoch));
+        let epocher = cfg.initial_state.get_epocher().clone();
 
         // create application
         let (application, application_mailbox) = summit_application::Actor::new(
@@ -297,12 +298,10 @@ where
                 oracle: cfg.oracle.clone(),
                 orchestrator_mailbox,
                 protocol_consts: ProtocolConsts {
-                    epoch_num_of_blocks: blocks_per_epoch,
                     validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                     validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
                     validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
                 },
-                epocher: epocher.clone(),
                 validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
                 page_cache: page_cache.clone(),
                 genesis_hash: cfg.genesis_hash,

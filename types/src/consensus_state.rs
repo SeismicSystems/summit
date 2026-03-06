@@ -1,5 +1,6 @@
 use crate::account::{ValidatorAccount, ValidatorStatus};
 use crate::checkpoint::Checkpoint;
+use crate::dynamic_epocher::DynamicEpocher;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
@@ -13,6 +14,7 @@ use commonware_cryptography::{bls12381, sha256};
 #[cfg(feature = "prom")]
 use metrics::histogram;
 use std::collections::{BTreeMap, VecDeque};
+use std::num::NonZeroU64;
 
 #[derive(Clone, Debug)]
 pub struct ConsensusState {
@@ -34,6 +36,7 @@ pub struct ConsensusState {
     pub(crate) epoch_genesis_hash: [u8; 32],
     pub(crate) validator_minimum_stake: u64, // in gwei
     pub(crate) validator_maximum_stake: u64, // in gwei
+    pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
     /// Not serialized — rebuilt from data fields on deserialization.
@@ -79,6 +82,7 @@ impl Default for ConsensusState {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
@@ -96,6 +100,7 @@ impl ConsensusState {
         forkchoice: ForkchoiceState,
         validator_minimum_stake: u64,
         validator_maximum_stake: u64,
+        epoch_length: NonZeroU64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -114,6 +119,7 @@ impl ConsensusState {
             epoch_genesis_hash: forkchoice.head_block_hash.into(),
             validator_minimum_stake,
             validator_maximum_stake,
+            epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
@@ -126,6 +132,10 @@ impl ConsensusState {
     }
 
     // State variable operations
+    pub fn get_epocher(&self) -> &DynamicEpocher {
+        &self.epocher
+    }
+
     pub fn get_epoch(&self) -> u64 {
         self.epoch
     }
@@ -626,6 +636,13 @@ impl ConsensusState {
                     self.ssz_tree.set_validator_maximum_stake(max_stake);
                     min_or_max_stake_changed = true;
                 }
+                ProtocolParam::EpochLength(length) => {
+                    let new_length = std::num::NonZeroU64::new(length)
+                        .expect("EpochLength must be nonzero (validated at parse time)");
+                    self.epocher
+                        .update_length(new_length)
+                        .expect("failed to update epoch length");
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
@@ -706,6 +723,7 @@ impl EncodeSize for ConsensusState {
         + 32 // head_digest
         + 8 // validator_minimum_stake
         + 8 // validator_maximum_stake
+        + self.epocher.encode_size()
     }
 }
 
@@ -807,6 +825,8 @@ impl Read for ConsensusState {
         let validator_minimum_stake = buf.get_u64();
         let validator_maximum_stake = buf.get_u64();
 
+        let epocher = DynamicEpocher::read_cfg(buf, &())?;
+
         let mut state = Self {
             epoch,
             view,
@@ -824,6 +844,7 @@ impl Read for ConsensusState {
             epoch_genesis_hash,
             validator_minimum_stake,
             validator_maximum_stake,
+            epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
@@ -906,6 +927,9 @@ impl Write for ConsensusState {
         // Write validator stake bounds
         buf.put_u64(self.validator_minimum_stake);
         buf.put_u64(self.validator_maximum_stake);
+
+        // Write epocher
+        self.epocher.write(buf);
     }
 }
 
@@ -929,6 +953,7 @@ mod tests {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_codec::{DecodeExt, Encode};
+    use commonware_consensus::types::{Epoch, Epocher, Height};
     use commonware_cryptography::{Signer, bls12381, ed25519};
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
@@ -1012,9 +1037,20 @@ mod tests {
 
     #[test]
     fn test_serialization_deserialization_populated() {
-        let mut original_state = ConsensusState::default();
+        let mut original_state = ConsensusState::new(
+            ForkchoiceState::default(),
+            0,
+            0,
+            NonZeroU64::new(100).unwrap(),
+        );
 
         original_state.set_epoch(7);
+        original_state.get_epocher().advance_epoch(Epoch::new(0));
+        original_state
+            .get_epocher()
+            .update_length(NonZeroU64::new(200).unwrap())
+            .unwrap();
+        original_state.get_epocher().advance_epoch(Epoch::new(7));
         original_state.set_view(123);
         original_state.set_latest_height(42);
         original_state.set_next_withdrawal_index(5);
@@ -1147,6 +1183,15 @@ mod tests {
 
         // Check that epoch 8 returns None (no validators scheduled)
         assert!(decoded_state.get_added_validators(8).is_none());
+
+        // Verify epocher round-trips correctly
+        let epocher = decoded_state.get_epocher();
+        assert_eq!(epocher.current_length(), 200);
+        // Epoch 0-1: length 100, epoch 2+: length 200
+        assert_eq!(epocher.first(Epoch::new(0)), Some(Height::new(0)));
+        assert_eq!(epocher.last(Epoch::new(1)), Some(Height::new(199)));
+        assert_eq!(epocher.first(Epoch::new(2)), Some(Height::new(200)));
+        assert_eq!(epocher.last(Epoch::new(2)), Some(Height::new(399)));
     }
 
     #[test]
@@ -1740,7 +1785,12 @@ mod tests {
             safe_block_hash: [0xAA; 32].into(),
             finalized_block_hash: [0xAA; 32].into(),
         };
-        let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 32_000_000_000);
+        let mut state = ConsensusState::new(
+            forkchoice,
+            32_000_000_000,
+            32_000_000_000,
+            NonZeroU64::new(10).unwrap(),
+        );
 
         // Add 4 genesis validators (like the testnet)
         for i in 0..4 {

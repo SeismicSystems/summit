@@ -22,7 +22,7 @@ use governor::Quota;
 use ssz::Decode;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroU64},
     path::Path,
     str::FromStr as _,
 };
@@ -287,6 +287,8 @@ impl Command {
                 maybe_checkpoint,
                 genesis.validator_minimum_stake,
                 genesis.validator_maximum_stake,
+                NonZeroU64::new(genesis.blocks_per_epoch)
+                    .expect("blocks_per_epoch must be nonzero"),
             );
             let peers = initial_state.get_validator_keys();
 
@@ -504,6 +506,7 @@ pub fn run_node_local(
             checkpoint,
             genesis.validator_minimum_stake,
             genesis.validator_maximum_stake,
+            NonZeroU64::new(genesis.blocks_per_epoch).expect("blocks_per_epoch must be nonzero"),
         );
         let peers = initial_state.get_validator_keys();
 
@@ -662,6 +665,7 @@ fn get_initial_state(
     checkpoint: Option<ConsensusState>,
     validator_minimum_stake: u64,
     validator_maximum_stake: u64,
+    epoch_length: NonZeroU64,
 ) -> ConsensusState {
     let genesis_hash: B256 = genesis_hash.into();
     checkpoint.unwrap_or_else(|| {
@@ -670,8 +674,12 @@ fn get_initial_state(
             safe_block_hash: genesis_hash,
             finalized_block_hash: genesis_hash,
         };
-        let mut state =
-            ConsensusState::new(forkchoice, validator_minimum_stake, validator_maximum_stake);
+        let mut state = ConsensusState::new(
+            forkchoice,
+            validator_minimum_stake,
+            validator_maximum_stake,
+            epoch_length,
+        );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for validator in genesis_committee {
             let pubkey_bytes: [u8; 32] = validator

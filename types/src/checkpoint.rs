@@ -326,12 +326,14 @@ pub fn verify_checkpoint_chain(
 mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
+    use crate::dynamic_epocher::DynamicEpocher;
     use crate::ssz_state_tree::SszStateTree;
     use crate::withdrawal::WithdrawalQueue;
     use commonware_codec::DecodeExt;
     use commonware_cryptography::{Signer, bls12381, ed25519, sha256};
     use ssz::{Decode, Encode};
     use std::collections::{BTreeMap, VecDeque};
+    use std::num::NonZeroU64;
 
     fn parse_public_key(public_key: &str) -> ed25519::PublicKey {
         ed25519::PublicKey::decode(
@@ -364,6 +366,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
@@ -487,6 +490,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
@@ -534,6 +538,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
@@ -664,6 +669,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
@@ -716,6 +722,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
@@ -773,6 +780,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
@@ -826,6 +834,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],
@@ -924,6 +933,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             state_root: [0u8; 32],

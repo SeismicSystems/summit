@@ -1,4 +1,6 @@
 use anyhow::{Result, anyhow};
+use bytes::{Buf, BufMut};
+use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::types::{Epoch, EpochInfo, Epocher, Height};
 use std::num::NonZeroU64;
 use std::sync::{Arc, RwLock};
@@ -42,6 +44,18 @@ impl DynamicEpocher {
                 current_epoch: Epoch::new(0),
             })),
         }
+    }
+
+    /// Returns the epoch length for the current epoch.
+    pub fn current_length(&self) -> u64 {
+        let inner = self.inner.read().unwrap();
+        let epoch = inner.current_epoch;
+        for seg in inner.segments.iter().rev() {
+            if seg.start_epoch.get() <= epoch.get() {
+                return seg.length;
+            }
+        }
+        unreachable!("segments is never empty")
     }
 
     /// Advances the current epoch. Called by the finalizer at each epoch
@@ -146,9 +160,65 @@ impl Epocher for DynamicEpocher {
     }
 }
 
+impl EncodeSize for DynamicEpocher {
+    fn encode_size(&self) -> usize {
+        let inner = self.inner.read().unwrap();
+        8 // current_epoch
+        + 4 // segments length
+        + inner.segments.len() * (8 + 8 + 8) // start_epoch + start_height + length per segment
+    }
+}
+
+impl Write for DynamicEpocher {
+    fn write(&self, buf: &mut impl BufMut) {
+        let inner = self.inner.read().unwrap();
+        buf.put_u64(inner.current_epoch.get());
+        buf.put_u32(inner.segments.len() as u32);
+        for seg in &inner.segments {
+            buf.put_u64(seg.start_epoch.get());
+            buf.put_u64(seg.start_height.get());
+            buf.put_u64(seg.length);
+        }
+    }
+}
+
+impl Read for DynamicEpocher {
+    type Cfg = ();
+
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> core::result::Result<Self, Error> {
+        let current_epoch = Epoch::new(buf.get_u64());
+        let segments_len = buf.get_u32() as usize;
+        if segments_len == 0 {
+            return Err(Error::Invalid("DynamicEpocher", "no segments"));
+        }
+        let mut segments = Vec::with_capacity(segments_len);
+        for _ in 0..segments_len {
+            let start_epoch = Epoch::new(buf.get_u64());
+            let start_height = Height::new(buf.get_u64());
+            let length = buf.get_u64();
+            if length == 0 {
+                return Err(Error::Invalid("DynamicEpocher", "zero-length segment"));
+            }
+            segments.push(Segment {
+                start_epoch,
+                start_height,
+                length,
+            });
+        }
+        Ok(Self {
+            inner: Arc::new(RwLock::new(DynamicEpocherInner {
+                segments,
+                current_epoch,
+            })),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
+    use commonware_codec::ReadExt;
 
     fn setup() -> DynamicEpocher {
         // epoch 0-1: length 100 (heights 0-199)
@@ -489,5 +559,64 @@ mod tests {
         assert_eq!(epocher.last(Epoch::new(3)), Some(Height::new(799)));
         assert_eq!(epocher.first(Epoch::new(4)), Some(Height::new(800)));
         assert_eq!(epocher.last(Epoch::new(4)), Some(Height::new(1099)));
+    }
+
+    #[test]
+    fn test_encode_decode_genesis_only() {
+        let epocher = DynamicEpocher::new(NonZeroU64::new(10).unwrap());
+        epocher.advance_epoch(Epoch::new(3));
+
+        let mut buf = BytesMut::new();
+        epocher.write(&mut buf);
+        assert_eq!(buf.len(), epocher.encode_size());
+
+        let decoded = DynamicEpocher::read(&mut buf.as_ref()).unwrap();
+        assert_eq!(decoded.current_length(), 10);
+        assert_eq!(decoded.first(Epoch::new(0)), Some(Height::new(0)));
+        assert_eq!(decoded.last(Epoch::new(3)), Some(Height::new(39)));
+    }
+
+    #[test]
+    fn test_encode_decode_multiple_segments() {
+        let epocher = DynamicEpocher::new(NonZeroU64::new(100).unwrap());
+        epocher.advance_epoch(Epoch::new(0));
+        epocher
+            .update_length(NonZeroU64::new(200).unwrap())
+            .unwrap();
+        epocher.advance_epoch(Epoch::new(3));
+
+        let mut buf = BytesMut::new();
+        epocher.write(&mut buf);
+        assert_eq!(buf.len(), epocher.encode_size());
+
+        let decoded = DynamicEpocher::read(&mut buf.as_ref()).unwrap();
+        // Epoch 0-1: length 100, epoch 2+: length 200
+        assert_eq!(decoded.first(Epoch::new(0)), Some(Height::new(0)));
+        assert_eq!(decoded.last(Epoch::new(1)), Some(Height::new(199)));
+        assert_eq!(decoded.first(Epoch::new(2)), Some(Height::new(200)));
+        assert_eq!(decoded.last(Epoch::new(2)), Some(Height::new(399)));
+    }
+
+    #[test]
+    fn test_decode_empty_segments_fails() {
+        let mut buf = BytesMut::new();
+        buf.put_u64(0); // current_epoch
+        buf.put_u32(0); // zero segments
+
+        let result = DynamicEpocher::read(&mut buf.as_ref());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_zero_length_segment_fails() {
+        let mut buf = BytesMut::new();
+        buf.put_u64(0); // current_epoch
+        buf.put_u32(1); // one segment
+        buf.put_u64(0); // start_epoch
+        buf.put_u64(0); // start_height
+        buf.put_u64(0); // length = 0 (invalid)
+
+        let result = DynamicEpocher::read(&mut buf.as_ref());
+        assert!(result.is_err());
     }
 }

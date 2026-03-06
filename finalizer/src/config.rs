@@ -1,4 +1,3 @@
-use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_runtime::buffer::paged::CacheRef;
 use std::marker::PhantomData;
@@ -7,10 +6,8 @@ use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 
-/// Fixed protocol-level constants governing epochs and validator lifecycle.
+/// Fixed protocol-level constants governing validator lifecycle.
 pub struct ProtocolConsts {
-    /// The length of an epoch in number of blocks.
-    pub epoch_num_of_blocks: u64,
     /// The maximum number of validators that will be onboarded at the same time.
     pub validator_onboarding_limit_per_block: usize,
     /// Number of epochs to wait before activating validators after deposit.
@@ -27,7 +24,6 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub oracle: O,
     pub orchestrator_mailbox: OrchestratorMailbox,
     pub protocol_consts: ProtocolConsts,
-    pub epocher: FixedEpocher,
     pub validator_max_withdrawals_per_block: usize,
     pub page_cache: CacheRef,
     pub genesis_hash: [u8; 32],

@@ -7,6 +7,7 @@ use commonware_codec::{EncodeSize, Error, Read, Write};
 pub enum ProtocolParam {
     MinimumStake(u64),
     MaximumStake(u64),
+    EpochLength(u64),
 }
 
 impl TryFrom<ProtocolParamRequest> for ProtocolParam {
@@ -37,6 +38,20 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                 let maximum_stake = u64::from_le_bytes(bytes);
                 Ok(ProtocolParam::MaximumStake(maximum_stake))
             }
+            0x02 => {
+                if request.param.len() != 8 {
+                    return Err(anyhow!(
+                        "Failed to parse epoch length protocol param, invalid length {}",
+                        request.param.len()
+                    ));
+                }
+                let bytes: [u8; 8] = request.param.as_slice().try_into()?;
+                let epoch_length = u64::from_le_bytes(bytes);
+                if epoch_length == 0 {
+                    return Err(anyhow!("Epoch length must be nonzero"));
+                }
+                Ok(ProtocolParam::EpochLength(epoch_length))
+            }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
             )),
@@ -61,6 +76,10 @@ impl Write for ProtocolParam {
                 buf.put_u8(0x01);
                 buf.put_u64(*value);
             }
+            ProtocolParam::EpochLength(value) => {
+                buf.put_u8(0x02);
+                buf.put_u64(*value);
+            }
         }
     }
 }
@@ -74,6 +93,7 @@ impl Read for ProtocolParam {
         match tag {
             0x00 => Ok(ProtocolParam::MinimumStake(value)),
             0x01 => Ok(ProtocolParam::MaximumStake(value)),
+            0x02 => Ok(ProtocolParam::EpochLength(value)),
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }
     }
@@ -275,5 +295,50 @@ mod tests {
             ProtocolParam::MaximumStake(value) => assert_eq!(value, 64_000_000_000),
             _ => panic!("Expected MaximumStake variant"),
         }
+    }
+
+    #[test]
+    fn test_epoch_length_encode_decode() {
+        let param = ProtocolParam::EpochLength(500);
+
+        let mut buf = BytesMut::new();
+        param.write(&mut buf);
+
+        assert_eq!(buf.len(), param.encode_size());
+        assert_eq!(buf.len(), 9);
+        assert_eq!(buf[0], 0x02);
+
+        let decoded = ProtocolParam::read(&mut buf.as_ref()).unwrap();
+
+        match decoded {
+            ProtocolParam::EpochLength(value) => assert_eq!(value, 500),
+            _ => panic!("Expected EpochLength variant"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_protocol_param_request_epoch_length() {
+        let request = ProtocolParamRequest {
+            param_id: 0x02,
+            param: 100u64.to_le_bytes().to_vec(),
+        };
+
+        let param = ProtocolParam::try_from(request).unwrap();
+
+        match param {
+            ProtocolParam::EpochLength(value) => assert_eq!(value, 100),
+            _ => panic!("Expected EpochLength variant"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_protocol_param_request_epoch_length_zero() {
+        let request = ProtocolParamRequest {
+            param_id: 0x02,
+            param: 0u64.to_le_bytes().to_vec(),
+        };
+
+        let result = ProtocolParam::try_from(request);
+        assert!(result.is_err());
     }
 }

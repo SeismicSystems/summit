@@ -8,18 +8,18 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
 };
 use commonware_consensus::Reporter;
-use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
 use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
 use commonware_runtime::{Clock, Metrics, Runner as _};
+use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
-use commonware_utils::{NZU64, NZUsize};
 use futures::channel::mpsc as futures_mpsc;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
+use std::num::NonZeroU64;
 use std::time::Duration;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
@@ -81,7 +81,7 @@ fn create_test_block(parent_digest: Digest, height: u64, view: u64, unique_seed:
 }
 
 /// Create a minimal initial ConsensusState for testing
-fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
+fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -> ConsensusState {
     use rand::SeedableRng;
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
@@ -113,7 +113,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
         safe_block_hash: genesis_hash.into(),
         finalized_block_hash: genesis_hash.into(),
     };
-    let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 64_000_000_000);
+    let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 64_000_000_000, epoch_length);
     state.set_validator_accounts(validator_accounts);
     state
 }
@@ -123,8 +123,9 @@ fn create_checkpoint_initial_state(
     checkpoint_hash: [u8; 32],
     height: u64,
     epoch: u64,
+    epoch_length: NonZeroU64,
 ) -> ConsensusState {
-    let mut state = create_test_initial_state(checkpoint_hash);
+    let mut state = create_test_initial_state(checkpoint_hash, epoch_length);
     state.set_latest_height(height);
     state.set_view(height);
     state.set_epoch(epoch);
@@ -138,7 +139,6 @@ fn create_checkpoint_initial_state(
 
 fn default_protocol_consts() -> ProtocolConsts {
     ProtocolConsts {
-        epoch_num_of_blocks: 10,
         validator_onboarding_limit_per_block: 10,
         validator_num_warm_up_epochs: 2,
         validator_withdrawal_num_epochs: 2,
@@ -156,7 +156,8 @@ fn test_initial_startup_sync_waits_for_valid() {
     executor.start(|context| async move {
         let checkpoint_hash = [0xAAu8; 32];
         // Checkpoint at height 5, still in epoch 0 (epoch_num_of_blocks = 10)
-        let initial_state = create_checkpoint_initial_state(checkpoint_hash, 5, 0);
+        let initial_state =
+            create_checkpoint_initial_state(checkpoint_hash, 5, 0, NonZeroU64::new(10).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
@@ -182,7 +183,6 @@ fn test_initial_startup_sync_waits_for_valid() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
-            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
@@ -229,7 +229,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let genesis_hash = [0u8; 32];
-        let initial_state = create_test_initial_state(genesis_hash);
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
@@ -251,7 +251,6 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
-            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
@@ -294,7 +293,7 @@ fn test_execute_block_retries_on_syncing() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let genesis_hash = [0x42u8; 32];
-        let initial_state = create_test_initial_state(genesis_hash);
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
@@ -320,7 +319,6 @@ fn test_execute_block_retries_on_syncing() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
-            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
@@ -378,7 +376,7 @@ fn test_notarized_block_retries_on_syncing() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let genesis_hash = [0x42u8; 32];
-        let initial_state = create_test_initial_state(genesis_hash);
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
@@ -404,7 +402,6 @@ fn test_notarized_block_retries_on_syncing() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
-            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
@@ -451,7 +448,8 @@ fn test_checkpoint_startup_full_flow() {
     executor.start(|context| async move {
         let checkpoint_hash = [0xBBu8; 32];
         // Checkpoint at height 5, epoch 0 (epoch_num_of_blocks = 10)
-        let initial_state = create_checkpoint_initial_state(checkpoint_hash, 5, 0);
+        let initial_state =
+            create_checkpoint_initial_state(checkpoint_hash, 5, 0, NonZeroU64::new(10).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
@@ -479,7 +477,6 @@ fn test_checkpoint_startup_full_flow() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
-            epocher: FixedEpocher::new(NZU64!(10)),
             _variant_marker: PhantomData,
         };
 
