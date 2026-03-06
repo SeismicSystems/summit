@@ -109,6 +109,13 @@ impl DynamicEpocher {
     }
 
     /// Computes the bounds (first, last) of a given epoch.
+    /// The theoretical runtime of this function is O(n).
+    /// It could be optimized to O(log n) by using binary search, since the segments are sorted by
+    /// both start_epoch and start_height.
+    /// However, in practice, calls for first(epoch) and last(epoch) will always be for the current
+    /// or recent epochs.
+    /// Therefore, the loop will stop after a single iteration, since we only need the last segment.
+    /// Thus, the best case runtime is O(1) and we hit the best case almost every time.
     fn bounds(segments: &[Segment], epoch: Epoch) -> Option<(Height, Height)> {
         for seg in segments.iter().rev() {
             if seg.start_epoch.get() <= epoch.get() {
@@ -124,6 +131,13 @@ impl DynamicEpocher {
 }
 
 impl Epocher for DynamicEpocher {
+    /// Computes the bounds (first, last) of a given epoch.
+    /// The theoretical runtime of this function is O(n).
+    /// It could be optimized to O(log n) by using binary search, since the segments are sorted by
+    /// both start_epoch and start_height.
+    /// However, in practice, calls for containing(height) will always be for recent heights.
+    /// Therefore, the loop will stop after a single iteration, since we only need the last segment.
+    /// Thus, the best case runtime is O(1) and we hit the best case almost every time.
     fn containing(&self, height: Height) -> Option<EpochInfo> {
         let inner = self.inner.read().unwrap();
         for seg in inner.segments.iter().rev() {

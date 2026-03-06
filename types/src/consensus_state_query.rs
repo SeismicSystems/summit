@@ -20,6 +20,7 @@ pub enum ConsensusStateRequest {
     GetFinalizedHeader(u64),
     GetMinimumStake,
     GetMaximumStake,
+    GetEpochLength,
     GetDeposit(usize),
     GetDepositCount,
     GetWithdrawal([u8; 32]),
@@ -37,6 +38,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     FinalizedHeader(Option<FinalizedHeader<S>>),
     MinimumStake(u64),
     MaximumStake(u64),
+    EpochLength(u64),
     Deposit(Option<DepositRequest>),
     DepositCount(usize),
     Withdrawal(Option<PendingWithdrawal>),
@@ -201,5 +203,19 @@ impl<S: Scheme> ConsensusStateQuery<S> {
             unreachable!("request and response variants must match");
         };
         stake
+    }
+
+    pub async fn get_epoch_length(&self) -> u64 {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetEpochLength;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::EpochLength(length) = res else {
+            unreachable!("request and response variants must match");
+        };
+        length
     }
 }

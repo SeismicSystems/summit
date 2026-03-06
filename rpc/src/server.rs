@@ -284,6 +284,11 @@ impl SummitApiServer for SummitRpcServer {
         Ok(maximum_stake)
     }
 
+    async fn get_epoch_length(&self) -> RpcResult<u64> {
+        let epoch_length = self.finalizer_mailbox.get_epoch_length().await;
+        Ok(epoch_length)
+    }
+
     async fn get_deposit(&self, index: usize) -> RpcResult<DepositResponse> {
         let deposit = self.finalizer_mailbox.get_deposit(index).await;
         match deposit {

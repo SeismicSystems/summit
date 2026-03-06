@@ -1073,6 +1073,8 @@ mod tests {
         original_state.push_protocol_param_change(
             crate::protocol_params::ProtocolParam::MaximumStake(80_000_000_000),
         );
+        original_state
+            .push_protocol_param_change(crate::protocol_params::ProtocolParam::EpochLength(500));
 
         let pubkey1 = [1u8; 32];
         let pubkey2 = [2u8; 32];
@@ -1144,7 +1146,7 @@ mod tests {
         assert_eq!(epoch11_withdrawals[0].inner.amount, 24000000000);
 
         // Verify protocol_param_changes
-        assert_eq!(decoded_state.protocol_param_changes.len(), 2);
+        assert_eq!(decoded_state.protocol_param_changes.len(), 3);
         match &decoded_state.protocol_param_changes[0] {
             crate::protocol_params::ProtocolParam::MinimumStake(value) => {
                 assert_eq!(*value, 40_000_000_000)
@@ -1156,6 +1158,12 @@ mod tests {
                 assert_eq!(*value, 80_000_000_000)
             }
             _ => panic!("Expected MaximumStake variant"),
+        }
+        match &decoded_state.protocol_param_changes[2] {
+            crate::protocol_params::ProtocolParam::EpochLength(value) => {
+                assert_eq!(*value, 500)
+            }
+            _ => panic!("Expected EpochLength variant"),
         }
 
         assert_eq!(decoded_state.validator_accounts.len(), 2);

@@ -939,6 +939,10 @@ impl<
                 let stake = self.canonical_state.get_maximum_stake();
                 let _ = sender.send(ConsensusStateResponse::MaximumStake(stake));
             }
+            ConsensusStateRequest::GetEpochLength => {
+                let length = self.canonical_state.get_epocher().current_length();
+                let _ = sender.send(ConsensusStateResponse::EpochLength(length));
+            }
             ConsensusStateRequest::GetDeposit(index) => {
                 let deposit = self.canonical_state.get_deposit(index).cloned();
                 let _ = sender.send(ConsensusStateResponse::Deposit(deposit));
