@@ -38,8 +38,8 @@ use summit_types::scheme::EpochTransition;
 use summit_types::ssz_state_tree::SszProof;
 use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::utils::{
-    epocher_is_first_block_of_epoch, epocher_is_last_block_of_epoch,
-    epocher_is_penultimate_block_of_epoch, parse_withdrawal_credentials,
+    is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
+    parse_withdrawal_credentials,
 };
 use summit_types::{
     AddedValidator, Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature,
@@ -250,7 +250,7 @@ impl<
 
         loop {
             if self.validator_exit
-                && epocher_is_first_block_of_epoch(
+                && is_first_block_of_epoch(
                     self.canonical_state.get_epocher(),
                     self.canonical_state.get_latest_height(),
                 )
@@ -456,7 +456,7 @@ impl<
 
         let new_height = block.height();
         let mut epoch_change = false; // Store finalizes checkpoint to database
-        if epocher_is_last_block_of_epoch(self.canonical_state.get_epocher(), new_height) {
+        if is_last_block_of_epoch(self.canonical_state.get_epocher(), new_height) {
             // The syncer will always send the last block of an epoch together with
             // the finalization.
             let finalization = finalization
@@ -815,7 +815,7 @@ impl<
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
-        let is_last = epocher_is_last_block_of_epoch(self.canonical_state.get_epocher(), height);
+        let is_last = is_last_block_of_epoch(self.canonical_state.get_epocher(), height);
         let aux_data = if is_last {
             // The pending_checkpoint should have been set when processing the penultimate block.
             // If it's None, we can't propose the last block (e.g., node restarted from checkpoint).
@@ -1274,7 +1274,7 @@ async fn execute_block<
     // We build the checkpoint one height before the epoch end which
     // allows the validators to sign the checkpoint hash in the last block
     // of the epoch
-    if epocher_is_penultimate_block_of_epoch(state.get_epocher(), new_height) {
+    if is_penultimate_block_of_epoch(state.get_epocher(), new_height) {
         #[cfg(feature = "prom")]
         let checkpoint_creation_start = Instant::now();
         let checkpoint = Checkpoint::new(state);
@@ -1470,10 +1470,7 @@ async fn parse_execution_requests<
                                         "cancelled pending validator activation due to withdrawal request"
                                     );
                                 }
-                            } else if epocher_is_last_block_of_epoch(
-                                state.get_epocher(),
-                                new_height,
-                            ) {
+                            } else if is_last_block_of_epoch(state.get_epocher(), new_height) {
                                 // On the last block of an epoch, buffer the withdrawal request
                                 // to be processed at the penultimate block of the next epoch.
                                 // This ensures the validator is included in removed_validators
@@ -1544,7 +1541,7 @@ async fn process_execution_requests<
     state: &mut ConsensusState,
     consts: &ProtocolConsts,
 ) {
-    if epocher_is_penultimate_block_of_epoch(state.get_epocher(), new_height) {
+    if is_penultimate_block_of_epoch(state.get_epocher(), new_height) {
         for _ in 0..consts.validator_onboarding_limit_per_block {
             if let Some(request) = state.pop_deposit() {
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();

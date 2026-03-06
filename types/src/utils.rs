@@ -1,6 +1,6 @@
 use alloy_primitives::Address;
 use anyhow::{Context, Result, anyhow};
-use commonware_consensus::types::{Epoch, Epocher, Height};
+use commonware_consensus::types::{Epocher, Height};
 use dirs::home_dir;
 use std::{path::PathBuf, str::FromStr};
 
@@ -20,64 +20,22 @@ pub fn get_expanded_path(path: &str) -> Result<PathBuf> {
     Ok(path_buf)
 }
 
-pub fn last_block_in_epoch(epoch_length: u64, epoch: u64) -> u64 {
-    assert!(epoch_length > 0);
-
-    // (epoch + 1) * epoch_length - 1
-    epoch
-        .checked_add(1)
-        .and_then(|next_epoch| next_epoch.checked_mul(epoch_length))
-        .unwrap()
-        - 1
-}
-
-pub fn is_last_block_of_epoch(epoch_length: u64, height: u64) -> bool {
-    assert!(epoch_length > 0);
-
-    height % epoch_length == epoch_length - 1
-}
-
-pub fn is_first_block_of_epoch(epoch_length: u64, height: u64) -> bool {
-    assert!(epoch_length > 0);
-
-    height.is_multiple_of(epoch_length)
-}
-
-pub fn is_penultimate_block_of_epoch(epoch_num_blocks: u64, height: u64) -> bool {
-    is_last_block_of_epoch(epoch_num_blocks, height + 1)
-}
-
-/// Returns the epoch that a given block height belongs to.
-pub fn epoch(epoch_length: u64, height: u64) -> Epoch {
-    assert!(epoch_length > 0);
-    Epoch::new(height / epoch_length)
-}
-
-/// Returns Some(epoch) if the given height is the last block in an epoch, otherwise None.
-pub fn is_last_block_in_epoch(epoch_length: u64, height: u64) -> Option<Epoch> {
-    if is_last_block_of_epoch(epoch_length, height) {
-        Some(epoch(epoch_length, height))
-    } else {
-        None
-    }
-}
-
 /// Returns true if `height` is the first block in its epoch.
-pub fn epocher_is_first_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
+pub fn is_first_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
     epocher
         .containing(Height::new(height))
         .is_some_and(|info| info.first() == info.height())
 }
 
 /// Returns true if `height` is the last block in its epoch.
-pub fn epocher_is_last_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
+pub fn is_last_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
     epocher
         .containing(Height::new(height))
         .is_some_and(|info| info.last() == info.height())
 }
 
 /// Returns true if `height` is the penultimate (second-to-last) block in its epoch.
-pub fn epocher_is_penultimate_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
+pub fn is_penultimate_block_of_epoch(epocher: &impl Epocher, height: u64) -> bool {
     epocher
         .containing(Height::new(height))
         .is_some_and(|info| info.last() == Height::new(height + 1))

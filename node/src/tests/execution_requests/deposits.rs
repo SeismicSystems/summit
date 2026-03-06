@@ -281,7 +281,7 @@ fn test_deposit_request_top_up() {
         let deposit_block_height2 = 10;
         let deposit_block_height3 = 20;
 
-        let deposit_process_height2 = utils::last_block_in_epoch(
+        let deposit_process_height2 = last_block_in_epoch(
             DEFAULT_BLOCKS_PER_EPOCH,
             deposit_block_height2 / DEFAULT_BLOCKS_PER_EPOCH,
         );
@@ -503,7 +503,7 @@ fn test_deposit_less_than_min_stake_rejected() {
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
 
-        let deposit_process_height = utils::last_block_in_epoch(
+        let deposit_process_height = last_block_in_epoch(
             DEFAULT_BLOCKS_PER_EPOCH,
             deposit_block_height / DEFAULT_BLOCKS_PER_EPOCH,
         );
@@ -706,7 +706,7 @@ fn test_deposit_greater_than_max_stake_rejected() {
         // Create execution requests map (add deposit to block 5)
         let deposit_block_height = 5;
 
-        let deposit_process_height = utils::last_block_in_epoch(
+        let deposit_process_height = last_block_in_epoch(
             DEFAULT_BLOCKS_PER_EPOCH,
             deposit_block_height / DEFAULT_BLOCKS_PER_EPOCH,
         );
@@ -891,7 +891,7 @@ fn test_deposit_request_invalid_node_signature() {
         let requests = common::execution_requests_to_requests(execution_requests);
 
         let deposit_block_height = 5;
-        let deposit_process_height = utils::last_block_in_epoch(
+        let deposit_process_height = last_block_in_epoch(
             DEFAULT_BLOCKS_PER_EPOCH,
             deposit_block_height / DEFAULT_BLOCKS_PER_EPOCH,
         );
@@ -1088,7 +1088,7 @@ fn test_deposit_request_invalid_consensus_signature() {
         let requests = common::execution_requests_to_requests(execution_requests);
 
         let deposit_block_height = 5;
-        let deposit_process_height = utils::last_block_in_epoch(
+        let deposit_process_height = last_block_in_epoch(
             DEFAULT_BLOCKS_PER_EPOCH,
             deposit_block_height / DEFAULT_BLOCKS_PER_EPOCH,
         );

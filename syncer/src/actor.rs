@@ -28,7 +28,7 @@ use commonware_utils::{
     sequence::U64,
 };
 use pin_project::pin_project;
-use summit_types::utils::epocher_is_last_block_of_epoch;
+use summit_types::utils::is_last_block_of_epoch;
 
 use commonware_consensus::marshal::store::{Blocks, Certificates};
 use commonware_storage::metadata;
@@ -864,7 +864,7 @@ where
         let (height, commitment) = (block.height(), block.commitment());
         let (ack, ack_waiter) = A::handle();
 
-        if epocher_is_last_block_of_epoch(&self.epocher, next_height.get()) {
+        if is_last_block_of_epoch(&self.epocher, next_height.get()) {
             let Some(finalization) = self.get_finalization_by_height(next_height).await else {
                 // The last block of an epoch will always have an explicit finalization certificate
                 // The finalizer requires it for storing the finalized header.
