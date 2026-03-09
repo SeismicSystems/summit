@@ -3,6 +3,7 @@ use crate::test_harness::common;
 use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
+use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381;
 use commonware_macros::test_traced;
@@ -15,10 +16,12 @@ use commonware_utils::from_hex_formatted;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 use std::time::Duration;
+use summit_types::PrivateKey;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::keystore::KeyStore;
-use summit_types::{PrivateKey, utils};
+use summit_types::utils::is_last_block_of_epoch;
 
 #[test_traced("INFO")]
 fn test_checkpoint_created() {
@@ -353,12 +356,17 @@ fn test_previous_header_hash_matches() {
                     let validator_id =
                         common::extract_validator_id(metric).expect("failed to parse validator id");
 
-                    if utils::is_last_block_of_epoch(DEFAULT_BLOCKS_PER_EPOCH, height)
-                        && height <= DEFAULT_BLOCKS_PER_EPOCH
+                    if is_last_block_of_epoch(
+                        &FixedEpocher::new(NonZeroU64::new(DEFAULT_BLOCKS_PER_EPOCH).unwrap()),
+                        height,
+                    ) && height <= DEFAULT_BLOCKS_PER_EPOCH
                     {
                         // This is the first time the finalized header is written to disk
                         first_header_stored.insert(validator_id, header);
-                    } else if utils::is_last_block_of_epoch(DEFAULT_BLOCKS_PER_EPOCH, height) {
+                    } else if is_last_block_of_epoch(
+                        &FixedEpocher::new(NonZeroU64::new(DEFAULT_BLOCKS_PER_EPOCH).unwrap()),
+                        height,
+                    ) {
                         // This is the second time the finalized header is written to disk
                         if let Some(header_from_prev_epoch) = first_header_stored.get(&validator_id)
                         {
@@ -367,8 +375,8 @@ fn test_previous_header_hash_matches() {
                             second_header_stored.insert(validator_id);
                         }
                     } else {
-                        assert!(utils::is_last_block_of_epoch(
-                            DEFAULT_BLOCKS_PER_EPOCH,
+                        assert!(is_last_block_of_epoch(
+                            &FixedEpocher::new(NonZeroU64::new(DEFAULT_BLOCKS_PER_EPOCH).unwrap()),
                             height
                         ));
                     }

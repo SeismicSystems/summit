@@ -236,8 +236,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .expect("failed to send protocol params transaction");
 
-            // Wait for nodes to process the transaction and make some progress
-            let target_height = blocks_per_epoch + 1;
+            // Also send a transaction to update epoch length to 100
+            println!("Sending protocol parameter update transaction to set epoch length to 100");
+            let epoch_length_param_id: u8 = 0x02; // EpochLength
+            let new_epoch_length: u64 = 100;
+            let epoch_length_data = new_epoch_length.to_le_bytes();
+            let mut epoch_length_value = Vec::with_capacity(epoch_length_data.len() + 1);
+            epoch_length_value.push(epoch_length_data.len() as u8);
+            epoch_length_value.extend_from_slice(&epoch_length_data);
+
+            send_protocol_params_transaction(&provider, protocol_params_contract_address, epoch_length_param_id, epoch_length_value, 1)
+                .await
+                .expect("failed to send epoch length protocol params transaction");
+
+            // Wait for nodes to reach epoch 2 so both param changes are active.
+            // MaximumStake applies at the next epoch boundary (epoch 1).
+            // EpochLength targets current_epoch + 2 (epoch 2 if included in epoch 0).
+            let target_height = 2 * blocks_per_epoch + 1;
             println!(
                 "Waiting for all {} nodes to reach height {} (to ensure protocol param change is processed)",
                 NUM_NODES, target_height
@@ -276,7 +291,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Current maximum stake: {} gwei", max_stake);
 
             assert_eq!(max_stake, new_max_stake, "Maximum stake should be {} gwei", new_max_stake);
-            println!("✓ Maximum stake successfully updated to {} gwei!", new_max_stake);
+            println!("Maximum stake successfully updated to {} gwei!", new_max_stake);
+
+            // Verify that the epoch length was correctly updated
+            println!("Verifying epoch length was updated to {}...", new_epoch_length);
+            let epoch_length = client.get_epoch_length().await.expect("Failed to get epoch length");
+            println!("Current epoch length: {}", epoch_length);
+
+            assert_eq!(epoch_length, new_epoch_length, "Epoch length should be {}", new_epoch_length);
+            println!("Epoch length successfully updated to {}!", new_epoch_length);
 
             println!("Protocol parameter change test completed successfully!");
 

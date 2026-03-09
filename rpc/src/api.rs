@@ -54,6 +54,9 @@ pub trait SummitApi {
     #[method(name = "getMaximumStake")]
     async fn get_maximum_stake(&self) -> RpcResult<u64>;
 
+    #[method(name = "getEpochLength")]
+    async fn get_epoch_length(&self) -> RpcResult<u64>;
+
     #[method(name = "getDeposit")]
     async fn get_deposit(&self, index: usize) -> RpcResult<DepositResponse>;
 

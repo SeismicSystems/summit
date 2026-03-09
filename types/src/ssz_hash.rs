@@ -97,6 +97,7 @@ impl SszHashTreeRoot for ProtocolParam {
         let (tag, value) = match self {
             ProtocolParam::MinimumStake(v) => (0u64, *v),
             ProtocolParam::MaximumStake(v) => (1u64, *v),
+            ProtocolParam::EpochLength(v) => (2u64, *v),
         };
         merkleize(&[tag.hash_tree_root(), value.hash_tree_root()])
     }

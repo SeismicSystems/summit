@@ -24,6 +24,7 @@ use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox, ProtocolConsts};
 use summit_syncer::{SyncCheckpoint, SyncStart};
+use summit_types::dynamic_epocher::DynamicEpocher;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
 use summit_types::{Block, EngineClient, PublicKey};
@@ -69,7 +70,8 @@ pub struct Engine<
     S: Signer<PublicKey = PublicKey>,
 > {
     context: E,
-    application: summit_application::Actor<E, C, MultisigScheme, S::PublicKey, S, MinPk>,
+    application:
+        summit_application::Actor<E, C, MultisigScheme, S::PublicKey, S, MinPk, DynamicEpocher>,
     buffer: buffered::Engine<E, S::PublicKey, Block>,
     buffer_mailbox: buffered::Mailbox<S::PublicKey, Block>,
     #[allow(clippy::type_complexity)]
@@ -86,14 +88,20 @@ pub struct Engine<
             >,
         >,
         immutable::Archive<E, summit_types::Digest, Block>,
+        DynamicEpocher,
         Sequential,
         Exact,
     >,
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
     finalizer: Finalizer<E, C, O, S, MinPk>,
     pub finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
-    orchestrator:
-        summit_orchestrator::Actor<E, O, summit_application::Mailbox<S::PublicKey>, Sequential>,
+    orchestrator: summit_orchestrator::Actor<
+        E,
+        O,
+        summit_application::Mailbox<S::PublicKey>,
+        Sequential,
+        DynamicEpocher,
+    >,
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: usize,
@@ -126,6 +134,7 @@ where
             SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
 
         let cancellation_token = CancellationToken::new();
+        let epocher = cfg.initial_state.get_epocher().clone();
 
         // create application
         let (application, application_mailbox) = summit_application::Actor::new(
@@ -135,7 +144,7 @@ where
                 mailbox_size: cfg.mailbox_size,
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
-                epoch_num_of_blocks: blocks_per_epoch,
+                epocher: epocher.clone(),
                 cancellation_token: cancellation_token.clone(),
             },
         )
@@ -232,7 +241,7 @@ where
 
         let syncer_config = summit_syncer::Config {
             scheme_provider: scheme_provider.clone(),
-            epoch_length: blocks_per_epoch,
+            epocher: epocher.clone(),
             partition_prefix: cfg.partition_prefix.clone(),
             mailbox_size: cfg.mailbox_size,
             view_retention_timeout: ViewDelta::new(cfg.activity_timeout),
@@ -266,7 +275,7 @@ where
                 namespace: cfg.namespace.as_bytes().to_vec(),
                 muxer_size: cfg.mailbox_size,
                 mailbox_size: cfg.mailbox_size,
-                blocks_per_epoch,
+                epocher: epocher.clone(),
                 partition_prefix: cfg.partition_prefix.clone(),
                 leader_timeout: cfg.leader_timeout,
                 notarization_timeout: cfg.notarization_timeout,
@@ -289,7 +298,6 @@ where
                 oracle: cfg.oracle.clone(),
                 orchestrator_mailbox,
                 protocol_consts: ProtocolConsts {
-                    epoch_num_of_blocks: blocks_per_epoch,
                     validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                     validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
                     validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,

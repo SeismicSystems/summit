@@ -6,10 +6,8 @@ use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 
-/// Fixed protocol-level constants governing epochs and validator lifecycle.
+/// Fixed protocol-level constants governing validator lifecycle.
 pub struct ProtocolConsts {
-    /// The length of an epoch in number of blocks.
-    pub epoch_num_of_blocks: u64,
     /// The maximum number of validators that will be onboarded at the same time.
     pub validator_onboarding_limit_per_block: usize,
     /// Number of epochs to wait before activating validators after deposit.

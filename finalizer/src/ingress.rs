@@ -262,6 +262,24 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
         stake
     }
 
+    pub async fn get_epoch_length(&self) -> u64 {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetEpochLength;
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::EpochLength(length) = res else {
+            unreachable!("request and response variants must match");
+        };
+        length
+    }
+
     pub async fn get_deposit(
         &self,
         index: usize,

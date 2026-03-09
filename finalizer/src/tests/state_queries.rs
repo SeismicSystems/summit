@@ -19,6 +19,7 @@ use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::channel::mpsc as futures_mpsc;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
+use std::num::NonZeroU64;
 use std::time::Duration;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
@@ -86,7 +87,7 @@ fn create_test_block_with_epoch(
 }
 
 /// Create a minimal initial ConsensusState for testing
-fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
+fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -> ConsensusState {
     use rand::SeedableRng;
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
@@ -118,7 +119,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32]) -> ConsensusState {
         safe_block_hash: genesis_hash.into(),
         finalized_block_hash: genesis_hash.into(),
     };
-    let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 64_000_000_000);
+    let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 64_000_000_000, epoch_length);
     state.set_validator_accounts(validator_accounts);
     state
 }
@@ -135,14 +136,12 @@ fn test_get_latest_epoch() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let genesis_hash = [0x51u8; 32];
-        let initial_state = create_test_initial_state(genesis_hash);
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
-
-        let epoch_num_of_blocks = 5;
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
             archive_mode: false,
@@ -152,7 +151,6 @@ fn test_get_latest_epoch() {
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
-                epoch_num_of_blocks,
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
@@ -246,14 +244,12 @@ fn test_get_epoch_genesis_hash() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let genesis_hash = [0x53u8; 32];
-        let initial_state = create_test_initial_state(genesis_hash);
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
-
-        let epoch_num_of_blocks = 5;
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
             archive_mode: false,
@@ -263,7 +259,6 @@ fn test_get_epoch_genesis_hash() {
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
-                epoch_num_of_blocks,
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
@@ -345,7 +340,7 @@ fn test_get_aux_data_from_canonical_chain() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let genesis_hash = [0x54u8; 32];
-        let initial_state = create_test_initial_state(genesis_hash);
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
@@ -360,7 +355,6 @@ fn test_get_aux_data_from_canonical_chain() {
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
-                epoch_num_of_blocks: 10,
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
@@ -416,7 +410,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let genesis_hash = [0x55u8; 32];
-        let initial_state = create_test_initial_state(genesis_hash);
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
@@ -431,7 +425,6 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             oracle: MockNetworkOracle,
             orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
-                epoch_num_of_blocks: 10,
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,

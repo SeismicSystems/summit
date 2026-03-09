@@ -124,6 +124,9 @@ pub fn create_test_finalizer_mailbox(
                             proofs: vec![],
                         });
                     }
+                    ConsensusStateRequest::GetEpochLength => {
+                        let _ = response.send(ConsensusStateResponse::EpochLength(10));
+                    }
                 },
                 _ => {}
             }

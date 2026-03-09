@@ -14,6 +14,7 @@ pub(crate) use crate::test_harness::common::{
 pub(crate) use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 pub(crate) use alloy_primitives::Address;
 pub(crate) use commonware_codec::Encode;
+pub(crate) use commonware_consensus::types::{Epoch, Epocher, FixedEpocher};
 pub(crate) use commonware_cryptography::Signer;
 pub(crate) use commonware_cryptography::bls12381;
 pub(crate) use commonware_macros::test_traced;
@@ -26,8 +27,16 @@ pub(crate) use commonware_utils::from_hex_formatted;
 pub(crate) use rand::SeedableRng;
 pub(crate) use rand::rngs::StdRng;
 pub(crate) use std::collections::{HashMap, HashSet};
+pub(crate) use std::num::NonZeroU64;
 pub(crate) use std::time::Duration;
 pub(crate) use summit_types::account::ValidatorStatus;
 pub(crate) use summit_types::execution_request::ExecutionRequest;
 pub(crate) use summit_types::keystore::KeyStore;
 pub(crate) use summit_types::{PrivateKey, utils};
+
+pub(crate) fn last_block_in_epoch(epoch_length: u64, epoch: u64) -> u64 {
+    FixedEpocher::new(NonZeroU64::new(epoch_length).unwrap())
+        .last(Epoch::new(epoch))
+        .unwrap()
+        .get()
+}

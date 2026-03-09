@@ -1,6 +1,6 @@
 use commonware_consensus::Block;
 use commonware_consensus::simplex::scheme::Scheme;
-use commonware_consensus::types::{Epoch, ViewDelta};
+use commonware_consensus::types::{Epoch, Epocher, ViewDelta};
 use commonware_cryptography::certificate::Provider;
 use commonware_parallel::Strategy;
 use commonware_runtime::buffer::paged::CacheRef;
@@ -21,17 +21,18 @@ pub struct SyncCheckpoint<B: Block, S: Scheme<B::Commitment>> {
 }
 
 /// Marshal configuration.
-pub struct Config<B, P, T>
+pub struct Config<B, P, ES, T>
 where
     B: Block,
     P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
+    ES: Epocher,
     T: Strategy,
 {
     /// Provider for epoch-specific signing schemes.
     pub scheme_provider: P,
 
-    /// The length of an epoch in number of blocks.
-    pub epoch_length: u64,
+    /// Epocher for determining epoch boundaries.
+    pub epocher: ES,
 
     /// The prefix to use for all partitions.
     pub partition_prefix: String,

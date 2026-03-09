@@ -91,7 +91,7 @@ fn test_added_validators_at_epoch_boundary() {
         // joining in epoch 2 (next_epoch).
         //
         // We need to run until block 20 to ensure block 19's header is finalized.
-        let last_block_epoch_1 = utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 1); // block 19
+        let last_block_epoch_1 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 1); // block 19
         let stop_height = last_block_epoch_1 + 1; // block 20
 
         let mut execution_requests_map = HashMap::new();
@@ -315,7 +315,7 @@ fn test_removed_validators_at_epoch_boundary() {
         // withdrawing validator in removed_validators.
         //
         // We need to run until block 10 to ensure block 9's header is finalized.
-        let last_block_epoch_0 = utils::last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0); // block 9
+        let last_block_epoch_0 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0); // block 9
         let stop_height = last_block_epoch_0 + 1; // block 10
 
         let mut execution_requests_map = HashMap::new();

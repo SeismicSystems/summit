@@ -1,13 +1,11 @@
 //! Consensus engine orchestrator for epoch transitions.
 use crate::{Mailbox, Message};
-use summit_types::{
-    Block, Digest, PublicKey, scheme::SummitSchemeProvider, utils::last_block_in_epoch,
-};
+use summit_types::{Block, Digest, PublicKey, scheme::SummitSchemeProvider};
 
 use commonware_consensus::{
     CertifiableAutomaton, Relay,
     simplex::{self, types::Context},
-    types::{Epoch, Height, ViewDelta},
+    types::{Epoch, Epocher, ViewDelta},
 };
 use commonware_cryptography::Sha256;
 use commonware_macros::select_loop;
@@ -29,12 +27,13 @@ use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
 use tracing::info;
 
 /// Configuration for the orchestrator.
-pub struct Config<B, A, St>
+pub struct Config<B, A, St, ES>
 where
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
     St: Strategy + Default,
+    ES: Epocher,
 {
     pub oracle: B,
     pub application: A,
@@ -45,7 +44,7 @@ where
     pub muxer_size: usize,
     pub mailbox_size: usize,
 
-    pub blocks_per_epoch: u64,
+    pub epocher: ES,
 
     // Partition prefix used for orchestrator metadata persistence
     pub partition_prefix: String,
@@ -61,13 +60,14 @@ where
     pub _strategy: std::marker::PhantomData<St>,
 }
 
-pub struct Actor<E, B, A, St>
+pub struct Actor<E, B, A, St, ES>
 where
     E: Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
     St: Strategy + Default,
+    ES: Epocher,
 {
     context: ContextCell<E>,
     mailbox: mpsc::Receiver<Message>,
@@ -80,7 +80,7 @@ where
     muxer_size: usize,
     partition_prefix: String,
     page_cache: CacheRef,
-    blocks_per_epoch: u64,
+    epocher: ES,
 
     // Consensus timeouts
     leader_timeout: Duration,
@@ -93,15 +93,16 @@ where
     _strategy: std::marker::PhantomData<St>,
 }
 
-impl<E, B, A, St> Actor<E, B, A, St>
+impl<E, B, A, St, ES> Actor<E, B, A, St, ES>
 where
     E: Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
     St: Strategy + Default,
+    ES: Epocher,
 {
-    pub fn new(context: E, config: Config<B, A, St>) -> (Self, Mailbox) {
+    pub fn new(context: E, config: Config<B, A, St, ES>) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
         let page_cache = CacheRef::new(NonZero::<u16>::new(16_384).unwrap(), NZUsize!(10_000));
 
@@ -116,7 +117,7 @@ where
                 muxer_size: config.muxer_size,
                 partition_prefix: config.partition_prefix,
                 page_cache,
-                blocks_per_epoch: config.blocks_per_epoch,
+                epocher: config.epocher,
                 leader_timeout: config.leader_timeout,
                 notarization_timeout: config.notarization_timeout,
                 nullify_retry: config.nullify_retry,
@@ -214,7 +215,7 @@ where
                 // We target only the peer who claims to be ahead. If we receive messages from
                 // multiple peers claiming to be ahead, each call adds them to the target set,
                 // giving us more peers to try fetching from.
-                let boundary_height = Height::new(last_block_in_epoch(self.blocks_per_epoch, our_epoch.get()));
+                let boundary_height = self.epocher.last(our_epoch).expect("epoch should exist");
                 self.syncer_mailbox.hint_finalized(boundary_height, NonEmptyVec::new(from)).await;
             },
             transition = self.mailbox.next() => {

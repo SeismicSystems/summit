@@ -4,6 +4,7 @@ pub mod bootstrap;
 pub mod checkpoint;
 pub mod consensus_state;
 pub mod consensus_state_query;
+pub mod dynamic_epocher;
 pub mod engine_client;
 pub mod execution_request;
 pub mod genesis;

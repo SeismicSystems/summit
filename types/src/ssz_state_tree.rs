@@ -748,6 +748,7 @@ impl SszStateTree {
         let (tag, value) = match param {
             ProtocolParam::MinimumStake(v) => (0u64, *v),
             ProtocolParam::MaximumStake(v) => (1u64, *v),
+            ProtocolParam::EpochLength(v) => (2u64, *v),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value.hash_tree_root());
