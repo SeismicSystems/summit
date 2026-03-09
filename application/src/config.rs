@@ -1,4 +1,5 @@
 use commonware_consensus::types::Epocher;
+use std::time::Duration;
 use summit_types::EngineClient;
 use tokio_util::sync::CancellationToken;
 
@@ -16,6 +17,12 @@ pub struct ApplicationConfig<C: EngineClient, ES: Epocher> {
 
     /// Epocher for determining epoch boundaries.
     pub epocher: ES,
+
+    /// Maximum allowed drift between a block's timestamp and the
+    /// local wall clock. Blocks with timestamps that differ from
+    /// the local time by more than this are rejected during
+    /// verification.
+    pub max_timestamp_drift: Duration,
 
     pub cancellation_token: CancellationToken,
 }

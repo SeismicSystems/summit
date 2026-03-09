@@ -145,6 +145,7 @@ where
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
                 epocher: epocher.clone(),
+                max_timestamp_drift: cfg.nullify_retry,
                 cancellation_token: cancellation_token.clone(),
             },
         )
