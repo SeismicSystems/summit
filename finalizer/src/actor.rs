@@ -631,6 +631,7 @@ impl<
         let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(
             new_height,
+            view = block.view(),
             epoch = self.canonical_state.get_epoch(),
             tx_count,
             "finalized block"
@@ -735,7 +736,12 @@ impl<
             self.engine_client.commit_hash(fork_forkchoice).await;
 
             let total_fork_count: usize = self.fork_states.values().map(|f| f.len()).sum();
-            info!(height, ?block_digest, "executed notarized block into fork");
+            info!(
+                height,
+                view = block.view(),
+                ?block_digest,
+                "executed notarized block into fork"
+            );
             trace!(
                 height,
                 total_fork_states = total_fork_count,

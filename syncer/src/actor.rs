@@ -534,9 +534,17 @@ where
                         Message::Subscribe { round, commitment, response } => {
                             // Check for block locally
                             if let Some(block) = self.find_block(&mut buffer, commitment).await {
+                                debug!(?round, ?commitment, "subscribe: block found locally");
                                 response.send_lossy(block);
                                 continue;
                             }
+                            debug!(
+                                ?round,
+                                ?commitment,
+                                last_processed_round = ?self.last_processed_round,
+                                last_processed_height = %self.last_processed_height,
+                                "subscribe: block not found locally"
+                            );
 
                             // We don't have the block locally, so fetch the block from the network
                             // if we have an associated view. If we only have the digest, don't make
