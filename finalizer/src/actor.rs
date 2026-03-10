@@ -1327,6 +1327,12 @@ async fn execute_block<
         counter!("blocks_processed_total").increment(1);
     }
 
+    // Normalize safe/finalized to head before capturing the root. Fork states
+    // inherit canonical's safe/finalized at clone time, which varies depending
+    // on when the block is processed. Since the SSZ tree includes forkchoice
+    // hashes, the state root must not depend on processing order.
+    state.set_forkchoice_safe_and_finalized(state.get_forkchoice().head_block_hash);
+
     // Freeze the trie root so that subsequent finalization mutations
     // (epoch transitions, forkchoice updates) don't alter the captured value.
     let el_block_number = block.payload.payload_inner.payload_inner.block_number;
