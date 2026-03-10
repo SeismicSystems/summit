@@ -428,26 +428,6 @@ impl<
             );
         }
 
-        // After advancing canonical, re-adopt orphaned blocks at height+1
-        // whose parent is the block that was just finalized.
-        if let Some(children) = self
-            .orphaned_blocks
-            .get(&(height + 1))
-            .and_then(|children_map| children_map.get(&block_digest))
-        {
-            let children_to_process: Vec<Block> = children.clone();
-            if !children_to_process.is_empty() {
-                info!(
-                    height,
-                    num_children = children_to_process.len(),
-                    "re-adopting orphaned blocks after finalization"
-                );
-                for child in children_to_process {
-                    self.handle_notarized_block(child).await;
-                }
-            }
-        }
-
         self.engine_client
             .commit_hash(*self.canonical_state.get_forkchoice())
             .await;
@@ -650,10 +630,31 @@ impl<
         let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(
             new_height,
+            view = block.view(),
             epoch = self.canonical_state.get_epoch(),
             tx_count,
             "finalized block"
         );
+
+        // After advancing canonical, re-adopt orphaned blocks at height+1
+        // whose parent is the block that was just finalized.
+        if let Some(children) = self
+            .orphaned_blocks
+            .get(&(height + 1))
+            .and_then(|children_map| children_map.get(&block_digest))
+        {
+            let children_to_process: Vec<Block> = children.clone();
+            if !children_to_process.is_empty() {
+                info!(
+                    height,
+                    num_children = children_to_process.len(),
+                    "re-adopting orphaned blocks after finalization"
+                );
+                for child in children_to_process {
+                    self.handle_notarized_block(child).await;
+                }
+            }
+        }
     }
 
     async fn handle_notarized_block(&mut self, block: Block) {
@@ -754,7 +755,12 @@ impl<
             self.engine_client.commit_hash(fork_forkchoice).await;
 
             let total_fork_count: usize = self.fork_states.values().map(|f| f.len()).sum();
-            info!(height, ?block_digest, "executed notarized block into fork");
+            info!(
+                height,
+                view = block.view(),
+                ?block_digest,
+                "executed notarized block into fork"
+            );
             trace!(
                 height,
                 total_fork_states = total_fork_count,
