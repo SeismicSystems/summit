@@ -82,7 +82,9 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).with_stop_at(stop_height).build();
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_stop_at(stop_height)
+            .build();
         let initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
@@ -205,7 +207,6 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
 
                 if metric.ends_with("finalizer_height") {
                     let value = value.parse::<u64>().unwrap();
-                    println!("Height: {value}");
                     if value >= stop_height {
                         nodes_finished.insert(metric.to_string());
                         if nodes_finished.len() as u32 == n {
@@ -306,7 +307,9 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).with_stop_at(stop_height).build();
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_stop_at(stop_height)
+            .build();
         let initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 

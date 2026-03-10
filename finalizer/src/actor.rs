@@ -135,7 +135,9 @@ impl<
                 num_validators = state.num_validators(),
                 "loaded consensus state from database"
             );
-            cfg.initial_state.get_epocher().advance_epoch(Epoch::new(state.get_epoch())); 
+            cfg.initial_state
+                .get_epocher()
+                .advance_epoch(Epoch::new(state.get_epoch()));
             state
         } else {
             info!(

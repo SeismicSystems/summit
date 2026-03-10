@@ -19,7 +19,7 @@ pub struct MockEngineClient {
     // Execution requests that will be included in the blocks
     execution_requests: Arc<Mutex<HashMap<u64, Requests>>>,
     /// The block this client will stop voting for blocks
-    stop_at: Option<u64>
+    stop_at: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -53,7 +53,7 @@ impl MockEngineClient {
         client_id: String,
         genesis_hash: [u8; 32],
         execution_requests: Arc<Mutex<HashMap<u64, Requests>>>,
-        stop_at: Option<u64>
+        stop_at: Option<u64>,
     ) -> Self {
         let state = MockEngineState::new(genesis_hash);
 
@@ -61,7 +61,7 @@ impl MockEngineClient {
             client_id,
             state: Arc::new(Mutex::new(state)),
             execution_requests,
-            stop_at
+            stop_at,
         }
     }
 
@@ -358,11 +358,11 @@ impl EngineClient for MockEngineClient {
         if state.should_fail {
             return None;
         }
-        
+
         if let Some(stop_at) = self.stop_at {
             if stop_at < state.next_block_number {
                 return None;
-                }
+            }
         }
 
         // Verify we know about the head block
@@ -531,7 +531,7 @@ impl EngineClient for MockEngineClient {
 pub struct MockEngineNetworkBuilder {
     genesis_hash: [u8; 32],
     execution_requests: Option<HashMap<u64, Requests>>,
-    stop_at: Option<u64>
+    stop_at: Option<u64>,
 }
 
 impl MockEngineNetworkBuilder {
@@ -539,7 +539,7 @@ impl MockEngineNetworkBuilder {
         Self {
             genesis_hash,
             execution_requests: None,
-            stop_at: None
+            stop_at: None,
         }
     }
 
@@ -558,7 +558,7 @@ impl MockEngineNetworkBuilder {
             genesis_hash: self.genesis_hash,
             clients: Arc::new(Mutex::new(Vec::new())),
             execution_requests: Arc::new(Mutex::new(self.execution_requests.unwrap_or_default())),
-            stop_at: self.stop_at
+            stop_at: self.stop_at,
         }
     }
 }
@@ -570,7 +570,7 @@ pub struct MockEngineNetwork {
     clients: Arc<Mutex<Vec<MockEngineClient>>>,
     execution_requests: Arc<Mutex<HashMap<u64, Requests>>>,
     /// the block they will stop voting for at. To make sure tests stop at the expected block
-    stop_at: Option<u64> 
+    stop_at: Option<u64>,
 }
 
 impl MockEngineNetwork {
@@ -579,7 +579,7 @@ impl MockEngineNetwork {
             genesis_hash,
             clients: Arc::new(Mutex::new(Vec::new())),
             execution_requests: Arc::new(Mutex::new(HashMap::new())),
-            stop_at
+            stop_at,
         }
     }
 
@@ -589,7 +589,7 @@ impl MockEngineNetwork {
             client_id,
             self.genesis_hash,
             self.execution_requests.clone(),
-            self.stop_at
+            self.stop_at,
         );
 
         let mut clients = self.clients.lock().unwrap();
@@ -728,7 +728,7 @@ mod tests {
             "test".to_string(),
             genesis_hash,
             Arc::new(Mutex::new(HashMap::new())),
-            None
+            None,
         );
 
         // Should start at genesis
@@ -873,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_block_production() {
         let genesis_hash = [0; 32];
-        let network = MockEngineNetwork::new(genesis_hash,None);
+        let network = MockEngineNetwork::new(genesis_hash, None);
 
         let client1 = network.create_client("node1".to_string());
         let client2 = network.create_client("node2".to_string());
