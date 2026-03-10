@@ -185,7 +185,7 @@ pub fn run_until_height(
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
-        let engine_client_network = MockEngineNetwork::new(genesis_hash);
+        let engine_client_network = MockEngineNetwork::new(genesis_hash, Some(stop_height));
         let initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 

@@ -433,7 +433,7 @@ where
             mailbox_size: self.mailbox_size,
             initial: Duration::from_secs(1),
             timeout: Duration::from_secs(2),
-            fetch_retry_timeout: Duration::from_millis(100),
+            fetch_retry_timeout: Duration::from_millis(1000),
             priority_requests: false,
             priority_responses: false,
         };

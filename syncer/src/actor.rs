@@ -370,10 +370,6 @@ where
         self.try_dispatch_block(&mut application, &mut resolver)
             .await;
 
-        // Attempt to repair any gaps in the finalized blocks archive, if there are any.
-        self.try_repair_gaps(&mut buffer, &mut resolver, &mut application)
-            .await;
-
         loop {
             // Remove any dropped subscribers. If all subscribers dropped, abort the waiter.
             self.block_subscriptions.retain(|_, bs| {
