@@ -315,6 +315,18 @@ impl<
                                         .unwrap_or(false) {
                                     let _ = response.send(true);
                                 } else {
+                                    let is_orphaned = self.orphaned_blocks.get(&height)
+                                        .map(|by_parent| by_parent.values().any(|blocks| blocks.iter().any(|b| b.digest() == block_digest)))
+                                        .unwrap_or(false);
+                                    warn!(
+                                        height,
+                                        ?block_digest,
+                                        canonical_height = self.canonical_state.get_latest_height(),
+                                        num_fork_heights = self.fork_states.len(),
+                                        num_orphan_heights = self.orphaned_blocks.len(),
+                                        is_orphaned,
+                                        "notify_at_height: fork state not found, storing pending notification"
+                                    );
                                     self.pending_height_notifys.entry((height, block_digest)).or_default().push(response);
                                 }
                             }
@@ -417,17 +429,36 @@ impl<
         }
 
         // Prune orphaned blocks at or below finalized height
-        let total_orphans = self.orphaned_blocks.len();
-        self.orphaned_blocks.retain(|&h, _| h > height);
-        let remaining_orphans = self.orphaned_blocks.len();
-        let num_pruned_orphans = total_orphans - remaining_orphans;
+        let total_orphans: usize = self
+            .orphaned_blocks
+            .values()
+            .flat_map(|by_parent| by_parent.values())
+            .map(|blocks| blocks.len())
+            .sum();
+        let orphans_above: usize = self
+            .orphaned_blocks
+            .iter()
+            .filter(|&(&h, _)| h > height)
+            .flat_map(|(_, by_parent)| by_parent.values())
+            .map(|blocks| blocks.len())
+            .sum();
+        let num_pruned_orphans = total_orphans - orphans_above;
         if num_pruned_orphans > 0 {
-            debug!(
+            warn!(
                 height,
                 pruned = num_pruned_orphans,
-                "pruned orphaned blocks"
+                remaining = orphans_above,
+                "pruning orphaned blocks at finalized height"
             );
         }
+        if orphans_above > 0 {
+            warn!(
+                height,
+                remaining = orphans_above,
+                "orphaned blocks remain above finalized height"
+            );
+        }
+        self.orphaned_blocks.retain(|&h, _| h > height);
 
         self.engine_client
             .commit_hash(*self.canonical_state.get_forkchoice())
@@ -692,9 +723,11 @@ impl<
 
             // If we can't find the parent, buffer as orphaned
             let Some(mut fork_state) = parent_state else {
-                debug!(
+                warn!(
                     height,
                     ?parent_digest,
+                    canonical_height = self.canonical_state.get_latest_height(),
+                    view = block.view(),
                     "buffering orphaned notarized block - parent not found"
                 );
                 self.orphaned_blocks
