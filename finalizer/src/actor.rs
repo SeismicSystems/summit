@@ -646,21 +646,23 @@ impl<
 
         // After advancing canonical, re-adopt orphaned blocks at height+1
         // whose parent is the block that was just finalized.
-        if let Some(children) = self
+        let orphaned_children = self
             .orphaned_blocks
-            .get(&(height + 1))
-            .and_then(|children_map| children_map.get(&block_digest))
+            .get_mut(&(height + 1))
+            .and_then(|children_map| children_map.remove(&block_digest));
+        if let Some(children_map) = self.orphaned_blocks.get(&(height + 1))
+            && children_map.is_empty()
         {
-            let children_to_process: Vec<Block> = children.clone();
-            if !children_to_process.is_empty() {
-                info!(
-                    height,
-                    num_children = children_to_process.len(),
-                    "re-adopting orphaned blocks after finalization"
-                );
-                for child in children_to_process {
-                    self.handle_notarized_block(child).await;
-                }
+            self.orphaned_blocks.remove(&(height + 1));
+        }
+        if let Some(children) = orphaned_children {
+            info!(
+                height,
+                num_children = children.len(),
+                "re-adopting orphaned blocks after finalization"
+            );
+            for child in children {
+                self.handle_notarized_block(child).await;
             }
         }
     }
