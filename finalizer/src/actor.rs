@@ -407,6 +407,13 @@ impl<
             self.canonical_state.get_forkchoice().head_block_hash,
         );
 
+        debug!(
+            height,
+            state_root = ?self.canonical_state.get_state_root(),
+            ?block_digest,
+            "canonical state root after finalization"
+        );
+
         // Prune fork states at or below finalized height
         let total_forks = self.fork_states.len();
         self.fork_states.retain(|&h, _| h > height);
@@ -756,6 +763,13 @@ impl<
             self.engine_client.commit_hash(fork_forkchoice).await;
 
             let total_fork_count: usize = self.fork_states.values().map(|f| f.len()).sum();
+            debug!(
+                height,
+                view = block.view(),
+                ?block_digest,
+                state_root = ?fork_state.get_state_root(),
+                "fork state root after notarized block execution"
+            );
             info!(
                 height,
                 view = block.view(),
