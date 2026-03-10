@@ -331,6 +331,12 @@ impl<
         let proposal_start = std::time::Instant::now();
 
         // STEP 1: Get the parent block
+        debug!(
+            ?round,
+            parent_view = parent.0.get(),
+            parent_digest = ?parent.1,
+            "proposal step 1: fetching parent block"
+        );
         #[cfg(feature = "prom")]
         let parent_fetch_start = std::time::Instant::now();
         let parent_block = if parent.1 == self.genesis_hash.into() {
@@ -359,6 +365,12 @@ impl<
         }
 
         // STEP 2: Wait for finalizer notification
+        debug!(
+            ?round,
+            parent_height = parent_block.height(),
+            parent_digest = ?parent_block.digest(),
+            "proposal step 2: waiting for finalizer notification"
+        );
         #[cfg(feature = "prom")]
         let finalizer_wait_start = std::time::Instant::now();
         // now that we have the parent additionally await for that to be executed by the finalizer
@@ -388,6 +400,10 @@ impl<
         }
 
         // STEP 3: Request aux data (withdrawals, checkpoint hash, header hash)
+        debug!(
+            ?round,
+            parent_height, "proposal step 3: requesting aux data"
+        );
         #[cfg(feature = "prom")]
         let aux_data_start = std::time::Instant::now();
         let maybe_aux_data = finalizer
@@ -447,6 +463,12 @@ impl<
         }
 
         // STEP 4: Start building block (Engine Client)
+        debug!(
+            ?round,
+            parent_height,
+            epoch = aux_data.epoch,
+            "proposal step 4: building block via engine client"
+        );
         #[cfg(feature = "prom")]
         let start_building_start = std::time::Instant::now();
 
