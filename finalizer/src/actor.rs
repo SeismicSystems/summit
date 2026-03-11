@@ -630,10 +630,33 @@ impl<
         let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(
             new_height,
+            view = block.view(),
             epoch = self.canonical_state.get_epoch(),
             tx_count,
             "finalized block"
         );
+
+        // After advancing canonical, re-adopt orphaned blocks at height+1
+        // whose parent is the block that was just finalized.
+        let orphaned_children = self
+            .orphaned_blocks
+            .get_mut(&(height + 1))
+            .and_then(|children_map| children_map.remove(&block_digest));
+        if let Some(children_map) = self.orphaned_blocks.get(&(height + 1))
+            && children_map.is_empty()
+        {
+            self.orphaned_blocks.remove(&(height + 1));
+        }
+        if let Some(children) = orphaned_children {
+            info!(
+                height,
+                num_children = children.len(),
+                "re-adopting orphaned blocks after finalization"
+            );
+            for child in children {
+                self.handle_notarized_block(child).await;
+            }
+        }
     }
 
     async fn handle_notarized_block(&mut self, block: Block) {
@@ -734,7 +757,12 @@ impl<
             self.engine_client.commit_hash(fork_forkchoice).await;
 
             let total_fork_count: usize = self.fork_states.values().map(|f| f.len()).sum();
-            info!(height, ?block_digest, "executed notarized block into fork");
+            info!(
+                height,
+                view = block.view(),
+                ?block_digest,
+                "executed notarized block into fork"
+            );
             trace!(
                 height,
                 total_fork_states = total_fork_count,
@@ -1300,6 +1328,12 @@ async fn execute_block<
             .record(total_block_processing_duration);
         counter!("blocks_processed_total").increment(1);
     }
+
+    // Normalize safe/finalized to head before capturing the root. Fork states
+    // inherit canonical's safe/finalized at clone time, which varies depending
+    // on when the block is processed. Since the SSZ tree includes forkchoice
+    // hashes, the state root must not depend on processing order.
+    state.set_forkchoice_safe_and_finalized(state.get_forkchoice().head_block_hash);
 
     // Freeze the trie root so that subsequent finalization mutations
     // (epoch transitions, forkchoice updates) don't alter the captured value.
