@@ -149,7 +149,6 @@ fn test_get_latest_epoch() {
             db_prefix: "test_epoch".to_string(),
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
@@ -172,7 +171,7 @@ fn test_get_latest_epoch() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
         context.sleep(Duration::from_millis(100)).await;
 
         // Initial epoch should be 0
@@ -257,7 +256,6 @@ fn test_get_epoch_genesis_hash() {
             db_prefix: "test_epoch_hash".to_string(),
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
@@ -280,7 +278,7 @@ fn test_get_epoch_genesis_hash() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
         context.sleep(Duration::from_millis(100)).await;
 
         // In epoch 0, the epoch genesis hash should be the genesis hash
@@ -353,7 +351,6 @@ fn test_get_aux_data_from_canonical_chain() {
             db_prefix: "test_aux_data".to_string(),
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
@@ -376,7 +373,7 @@ fn test_get_aux_data_from_canonical_chain() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
         context.sleep(Duration::from_millis(100)).await;
 
         let genesis_block = Block::genesis(genesis_hash);
@@ -423,7 +420,6 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             db_prefix: "test_aux_invalid".to_string(),
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
@@ -446,7 +442,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
         context.sleep(Duration::from_millis(100)).await;
 
         // Request aux data with an invalid parent digest

@@ -158,7 +158,6 @@ fn test_validator_exit_triggers_cancellation() {
             db_prefix: "test_exit".to_string(),
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: ProtocolConsts {
                 validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
@@ -181,7 +180,7 @@ fn test_validator_exit_triggers_cancellation() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
         context.sleep(Duration::from_millis(100)).await;
 
         // Token should not be cancelled yet

@@ -102,6 +102,7 @@ pub struct Engine<
         Sequential,
         DynamicEpocher,
     >,
+    orchestrator_mailbox: summit_orchestrator::Mailbox,
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: usize,
@@ -134,13 +135,40 @@ where
             SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
 
         let cancellation_token = CancellationToken::new();
-        let epocher = cfg.initial_state.get_epocher().clone();
+
+        // create finalizer
+        let (finalizer, initial_state, finalizer_mailbox) = Finalizer::new(
+            context.with_label("finalizer"),
+            FinalizerConfig {
+                archive_mode: cfg.archive_mode,
+                mailbox_size: cfg.mailbox_size,
+                db_prefix: cfg.partition_prefix.clone(),
+                engine_client: cfg.engine_client.clone(),
+                oracle: cfg.oracle.clone(),
+                protocol_consts: ProtocolConsts {
+                    validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
+                    validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
+                    validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
+                },
+                validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
+                page_cache: page_cache.clone(),
+                genesis_hash: cfg.genesis_hash,
+                initial_state: cfg.initial_state,
+                protocol_version: PROTOCOL_VERSION,
+                node_public_key: cfg.key_store.node_key.public_key().clone(),
+                cancellation_token: cancellation_token.clone(),
+                _variant_marker: PhantomData,
+            },
+        )
+        .await;
+
+        let epocher = initial_state.get_epocher().clone();
 
         // create application
         let (application, application_mailbox) = summit_application::Actor::new(
             context.with_label("application"),
             ApplicationConfig {
-                engine_client: cfg.engine_client.clone(),
+                engine_client: cfg.engine_client,
                 mailbox_size: cfg.mailbox_size,
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
@@ -287,32 +315,6 @@ where
             },
         );
 
-        // create finalizer
-        let (finalizer, initial_state, finalizer_mailbox) = Finalizer::new(
-            context.with_label("finalizer"),
-            FinalizerConfig {
-                archive_mode: cfg.archive_mode,
-                mailbox_size: cfg.mailbox_size,
-                db_prefix: cfg.partition_prefix.clone(),
-                engine_client: cfg.engine_client,
-                oracle: cfg.oracle.clone(),
-                orchestrator_mailbox,
-                protocol_consts: ProtocolConsts {
-                    validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
-                    validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
-                    validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
-                },
-                validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
-                page_cache: page_cache.clone(),
-                genesis_hash: cfg.genesis_hash,
-                initial_state: cfg.initial_state,
-                protocol_version: PROTOCOL_VERSION,
-                node_public_key: cfg.key_store.node_key.public_key().clone(),
-                cancellation_token: cancellation_token.clone(),
-                _variant_marker: PhantomData,
-            },
-        )
-        .await;
         // Initialize the sync variables from the consensus state returned by the finalizer.
         // This covers the case where the finalizer reads the consensus state from disk.
         let sync_start = SyncStart {
@@ -346,6 +348,7 @@ where
             finalizer,
             finalizer_mailbox,
             orchestrator,
+            orchestrator_mailbox,
             oracle: cfg.oracle,
             node_public_key: cfg.key_store.node_key.public_key(),
             mailbox_size: cfg.mailbox_size,
@@ -433,14 +436,14 @@ where
             mailbox_size: self.mailbox_size,
             initial: Duration::from_secs(1),
             timeout: Duration::from_secs(2),
-            fetch_retry_timeout: Duration::from_millis(1000),
+            fetch_retry_timeout: Duration::from_millis(1500),
             priority_requests: false,
             priority_responses: false,
         };
         let (resolver_rx, resolver) =
             summit_syncer::resolver::p2p::init(&self.context, resolver_config, backfill_network);
 
-        let finalizer_handle = self.finalizer.start();
+        let finalizer_handle = self.finalizer.start(self.orchestrator_mailbox);
         // start the syncer
         let syncer_handle = self.syncer.start(
             self.finalizer_mailbox.clone(),

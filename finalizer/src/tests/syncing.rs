@@ -174,7 +174,6 @@ fn test_initial_startup_sync_waits_for_valid() {
             db_prefix: "test_startup_sync".to_string(),
             engine_client,
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: default_protocol_consts(),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
@@ -193,7 +192,7 @@ fn test_initial_startup_sync_waits_for_valid() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
 
         // The initial forkchoice loop sleeps 5s per SYNCING retry.
         // With 2 SYNCING responses, the finalizer needs ~10s before it starts
@@ -242,7 +241,6 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             db_prefix: "test_zero_forkchoice".to_string(),
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: default_protocol_consts(),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
@@ -261,7 +259,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
         // Only a short sleep — no sync loop should run
         context.sleep(Duration::from_millis(100)).await;
 
@@ -310,7 +308,6 @@ fn test_execute_block_retries_on_syncing() {
             db_prefix: "test_execute_sync".to_string(),
             engine_client,
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: default_protocol_consts(),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
@@ -329,7 +326,7 @@ fn test_execute_block_retries_on_syncing() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
         context.sleep(Duration::from_millis(100)).await;
 
         // Send a finalized block that will hit the SYNCING retry loop
@@ -393,7 +390,6 @@ fn test_notarized_block_retries_on_syncing() {
             db_prefix: "test_notarized_sync".to_string(),
             engine_client,
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: default_protocol_consts(),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
@@ -412,7 +408,7 @@ fn test_notarized_block_retries_on_syncing() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
         context.sleep(Duration::from_millis(100)).await;
 
         // Send a notarized block — triggers execute_block which hits SYNCING
@@ -468,7 +464,6 @@ fn test_checkpoint_startup_full_flow() {
             db_prefix: "test_checkpoint_flow".to_string(),
             engine_client,
             oracle: MockNetworkOracle,
-            orchestrator_mailbox,
             protocol_consts: default_protocol_consts(),
             validator_max_withdrawals_per_block: 16,
             page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
@@ -487,7 +482,7 @@ fn test_checkpoint_startup_full_flow() {
             )
             .await;
 
-        let _handle = finalizer.start();
+        let _handle = finalizer.start(orchestrator_mailbox);
 
         // Wait for initial forkchoice sync (1 SYNCING * 5s)
         context.sleep(Duration::from_secs(7)).await;
