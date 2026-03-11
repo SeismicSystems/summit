@@ -144,7 +144,6 @@ fn test_get_latest_epoch() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_epoch".to_string(),
             engine_client: MockEngineClient::new(),
@@ -251,7 +250,6 @@ fn test_get_epoch_genesis_hash() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_epoch_hash".to_string(),
             engine_client: MockEngineClient::new(),
@@ -346,7 +344,6 @@ fn test_get_aux_data_from_canonical_chain() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_aux_data".to_string(),
             engine_client: MockEngineClient::new(),
@@ -415,7 +412,6 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_aux_invalid".to_string(),
             engine_client: MockEngineClient::new(),

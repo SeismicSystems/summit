@@ -664,7 +664,6 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
     let path = format!("testnet/node{node}/");
 
     RunFlags {
-        archive_mode: false,
         key_store_path: path.clone(),
         store_path: format!("{path}db"),
         port: (26600 + (node * 10)) as u16,

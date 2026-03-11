@@ -57,7 +57,6 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub initial_state: ConsensusState,
     pub checkpoint_last_block: Option<Block>,
     pub checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
-    pub archive_mode: bool,
     pub blocks_per_epoch: u64,
 }
 
@@ -73,7 +72,6 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
         initial_state: ConsensusState,
         checkpoint_last_block: Option<Block>,
         checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
-        archive_mode: bool,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,
@@ -102,7 +100,6 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             initial_state,
             checkpoint_last_block,
             checkpoint_finalized_header,
-            archive_mode,
             blocks_per_epoch: genesis.blocks_per_epoch,
         })
     }

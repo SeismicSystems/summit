@@ -16,7 +16,6 @@ pub struct ProtocolConsts {
 }
 
 pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Variant> {
-    pub archive_mode: bool,
     pub mailbox_size: usize,
     pub db_prefix: String,
     pub engine_client: C,

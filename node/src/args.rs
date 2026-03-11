@@ -139,10 +139,6 @@ pub struct RunFlags {
     #[arg(long)]
     pub ip: Option<String>,
 
-    /// Start this mode on archive mode and store a checkpoint for every epoch
-    #[arg(long)]
-    pub archive_mode: bool,
-
     /// Path to a TOML file containing bootstrapper nodes (pubkey and address) for syncing
     #[arg(long)]
     pub bootstrappers: Option<String>,
@@ -395,7 +391,6 @@ impl Command {
                 initial_state,
                 maybe_last_block,
                 maybe_finalized_header,
-                flags.archive_mode,
             )
             .unwrap();
 
@@ -591,7 +586,6 @@ pub fn run_node_local(
             initial_state,
             checkpoint_parent_block,
             None,
-            flags.archive_mode,
         )
         .unwrap();
 

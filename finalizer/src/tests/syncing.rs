@@ -169,7 +169,6 @@ fn test_initial_startup_sync_waits_for_valid() {
         engine_client.queue_commit_hash_syncing(2);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_startup_sync".to_string(),
             engine_client,
@@ -236,7 +235,6 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_zero_forkchoice".to_string(),
             engine_client: MockEngineClient::new(),
@@ -303,7 +301,6 @@ fn test_execute_block_retries_on_syncing() {
         engine_client.queue_check_payload_syncing(3);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_execute_sync".to_string(),
             engine_client,
@@ -385,7 +382,6 @@ fn test_notarized_block_retries_on_syncing() {
         engine_client.queue_check_payload_syncing(2);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_notarized_sync".to_string(),
             engine_client,
@@ -459,7 +455,6 @@ fn test_checkpoint_startup_full_flow() {
         engine_client.queue_check_payload_syncing(1);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_checkpoint_flow".to_string(),
             engine_client,

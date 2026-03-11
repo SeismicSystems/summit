@@ -135,7 +135,6 @@ fn test_orphaned_block_processed_when_parent_arrives() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_orphaned".to_string(),
             engine_client: MockEngineClient::new(),
@@ -214,7 +213,6 @@ fn test_multiple_forks_tracked() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_forks".to_string(),
             engine_client: MockEngineClient::new(),
@@ -294,7 +292,6 @@ fn test_dead_fork_block_discarded() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_dead_fork".to_string(),
             engine_client: MockEngineClient::new(),
@@ -390,7 +387,6 @@ fn test_fork_states_pruned_after_finalization() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_prune_forks".to_string(),
             engine_client: MockEngineClient::new(),
@@ -505,7 +501,6 @@ fn test_orphaned_blocks_pruned_after_finalization() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_prune_orphans".to_string(),
             engine_client: MockEngineClient::new(),
@@ -612,7 +607,6 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_reuse".to_string(),
             engine_client: MockEngineClient::new(),
@@ -715,7 +709,6 @@ fn test_competing_fork_pruned_on_finalization() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_compete".to_string(),
             engine_client: MockEngineClient::new(),

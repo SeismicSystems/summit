@@ -622,7 +622,6 @@ where
         initial_state,
         checkpoint_last_block: None,
         checkpoint_finalized_header: None,
-        archive_mode: false,
         blocks_per_epoch: DEFAULT_BLOCKS_PER_EPOCH,
     }
 }
