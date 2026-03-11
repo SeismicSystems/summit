@@ -75,6 +75,7 @@ fn test_deposit_request_single() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
