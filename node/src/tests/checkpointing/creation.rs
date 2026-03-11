@@ -81,7 +81,9 @@ fn test_checkpoint_created() {
 
         let stop_height = DEFAULT_BLOCKS_PER_EPOCH;
 
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).with_stop_at(stop_height).build();
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_stop_at(stop_height)
+            .build();
         let initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
@@ -276,7 +278,9 @@ fn test_previous_header_hash_matches() {
 
         let stop_height = DEFAULT_BLOCKS_PER_EPOCH + 1;
 
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_stop_at(21)
+            .build();
         let initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
