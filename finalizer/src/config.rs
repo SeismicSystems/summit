@@ -1,7 +1,6 @@
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_runtime::buffer::paged::CacheRef;
 use std::marker::PhantomData;
-use summit_orchestrator::Mailbox as OrchestratorMailbox;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{EngineClient, PublicKey, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
@@ -22,7 +21,6 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub db_prefix: String,
     pub engine_client: C,
     pub oracle: O,
-    pub orchestrator_mailbox: OrchestratorMailbox,
     pub protocol_consts: ProtocolConsts,
     pub validator_max_withdrawals_per_block: usize,
     pub page_cache: CacheRef,

@@ -83,7 +83,6 @@ pub struct Finalizer<
     protocol_consts: ProtocolConsts,
     protocol_version_digest: Digest,
     oracle: O,
-    orchestrator_mailbox: summit_orchestrator::Mailbox,
     node_public_key: PublicKey,
     validator_exit: bool,
     cancellation_token: CancellationToken,
@@ -171,7 +170,6 @@ impl<
                 mailbox: rx,
                 engine_client: cfg.engine_client,
                 oracle: cfg.oracle,
-                orchestrator_mailbox: cfg.orchestrator_mailbox,
                 pending_height_notifys: BTreeMap::new(),
                 db,
                 canonical_state: state.clone(),
@@ -195,11 +193,11 @@ impl<
         )
     }
 
-    pub fn start(mut self) -> Handle<()> {
-        spawn_cell!(self.context, self.run().await)
+    pub fn start(mut self, orchestrator_mailbox: summit_orchestrator::Mailbox) -> Handle<()> {
+        spawn_cell!(self.context, self.run(orchestrator_mailbox).await)
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self, mut orchestrator_mailbox: summit_orchestrator::Mailbox) {
         let mut last_committed_timestamp: Option<Instant> = None;
         let mut signal = self.context.stopped().fuse();
         let cancellation_token = self.cancellation_token.clone();
@@ -215,7 +213,7 @@ impl<
             .track(self.canonical_state.get_epoch(), network_keys)
             .await;
 
-        self.orchestrator_mailbox
+        orchestrator_mailbox
             .report(Message::Enter(EpochTransition {
                 epoch: Epoch::new(self.canonical_state.get_epoch()),
                 validator_keys: active_validators,
@@ -270,7 +268,7 @@ impl<
                                     // I don't think we need this
                                 }
                                 Update::FinalizedBlock((block, finalization), ack_tx) => {
-                                    self.handle_finalized_block(ack_tx, block, finalization, &mut last_committed_timestamp).await;
+                                    self.handle_finalized_block(ack_tx, block, finalization, &mut orchestrator_mailbox, &mut last_committed_timestamp).await;
                                 }
                                 Update::NotarizedBlock(block) => {
                                     self.handle_notarized_block(block).await;
@@ -358,6 +356,7 @@ impl<
         finalization: Option<
             Finalization<bls12381_multisig::Scheme<PublicKey, V>, <Block as Digestible>::Digest>,
         >,
+        orchestrator_mailbox: &mut summit_orchestrator::Mailbox,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
     ) {
         let height = block.height();
@@ -607,7 +606,7 @@ impl<
                 "signaling orchestrator to enter new epoch"
             );
 
-            self.orchestrator_mailbox
+            orchestrator_mailbox
                 .report(Message::Enter(EpochTransition {
                     epoch: Epoch::new(self.canonical_state.get_epoch()),
                     validator_keys: active_validators,
@@ -622,7 +621,7 @@ impl<
                 old_epoch = self.canonical_state.get_epoch() - 1,
                 "signaling orchestrator to exit old epoch"
             );
-            self.orchestrator_mailbox
+            orchestrator_mailbox
                 .report(Message::Exit(Epoch::new(
                     self.canonical_state.get_epoch() - 1,
                 )))

@@ -101,6 +101,7 @@ fn test_deposit_and_withdrawal_request_single() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(41) // stop at block 41 because of the epoch+1 hold period on withdrawls
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
@@ -331,6 +332,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
         // Set the validator balance to 0
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
@@ -577,6 +579,7 @@ fn test_deposit_blocked_by_pending_withdrawal() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
 
         let mut initial_state =
@@ -768,6 +771,7 @@ fn test_withdrawal_blocked_by_pending_deposit() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
 
         let mut initial_state =
@@ -971,6 +975,7 @@ fn test_deposit_and_withdrawal_same_block() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
 
         let mut initial_state =

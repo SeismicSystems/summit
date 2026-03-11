@@ -103,6 +103,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(41) // we stop at 41 because of the epoch+1 hold period before executing withdrawls
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
@@ -320,6 +321,7 @@ fn test_duplicate_withdrawal_blocked() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
 
         let initial_state =
@@ -496,6 +498,7 @@ fn test_withdrawal_wrong_source_address_rejected() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
 
         let initial_state =
@@ -673,6 +676,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
 
         let initial_state =
@@ -869,6 +873,7 @@ fn test_withdrawal_during_onboarding_aborts() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
 
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
@@ -1082,6 +1087,7 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
         let initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
@@ -1317,6 +1323,7 @@ fn test_stake_bounds_skips_zero_balance_validator() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, balance);

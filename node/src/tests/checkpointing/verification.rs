@@ -110,7 +110,9 @@ fn test_checkpoint_verification_fixed_committee() {
 
         let stop_height = num_epochs * DEFAULT_BLOCKS_PER_EPOCH;
 
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_stop_at(stop_height)
+            .build();
         let initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
@@ -351,6 +353,7 @@ fn test_checkpoint_verification_dynamic_committee() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 

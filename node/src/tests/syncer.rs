@@ -41,6 +41,8 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
                 tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
+        let stop_height = 2 * DEFAULT_BLOCKS_PER_EPOCH;
+
         // Start network
         network.start();
         // Register participants
@@ -80,7 +82,9 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_stop_at(stop_height)
+            .build();
         let initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
@@ -178,7 +182,6 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
         engine.start(pending, recovered, resolver, orchestrator, broadcast);
 
         // Poll metrics
-        let stop_height = 2 * DEFAULT_BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();
@@ -264,6 +267,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
                 tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
+        let stop_height = 2 * DEFAULT_BLOCKS_PER_EPOCH;
         // Start network
         network.start();
         // Register participants
@@ -303,7 +307,9 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash).build();
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_stop_at(stop_height)
+            .build();
         let initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
 
@@ -403,7 +409,6 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         engine.start(pending, recovered, resolver, orchestrator, broadcast);
 
         // Poll metrics
-        let stop_height = 2 * DEFAULT_BLOCKS_PER_EPOCH;
         let mut nodes_finished = HashSet::new();
         loop {
             let metrics = context.encode();

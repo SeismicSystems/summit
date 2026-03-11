@@ -80,6 +80,7 @@ fn test_protocol_param_max_stake() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
@@ -311,6 +312,7 @@ fn test_protocol_param_stake_update_committee() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
             .build();
         let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
         initial_state.set_maximum_stake(max_stake);

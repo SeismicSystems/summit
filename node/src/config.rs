@@ -53,6 +53,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub namespace: String,
     pub genesis_hash: [u8; 32],
 
+    /// Initial state given to the finalizer. All other processes should get initial state from the finalizer not the config
     pub initial_state: ConsensusState,
     pub checkpoint_last_block: Option<Block>,
     pub checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
