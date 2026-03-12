@@ -121,7 +121,7 @@ impl EngineClient for RethEngineClient {
                     .await
                     .expect("Failed to update fork choice after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("Unable to get a response: {e}"),
         };
 
         if res.is_invalid() {
@@ -144,7 +144,7 @@ impl EngineClient for RethEngineClient {
                     .await
                     .expect("Failed to get payload after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("Unable to get a response: {e}"),
         }
     }
 
@@ -172,7 +172,7 @@ impl EngineClient for RethEngineClient {
                     .await
                     .expect("Failed to check payload after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("Unable to get a response: {e}"),
         }
     }
 
@@ -190,7 +190,7 @@ impl EngineClient for RethEngineClient {
                     .await
                     .expect("Failed to commit hash after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("Unable to get a response: {e}"),
         }
     }
 }
@@ -268,7 +268,7 @@ impl EngineClient for BadBlockEngineClient {
                     .await
                     .expect("Failed to update fork choice after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("Unable to get a response: {e}"),
         };
 
         if res.is_invalid() {
@@ -325,7 +325,7 @@ impl EngineClient for BadBlockEngineClient {
                     .await
                     .expect("Failed to check payload after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("Unable to get a response: {e}"),
         }
     }
 
@@ -343,7 +343,7 @@ impl EngineClient for BadBlockEngineClient {
                     .await
                     .expect("Failed to commit hash after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("Unable to get a response: {e}"),
         }
     }
 }
