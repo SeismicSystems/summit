@@ -46,7 +46,7 @@ pub struct Actor<
     built_block: Arc<Mutex<Option<(Block, Round)>>>,
     genesis_hash: [u8; 32],
     epocher: ES,
-    allowed_timestamp_delta_ms: u64,
+    allowed_timestamp_future_ms: u64,
     cancellation_token: CancellationToken,
     _scheme_marker: PhantomData<S>,
     _key_marker: PhantomData<P>,
@@ -77,7 +77,7 @@ impl<
                 built_block: Arc::new(Mutex::new(None)),
                 genesis_hash,
                 epocher: cfg.epocher,
-                allowed_timestamp_delta_ms: cfg.max_timestamp_drift.as_millis() as u64,
+                allowed_timestamp_future_ms: cfg.allowed_timestamp_future.as_millis() as u64,
                 cancellation_token: cfg.cancellation_token,
                 _scheme_marker: PhantomData,
                 _key_marker: PhantomData,
@@ -236,7 +236,7 @@ impl<
                                 let mut syncer = syncer.clone();
                                 let mut finalizer_clone = finalizer.clone();
                                 let epocher = self.epocher.clone();
-                                let allowed_timestamp_delta_ms = self.allowed_timestamp_delta_ms;
+                                let allowed_timestamp_future_ms = self.allowed_timestamp_future_ms;
                                 move |context| async move {
                                     let requester = try_join(parent_request, block_request);
                                     select! {
@@ -282,7 +282,7 @@ impl<
                                                 }
 
                                                 let now_millis = context.current().epoch_millis();
-                                                if handle_verify(&block, parent, &epocher, &aux_data, now_millis, allowed_timestamp_delta_ms) {
+                                                if handle_verify(&block, parent, &epocher, &aux_data, now_millis, allowed_timestamp_future_ms) {
                                                     // persist valid block
                                                     syncer.verified(round, block).await;
 
@@ -581,7 +581,7 @@ fn handle_verify<ES: Epocher>(
     epocher: &ES,
     aux_data: &BlockAuxData,
     now_millis: u64,
-    allowed_timestamp_delta_ms: u64,
+    allowed_timestamp_future_ms: u64,
 ) -> bool {
     // You can only re-propose the same block if it's the last height in the epoch.
     if parent.digest() == block.digest() {
@@ -604,10 +604,10 @@ fn handle_verify<ES: Epocher>(
         warn!("block timestamp not increasing");
         return false;
     }
-    if block.timestamp() > now_millis + allowed_timestamp_delta_ms {
+    if block.timestamp() > now_millis + allowed_timestamp_future_ms {
         warn!(
             block_timestamp = block.timestamp(),
-            now_millis, allowed_timestamp_delta_ms, "block timestamp too far in the future"
+            now_millis, allowed_timestamp_future_ms, "block timestamp too far in the future"
         );
         return false;
     }
