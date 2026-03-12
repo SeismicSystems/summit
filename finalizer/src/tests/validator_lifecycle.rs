@@ -153,7 +153,6 @@ fn test_validator_exit_triggers_cancellation() {
         let token_clone = cancellation_token.clone();
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            archive_mode: false,
             mailbox_size: 100,
             db_prefix: "test_exit".to_string(),
             engine_client: MockEngineClient::new(),
