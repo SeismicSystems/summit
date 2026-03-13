@@ -9,14 +9,14 @@ use std::{
 
 /// A mock application that stores finalized blocks.
 #[derive(Clone)]
-pub struct Application<B: Block, S: Scheme<B::Commitment>> {
+pub struct Application<B: Block, S: Scheme<B::Digest>> {
     blocks: Arc<Mutex<BTreeMap<u64, B>>>,
     #[allow(clippy::type_complexity)]
-    tip: Arc<Mutex<Option<(u64, B::Commitment)>>>,
+    tip: Arc<Mutex<Option<(u64, B::Digest)>>>,
     _phantom: std::marker::PhantomData<S>,
 }
 
-impl<B: Block, S: Scheme<B::Commitment>> Default for Application<B, S> {
+impl<B: Block, S: Scheme<B::Digest>> Default for Application<B, S> {
     fn default() -> Self {
         Self {
             blocks: Default::default(),
@@ -26,19 +26,19 @@ impl<B: Block, S: Scheme<B::Commitment>> Default for Application<B, S> {
     }
 }
 
-impl<B: Block, S: Scheme<B::Commitment>> Application<B, S> {
+impl<B: Block, S: Scheme<B::Digest>> Application<B, S> {
     /// Returns the finalized blocks.
     pub fn blocks(&self) -> BTreeMap<u64, B> {
         self.blocks.lock().unwrap().clone()
     }
 
     /// Returns the tip.
-    pub fn tip(&self) -> Option<(u64, B::Commitment)> {
+    pub fn tip(&self) -> Option<(u64, B::Digest)> {
         *self.tip.lock().unwrap()
     }
 }
 
-impl<B: Block, S: Scheme<B::Commitment>> Reporter for Application<B, S> {
+impl<B: Block, S: Scheme<B::Digest>> Reporter for Application<B, S> {
     type Activity = Update<B, S>;
 
     async fn report(&mut self, activity: Self::Activity) {

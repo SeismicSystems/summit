@@ -102,7 +102,7 @@ impl<B: Block> Producer for Handler<B> {
 /// A request for backfilling data.
 #[derive(Clone)]
 pub enum Request<B: Block> {
-    Block(B::Commitment),
+    Block(B::Digest),
     Finalized { height: u64 },
     Notarized { round: Round },
 }
@@ -151,7 +151,7 @@ impl<B: Block> Read for Request<B> {
 
     fn read_cfg(buf: &mut impl Buf, _: &()) -> Result<Self, CodecError> {
         let request = match u8::read(buf)? {
-            BLOCK_REQUEST => Self::Block(B::Commitment::read(buf)?),
+            BLOCK_REQUEST => Self::Block(B::Digest::read(buf)?),
             FINALIZED_REQUEST => Self::Finalized {
                 height: u64::read(buf)?,
             },

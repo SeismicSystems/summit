@@ -163,7 +163,11 @@ fn test_validator_exit_triggers_cancellation() {
                 validator_withdrawal_num_epochs: 2,
             },
             validator_max_withdrawals_per_block: 16,
-            page_cache: CacheRef::new(std::num::NonZero::new(4096).unwrap(), NZUsize!(100)),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
             genesis_hash,
             initial_state,
             protocol_version: 1,

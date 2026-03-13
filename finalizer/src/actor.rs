@@ -115,7 +115,7 @@ impl<
             log_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
             log_write_buffer: WRITE_BUFFER,
             log_compression: None,
-            log_codec_config: (),
+            log_codec_config: ((), ()),
             log_items_per_section: NZU64!(262_144),
             translator: EightCap,
             page_cache: cfg.page_cache,

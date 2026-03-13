@@ -4,7 +4,6 @@ use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Storage};
-use commonware_storage::qmdb::store::NonDurable;
 use commonware_storage::qmdb::store::db::{self, Db};
 use commonware_storage::translator::EightCap;
 use commonware_utils::sequence::FixedBytes;
@@ -26,24 +25,23 @@ const LATEST_FINALIZED_HEADER_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const LATEST_CHECKPOINT_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 2];
 
 pub struct FinalizerState<E: Clock + Storage + Metrics, V: Variant> {
-    store: Option<Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable>>,
+    store: Option<Db<E, FixedBytes<64>, Value<V>, EightCap>>,
 }
 
 impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
-    pub async fn new(context: E, cfg: Config<EightCap, ()>) -> Self {
+    pub async fn new(context: E, cfg: Config<EightCap, ((), ())>) -> Self {
         let store = Db::<_, FixedBytes<64>, Value<V>, EightCap>::init(context, cfg)
             .await
-            .expect("failed to initialize unified store")
-            .into_dirty();
+            .expect("failed to initialize unified store");
 
         Self { store: Some(store) }
     }
 
-    fn store(&self) -> &Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable> {
+    fn store(&self) -> &Db<E, FixedBytes<64>, Value<V>, EightCap> {
         self.store.as_ref().expect("store should always be present")
     }
 
-    fn store_mut(&mut self) -> &mut Db<E, FixedBytes<64>, Value<V>, EightCap, NonDurable> {
+    fn store_mut(&mut self) -> &mut Db<E, FixedBytes<64>, Value<V>, EightCap> {
         self.store.as_mut().expect("store should always be present")
     }
 
@@ -96,7 +94,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn set_latest_consensus_state_epoch(&mut self, epoch: u64) {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
         self.store_mut()
-            .update(key, Value::U64(epoch))
+            .write_batch([(key, Some(Value::U64(epoch)))])
             .await
             .expect("failed to set latest consensus state epoch");
     }
@@ -119,7 +117,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn set_latest_finalized_header_epoch(&mut self, epoch: u64) {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
         self.store_mut()
-            .update(key, Value::U64(epoch))
+            .write_batch([(key, Some(Value::U64(epoch)))])
             .await
             .expect("failed to set latest finalized header epoch");
     }
@@ -142,7 +140,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn set_latest_checkpoint_epoch(&mut self, epoch: u64) {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
         self.store_mut()
-            .update(key, Value::U64(epoch))
+            .write_batch([(key, Some(Value::U64(epoch)))])
             .await
             .expect("failed to set latest checkpoint epoch");
     }
@@ -151,7 +149,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn store_consensus_state(&mut self, epoch: u64, state: &ConsensusState) {
         let key = Self::make_consensus_state_key(epoch);
         self.store_mut()
-            .update(key, Value::ConsensusState(Box::new(state.clone())))
+            .write_batch([(key, Some(Value::ConsensusState(Box::new(state.clone()))))])
             .await
             .expect("failed to store consensus state");
 
@@ -190,12 +188,12 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         }
     }
 
-    pub async fn delete_consensus_state(&mut self, epoch: u64) -> bool {
+    pub async fn delete_consensus_state(&mut self, epoch: u64) {
         let key = Self::make_consensus_state_key(epoch);
         self.store_mut()
-            .delete(key)
+            .write_batch([(key, None)])
             .await
-            .expect("failed to delete consensus state")
+            .expect("failed to delete consensus state");
     }
 
     // Checkpoint operations
@@ -208,10 +206,13 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     ) {
         let key = Self::make_checkpoint_key(epoch);
         self.store_mut()
-            .update(
+            .write_batch([(
                 key,
-                Value::Checkpoint(Box::new((checkpoint.clone(), last_block))),
-            )
+                Some(Value::Checkpoint(Box::new((
+                    checkpoint.clone(),
+                    last_block,
+                )))),
+            )])
             .await
             .expect("failed to store finalized checkpoint");
 
@@ -254,7 +255,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     ) {
         let key = Self::make_finalized_header_key(epoch);
         self.store_mut()
-            .update(key, Value::FinalizedHeader(Box::new(header.clone())))
+            .write_batch([(key, Some(Value::FinalizedHeader(Box::new(header.clone()))))])
             .await
             .expect("failed to store finalized header");
 
@@ -292,17 +293,10 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     // Commit all pending changes to the database
     pub async fn commit(&mut self) {
-        // Take ownership of the store temporarily
-        let store = self.store.take().expect("store should be present");
-
-        // Commit returns (Durable store, range)
-        let (durable_store, _range) = store
+        self.store_mut()
             .commit(None)
             .await
             .expect("failed to commit to database");
-
-        // Convert back to NonDurable and restore
-        self.store = Some(durable_store.into_dirty());
     }
 }
 
@@ -393,7 +387,10 @@ mod tests {
     use rand::rngs::StdRng;
     use summit_types::Block;
 
-    async fn create_test_db_with_context<E: Clock + Storage + Metrics, V: Variant>(
+    async fn create_test_db_with_context<
+        E: Clock + Storage + Metrics + commonware_runtime::BufferPooler,
+        V: Variant,
+    >(
         partition: &str,
         context: E,
     ) -> FinalizerState<E, V> {
@@ -401,10 +398,14 @@ mod tests {
             log_partition: format!("{}-log", partition),
             log_write_buffer: NZUsize!(64 * 1024),
             log_compression: None,
-            log_codec_config: (),
+            log_codec_config: ((), ()),
             log_items_per_section: NZU64!(4),
             translator: EightCap,
-            page_cache: CacheRef::new(std::num::NonZero::new(77u16).unwrap(), NZUsize!(9)),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(77u16).unwrap(),
+                NZUsize!(9),
+            ),
         };
         FinalizerState::<E, V>::new(context, config).await
     }

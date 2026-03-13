@@ -68,15 +68,15 @@ impl<D: Digest> From<archive::Identifier<'_, D>> for Identifier<D> {
 ///
 /// These messages are sent from the consensus engine and other parts of the
 /// system to drive the state of the marshal.
-pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
+pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
     // -------------------- Application Messages --------------------
     /// A request to retrieve the (height, commitment) of a block by its identifier.
     /// The block must be finalized; returns `None` if the block is not finalized.
     GetInfo {
         /// The identifier of the block to get the information of.
-        identifier: Identifier<B::Commitment>,
+        identifier: Identifier<B::Digest>,
         /// A channel to send the retrieved (height, commitment).
-        response: oneshot::Sender<Option<(Height, B::Commitment)>>,
+        response: oneshot::Sender<Option<(Height, B::Digest)>>,
     },
     /// A request to retrieve a block by its identifier.
     ///
@@ -84,7 +84,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
     /// blocks, whereas requesting by commitment may return non-finalized or even unverified blocks.
     GetBlock {
         /// The identifier of the block to retrieve.
-        identifier: Identifier<B::Commitment>,
+        identifier: Identifier<B::Digest>,
         /// A channel to send the retrieved block.
         response: oneshot::Sender<Option<B>>,
     },
@@ -93,7 +93,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
         /// The height of the finalization to retrieve.
         height: Height,
         /// A channel to send the retrieved finalization.
-        response: oneshot::Sender<Option<Finalization<S, B::Commitment>>>,
+        response: oneshot::Sender<Option<Finalization<S, B::Digest>>>,
     },
     /// A hint to fetch a finalization from the network if not available locally.
     ///
@@ -111,7 +111,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
         /// to help locate the block.
         round: Option<Round>,
         /// The commitment of the block to retrieve.
-        commitment: B::Commitment,
+        commitment: B::Digest,
         /// A channel to send the retrieved block.
         response: oneshot::Sender<B>,
     },
@@ -134,12 +134,12 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
     /// A notarization from the consensus engine.
     Notarization {
         /// The notarization.
-        notarization: Notarization<S, B::Commitment>,
+        notarization: Notarization<S, B::Digest>,
     },
     /// A finalization from the consensus engine.
     Finalization {
         /// The finalization.
-        finalization: Finalization<S, B::Commitment>,
+        finalization: Finalization<S, B::Digest>,
     },
     /// A request to set the sync floor.
     ///
@@ -159,11 +159,11 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
 
 /// A mailbox for sending messages to the marshal [Actor](super::super::actor::Actor).
 #[derive(Clone)]
-pub struct Mailbox<S: Scheme<B::Commitment>, B: Block> {
+pub struct Mailbox<S: Scheme<B::Digest>, B: Block> {
     sender: mpsc::Sender<Message<S, B>>,
 }
 
-impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
+impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     /// Creates a new mailbox.
     pub(crate) const fn new(sender: mpsc::Sender<Message<S, B>>) -> Self {
         Self { sender }
@@ -172,8 +172,8 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     /// A request to retrieve the information about the highest finalized block.
     pub async fn get_info(
         &mut self,
-        identifier: impl Into<Identifier<B::Commitment>>,
-    ) -> Option<(Height, B::Commitment)> {
+        identifier: impl Into<Identifier<B::Digest>>,
+    ) -> Option<(Height, B::Digest)> {
         let (tx, rx) = oneshot::channel();
         if self
             .sender
@@ -194,10 +194,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
 
     /// A best-effort attempt to retrieve a given block from local
     /// storage. It is not an indication to go fetch the block from the network.
-    pub async fn get_block(
-        &mut self,
-        identifier: impl Into<Identifier<B::Commitment>>,
-    ) -> Option<B> {
+    pub async fn get_block(&mut self, identifier: impl Into<Identifier<B::Digest>>) -> Option<B> {
         let (tx, rx) = oneshot::channel();
         if self
             .sender
@@ -218,10 +215,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
 
     /// A best-effort attempt to retrieve a given [Finalization] from local
     /// storage. It is not an indication to go fetch the [Finalization] from the network.
-    pub async fn get_finalization(
-        &mut self,
-        height: Height,
-    ) -> Option<Finalization<S, B::Commitment>> {
+    pub async fn get_finalization(&mut self, height: Height) -> Option<Finalization<S, B::Digest>> {
         let (tx, rx) = oneshot::channel();
         if self
             .sender
@@ -267,7 +261,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     pub async fn subscribe(
         &mut self,
         round: Option<Round>,
-        commitment: B::Commitment,
+        commitment: B::Digest,
     ) -> oneshot::Receiver<B> {
         let (tx, rx) = oneshot::channel();
         if self
@@ -290,7 +284,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     /// If the starting block is not found, `None` is returned.
     pub async fn ancestry(
         &mut self,
-        (start_round, start_commitment): (Option<Round>, B::Commitment),
+        (start_round, start_commitment): (Option<Round>, B::Digest),
     ) -> Option<AncestorStream<S, B>> {
         self.subscribe(start_round, start_commitment)
             .await
@@ -345,7 +339,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     ///
     /// This is a trusted call that injects a finalization directly into marshal. The
     /// finalization is expected to have already been verified by the caller.
-    pub async fn finalization(&mut self, finalization: Finalization<S, B::Commitment>) {
+    pub async fn finalization(&mut self, finalization: Finalization<S, B::Digest>) {
         if self
             .sender
             .send(Message::Finalization { finalization })
@@ -357,8 +351,8 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     }
 }
 
-impl<S: Scheme<B::Commitment>, B: Block> Reporter for Mailbox<S, B> {
-    type Activity = Activity<S, B::Commitment>;
+impl<S: Scheme<B::Digest>, B: Block> Reporter for Mailbox<S, B> {
+    type Activity = Activity<S, B::Digest>;
 
     async fn report(&mut self, activity: Self::Activity) {
         let message = match activity {
@@ -377,9 +371,9 @@ impl<S: Scheme<B::Commitment>, B: Block> Reporter for Mailbox<S, B> {
 
 /// Returns a boxed subscription future for a block.
 #[inline]
-fn subscribe_block_future<S: Scheme<B::Commitment>, B: Block>(
+fn subscribe_block_future<S: Scheme<B::Digest>, B: Block>(
     mut marshal: Mailbox<S, B>,
-    commitment: B::Commitment,
+    commitment: B::Digest,
 ) -> BoxFuture<'static, Option<B>> {
     async move {
         let receiver = marshal.subscribe(None, commitment).await;
@@ -393,14 +387,14 @@ fn subscribe_block_future<S: Scheme<B::Commitment>, B: Block>(
 /// TODO(clabby): Once marshal can also yield the genesis block, this stream should end
 /// at block height 0 rather than 1.
 #[pin_project]
-pub struct AncestorStream<S: Scheme<B::Commitment>, B: Block> {
+pub struct AncestorStream<S: Scheme<B::Digest>, B: Block> {
     marshal: Mailbox<S, B>,
     buffered: Vec<B>,
     #[pin]
     pending: FuturesOrdered<BoxFuture<'static, Option<B>>>,
 }
 
-impl<S: Scheme<B::Commitment>, B: Block> AncestorStream<S, B> {
+impl<S: Scheme<B::Digest>, B: Block> AncestorStream<S, B> {
     /// Creates a new [AncestorStream] starting from the given ancestry.
     ///
     /// # Panics
@@ -427,7 +421,7 @@ impl<S: Scheme<B::Commitment>, B: Block> AncestorStream<S, B> {
     }
 }
 
-impl<S: Scheme<B::Commitment>, B: Block> Stream for AncestorStream<S, B> {
+impl<S: Scheme<B::Digest>, B: Block> Stream for AncestorStream<S, B> {
     type Item = B;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

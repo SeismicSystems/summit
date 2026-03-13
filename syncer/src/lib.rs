@@ -82,9 +82,9 @@ use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 /// Finalized blocks are reported to the application in monotonically increasing order (no gaps permitted).
 /// Notarized blocks are sent without ordering guarantees to enable execution before finalization.
 #[derive(Clone, Debug)]
-pub enum Update<B: Block, S: Scheme<B::Commitment>, A: Acknowledgement = Exact> {
+pub enum Update<B: Block, S: Scheme<B::Digest>, A: Acknowledgement = Exact> {
     /// A new finalized tip.
-    Tip(u64, B::Commitment),
+    Tip(u64, B::Digest),
     /// A new finalized block and an [Acknowledgement] for the application to signal once processed.
     ///
     /// To ensure all blocks are delivered at least once, marshal waits to mark a block as delivered
@@ -93,7 +93,7 @@ pub enum Update<B: Block, S: Scheme<B::Commitment>, A: Acknowledgement = Exact> 
     ///
     /// Because the [Acknowledgement] is clonable, the application can pass [Update] to multiple consumers
     /// (and marshal will only consider the block delivered once all consumers have acknowledged it).
-    FinalizedBlock((B, Option<Finalization<S, B::Commitment>>), A),
+    FinalizedBlock((B, Option<Finalization<S, B::Digest>>), A),
     /// A notarized (but not yet finalized) block.
     ///
     /// These blocks do not require acknowledgement and may arrive out of order. They enable proposers
@@ -199,7 +199,7 @@ mod tests {
             replay_buffer: NZUsize!(1024),
             key_write_buffer: NZUsize!(1024),
             value_write_buffer: NZUsize!(1024),
-            page_cache: CacheRef::new(PAGE_SIZE, PAGE_CACHE_SIZE),
+            page_cache: CacheRef::from_pooler(&context, PAGE_SIZE, PAGE_CACHE_SIZE),
             strategy: Sequential,
         };
 
@@ -226,6 +226,7 @@ mod tests {
             deque_size: 10,
             priority: false,
             codec_config: (),
+            peer_provider: oracle.manager(),
         };
         let (broadcast_engine, buffer) = buffered::Engine::new(context.clone(), broadcast_config);
         let network = control.register(2, TEST_QUOTA).await.unwrap();

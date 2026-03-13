@@ -8,7 +8,7 @@ use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::Viewable;
 use commonware_consensus::types::{Height, View};
 use commonware_consensus::{Block as ConsensusBlock, Heightable};
-use commonware_cryptography::{Committable, Digestible, Hasher, Sha256, sha256::Digest};
+use commonware_cryptography::{Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,7 +185,7 @@ impl Heightable for Block {
 }
 
 impl ConsensusBlock for Block {
-    fn parent(&self) -> Self::Commitment {
+    fn parent(&self) -> Self::Digest {
         self.header.parent
     }
 }
@@ -276,14 +276,6 @@ impl Digestible for Block {
     type Digest = Digest;
 
     fn digest(&self) -> Digest {
-        self.header.digest
-    }
-}
-
-impl Committable for Block {
-    type Commitment = Digest;
-
-    fn commitment(&self) -> Digest {
         self.header.digest
     }
 }

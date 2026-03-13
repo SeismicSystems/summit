@@ -19,7 +19,9 @@ use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_parallel::Strategy;
 use commonware_resolver::Resolver;
-use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_runtime::{
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell,
+};
 use commonware_storage::archive::Identifier as ArchiveID;
 use commonware_utils::{
     Acknowledgement, BoxedError,
@@ -64,7 +66,7 @@ const LATEST_KEY: U64 = U64::new(0xFF);
 #[pin_project]
 struct PendingAck<B: Block, A: Acknowledgement> {
     height: Height,
-    commitment: B::Commitment,
+    commitment: B::Digest,
     #[pin]
     receiver: A::Waiter,
 }
@@ -102,10 +104,10 @@ struct BlockSubscription<B: Block> {
 /// behind.
 pub struct Actor<E, B, P, FC, FB, ES, T, A = Exact>
 where
-    E: CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
-    B: Block<Commitment = Digest>,
-    P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
-    FC: Certificates<Commitment = B::Commitment, Scheme = P::Scheme>,
+    E: BufferPooler + CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
+    B: Block<Digest = Digest>,
+    P: Provider<Scope = Epoch, Scheme: Scheme<B::Digest>>,
+    FC: Certificates<BlockDigest = B::Digest, Commitment = B::Digest, Scheme = P::Scheme>,
     FB: Blocks<Block = B>,
     ES: Epocher,
     T: Strategy,
@@ -142,7 +144,7 @@ where
     // Highest known finalized height
     tip: Height,
     // Outstanding subscriptions for blocks
-    block_subscriptions: BTreeMap<B::Commitment, BlockSubscription<B>>,
+    block_subscriptions: BTreeMap<B::Digest, BlockSubscription<B>>,
 
     // ---------- Storage ----------
     // Prunable cache
@@ -165,10 +167,10 @@ where
 
 impl<E, B, P, FC, FB, ES, T, A> Actor<E, B, P, FC, FB, ES, T, A>
 where
-    E: CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
-    B: Block<Commitment = Digest>,
-    P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
-    FC: Certificates<Commitment = B::Commitment, Scheme = P::Scheme>,
+    E: BufferPooler + CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
+    B: Block<Digest = Digest>,
+    P: Provider<Scope = Epoch, Scheme: Scheme<B::Digest>>,
+    FC: Certificates<BlockDigest = B::Digest, Commitment = B::Digest, Scheme = P::Scheme>,
     FB: Blocks<Block = B>,
     ES: Epocher,
     T: Strategy,
@@ -336,7 +338,7 @@ where
             let finalization = checkpoint.finalized_header.map(|h| h.finalization);
             self.finalize(
                 height,
-                checkpoint.last_block.commitment(),
+                checkpoint.last_block.digest(),
                 checkpoint.last_block,
                 finalization,
                 &mut application,
@@ -353,7 +355,7 @@ where
         }
 
         // Create a local pool for waiter futures.
-        let mut waiters = AbortablePool::<(B::Commitment, B)>::default();
+        let mut waiters = AbortablePool::<(B::Digest, B)>::default();
 
         // Get tip and send to application
         let tip = self.get_latest().await;
@@ -442,11 +444,11 @@ where
                             response.send_lossy(info);
                         }
                         Message::Proposed { round, block } => {
-                            self.cache_verified(round, block.commitment(), block.clone()).await;
+                            self.cache_verified(round, block.digest(), block.clone()).await;
                             let _peers = buffer.broadcast(Recipients::All, block).await;
                         }
                         Message::Verified { round, block } => {
-                            self.cache_verified(round, block.commitment(), block).await;
+                            self.cache_verified(round, block.digest(), block).await;
                         }
                         Message::Notarization { notarization } => {
                             let round = notarization.round();
@@ -578,7 +580,7 @@ where
                                 }
                                 Entry::Vacant(entry) => {
                                     let (tx, rx) = oneshot::channel();
-                                    buffer.subscribe_prepared(None, commitment, None, tx).await;
+                                    buffer.subscribe_prepared(commitment, tx).await;
                                     let aborter = waiters.push(async move {
                                         (commitment, rx.await.expect("buffer subscriber closed"))
                                     });
@@ -689,7 +691,7 @@ where
                                     };
 
                                     // Validation
-                                    if block.commitment() != commitment {
+                                    if block.digest() != commitment {
                                         response.send_lossy(false);
                                         continue;
                                     }
@@ -725,7 +727,7 @@ where
 
                                     // Parse finalization
                                     let Ok((finalization, block)) =
-                                        <(Finalization<P::Scheme, B::Commitment>, B)>::decode_cfg(
+                                        <(Finalization<P::Scheme, B::Digest>, B)>::decode_cfg(
                                             value,
                                             &(scheme.certificate_codec_config(), self.block_codec_config.clone()),
                                         )
@@ -736,7 +738,7 @@ where
 
                                     // Validation
                                     if block.height() != height
-                                        || finalization.proposal.payload != block.commitment()
+                                        || finalization.proposal.payload != block.digest()
                                         || !finalization.verify(&mut self.context, &scheme, &self.strategy)
                                     {
                                         response.send_lossy(false);
@@ -747,7 +749,7 @@ where
                                     response.send_lossy(true);
                                     self.finalize(
                                         height,
-                                        block.commitment(),
+                                        block.digest(),
                                         block,
                                         Some(finalization),
                                         &mut application,
@@ -764,7 +766,7 @@ where
 
                                     // Parse notarization
                                     let Ok((notarization, block)) =
-                                        <(Notarization<P::Scheme, B::Commitment>, B)>::decode_cfg(
+                                        <(Notarization<P::Scheme, B::Digest>, B)>::decode_cfg(
                                             value,
                                             &(scheme.certificate_codec_config(), self.block_codec_config.clone()),
                                         )
@@ -775,7 +777,7 @@ where
 
                                     // Validation
                                     if notarization.round() != round
-                                        || notarization.proposal.payload != block.commitment()
+                                        || notarization.proposal.payload != block.digest()
                                         || !notarization.verify(&mut self.context, &scheme, &self.strategy)
                                     {
                                         response.send_lossy(false);
@@ -784,7 +786,7 @@ where
 
                                     // Valid notarization received
                                     response.send_lossy(true);
-                                    let commitment = block.commitment();
+                                    let commitment = block.digest();
                                     debug!(?round, ?commitment, "received notarization");
 
                                     // If there exists a finalization certificate for this block, we
@@ -831,7 +833,7 @@ where
     // -------------------- Waiters --------------------
 
     /// Notify any subscribers for the given commitment with the provided block.
-    async fn notify_subscribers(&mut self, commitment: B::Commitment, block: &B) {
+    async fn notify_subscribers(&mut self, commitment: B::Digest, block: &B) {
         if let Some(mut bs) = self.block_subscriptions.remove(&commitment) {
             for subscriber in bs.subscribers.drain(..) {
                 subscriber.send_lossy(block.clone());
@@ -861,7 +863,7 @@ where
             "finalized block height mismatch"
         );
 
-        let (height, commitment) = (block.height(), block.commitment());
+        let (height, commitment) = (block.height(), block.digest());
         let (ack, ack_waiter) = A::handle();
 
         if is_last_block_of_epoch(&self.epocher, next_height.get()) {
@@ -895,7 +897,7 @@ where
     async fn handle_block_processed(
         &mut self,
         height: Height,
-        commitment: B::Commitment,
+        commitment: B::Digest,
         resolver: &mut impl Resolver<Key = Request<B>>,
     ) -> Result<(), metadata::Error> {
         // Update the processed height
@@ -931,13 +933,13 @@ where
     // -------------------- Prunable Storage --------------------
 
     /// Add a verified block to the prunable archive.
-    async fn cache_verified(&mut self, round: Round, commitment: B::Commitment, block: B) {
+    async fn cache_verified(&mut self, round: Round, commitment: B::Digest, block: B) {
         self.notify_subscribers(commitment, &block).await;
         self.cache.put_verified(round, commitment, block).await;
     }
 
     /// Add a notarized block to the prunable archive.
-    async fn cache_block(&mut self, round: Round, commitment: B::Commitment, block: B) {
+    async fn cache_block(&mut self, round: Round, commitment: B::Digest, block: B) {
         self.notify_subscribers(commitment, &block).await;
         self.cache.put_block(round, commitment, block).await;
     }
@@ -960,7 +962,7 @@ where
     async fn get_finalization_by_height(
         &self,
         height: Height,
-    ) -> Option<Finalization<P::Scheme, B::Commitment>> {
+    ) -> Option<Finalization<P::Scheme, B::Digest>> {
         match self
             .finalizations_by_height
             .get(ArchiveID::Index(height.get()))
@@ -977,9 +979,9 @@ where
     async fn finalize(
         &mut self,
         height: Height,
-        commitment: B::Commitment,
+        commitment: B::Digest,
         block: B,
-        finalization: Option<Finalization<P::Scheme, B::Commitment>>,
+        finalization: Option<Finalization<P::Scheme, B::Digest>>,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
         buffer: &mut buffered::Mailbox<impl PublicKey, B>,
         resolver: &mut impl Resolver<Key = Request<B>>,
@@ -1004,9 +1006,9 @@ where
     async fn store_finalization(
         &mut self,
         height: Height,
-        commitment: B::Commitment,
+        commitment: B::Digest,
         block: B,
-        finalization: Option<Finalization<P::Scheme, B::Commitment>>,
+        finalization: Option<Finalization<P::Scheme, B::Digest>>,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
         resolver: &mut impl Resolver<Key = Request<B>>,
     ) {
@@ -1079,7 +1081,7 @@ where
     /// yet be found in the `finalizations_by_height` archive. While not checked explicitly, we
     /// should have the associated block (in the `finalized_blocks` archive) for the information
     /// returned.
-    async fn get_latest(&mut self) -> Option<(Height, B::Commitment)> {
+    async fn get_latest(&mut self) -> Option<(Height, B::Digest)> {
         let height = self.finalizations_by_height.last_index()?;
         let finalization = self
             .get_finalization_by_height(height)
@@ -1094,10 +1096,10 @@ where
     async fn find_block<K: PublicKey>(
         &mut self,
         buffer: &mut buffered::Mailbox<K, B>,
-        commitment: B::Commitment,
+        commitment: B::Digest,
     ) -> Option<B> {
         // Check buffer.
-        if let Some(block) = buffer.get(None, commitment, None).await.into_iter().next() {
+        if let Some(block) = buffer.get(commitment).await {
             return Some(block);
         }
         // Check verified / notarized blocks via cache manager.

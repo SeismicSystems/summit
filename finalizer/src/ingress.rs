@@ -1,6 +1,5 @@
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::{Block as ConsensusBlock, Reporter};
-use commonware_cryptography::Committable;
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
@@ -15,7 +14,7 @@ use summit_types::{
 };
 
 #[allow(clippy::large_enum_variant)]
-pub enum FinalizerMessage<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable = Block> {
+pub enum FinalizerMessage<S: Scheme<B::Digest>, B: ConsensusBlock = Block> {
     NotifyAtHeight {
         height: u64,
         block_digest: Digest,
@@ -40,11 +39,11 @@ pub enum FinalizerMessage<S: Scheme<B::Commitment>, B: ConsensusBlock + Committa
 }
 
 #[derive(Clone)]
-pub struct FinalizerMailbox<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable = Block> {
+pub struct FinalizerMailbox<S: Scheme<B::Digest>, B: ConsensusBlock = Block> {
     sender: mpsc::Sender<FinalizerMessage<S, B>>,
 }
 
-impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox<S, B> {
+impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
     pub fn new(sender: mpsc::Sender<FinalizerMessage<S, B>>) -> Self {
         Self { sender }
     }
@@ -389,9 +388,7 @@ impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> FinalizerMailbox
     }
 }
 
-impl<S: Scheme<B::Commitment>, B: ConsensusBlock + Committable> Reporter
-    for FinalizerMailbox<S, B>
-{
+impl<S: Scheme<B::Digest>, B: ConsensusBlock> Reporter for FinalizerMailbox<S, B> {
     type Activity = Update<B, S>;
 
     async fn report(&mut self, activity: Self::Activity) {
