@@ -70,6 +70,10 @@ pub use config::{Config, SyncCheckpoint, SyncStart};
 pub mod ingress;
 pub use ingress::mailbox::Mailbox;
 pub mod resolver;
+pub mod standard;
+pub use standard::Standard;
+pub mod variant;
+pub use variant::{Buffer, IntoBlock, Variant};
 
 use commonware_consensus::Block;
 use commonware_consensus::simplex::scheme::Scheme;
@@ -193,6 +197,7 @@ mod tests {
             namespace: NAMESPACE.to_vec(),
             view_retention_timeout: ViewDelta::new(10),
             max_repair: NZUsize!(10),
+            max_pending_acks: NZUsize!(1),
             block_codec_config: (),
             partition_prefix: format!("validator_{}", validator.clone()),
             prunable_items_per_section: NZU64!(10),

@@ -1,6 +1,7 @@
 use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{EncodeSize, Error as CodecError, Read, ReadExt, Write};
-use commonware_consensus::{Block, types::Round};
+use commonware_consensus::types::Round;
+use commonware_cryptography::Digest;
 use commonware_resolver::{Consumer, p2p::Producer};
 use commonware_utils::{
     Span,
@@ -19,11 +20,11 @@ const NOTARIZED_REQUEST: u8 = 2;
 
 /// Messages sent from the resolver's [Consumer]/[Producer] implementation
 /// to the marshal [Actor](super::super::actor::Actor).
-pub enum Message<B: Block> {
+pub enum Message<D: Digest> {
     /// A request to deliver a value for a given key.
     Deliver {
         /// The key of the value being delivered.
-        key: Request<B>,
+        key: Request<D>,
         /// The value being delivered.
         value: Bytes,
         /// A channel to send the result of the delivery (true for success).
@@ -32,7 +33,7 @@ pub enum Message<B: Block> {
     /// A request to produce a value for a given key.
     Produce {
         /// The key of the value to produce.
-        key: Request<B>,
+        key: Request<D>,
         /// A channel to send the produced value.
         response: oneshot::Sender<Bytes>,
     },
@@ -43,19 +44,19 @@ pub enum Message<B: Block> {
 /// This struct implements the [Consumer] and [Producer] traits from the
 /// resolver, and acts as a bridge to the main actor loop.
 #[derive(Clone)]
-pub struct Handler<B: Block> {
-    sender: mpsc::Sender<Message<B>>,
+pub struct Handler<D: Digest> {
+    sender: mpsc::Sender<Message<D>>,
 }
 
-impl<B: Block> Handler<B> {
+impl<D: Digest> Handler<D> {
     /// Creates a new handler.
-    pub const fn new(sender: mpsc::Sender<Message<B>>) -> Self {
+    pub const fn new(sender: mpsc::Sender<Message<D>>) -> Self {
         Self { sender }
     }
 }
 
-impl<B: Block> Consumer for Handler<B> {
-    type Key = Request<B>;
+impl<D: Digest> Consumer for Handler<D> {
+    type Key = Request<D>;
     type Value = Bytes;
     type Failure = ();
 
@@ -82,8 +83,8 @@ impl<B: Block> Consumer for Handler<B> {
     }
 }
 
-impl<B: Block> Producer for Handler<B> {
-    type Key = Request<B>;
+impl<D: Digest> Producer for Handler<D> {
+    type Key = Request<D>;
 
     async fn produce(&mut self, key: Self::Key) -> oneshot::Receiver<Bytes> {
         let (response, receiver) = oneshot::channel();
@@ -101,13 +102,13 @@ impl<B: Block> Producer for Handler<B> {
 
 /// A request for backfilling data.
 #[derive(Clone)]
-pub enum Request<B: Block> {
-    Block(B::Digest),
+pub enum Request<D: Digest> {
+    Block(D),
     Finalized { height: u64 },
     Notarized { round: Round },
 }
 
-impl<B: Block> Request<B> {
+impl<D: Digest> Request<D> {
     /// The subject of the request.
     const fn subject(&self) -> u8 {
         match self {
@@ -135,7 +136,7 @@ impl<B: Block> Request<B> {
     }
 }
 
-impl<B: Block> Write for Request<B> {
+impl<D: Digest> Write for Request<D> {
     fn write(&self, buf: &mut impl BufMut) {
         self.subject().write(buf);
         match self {
@@ -146,12 +147,12 @@ impl<B: Block> Write for Request<B> {
     }
 }
 
-impl<B: Block> Read for Request<B> {
+impl<D: Digest> Read for Request<D> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &()) -> Result<Self, CodecError> {
         let request = match u8::read(buf)? {
-            BLOCK_REQUEST => Self::Block(B::Digest::read(buf)?),
+            BLOCK_REQUEST => Self::Block(D::read(buf)?),
             FINALIZED_REQUEST => Self::Finalized {
                 height: u64::read(buf)?,
             },
@@ -164,7 +165,7 @@ impl<B: Block> Read for Request<B> {
     }
 }
 
-impl<B: Block> EncodeSize for Request<B> {
+impl<D: Digest> EncodeSize for Request<D> {
     fn encode_size(&self) -> usize {
         1 + match self {
             Self::Block(block) => block.encode_size(),
@@ -174,9 +175,9 @@ impl<B: Block> EncodeSize for Request<B> {
     }
 }
 
-impl<B: Block> Span for Request<B> {}
+impl<D: Digest> Span for Request<D> {}
 
-impl<B: Block> PartialEq for Request<B> {
+impl<D: Digest> PartialEq for Request<D> {
     fn eq(&self, other: &Self) -> bool {
         match (&self, &other) {
             (Self::Block(a), Self::Block(b)) => a == b,
@@ -187,9 +188,9 @@ impl<B: Block> PartialEq for Request<B> {
     }
 }
 
-impl<B: Block> Eq for Request<B> {}
+impl<D: Digest> Eq for Request<D> {}
 
-impl<B: Block> Ord for Request<B> {
+impl<D: Digest> Ord for Request<D> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (&self, &other) {
             (Self::Block(a), Self::Block(b)) => a.cmp(b),
@@ -200,23 +201,24 @@ impl<B: Block> Ord for Request<B> {
     }
 }
 
-impl<B: Block> PartialOrd for Request<B> {
+impl<D: Digest> PartialOrd for Request<D> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<B: Block> Hash for Request<B> {
+impl<D: Digest> Hash for Request<D> {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.subject().hash(state);
         match self {
-            Self::Block(commitment) => commitment.hash(state),
+            Self::Block(digest) => digest.hash(state),
             Self::Finalized { height } => height.hash(state),
             Self::Notarized { round } => round.hash(state),
         }
     }
 }
 
-impl<B: Block> Display for Request<B> {
+impl<D: Digest> Display for Request<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Block(commitment) => write!(f, "Block({commitment:?})"),
@@ -226,7 +228,7 @@ impl<B: Block> Display for Request<B> {
     }
 }
 
-impl<B: Block> Debug for Request<B> {
+impl<D: Digest> Debug for Request<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Block(commitment) => write!(f, "Block({commitment:?})"),
@@ -239,7 +241,6 @@ impl<B: Block> Debug for Request<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::block::Block as TestBlock;
     use commonware_codec::{Encode, ReadExt};
     use commonware_consensus::types::{Epoch, View};
     use commonware_cryptography::{
@@ -248,12 +249,12 @@ mod tests {
     };
     use std::collections::BTreeSet;
 
-    type B = TestBlock<Sha256Digest>;
+    type D = Sha256Digest;
 
     #[test]
     fn test_subject_block_encoding() {
         let commitment = Sha256::hash(b"test");
-        let request = Request::<B>::Block(commitment);
+        let request = Request::<D>::Block(commitment);
 
         // Test encoding
         let encoded = request.encode();
@@ -262,7 +263,7 @@ mod tests {
 
         // Test decoding
         let mut buf = encoded.as_ref();
-        let decoded = Request::<B>::read(&mut buf).unwrap();
+        let decoded = Request::<D>::read(&mut buf).unwrap();
         assert_eq!(request, decoded);
         assert_eq!(decoded, Request::Block(commitment));
     }
@@ -270,7 +271,7 @@ mod tests {
     #[test]
     fn test_subject_finalized_encoding() {
         let height = 12345u64;
-        let request = Request::<B>::Finalized { height };
+        let request = Request::<D>::Finalized { height };
 
         // Test encoding
         let encoded = request.encode();
@@ -278,7 +279,7 @@ mod tests {
 
         // Test decoding
         let mut buf = encoded.as_ref();
-        let decoded = Request::<B>::read(&mut buf).unwrap();
+        let decoded = Request::<D>::read(&mut buf).unwrap();
         assert_eq!(request, decoded);
         assert_eq!(decoded, Request::Finalized { height });
     }
@@ -286,7 +287,7 @@ mod tests {
     #[test]
     fn test_subject_notarized_encoding() {
         let round = Round::new(Epoch::new(67890), View::new(12345));
-        let request = Request::<B>::Notarized { round };
+        let request = Request::<D>::Notarized { round };
 
         // Test encoding
         let encoded = request.encode();
@@ -294,7 +295,7 @@ mod tests {
 
         // Test decoding
         let mut buf = encoded.as_ref();
-        let decoded = Request::<B>::read(&mut buf).unwrap();
+        let decoded = Request::<D>::read(&mut buf).unwrap();
         assert_eq!(request, decoded);
         assert_eq!(decoded, Request::Notarized { round });
     }
@@ -303,9 +304,9 @@ mod tests {
     fn test_subject_hash() {
         use std::collections::HashSet;
 
-        let r1 = Request::<B>::Finalized { height: 100 };
-        let r2 = Request::<B>::Finalized { height: 100 };
-        let r3 = Request::<B>::Finalized { height: 200 };
+        let r1 = Request::<D>::Finalized { height: 100 };
+        let r2 = Request::<D>::Finalized { height: 100 };
+        let r3 = Request::<D>::Finalized { height: 200 };
 
         let mut set = HashSet::new();
         set.insert(r1);
@@ -315,9 +316,9 @@ mod tests {
 
     #[test]
     fn test_subject_predicate() {
-        let r1 = Request::<B>::Finalized { height: 100 };
-        let r2 = Request::<B>::Finalized { height: 200 };
-        let r3 = Request::<B>::Notarized {
+        let r1 = Request::<D>::Finalized { height: 100 };
+        let r2 = Request::<D>::Finalized { height: 200 };
+        let r3 = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(150)),
         };
 
@@ -325,16 +326,16 @@ mod tests {
         assert!(predicate(&r2)); // r2.height > r1.height
         assert!(predicate(&r3)); // Different variant (notarized)
 
-        let r1_same = Request::<B>::Finalized { height: 100 };
+        let r1_same = Request::<D>::Finalized { height: 100 };
         assert!(!predicate(&r1_same)); // Same height, should not pass
     }
 
     #[test]
     fn test_encode_size() {
         let commitment = Sha256::hash(&[0u8; 32]);
-        let r1 = Request::<B>::Block(commitment);
-        let r2 = Request::<B>::Finalized { height: u64::MAX };
-        let r3 = Request::<B>::Notarized {
+        let r1 = Request::<D>::Block(commitment);
+        let r2 = Request::<D>::Finalized { height: u64::MAX };
+        let r3 = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(0)),
         };
 
@@ -349,8 +350,8 @@ mod tests {
         // Test ordering within the same variant
         let commitment1 = Sha256::hash(b"test1");
         let commitment2 = Sha256::hash(b"test2");
-        let block1 = Request::<B>::Block(commitment1);
-        let block2 = Request::<B>::Block(commitment2);
+        let block1 = Request::<D>::Block(commitment1);
+        let block2 = Request::<D>::Block(commitment2);
 
         // Block ordering depends on commitment ordering
         if commitment1 < commitment2 {
@@ -362,22 +363,22 @@ mod tests {
         }
 
         // Finalized ordering by height
-        let fin1 = Request::<B>::Finalized { height: 100 };
-        let fin2 = Request::<B>::Finalized { height: 200 };
-        let fin3 = Request::<B>::Finalized { height: 200 };
+        let fin1 = Request::<D>::Finalized { height: 100 };
+        let fin2 = Request::<D>::Finalized { height: 200 };
+        let fin3 = Request::<D>::Finalized { height: 200 };
 
         assert!(fin1 < fin2);
         assert!(fin2 > fin1);
         assert_eq!(fin2.cmp(&fin3), std::cmp::Ordering::Equal);
 
         // Notarized ordering by view
-        let not1 = Request::<B>::Notarized {
+        let not1 = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(50)),
         };
-        let not2 = Request::<B>::Notarized {
+        let not2 = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(150)),
         };
-        let not3 = Request::<B>::Notarized {
+        let not3 = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(150)),
         };
 
@@ -389,9 +390,9 @@ mod tests {
     #[test]
     fn test_request_ord_cross_variant() {
         let commitment = Sha256::hash(b"test");
-        let block = Request::<B>::Block(commitment);
-        let finalized = Request::<B>::Finalized { height: 100 };
-        let notarized = Request::<B>::Notarized {
+        let block = Request::<D>::Block(commitment);
+        let finalized = Request::<D>::Finalized { height: 100 };
+        let notarized = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(200)),
         };
 
@@ -417,10 +418,10 @@ mod tests {
     fn test_request_partial_ord() {
         let commitment1 = Sha256::hash(b"test1");
         let commitment2 = Sha256::hash(b"test2");
-        let block1 = Request::<B>::Block(commitment1);
-        let block2 = Request::<B>::Block(commitment2);
-        let finalized = Request::<B>::Finalized { height: 100 };
-        let notarized = Request::<B>::Notarized {
+        let block1 = Request::<D>::Block(commitment1);
+        let block2 = Request::<D>::Block(commitment2);
+        let finalized = Request::<D>::Finalized { height: 100 };
+        let notarized = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(200)),
         };
 
@@ -451,17 +452,17 @@ mod tests {
         let commitment3 = Sha256::hash(b"c");
 
         let requests = vec![
-            Request::<B>::Notarized {
+            Request::<D>::Notarized {
                 round: Round::new(Epoch::new(333), View::new(300)),
             },
-            Request::<B>::Block(commitment2),
-            Request::<B>::Finalized { height: 200 },
-            Request::<B>::Block(commitment1),
-            Request::<B>::Notarized {
+            Request::<D>::Block(commitment2),
+            Request::<D>::Finalized { height: 200 },
+            Request::<D>::Block(commitment1),
+            Request::<D>::Notarized {
                 round: Round::new(Epoch::new(333), View::new(250)),
             },
-            Request::<B>::Finalized { height: 100 },
-            Request::<B>::Block(commitment3),
+            Request::<D>::Finalized { height: 100 },
+            Request::<D>::Block(commitment3),
         ];
 
         // Sort using BTreeSet (uses Ord)
@@ -475,24 +476,24 @@ mod tests {
         assert_eq!(sorted.len(), 7);
 
         // Check that all blocks come first
-        assert!(matches!(sorted[0], Request::<B>::Block(_)));
-        assert!(matches!(sorted[1], Request::<B>::Block(_)));
-        assert!(matches!(sorted[2], Request::<B>::Block(_)));
+        assert!(matches!(sorted[0], Request::<D>::Block(_)));
+        assert!(matches!(sorted[1], Request::<D>::Block(_)));
+        assert!(matches!(sorted[2], Request::<D>::Block(_)));
 
         // Check that finalized come next
-        assert_eq!(sorted[3], Request::<B>::Finalized { height: 100 });
-        assert_eq!(sorted[4], Request::<B>::Finalized { height: 200 });
+        assert_eq!(sorted[3], Request::<D>::Finalized { height: 100 });
+        assert_eq!(sorted[4], Request::<D>::Finalized { height: 200 });
 
         // Check that notarized come last
         assert_eq!(
             sorted[5],
-            Request::<B>::Notarized {
+            Request::<D>::Notarized {
                 round: Round::new(Epoch::new(333), View::new(250))
             }
         );
         assert_eq!(
             sorted[6],
-            Request::<B>::Notarized {
+            Request::<D>::Notarized {
                 round: Round::new(Epoch::new(333), View::new(300))
             }
         );
@@ -501,12 +502,12 @@ mod tests {
     #[test]
     fn test_request_ord_edge_cases() {
         // Test with extreme values
-        let min_finalized = Request::<B>::Finalized { height: 0 };
-        let max_finalized = Request::<B>::Finalized { height: u64::MAX };
-        let min_notarized = Request::<B>::Notarized {
+        let min_finalized = Request::<D>::Finalized { height: 0 };
+        let max_finalized = Request::<D>::Finalized { height: u64::MAX };
+        let min_notarized = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(0)),
         };
-        let max_notarized = Request::<B>::Notarized {
+        let max_notarized = Request::<D>::Notarized {
             round: Round::new(Epoch::new(333), View::new(u64::MAX)),
         };
 
@@ -516,7 +517,7 @@ mod tests {
 
         // Test self-comparison
         let commitment = Sha256::hash(b"self");
-        let block = Request::<B>::Block(commitment);
+        let block = Request::<D>::Block(commitment);
         assert_eq!(block.cmp(&block), std::cmp::Ordering::Equal);
         assert_eq!(min_finalized.cmp(&min_finalized), std::cmp::Ordering::Equal);
         assert_eq!(max_notarized.cmp(&max_notarized), std::cmp::Ordering::Equal);

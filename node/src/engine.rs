@@ -284,6 +284,7 @@ where
             value_write_buffer: WRITE_BUFFER,
             block_codec_config: (),
             max_repair: MAX_REPAIR,
+            max_pending_acks: MAX_REPAIR,
             strategy: Sequential,
         };
 

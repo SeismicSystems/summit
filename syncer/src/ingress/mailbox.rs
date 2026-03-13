@@ -27,7 +27,7 @@ pub enum Identifier<D: Digest> {
     /// The height of the block to retrieve.
     Height(Height),
     /// The commitment of the block to retrieve.
-    Commitment(D),
+    Digest(D),
     /// The highest finalized block. It may be the case that marshal does not have some of the
     /// blocks below this height.
     Latest,
@@ -50,7 +50,7 @@ impl<D: Digest> From<u64> for Identifier<D> {
 // Allows using &Digest directly for convenience.
 impl<D: Digest> From<&D> for Identifier<D> {
     fn from(src: &D) -> Self {
-        Self::Commitment(*src)
+        Self::Digest(*src)
     }
 }
 
@@ -59,7 +59,7 @@ impl<D: Digest> From<archive::Identifier<'_, D>> for Identifier<D> {
     fn from(src: archive::Identifier<'_, D>) -> Self {
         match src {
             archive::Identifier::Index(index) => Self::Height(Height::new(index)),
-            archive::Identifier::Key(key) => Self::Commitment(*key),
+            archive::Identifier::Key(key) => Self::Digest(*key),
         }
     }
 }
@@ -141,18 +141,25 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         /// The finalization.
         finalization: Finalization<S, B::Digest>,
     },
-    /// A request to set the sync floor.
+    /// Sets the sync starting point (advances if higher than current).
     ///
-    /// The sync floor is the latest block that the application has processed. Marshal
-    /// will not attempt to sync blocks below this height nor deliver blocks below
-    /// this height to the application.
+    /// Marshal will sync and deliver blocks starting at `floor + 1`. Data below
+    /// the floor is pruned.
     ///
-    /// This sets the sync floor only if the provided height is higher than the
-    /// previously recorded floor.
+    /// To prune data without affecting the sync starting point, use [Message::Prune] instead.
     ///
-    /// The default sync floor is height 0.
+    /// The default floor is 0.
     SetFloor {
-        /// The candidate sync floor height.
+        /// The candidate floor height.
+        height: Height,
+    },
+    /// Prunes finalized blocks and certificates below the given height.
+    ///
+    /// Unlike [Message::SetFloor], this does not affect the sync starting point.
+    /// The height must be at or below the current floor (last processed height),
+    /// otherwise the prune request is ignored.
+    Prune {
+        /// The minimum height to keep (blocks below this are pruned).
         height: Height,
     },
 }
@@ -317,13 +324,14 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
         }
     }
 
-    /// A request to set the sync floor (conditionally advances if higher).
+    /// Sets the sync starting point (conditionally advances if higher).
     ///
-    /// The sync floor is the latest block that the application has processed. Marshal
-    /// will not attempt to sync blocks below this height nor deliver blocks below
-    /// this height to the application.
+    /// Marshal will sync and deliver blocks starting at `floor + 1`. Data below
+    /// the floor is pruned.
     ///
-    /// The default sync floor is height 0.
+    /// To prune data without affecting the sync starting point, use [`Self::prune`] instead.
+    ///
+    /// The default floor is 0.
     pub async fn set_floor(&mut self, height: Height) {
         if self
             .sender
@@ -332,6 +340,17 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
             .is_err()
         {
             error!("failed to send set sync floor message to actor: receiver dropped");
+        }
+    }
+
+    /// Prunes finalized blocks and certificates below the given height.
+    ///
+    /// Unlike [`Self::set_floor`], this does not affect the sync starting point.
+    /// The height must be at or below the current floor (last processed height),
+    /// otherwise the prune request is ignored.
+    pub async fn prune(&mut self, height: Height) {
+        if self.sender.send(Message::Prune { height }).await.is_err() {
+            error!("failed to send prune message to actor: receiver dropped");
         }
     }
 
