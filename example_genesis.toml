@@ -1,35 +1,35 @@
-eth_genesis_hash = "0x3aade273783123091d493c481baa1e9e9bcde4b9cb87b29ae5398d83b88af441"
+eth_genesis_hash = "0x2d26b6e0f8627a3e6967e90d7b33ce395227f26be14851fe87774a4dd7eecc78"
 leader_timeout_ms = 2000
 notarization_timeout_ms = 4000
 nullify_timeout_ms = 4000
 activity_timeout_views = 256
 skip_timeout_views = 32
 max_message_size_bytes = 104857600
-namespace = "_SUMMIT"
+namespace = "_PRAXIS"
 validator_minimum_stake = 32000000000
 validator_maximum_stake = 32000000000
-blocks_per_epoch = 10000
+blocks_per_epoch = 500000
 
 [[validators]]
-node_public_key = "1be3cb06d7cc347602421fb73838534e4b54934e28959de98906d120d0799ef2"
-consensus_public_key = "a6f61154ae7be4fd38cd43cf69adfd4896c57473cacb389702bb83f8adf923eecf4854c745e064c0a2db79db5674332b"
-ip_address = "127.0.0.1:26600"
+node_public_key = "c428519d07224cb3eb205d80237f7fad4eb02236383f52e9cdf9778c9d89381d"
+consensus_public_key = "9706d6607ab48fb9d4d2a9f3745bd85701c48523516b116029a0267576d797556b453298dc366fbfc1c235c9707f5ac9"
+ip_address = "34.186.105.189:18551"
 withdrawal_credentials = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
 [[validators]]
-node_public_key = "32efa16e3cd62292db529e8f4babd27724b13b397edcf2b1dbe48f416ce40f0d"
-consensus_public_key = "b82eaa7fbc7f9cf9d60826e5155ca8ccc46e13d87f64f7bcdcaa2972c370766b87635334bfc49b8fba7fb784e763d44e"
-ip_address = "127.0.0.1:26610"
+node_public_key = "b3eb5e5514b0d7d629dc82f8f65cec9a83c46bfd3e1889f3a24571489645b811"
+consensus_public_key = "80bc8c799ebb031f1a3c4baf497b0890625e310af09cb21f3170d8999d2868ff9b2e218220ac6e677df53ae2866637a2"
+ip_address = "34.48.116.34:18551"
 withdrawal_credentials = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
 [[validators]]
-node_public_key = "ce9b314ac9d55d28bedf543164120eecf737380015c977eaa78d59894bbccf52"
-consensus_public_key = "b806a3638975b2c33ccdda9cc55231e1328a0d1f70a3dde804e473e22ec21d5703ee34264c702b971cd0f9d5892434e8"
-ip_address = "127.0.0.1:26620"
+node_public_key = "a93077b556bc973466b878572c947103d5e858fb51cbab62e6f249f844ad63c8"
+consensus_public_key = "a370006f20734f08b01b9d38ec78757be5813add12041f1b4897e66766770d171430d9723a745b0bf45d78ed5056c23a"
+ip_address = "34.155.132.153:18551"
 withdrawal_credentials = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 
 [[validators]]
-node_public_key = "f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226"
-consensus_public_key = "83c50f2fa828c5e132a2ac00792ef9c892372976ff26400711b7061bdb045f0751559b4a04cfd7399555a2aed5b54f3f"
-ip_address = "127.0.0.1:26630"
+node_public_key = "21b172d706d3042b0a3dc6dc0269ed7fb8f690e099679b2081409564c9bec95b"
+consensus_public_key = "b6a6ed5881e40e1e316e9d62591c4dd87f3c068da4c4718b2d451d5d1b09a0091e38a87ba0d92d2aef9ae8428b957194"
+ip_address = "34.155.195.203:18551"
 withdrawal_credentials = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
