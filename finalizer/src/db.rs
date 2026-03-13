@@ -25,7 +25,7 @@ const LATEST_FINALIZED_HEADER_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const LATEST_CHECKPOINT_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 2];
 
 pub struct FinalizerState<E: Clock + Storage + Metrics, V: Variant> {
-    store: Option<Db<E, FixedBytes<64>, Value<V>, EightCap>>,
+    store: Db<E, FixedBytes<64>, Value<V>, EightCap>,
 }
 
 impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
@@ -34,15 +34,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
             .await
             .expect("failed to initialize unified store");
 
-        Self { store: Some(store) }
-    }
-
-    fn store(&self) -> &Db<E, FixedBytes<64>, Value<V>, EightCap> {
-        self.store.as_ref().expect("store should always be present")
-    }
-
-    fn store_mut(&mut self) -> &mut Db<E, FixedBytes<64>, Value<V>, EightCap> {
-        self.store.as_mut().expect("store should always be present")
+        Self { store }
     }
 
     fn pad_key(key: &[u8]) -> FixedBytes<64> {
@@ -80,7 +72,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn get_latest_consensus_state_epoch(&self) -> u64 {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
         if let Some(Value::U64(epoch)) = self
-            .store()
+            .store
             .get(&key)
             .await
             .expect("failed to get latest consensus state epoch")
@@ -93,7 +85,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     async fn set_latest_consensus_state_epoch(&mut self, epoch: u64) {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
-        self.store_mut()
+        self.store
             .write_batch([(key, Some(Value::U64(epoch)))])
             .await
             .expect("failed to set latest consensus state epoch");
@@ -103,7 +95,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn get_latest_finalized_header_epoch(&self) -> u64 {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
         if let Some(Value::U64(epoch)) = self
-            .store()
+            .store
             .get(&key)
             .await
             .expect("failed to get latest finalized header epoch")
@@ -116,7 +108,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     async fn set_latest_finalized_header_epoch(&mut self, epoch: u64) {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
-        self.store_mut()
+        self.store
             .write_batch([(key, Some(Value::U64(epoch)))])
             .await
             .expect("failed to set latest finalized header epoch");
@@ -126,7 +118,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     async fn get_latest_checkpoint_epoch(&self) -> u64 {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
         if let Some(Value::U64(epoch)) = self
-            .store()
+            .store
             .get(&key)
             .await
             .expect("failed to get latest checkpoint epoch")
@@ -139,7 +131,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     async fn set_latest_checkpoint_epoch(&mut self, epoch: u64) {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
-        self.store_mut()
+        self.store
             .write_batch([(key, Some(Value::U64(epoch)))])
             .await
             .expect("failed to set latest checkpoint epoch");
@@ -148,7 +140,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     // ConsensusState blob operations
     pub async fn store_consensus_state(&mut self, epoch: u64, state: &ConsensusState) {
         let key = Self::make_consensus_state_key(epoch);
-        self.store_mut()
+        self.store
             .write_batch([(key, Some(Value::ConsensusState(Box::new(state.clone()))))])
             .await
             .expect("failed to store consensus state");
@@ -163,7 +155,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn get_consensus_state(&self, epoch: u64) -> Option<ConsensusState> {
         let key = Self::make_consensus_state_key(epoch);
         if let Some(Value::ConsensusState(state)) = self
-            .store()
+            .store
             .get(&key)
             .await
             .expect("failed to get consensus state")
@@ -177,7 +169,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn get_latest_consensus_state(&self) -> Option<ConsensusState> {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
         if let Some(Value::U64(latest_epoch)) = self
-            .store()
+            .store
             .get(&key)
             .await
             .expect("failed to get latest consensus state epoch")
@@ -190,7 +182,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     pub async fn delete_consensus_state(&mut self, epoch: u64) {
         let key = Self::make_consensus_state_key(epoch);
-        self.store_mut()
+        self.store
             .write_batch([(key, None)])
             .await
             .expect("failed to delete consensus state");
@@ -205,7 +197,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         last_block: Block,
     ) {
         let key = Self::make_checkpoint_key(epoch);
-        self.store_mut()
+        self.store
             .write_batch([(
                 key,
                 Some(Value::Checkpoint(Box::new((
@@ -227,7 +219,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn get_finalized_checkpoint(&self, epoch: u64) -> Option<(Checkpoint, Block)> {
         let key = Self::make_checkpoint_key(epoch);
         if let Some(Value::Checkpoint(checkpoint)) = self
-            .store()
+            .store
             .get(&key)
             .await
             .expect("failed to get finalized checkpoint")
@@ -254,7 +246,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         header: &FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>,
     ) {
         let key = Self::make_finalized_header_key(epoch);
-        self.store_mut()
+        self.store
             .write_batch([(key, Some(Value::FinalizedHeader(Box::new(header.clone()))))])
             .await
             .expect("failed to store finalized header");
@@ -273,7 +265,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     ) -> Option<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>> {
         let key = Self::make_finalized_header_key(epoch);
         if let Some(Value::FinalizedHeader(header)) = self
-            .store()
+            .store
             .get(&key)
             .await
             .expect("failed to get finalized header")
@@ -293,7 +285,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     // Commit all pending changes to the database
     pub async fn commit(&mut self) {
-        self.store_mut()
+        self.store
             .commit(None)
             .await
             .expect("failed to commit to database");
