@@ -127,6 +127,12 @@ pub fn create_test_finalizer_mailbox(
                     ConsensusStateRequest::GetEpochLength => {
                         let _ = response.send(ConsensusStateResponse::EpochLength(10));
                     }
+                    ConsensusStateRequest::GetEpochBounds(epoch) => {
+                        let first = epoch * 10;
+                        let last = first + 9;
+                        let _ =
+                            response.send(ConsensusStateResponse::EpochBounds(Some((first, last))));
+                    }
                 },
                 _ => {}
             }

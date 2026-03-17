@@ -1,7 +1,7 @@
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
-    FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse, StateProofResponse,
-    StateRootResponse, ValidatorAccountResponse,
+    EpochBoundsResponse, FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse,
+    StateProofResponse, StateRootResponse, ValidatorAccountResponse,
 };
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
@@ -56,6 +56,9 @@ pub trait SummitApi {
 
     #[method(name = "getEpochLength")]
     async fn get_epoch_length(&self) -> RpcResult<u64>;
+
+    #[method(name = "getEpochBounds")]
+    async fn get_epoch_bounds(&self, epoch: u64) -> RpcResult<EpochBoundsResponse>;
 
     #[method(name = "getDeposit")]
     async fn get_deposit(&self, index: usize) -> RpcResult<DepositResponse>;

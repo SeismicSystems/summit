@@ -71,3 +71,9 @@ pub struct StateProofResponse {
     pub el_block_number: u64,
     pub proofs: Vec<crate::ssz_state_tree::SszProof>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EpochBoundsResponse {
+    pub first_height: u64,
+    pub last_height: u64,
+}
