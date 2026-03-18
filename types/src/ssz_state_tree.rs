@@ -1609,20 +1609,24 @@ mod tests {
         assert_ne!(tree.root(), r5);
         let r6 = tree.root();
 
-        tree.set_next_withdrawal_index(7);
+        tree.set_allowed_timestamp_future_ms(5_000);
         assert_ne!(tree.root(), r6);
         let r7 = tree.root();
 
-        tree.set_forkchoice_head_block_hash(&[3u8; 32]);
+        tree.set_next_withdrawal_index(7);
         assert_ne!(tree.root(), r7);
         let r8 = tree.root();
 
-        tree.set_forkchoice_safe_block_hash(&[4u8; 32]);
+        tree.set_forkchoice_head_block_hash(&[3u8; 32]);
         assert_ne!(tree.root(), r8);
         let r9 = tree.root();
 
-        tree.set_forkchoice_finalized_block_hash(&[5u8; 32]);
+        tree.set_forkchoice_safe_block_hash(&[4u8; 32]);
         assert_ne!(tree.root(), r9);
+        let r10 = tree.root();
+
+        tree.set_forkchoice_finalized_block_hash(&[5u8; 32]);
+        assert_ne!(tree.root(), r10);
     }
 
     #[test]
