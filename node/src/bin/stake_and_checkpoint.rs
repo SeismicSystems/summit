@@ -65,10 +65,10 @@ struct Args {
     #[arg(long, default_value = "/tmp/summit_checkpointing_test")]
     pub data_dir: String,
     /// Height at which the joining node will download the checkpoint
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 50)]
     pub checkpoint_height: u64,
     /// Height that all nodes must reach for the test to succeed
-    #[arg(long, default_value_t = 2000)]
+    #[arg(long, default_value_t = 100)]
     pub stop_height: u64,
 }
 

@@ -1,4 +1,5 @@
 use crate::PublicKey;
+use crate::protocol_params::{MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_ALLOWED_TIMESTAMP_FUTURE_MS};
 use alloy_primitives::Address;
 use anyhow::Context;
 use commonware_codec::DecodeExt;
@@ -104,6 +105,15 @@ impl Genesis {
         let genesis: Genesis = toml::from_str(&file_string)?;
         if genesis.blocks_per_epoch == 0 {
             return Err("blocks_per_epoch must be greater than 0".into());
+        }
+        if genesis.allowed_timestamp_future_ms < MIN_ALLOWED_TIMESTAMP_FUTURE_MS
+            || genesis.allowed_timestamp_future_ms > MAX_ALLOWED_TIMESTAMP_FUTURE_MS
+        {
+            return Err(format!(
+                "allowed_timestamp_future_ms must be between {} and {}",
+                MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_ALLOWED_TIMESTAMP_FUTURE_MS
+            )
+            .into());
         }
         Ok(genesis)
     }
