@@ -970,6 +970,14 @@ impl<
                 let length = self.canonical_state.get_epocher().current_length();
                 let _ = sender.send(ConsensusStateResponse::EpochLength(length));
             }
+            ConsensusStateRequest::GetEpochBounds(epoch) => {
+                let bounds = self
+                    .canonical_state
+                    .get_epocher()
+                    .epoch_bounds(Epoch::new(epoch))
+                    .map(|(first, last)| (first.get(), last.get()));
+                let _ = sender.send(ConsensusStateResponse::EpochBounds(bounds));
+            }
             ConsensusStateRequest::GetDeposit(index) => {
                 let deposit = self.canonical_state.get_deposit(index).cloned();
                 let _ = sender.send(ConsensusStateResponse::Deposit(deposit));

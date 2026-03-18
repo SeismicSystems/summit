@@ -2,8 +2,8 @@ use crate::api::{SummitApiServer, SummitProofApiServer};
 use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
-    FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse, StateProofResponse,
-    StateRootResponse, ValidatorAccountResponse,
+    EpochBoundsResponse, FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse,
+    StateProofResponse, StateRootResponse, ValidatorAccountResponse,
 };
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
@@ -287,6 +287,17 @@ impl SummitApiServer for SummitRpcServer {
     async fn get_epoch_length(&self) -> RpcResult<u64> {
         let epoch_length = self.finalizer_mailbox.get_epoch_length().await;
         Ok(epoch_length)
+    }
+
+    async fn get_epoch_bounds(&self, epoch: u64) -> RpcResult<EpochBoundsResponse> {
+        let bounds = self.finalizer_mailbox.get_epoch_bounds(epoch).await;
+        match bounds {
+            Some((first_height, last_height)) => Ok(EpochBoundsResponse {
+                first_height,
+                last_height,
+            }),
+            None => Err(RpcError::EpochNotFound.into()),
+        }
     }
 
     async fn get_deposit(&self, index: usize) -> RpcResult<DepositResponse> {

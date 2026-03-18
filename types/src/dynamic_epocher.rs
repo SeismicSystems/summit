@@ -65,6 +65,16 @@ impl DynamicEpocher {
         inner.current_epoch = epoch;
     }
 
+    /// Returns the bounds (first height, last height) of a given epoch,
+    /// or `None` if the epoch is beyond `current_epoch + 1`.
+    pub fn epoch_bounds(&self, epoch: Epoch) -> Option<(Height, Height)> {
+        let inner = self.inner.read().unwrap();
+        if epoch.get() > inner.current_epoch.get() + 1 {
+            return None;
+        }
+        Self::bounds(&inner.segments, epoch)
+    }
+
     /// Registers a new epoch length, taking effect at `current_epoch + 2`.
     ///
     /// Returns an error if the target epoch is before the latest registered

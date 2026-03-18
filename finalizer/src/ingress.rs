@@ -279,6 +279,24 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         length
     }
 
+    pub async fn get_epoch_bounds(&self, epoch: u64) -> Option<(u64, u64)> {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetEpochBounds(epoch);
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::EpochBounds(bounds) = res else {
+            unreachable!("request and response variants must match");
+        };
+        bounds
+    }
+
     pub async fn get_deposit(
         &self,
         index: usize,

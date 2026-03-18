@@ -7,6 +7,7 @@ pub enum RpcError {
     ValidatorNotFound,
     DepositNotFound,
     WithdrawalNotFound,
+    EpochNotFound,
     InvalidPublicKey(String),
     GenesisPathError(String),
     IoError(String),
@@ -26,6 +27,7 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::FinalizedHeaderNotFound => {
                 ErrorObjectOwned::owned(2003, "Finalized header not found", None::<()>)
             }
+            RpcError::EpochNotFound => ErrorObjectOwned::owned(2004, "Epoch not found", None::<()>),
             RpcError::ValidatorNotFound => {
                 ErrorObjectOwned::owned(3000, "Validator not found", None::<()>)
             }
