@@ -128,8 +128,8 @@ pub fn create_test_finalizer_mailbox(
                         let _ = response.send(ConsensusStateResponse::EpochLength(10));
                     }
                     ConsensusStateRequest::GetAllowedTimestampFuture => {
-                        let _ = response
-                            .send(ConsensusStateResponse::AllowedTimestampFuture(10_000));
+                        let _ =
+                            response.send(ConsensusStateResponse::AllowedTimestampFuture(10_000));
                     }
                     ConsensusStateRequest::GetEpochBounds(epoch) => {
                         let first = epoch * 10;
