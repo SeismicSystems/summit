@@ -5,7 +5,7 @@ use commonware_consensus::{
     simplex::types::{Finalization, Notarization},
     types::{Epoch, Round, View},
 };
-use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::{
     archive::{self, Archive as _, Identifier, prunable},
     metadata::{self, Metadata},
@@ -37,22 +37,25 @@ pub(crate) struct Config {
 
 /// Prunable archives for a single epoch.
 struct Cache<
-    R: Rng + Spawner + Metrics + Clock + GClock + Storage,
+    R: BufferPooler + Rng + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
-    S: Scheme<B::Commitment>,
+    S: Scheme<B::Digest>,
 > {
     /// Verified blocks stored by view
-    verified_blocks: prunable::Archive<TwoCap, R, B::Commitment, B>,
+    verified_blocks: prunable::Archive<TwoCap, R, B::Digest, B>,
     /// Notarized blocks stored by view
-    notarized_blocks: prunable::Archive<TwoCap, R, B::Commitment, B>,
+    notarized_blocks: prunable::Archive<TwoCap, R, B::Digest, B>,
     /// Notarizations stored by view
-    notarizations: prunable::Archive<TwoCap, R, B::Commitment, Notarization<S, B::Commitment>>,
+    notarizations: prunable::Archive<TwoCap, R, B::Digest, Notarization<S, B::Digest>>,
     /// Finalizations stored by view
-    finalizations: prunable::Archive<TwoCap, R, B::Commitment, Finalization<S, B::Commitment>>,
+    finalizations: prunable::Archive<TwoCap, R, B::Digest, Finalization<S, B::Digest>>,
 }
 
-impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<B::Commitment>>
-    Cache<R, B, S>
+impl<
+    R: BufferPooler + Rng + Spawner + Metrics + Clock + GClock + Storage,
+    B: Block,
+    S: Scheme<B::Digest>,
+> Cache<R, B, S>
 {
     /// Prune the archives to the given view.
     async fn prune(&mut self, min_view: View) {
@@ -70,9 +73,9 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
 
 /// Manages prunable caches and their metadata.
 pub(crate) struct Manager<
-    R: Rng + Spawner + Metrics + Clock + GClock + Storage,
+    R: BufferPooler + Rng + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
-    S: Scheme<B::Commitment>,
+    S: Scheme<B::Digest>,
 > {
     /// Context
     context: R,
@@ -91,8 +94,11 @@ pub(crate) struct Manager<
     caches: BTreeMap<Epoch, Cache<R, B, S>>,
 }
 
-impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<B::Commitment>>
-    Manager<R, B, S>
+impl<
+    R: BufferPooler + Rng + Spawner + Metrics + Clock + GClock + Storage,
+    B: Block,
+    S: Scheme<B::Digest>,
+> Manager<R, B, S>
 {
     /// Initialize the cache manager and its metadata store.
     pub(crate) async fn init(context: R, cfg: Config, block_codec_config: B::Cfg) -> Self {
@@ -201,7 +207,7 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
         epoch: Epoch,
         name: &str,
         codec_config: T::Cfg,
-    ) -> prunable::Archive<TwoCap, R, B::Commitment, T> {
+    ) -> prunable::Archive<TwoCap, R, B::Digest, T> {
         let start = Instant::now();
         let cfg = prunable::Config {
             translator: TwoCap,
@@ -228,7 +234,7 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
     }
 
     /// Add a verified block to the prunable archive.
-    pub(crate) async fn put_verified(&mut self, round: Round, commitment: B::Commitment, block: B) {
+    pub(crate) async fn put_verified(&mut self, round: Round, commitment: B::Digest, block: B) {
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
         };
@@ -240,7 +246,7 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
     }
 
     /// Add a notarized block to the prunable archive.
-    pub(crate) async fn put_block(&mut self, round: Round, commitment: B::Commitment, block: B) {
+    pub(crate) async fn put_block(&mut self, round: Round, commitment: B::Digest, block: B) {
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
         };
@@ -255,8 +261,8 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
     pub(crate) async fn put_notarization(
         &mut self,
         round: Round,
-        commitment: B::Commitment,
-        notarization: Notarization<S, B::Commitment>,
+        commitment: B::Digest,
+        notarization: Notarization<S, B::Digest>,
     ) {
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
@@ -272,8 +278,8 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
     pub(crate) async fn put_finalization(
         &mut self,
         round: Round,
-        commitment: B::Commitment,
-        finalization: Finalization<S, B::Commitment>,
+        commitment: B::Digest,
+        finalization: Finalization<S, B::Digest>,
     ) {
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
@@ -304,7 +310,7 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
     pub(crate) async fn get_notarization(
         &self,
         round: Round,
-    ) -> Option<Notarization<S, B::Commitment>> {
+    ) -> Option<Notarization<S, B::Digest>> {
         let cache = self.caches.get(&round.epoch())?;
         cache
             .notarizations
@@ -316,8 +322,8 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
     /// Get a finalization from the prunable archive by commitment.
     pub(crate) async fn get_finalization_for(
         &self,
-        commitment: B::Commitment,
-    ) -> Option<Finalization<S, B::Commitment>> {
+        commitment: B::Digest,
+    ) -> Option<Finalization<S, B::Digest>> {
         for cache in self.caches.values().rev() {
             match cache.finalizations.get(Identifier::Key(&commitment)).await {
                 Ok(Some(finalization)) => return Some(finalization),
@@ -329,7 +335,7 @@ impl<R: Rng + Spawner + Metrics + Clock + GClock + Storage, B: Block, S: Scheme<
     }
 
     /// Looks for a block (verified or notarized).
-    pub(crate) async fn find_block(&self, commitment: B::Commitment) -> Option<B> {
+    pub(crate) async fn find_block(&self, commitment: B::Digest) -> Option<B> {
         // Check in reverse order
         for cache in self.caches.values().rev() {
             // Check verified blocks

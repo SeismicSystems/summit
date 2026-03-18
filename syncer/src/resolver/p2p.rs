@@ -1,11 +1,10 @@
 //! P2P resolver initialization and config.
 
-use crate::Block;
 use crate::ingress::handler::{self, Handler};
-use commonware_cryptography::PublicKey;
+use commonware_cryptography::{Digest, PublicKey};
 use commonware_p2p::{Blocker, Provider, Receiver, Sender};
 use commonware_resolver::p2p;
-use commonware_runtime::{Clock, Metrics, Spawner};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner};
 use commonware_utils::channel::mpsc;
 use governor::clock::Clock as GClock;
 use rand::Rng;
@@ -42,19 +41,19 @@ pub struct Config<P: PublicKey, C: Provider<PublicKey = P>, B: Blocker<PublicKey
 }
 
 /// Initialize a P2P resolver.
-pub fn init<E, C, Bl, B, S, R, P>(
+pub fn init<E, C, Bl, D, S, R, P>(
     ctx: &E,
     config: Config<P, C, Bl>,
     backfill: (S, R),
 ) -> (
-    mpsc::Receiver<handler::Message<B>>,
-    p2p::Mailbox<handler::Request<B>, P>,
+    mpsc::Receiver<handler::Message<D>>,
+    p2p::Mailbox<handler::Request<D>, P>,
 )
 where
-    E: Rng + Spawner + Clock + GClock + Metrics,
+    E: BufferPooler + Rng + Spawner + Clock + GClock + Metrics,
     C: Provider<PublicKey = P>,
     Bl: Blocker<PublicKey = P>,
-    B: Block,
+    D: Digest,
     S: Sender<PublicKey = P>,
     R: Receiver<PublicKey = P>,
     P: PublicKey,
@@ -64,7 +63,7 @@ where
     let (resolver_engine, resolver) = p2p::Engine::new(
         ctx.with_label("resolver"),
         p2p::Config {
-            provider: config.provider,
+            peer_provider: config.provider,
             blocker: config.blocker,
             consumer: handler.clone(),
             producer: handler,

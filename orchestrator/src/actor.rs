@@ -15,14 +15,14 @@ use commonware_p2p::{
 };
 use commonware_parallel::Strategy;
 use commonware_runtime::{
-    Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
-    spawn_cell,
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
+    buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::{NZUsize, vec::NonEmptyVec};
+use commonware_utils::{NZU16, NZUsize, vec::NonEmptyVec};
 use futures::{StreamExt, channel::mpsc};
 use governor::clock::Clock as GClock;
 use rand_core::CryptoRngCore;
-use std::{collections::BTreeMap, num::NonZero, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
 use tracing::info;
 
@@ -51,8 +51,8 @@ where
 
     // Consensus timeouts
     pub leader_timeout: Duration,
-    pub notarization_timeout: Duration,
-    pub nullify_retry: Duration,
+    pub certification_timeout: Duration,
+    pub timeout_retry: Duration,
     pub fetch_timeout: Duration,
     pub activity_timeout: ViewDelta,
     pub skip_timeout: ViewDelta,
@@ -62,7 +62,7 @@ where
 
 pub struct Actor<E, B, A, St, ES>
 where
-    E: Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
+    E: BufferPooler + Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
@@ -84,8 +84,8 @@ where
 
     // Consensus timeouts
     leader_timeout: Duration,
-    notarization_timeout: Duration,
-    nullify_retry: Duration,
+    certification_timeout: Duration,
+    timeout_retry: Duration,
     fetch_timeout: Duration,
     activity_timeout: ViewDelta,
     skip_timeout: ViewDelta,
@@ -95,7 +95,7 @@ where
 
 impl<E, B, A, St, ES> Actor<E, B, A, St, ES>
 where
-    E: Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
+    E: BufferPooler + Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest>,
@@ -104,7 +104,7 @@ where
 {
     pub fn new(context: E, config: Config<B, A, St, ES>) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
-        let page_cache = CacheRef::new(NonZero::<u16>::new(16_384).unwrap(), NZUsize!(10_000));
+        let page_cache = CacheRef::from_pooler(&context, NZU16!(16_384), NZUsize!(10_000));
 
         (
             Self {
@@ -119,8 +119,8 @@ where
                 page_cache,
                 epocher: config.epocher,
                 leader_timeout: config.leader_timeout,
-                notarization_timeout: config.notarization_timeout,
-                nullify_retry: config.nullify_retry,
+                certification_timeout: config.certification_timeout,
+                timeout_retry: config.timeout_retry,
                 fetch_timeout: config.fetch_timeout,
                 activity_timeout: config.activity_timeout,
                 skip_timeout: config.skip_timeout,
@@ -309,8 +309,8 @@ where
                 replay_buffer: NZUsize!(1024 * 1024),
                 write_buffer: NZUsize!(1024 * 1024),
                 leader_timeout: self.leader_timeout,
-                notarization_timeout: self.notarization_timeout,
-                nullify_retry: self.nullify_retry,
+                certification_timeout: self.certification_timeout,
+                timeout_retry: self.timeout_retry,
                 fetch_timeout: self.fetch_timeout,
                 activity_timeout: self.activity_timeout,
                 skip_timeout: self.skip_timeout,

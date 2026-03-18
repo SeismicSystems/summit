@@ -27,7 +27,7 @@ pub enum Identifier<D: Digest> {
     /// The height of the block to retrieve.
     Height(Height),
     /// The commitment of the block to retrieve.
-    Commitment(D),
+    Digest(D),
     /// The highest finalized block. It may be the case that marshal does not have some of the
     /// blocks below this height.
     Latest,
@@ -50,7 +50,7 @@ impl<D: Digest> From<u64> for Identifier<D> {
 // Allows using &Digest directly for convenience.
 impl<D: Digest> From<&D> for Identifier<D> {
     fn from(src: &D) -> Self {
-        Self::Commitment(*src)
+        Self::Digest(*src)
     }
 }
 
@@ -59,7 +59,7 @@ impl<D: Digest> From<archive::Identifier<'_, D>> for Identifier<D> {
     fn from(src: archive::Identifier<'_, D>) -> Self {
         match src {
             archive::Identifier::Index(index) => Self::Height(Height::new(index)),
-            archive::Identifier::Key(key) => Self::Commitment(*key),
+            archive::Identifier::Key(key) => Self::Digest(*key),
         }
     }
 }
@@ -68,15 +68,15 @@ impl<D: Digest> From<archive::Identifier<'_, D>> for Identifier<D> {
 ///
 /// These messages are sent from the consensus engine and other parts of the
 /// system to drive the state of the marshal.
-pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
+pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
     // -------------------- Application Messages --------------------
     /// A request to retrieve the (height, commitment) of a block by its identifier.
     /// The block must be finalized; returns `None` if the block is not finalized.
     GetInfo {
         /// The identifier of the block to get the information of.
-        identifier: Identifier<B::Commitment>,
+        identifier: Identifier<B::Digest>,
         /// A channel to send the retrieved (height, commitment).
-        response: oneshot::Sender<Option<(Height, B::Commitment)>>,
+        response: oneshot::Sender<Option<(Height, B::Digest)>>,
     },
     /// A request to retrieve a block by its identifier.
     ///
@@ -84,7 +84,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
     /// blocks, whereas requesting by commitment may return non-finalized or even unverified blocks.
     GetBlock {
         /// The identifier of the block to retrieve.
-        identifier: Identifier<B::Commitment>,
+        identifier: Identifier<B::Digest>,
         /// A channel to send the retrieved block.
         response: oneshot::Sender<Option<B>>,
     },
@@ -93,7 +93,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
         /// The height of the finalization to retrieve.
         height: Height,
         /// A channel to send the retrieved finalization.
-        response: oneshot::Sender<Option<Finalization<S, B::Commitment>>>,
+        response: oneshot::Sender<Option<Finalization<S, B::Digest>>>,
     },
     /// A hint to fetch a finalization from the network if not available locally.
     ///
@@ -111,7 +111,7 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
         /// to help locate the block.
         round: Option<Round>,
         /// The commitment of the block to retrieve.
-        commitment: B::Commitment,
+        commitment: B::Digest,
         /// A channel to send the retrieved block.
         response: oneshot::Sender<B>,
     },
@@ -134,36 +134,43 @@ pub(crate) enum Message<S: Scheme<B::Commitment>, B: Block> {
     /// A notarization from the consensus engine.
     Notarization {
         /// The notarization.
-        notarization: Notarization<S, B::Commitment>,
+        notarization: Notarization<S, B::Digest>,
     },
     /// A finalization from the consensus engine.
     Finalization {
         /// The finalization.
-        finalization: Finalization<S, B::Commitment>,
+        finalization: Finalization<S, B::Digest>,
     },
-    /// A request to set the sync floor.
+    /// Sets the sync starting point (advances if higher than current).
     ///
-    /// The sync floor is the latest block that the application has processed. Marshal
-    /// will not attempt to sync blocks below this height nor deliver blocks below
-    /// this height to the application.
+    /// Marshal will sync and deliver blocks starting at `floor + 1`. Data below
+    /// the floor is pruned.
     ///
-    /// This sets the sync floor only if the provided height is higher than the
-    /// previously recorded floor.
+    /// To prune data without affecting the sync starting point, use [Message::Prune] instead.
     ///
-    /// The default sync floor is height 0.
+    /// The default floor is 0.
     SetFloor {
-        /// The candidate sync floor height.
+        /// The candidate floor height.
+        height: Height,
+    },
+    /// Prunes finalized blocks and certificates below the given height.
+    ///
+    /// Unlike [Message::SetFloor], this does not affect the sync starting point.
+    /// The height must be at or below the current floor (last processed height),
+    /// otherwise the prune request is ignored.
+    Prune {
+        /// The minimum height to keep (blocks below this are pruned).
         height: Height,
     },
 }
 
 /// A mailbox for sending messages to the marshal [Actor](super::super::actor::Actor).
 #[derive(Clone)]
-pub struct Mailbox<S: Scheme<B::Commitment>, B: Block> {
+pub struct Mailbox<S: Scheme<B::Digest>, B: Block> {
     sender: mpsc::Sender<Message<S, B>>,
 }
 
-impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
+impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     /// Creates a new mailbox.
     pub(crate) const fn new(sender: mpsc::Sender<Message<S, B>>) -> Self {
         Self { sender }
@@ -172,8 +179,8 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     /// A request to retrieve the information about the highest finalized block.
     pub async fn get_info(
         &mut self,
-        identifier: impl Into<Identifier<B::Commitment>>,
-    ) -> Option<(Height, B::Commitment)> {
+        identifier: impl Into<Identifier<B::Digest>>,
+    ) -> Option<(Height, B::Digest)> {
         let (tx, rx) = oneshot::channel();
         if self
             .sender
@@ -194,10 +201,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
 
     /// A best-effort attempt to retrieve a given block from local
     /// storage. It is not an indication to go fetch the block from the network.
-    pub async fn get_block(
-        &mut self,
-        identifier: impl Into<Identifier<B::Commitment>>,
-    ) -> Option<B> {
+    pub async fn get_block(&mut self, identifier: impl Into<Identifier<B::Digest>>) -> Option<B> {
         let (tx, rx) = oneshot::channel();
         if self
             .sender
@@ -218,10 +222,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
 
     /// A best-effort attempt to retrieve a given [Finalization] from local
     /// storage. It is not an indication to go fetch the [Finalization] from the network.
-    pub async fn get_finalization(
-        &mut self,
-        height: Height,
-    ) -> Option<Finalization<S, B::Commitment>> {
+    pub async fn get_finalization(&mut self, height: Height) -> Option<Finalization<S, B::Digest>> {
         let (tx, rx) = oneshot::channel();
         if self
             .sender
@@ -267,7 +268,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     pub async fn subscribe(
         &mut self,
         round: Option<Round>,
-        commitment: B::Commitment,
+        commitment: B::Digest,
     ) -> oneshot::Receiver<B> {
         let (tx, rx) = oneshot::channel();
         if self
@@ -290,7 +291,7 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     /// If the starting block is not found, `None` is returned.
     pub async fn ancestry(
         &mut self,
-        (start_round, start_commitment): (Option<Round>, B::Commitment),
+        (start_round, start_commitment): (Option<Round>, B::Digest),
     ) -> Option<AncestorStream<S, B>> {
         self.subscribe(start_round, start_commitment)
             .await
@@ -323,13 +324,14 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
         }
     }
 
-    /// A request to set the sync floor (conditionally advances if higher).
+    /// Sets the sync starting point (conditionally advances if higher).
     ///
-    /// The sync floor is the latest block that the application has processed. Marshal
-    /// will not attempt to sync blocks below this height nor deliver blocks below
-    /// this height to the application.
+    /// Marshal will sync and deliver blocks starting at `floor + 1`. Data below
+    /// the floor is pruned.
     ///
-    /// The default sync floor is height 0.
+    /// To prune data without affecting the sync starting point, use [`Self::prune`] instead.
+    ///
+    /// The default floor is 0.
     pub async fn set_floor(&mut self, height: Height) {
         if self
             .sender
@@ -341,11 +343,22 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
         }
     }
 
+    /// Prunes finalized blocks and certificates below the given height.
+    ///
+    /// Unlike [`Self::set_floor`], this does not affect the sync starting point.
+    /// The height must be at or below the current floor (last processed height),
+    /// otherwise the prune request is ignored.
+    pub async fn prune(&mut self, height: Height) {
+        if self.sender.send(Message::Prune { height }).await.is_err() {
+            error!("failed to send prune message to actor: receiver dropped");
+        }
+    }
+
     /// Notifies the actor of a verified [`Finalization`].
     ///
     /// This is a trusted call that injects a finalization directly into marshal. The
     /// finalization is expected to have already been verified by the caller.
-    pub async fn finalization(&mut self, finalization: Finalization<S, B::Commitment>) {
+    pub async fn finalization(&mut self, finalization: Finalization<S, B::Digest>) {
         if self
             .sender
             .send(Message::Finalization { finalization })
@@ -357,8 +370,8 @@ impl<S: Scheme<B::Commitment>, B: Block> Mailbox<S, B> {
     }
 }
 
-impl<S: Scheme<B::Commitment>, B: Block> Reporter for Mailbox<S, B> {
-    type Activity = Activity<S, B::Commitment>;
+impl<S: Scheme<B::Digest>, B: Block> Reporter for Mailbox<S, B> {
+    type Activity = Activity<S, B::Digest>;
 
     async fn report(&mut self, activity: Self::Activity) {
         let message = match activity {
@@ -377,9 +390,9 @@ impl<S: Scheme<B::Commitment>, B: Block> Reporter for Mailbox<S, B> {
 
 /// Returns a boxed subscription future for a block.
 #[inline]
-fn subscribe_block_future<S: Scheme<B::Commitment>, B: Block>(
+fn subscribe_block_future<S: Scheme<B::Digest>, B: Block>(
     mut marshal: Mailbox<S, B>,
-    commitment: B::Commitment,
+    commitment: B::Digest,
 ) -> BoxFuture<'static, Option<B>> {
     async move {
         let receiver = marshal.subscribe(None, commitment).await;
@@ -393,14 +406,14 @@ fn subscribe_block_future<S: Scheme<B::Commitment>, B: Block>(
 /// TODO(clabby): Once marshal can also yield the genesis block, this stream should end
 /// at block height 0 rather than 1.
 #[pin_project]
-pub struct AncestorStream<S: Scheme<B::Commitment>, B: Block> {
+pub struct AncestorStream<S: Scheme<B::Digest>, B: Block> {
     marshal: Mailbox<S, B>,
     buffered: Vec<B>,
     #[pin]
     pending: FuturesOrdered<BoxFuture<'static, Option<B>>>,
 }
 
-impl<S: Scheme<B::Commitment>, B: Block> AncestorStream<S, B> {
+impl<S: Scheme<B::Digest>, B: Block> AncestorStream<S, B> {
     /// Creates a new [AncestorStream] starting from the given ancestry.
     ///
     /// # Panics
@@ -427,7 +440,7 @@ impl<S: Scheme<B::Commitment>, B: Block> AncestorStream<S, B> {
     }
 }
 
-impl<S: Scheme<B::Commitment>, B: Block> Stream for AncestorStream<S, B> {
+impl<S: Scheme<B::Digest>, B: Block> Stream for AncestorStream<S, B> {
     type Item = B;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

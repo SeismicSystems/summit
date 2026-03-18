@@ -1,7 +1,7 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, ReadExt, Write, varint::UInt};
 use commonware_consensus::types::Height;
-use commonware_cryptography::{Committable, Digest, Digestible, Hasher};
+use commonware_cryptography::{Digest, Digestible, Hasher};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block<D: Digest> {
@@ -83,14 +83,6 @@ impl<D: Digest> Digestible for Block<D> {
     }
 }
 
-impl<D: Digest> Committable for Block<D> {
-    type Commitment = D;
-
-    fn commitment(&self) -> D {
-        self.digest
-    }
-}
-
 impl<D: Digest> commonware_consensus::Heightable for Block<D> {
     fn height(&self) -> Height {
         self.height
@@ -98,7 +90,7 @@ impl<D: Digest> commonware_consensus::Heightable for Block<D> {
 }
 
 impl<D: Digest> commonware_consensus::Block for Block<D> {
-    fn parent(&self) -> Self::Commitment {
+    fn parent(&self) -> Self::Digest {
         self.parent
     }
 }

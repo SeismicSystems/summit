@@ -86,10 +86,14 @@ fn main() {
             log_partition: "bench-log".to_string(),
             log_write_buffer: NZUsize!(64 * 1024),
             log_compression: None,
-            log_codec_config: (),
+            log_codec_config: ((), ()),
             log_items_per_section: NZU64!(4),
             translator: EightCap,
-            page_cache: CacheRef::new(std::num::NonZero::new(77u16).unwrap(), NZUsize!(9)),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(77u16).unwrap(),
+                NZUsize!(9),
+            ),
         };
 
         let mut db = FinalizerState::<_, MinPk>::new(context, config).await;

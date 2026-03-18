@@ -9,7 +9,7 @@ use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_p2p::{Blocker, Provider, Receiver, Sender};
 use commonware_parallel::Sequential;
 use commonware_runtime::buffer::paged::CacheRef;
-use commonware_runtime::{Clock, Handle, Metrics, Network, Spawner, Storage};
+use commonware_runtime::{BufferPooler, Clock, Handle, Metrics, Network, Spawner, Storage};
 use commonware_storage::archive::immutable;
 use commonware_utils::acknowledgement::Exact;
 use commonware_utils::{NZU64, NZUsize};
@@ -65,7 +65,7 @@ const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 //
 
 pub struct Engine<
-    E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
+    E: BufferPooler + Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
     C: EngineClient,
     O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Provider<PublicKey = PublicKey>,
     S: Signer<PublicKey = PublicKey>,
@@ -73,7 +73,7 @@ pub struct Engine<
     context: E,
     application:
         summit_application::Actor<E, C, MultisigScheme, S::PublicKey, S, MinPk, DynamicEpocher>,
-    buffer: buffered::Engine<E, S::PublicKey, Block>,
+    buffer: buffered::Engine<E, S::PublicKey, Block, O>,
     buffer_mailbox: buffered::Mailbox<S::PublicKey, Block>,
     #[allow(clippy::type_complexity)]
     syncer: summit_syncer::Actor<
@@ -113,7 +113,7 @@ pub struct Engine<
 }
 
 impl<
-    E: Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
+    E: BufferPooler + Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
     C: EngineClient,
     O: NetworkOracle<PublicKey> + Blocker<PublicKey = S::PublicKey> + Provider<PublicKey = PublicKey>,
     S: Signer<PublicKey = PublicKey>,
@@ -124,7 +124,8 @@ where
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
         let blocks_per_epoch = cfg.blocks_per_epoch;
 
-        let page_cache = CacheRef::new(
+        let page_cache = CacheRef::from_pooler(
+            &context,
             NonZero::new(BUFFER_POOL_PAGE_SIZE).unwrap(),
             BUFFER_POOL_CAPACITY,
         );
@@ -188,6 +189,7 @@ where
                 deque_size: cfg.deque_size,
                 priority: true,
                 codec_config: (),
+                peer_provider: cfg.oracle.clone(),
             },
         );
 
@@ -282,6 +284,7 @@ where
             value_write_buffer: WRITE_BUFFER,
             block_codec_config: (),
             max_repair: MAX_REPAIR,
+            max_pending_acks: MAX_REPAIR,
             strategy: Sequential,
         };
 
@@ -307,8 +310,8 @@ where
                 epocher: epocher.clone(),
                 partition_prefix: cfg.partition_prefix.clone(),
                 leader_timeout: cfg.leader_timeout,
-                notarization_timeout: cfg.notarization_timeout,
-                nullify_retry: cfg.nullify_retry,
+                certification_timeout: cfg.notarization_timeout,
+                timeout_retry: cfg.nullify_retry,
                 fetch_timeout: cfg.fetch_timeout,
                 activity_timeout: ViewDelta::new(cfg.activity_timeout),
                 skip_timeout: ViewDelta::new(cfg.skip_timeout),

@@ -15,7 +15,7 @@ pub struct SyncStart {
 }
 
 /// Checkpoint data to restore from when loading from a checkpoint.
-pub struct SyncCheckpoint<B: Block, S: Scheme<B::Commitment>> {
+pub struct SyncCheckpoint<B: Block, S: Scheme<B::Digest>> {
     pub last_block: B,
     pub finalized_header: Option<FinalizedHeader<S>>,
 }
@@ -24,7 +24,7 @@ pub struct SyncCheckpoint<B: Block, S: Scheme<B::Commitment>> {
 pub struct Config<B, P, ES, T>
 where
     B: Block,
-    P: Provider<Scope = Epoch, Scheme: Scheme<B::Commitment>>,
+    P: Provider<Scope = Epoch, Scheme: Scheme<B::Digest>>,
     ES: Epocher,
     T: Strategy,
 {
@@ -68,6 +68,11 @@ where
 
     /// Maximum number of blocks to repair at once
     pub max_repair: NonZeroUsize,
+
+    /// Maximum number of blocks dispatched to the application that have not
+    /// yet been acknowledged. Increasing this value allows the application
+    /// to buffer work while marshal continues dispatching, hiding ack latency.
+    pub max_pending_acks: NonZeroUsize,
 
     /// Strategy for parallel operations.
     pub strategy: T,
