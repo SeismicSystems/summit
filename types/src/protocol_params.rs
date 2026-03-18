@@ -5,12 +5,15 @@ use commonware_codec::{EncodeSize, Error, Read, Write};
 
 pub const MIN_EPOCH_LENGTH: u64 = 10;
 pub const MAX_EPOCH_LENGTH: u64 = 1_814_400;
+pub const MIN_ALLOWED_TIMESTAMP_FUTURE_MS: u64 = 1_000;
+pub const MAX_ALLOWED_TIMESTAMP_FUTURE_MS: u64 = 600_000;
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {
     MinimumStake(u64),
     MaximumStake(u64),
     EpochLength(u64),
+    AllowedTimestampFuture(u64),
 }
 
 impl TryFrom<ProtocolParamRequest> for ProtocolParam {
@@ -62,6 +65,29 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                 }
                 Ok(ProtocolParam::EpochLength(epoch_length))
             }
+            0x03 => {
+                if request.param.len() != 8 {
+                    return Err(anyhow!(
+                        "Failed to parse allowed timestamp future protocol param, invalid length {}",
+                        request.param.len()
+                    ));
+                }
+                let bytes: [u8; 8] = request.param.as_slice().try_into()?;
+                let allowed_timestamp_future = u64::from_le_bytes(bytes);
+                if allowed_timestamp_future < MIN_ALLOWED_TIMESTAMP_FUTURE_MS {
+                    return Err(anyhow!(
+                        "Allowed timestamp future {allowed_timestamp_future}ms is below minimum {MIN_ALLOWED_TIMESTAMP_FUTURE_MS}ms"
+                    ));
+                }
+                if allowed_timestamp_future > MAX_ALLOWED_TIMESTAMP_FUTURE_MS {
+                    return Err(anyhow!(
+                        "Allowed timestamp future {allowed_timestamp_future}ms exceeds maximum {MAX_ALLOWED_TIMESTAMP_FUTURE_MS}ms"
+                    ));
+                }
+                Ok(ProtocolParam::AllowedTimestampFuture(
+                    allowed_timestamp_future,
+                ))
+            }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
             )),
@@ -90,6 +116,10 @@ impl Write for ProtocolParam {
                 buf.put_u8(0x02);
                 buf.put_u64(*value);
             }
+            ProtocolParam::AllowedTimestampFuture(value) => {
+                buf.put_u8(0x03);
+                buf.put_u64(*value);
+            }
         }
     }
 }
@@ -111,6 +141,17 @@ impl Read for ProtocolParam {
                     ));
                 }
                 Ok(ProtocolParam::EpochLength(value))
+            }
+            0x03 => {
+                if !(MIN_ALLOWED_TIMESTAMP_FUTURE_MS..=MAX_ALLOWED_TIMESTAMP_FUTURE_MS)
+                    .contains(&value)
+                {
+                    return Err(Error::Invalid(
+                        "ProtocolParam",
+                        "allowed timestamp future out of bounds",
+                    ));
+                }
+                Ok(ProtocolParam::AllowedTimestampFuture(value))
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }

@@ -39,15 +39,16 @@ pub const NEXT_WITHDRAWAL_INDEX: usize = 7;
 pub const FORKCHOICE_HEAD_BLOCK_HASH: usize = 8;
 pub const FORKCHOICE_SAFE_BLOCK_HASH: usize = 9;
 pub const FORKCHOICE_FINALIZED_BLOCK_HASH: usize = 10;
-pub const VALIDATOR_ACCOUNTS_ROOT: usize = 11;
-pub const DEPOSIT_QUEUE_ROOT: usize = 12;
-pub const WITHDRAWAL_QUEUE_ROOT: usize = 13;
-pub const PROTOCOL_PARAM_CHANGES_ROOT: usize = 14;
-pub const ADDED_VALIDATORS_ROOT: usize = 15;
-pub const REMOVED_VALIDATORS_ROOT: usize = 16;
+pub const ALLOWED_TIMESTAMP_FUTURE_MS: usize = 11;
+pub const VALIDATOR_ACCOUNTS_ROOT: usize = 12;
+pub const DEPOSIT_QUEUE_ROOT: usize = 13;
+pub const WITHDRAWAL_QUEUE_ROOT: usize = 14;
+pub const PROTOCOL_PARAM_CHANGES_ROOT: usize = 15;
+pub const ADDED_VALIDATORS_ROOT: usize = 16;
+pub const REMOVED_VALIDATORS_ROOT: usize = 17;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 17;
+pub const NUM_TOP_LEAVES: usize = 18;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -204,6 +205,11 @@ impl SszStateTree {
     pub fn set_validator_maximum_stake(&mut self, stake: u64) {
         self.top
             .set_leaf(VALIDATOR_MAXIMUM_STAKE, stake.hash_tree_root());
+    }
+
+    pub fn set_allowed_timestamp_future_ms(&mut self, ms: u64) {
+        self.top
+            .set_leaf(ALLOWED_TIMESTAMP_FUTURE_MS, ms.hash_tree_root());
     }
 
     pub fn set_next_withdrawal_index(&mut self, index: u64) {
@@ -749,6 +755,7 @@ impl SszStateTree {
             ProtocolParam::MinimumStake(v) => (0u64, *v),
             ProtocolParam::MaximumStake(v) => (1u64, *v),
             ProtocolParam::EpochLength(v) => (2u64, *v),
+            ProtocolParam::AllowedTimestampFuture(v) => (3u64, *v),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value.hash_tree_root());
@@ -844,6 +851,7 @@ impl SszStateTree {
         epoch_genesis_hash: &[u8; 32],
         validator_minimum_stake: u64,
         validator_maximum_stake: u64,
+        allowed_timestamp_future_ms: u64,
         next_withdrawal_index: u64,
         forkchoice_head: &[u8; 32],
         forkchoice_safe: &[u8; 32],
@@ -865,6 +873,7 @@ impl SszStateTree {
         self.set_epoch_genesis_hash(epoch_genesis_hash);
         self.set_validator_minimum_stake(validator_minimum_stake);
         self.set_validator_maximum_stake(validator_maximum_stake);
+        self.set_allowed_timestamp_future_ms(allowed_timestamp_future_ms);
         self.set_next_withdrawal_index(next_withdrawal_index);
         self.set_forkchoice_head_block_hash(forkchoice_head);
         self.set_forkchoice_safe_block_hash(forkchoice_safe);
@@ -1734,6 +1743,7 @@ mod tests {
         inc.set_epoch_genesis_hash(&[0xBB; 32]);
         inc.set_validator_minimum_stake(32_000_000_000);
         inc.set_validator_maximum_stake(64_000_000_000);
+        inc.set_allowed_timestamp_future_ms(10_000);
         inc.set_next_withdrawal_index(5);
         inc.set_forkchoice_head_block_hash(&[0xCC; 32]);
         inc.set_forkchoice_safe_block_hash(&[0xDD; 32]);
@@ -1755,6 +1765,7 @@ mod tests {
             &[0xBB; 32],
             32_000_000_000,
             64_000_000_000,
+            10_000,
             5,
             &[0xCC; 32],
             &[0xDD; 32],
@@ -1785,6 +1796,7 @@ mod tests {
             &[0u8; 32],
             32_000_000_000,
             32_000_000_000,
+            10_000,
             0,
             &[0u8; 32],
             &[0u8; 32],

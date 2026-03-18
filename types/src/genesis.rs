@@ -44,6 +44,10 @@ pub struct Genesis {
     pub validator_maximum_stake: u64,
     /// Number of blocks in each epoch
     pub blocks_per_epoch: u64,
+    /// Maximum allowed delta (in milliseconds) between a block's timestamp
+    /// and the local wall clock. Blocks with timestamps that exceed local
+    /// time by more than this are rejected during verification.
+    pub allowed_timestamp_future_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

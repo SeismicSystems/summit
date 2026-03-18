@@ -289,6 +289,11 @@ impl SummitApiServer for SummitRpcServer {
         Ok(epoch_length)
     }
 
+    async fn get_allowed_timestamp_future(&self) -> RpcResult<u64> {
+        let ms = self.finalizer_mailbox.get_allowed_timestamp_future().await;
+        Ok(ms)
+    }
+
     async fn get_epoch_bounds(&self, epoch: u64) -> RpcResult<EpochBoundsResponse> {
         let bounds = self.finalizer_mailbox.get_epoch_bounds(epoch).await;
         match bounds {

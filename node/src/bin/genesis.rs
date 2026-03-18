@@ -17,6 +17,7 @@ pub struct GenesisConfig {
     max_message_size_bytes: u64,
     namespace: String,
     blocks_per_epoch: u64,
+    allowed_timestamp_future_ms: u64,
     pub validators: Vec<GenesisValidator>,
 }
 

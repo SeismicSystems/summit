@@ -889,6 +889,7 @@ impl<
                 forkchoice: *state.get_forkchoice(),
                 withdrawal_credentials,
                 state_root: state.get_state_root(),
+                allowed_timestamp_future_ms: state.get_allowed_timestamp_future_ms(),
             }
         } else {
             BlockAuxData {
@@ -901,6 +902,7 @@ impl<
                 forkchoice: *state.get_forkchoice(),
                 withdrawal_credentials,
                 state_root: state.get_state_root(),
+                allowed_timestamp_future_ms: state.get_allowed_timestamp_future_ms(),
             }
         };
         trace!(
@@ -969,6 +971,10 @@ impl<
             ConsensusStateRequest::GetEpochLength => {
                 let length = self.canonical_state.get_epocher().current_length();
                 let _ = sender.send(ConsensusStateResponse::EpochLength(length));
+            }
+            ConsensusStateRequest::GetAllowedTimestampFuture => {
+                let ms = self.canonical_state.get_allowed_timestamp_future_ms();
+                let _ = sender.send(ConsensusStateResponse::AllowedTimestampFuture(ms));
             }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self

@@ -285,6 +285,7 @@ impl Command {
                 genesis.validator_maximum_stake,
                 NonZeroU64::new(genesis.blocks_per_epoch)
                     .expect("blocks_per_epoch must be nonzero"),
+                genesis.allowed_timestamp_future_ms,
             );
             let peers = initial_state.get_validator_keys();
 
@@ -502,6 +503,7 @@ pub fn run_node_local(
             genesis.validator_minimum_stake,
             genesis.validator_maximum_stake,
             NonZeroU64::new(genesis.blocks_per_epoch).expect("blocks_per_epoch must be nonzero"),
+            genesis.allowed_timestamp_future_ms,
         );
         let peers = initial_state.get_validator_keys();
 
@@ -660,6 +662,7 @@ fn get_initial_state(
     validator_minimum_stake: u64,
     validator_maximum_stake: u64,
     epoch_length: NonZeroU64,
+    allowed_timestamp_future_ms: u64,
 ) -> ConsensusState {
     let genesis_hash: B256 = genesis_hash.into();
     checkpoint.unwrap_or_else(|| {
@@ -673,6 +676,7 @@ fn get_initial_state(
             validator_minimum_stake,
             validator_maximum_stake,
             epoch_length,
+            allowed_timestamp_future_ms,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for validator in genesis_committee {

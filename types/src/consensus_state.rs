@@ -36,6 +36,7 @@ pub struct ConsensusState {
     pub(crate) epoch_genesis_hash: [u8; 32],
     pub(crate) validator_minimum_stake: u64, // in gwei
     pub(crate) validator_maximum_stake: u64, // in gwei
+    pub(crate) allowed_timestamp_future_ms: u64,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -82,6 +83,7 @@ impl Default for ConsensusState {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 50,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -101,6 +103,7 @@ impl ConsensusState {
         validator_minimum_stake: u64,
         validator_maximum_stake: u64,
         epoch_length: NonZeroU64,
+        allowed_timestamp_future_ms: u64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -119,6 +122,7 @@ impl ConsensusState {
             epoch_genesis_hash: forkchoice.head_block_hash.into(),
             validator_minimum_stake,
             validator_maximum_stake,
+            allowed_timestamp_future_ms,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -187,6 +191,15 @@ impl ConsensusState {
     pub fn set_maximum_stake(&mut self, stake: u64) {
         self.validator_maximum_stake = stake;
         self.ssz_tree.set_validator_maximum_stake(stake);
+    }
+
+    pub fn get_allowed_timestamp_future_ms(&self) -> u64 {
+        self.allowed_timestamp_future_ms
+    }
+
+    pub fn set_allowed_timestamp_future_ms(&mut self, ms: u64) {
+        self.allowed_timestamp_future_ms = ms;
+        self.ssz_tree.set_allowed_timestamp_future_ms(ms);
     }
 
     pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
@@ -643,6 +656,10 @@ impl ConsensusState {
                         .update_length(new_length)
                         .expect("failed to update epoch length");
                 }
+                ProtocolParam::AllowedTimestampFuture(ms) => {
+                    self.allowed_timestamp_future_ms = ms;
+                    self.ssz_tree.set_allowed_timestamp_future_ms(ms);
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
@@ -666,6 +683,7 @@ impl ConsensusState {
             &self.epoch_genesis_hash,
             self.validator_minimum_stake,
             self.validator_maximum_stake,
+            self.allowed_timestamp_future_ms,
             self.withdrawal_queue.next_index(),
             &self.forkchoice.head_block_hash.0,
             &self.forkchoice.safe_block_hash.0,
@@ -723,6 +741,7 @@ impl EncodeSize for ConsensusState {
         + 32 // head_digest
         + 8 // validator_minimum_stake
         + 8 // validator_maximum_stake
+        + 8 // allowed_timestamp_future_ms
         + self.epocher.encode_size()
     }
 }
@@ -824,6 +843,7 @@ impl Read for ConsensusState {
 
         let validator_minimum_stake = buf.get_u64();
         let validator_maximum_stake = buf.get_u64();
+        let allowed_timestamp_future_ms = buf.get_u64();
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
@@ -844,6 +864,7 @@ impl Read for ConsensusState {
             epoch_genesis_hash,
             validator_minimum_stake,
             validator_maximum_stake,
+            allowed_timestamp_future_ms,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -927,6 +948,7 @@ impl Write for ConsensusState {
         // Write validator stake bounds
         buf.put_u64(self.validator_minimum_stake);
         buf.put_u64(self.validator_maximum_stake);
+        buf.put_u64(self.allowed_timestamp_future_ms);
 
         // Write epocher
         self.epocher.write(buf);
@@ -1042,6 +1064,7 @@ mod tests {
             0,
             0,
             NonZeroU64::new(100).unwrap(),
+            10_000,
         );
 
         original_state.set_epoch(7);
@@ -1798,6 +1821,7 @@ mod tests {
             32_000_000_000,
             32_000_000_000,
             NonZeroU64::new(10).unwrap(),
+            10_000,
         );
 
         // Add 4 genesis validators (like the testnet)
