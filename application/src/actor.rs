@@ -481,7 +481,7 @@ impl<
                         aux_data.forkchoice,
                         current,
                         withdrawals,
-                        Default::default(),
+                        aux_data.suggested_fee_recipient,
                         None,
                         parent_block.height(),
                     )
@@ -494,7 +494,7 @@ impl<
                         aux_data.forkchoice,
                         current,
                         withdrawals,
-                        aux_data.withdrawal_credentials,
+                        aux_data.suggested_fee_recipient,
                         Some(aux_data.state_root.into()),
                     )
                     .await
