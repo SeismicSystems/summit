@@ -97,6 +97,7 @@ fn test_checkpoint_verification_fixed_committee() {
             validator_maximum_stake: 32_000_000_000,
             blocks_per_epoch: common::DEFAULT_BLOCKS_PER_EPOCH,
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO.to_string(),
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -314,6 +315,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             validator_maximum_stake: min_stake,
             blocks_per_epoch: common::DEFAULT_BLOCKS_PER_EPOCH,
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO.to_string(),
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();

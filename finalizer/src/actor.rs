@@ -976,6 +976,10 @@ impl<
                 let ms = self.canonical_state.get_allowed_timestamp_future_ms();
                 let _ = sender.send(ConsensusStateResponse::AllowedTimestampFuture(ms));
             }
+            ConsensusStateRequest::GetTreasuryAddress => {
+                let address = self.canonical_state.get_treasury_address();
+                let _ = sender.send(ConsensusStateResponse::TreasuryAddress(address));
+            }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self
                     .canonical_state

@@ -1,4 +1,5 @@
 use crate::execution_request::ProtocolParamRequest;
+use alloy_primitives::Address;
 use anyhow::anyhow;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
@@ -14,6 +15,7 @@ pub enum ProtocolParam {
     MaximumStake(u64),
     EpochLength(u64),
     AllowedTimestampFuture(u64),
+    TreasuryAddress(Address),
 }
 
 impl TryFrom<ProtocolParamRequest> for ProtocolParam {
@@ -88,6 +90,16 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                     allowed_timestamp_future,
                 ))
             }
+            0x04 => {
+                if request.param.len() != 20 {
+                    return Err(anyhow!(
+                        "Failed to parse treasury address protocol param, invalid length {}",
+                        request.param.len()
+                    ));
+                }
+                let bytes: [u8; 20] = request.param.as_slice().try_into()?;
+                Ok(ProtocolParam::TreasuryAddress(Address::from(bytes)))
+            }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
             )),
@@ -97,7 +109,13 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
 
 impl EncodeSize for ProtocolParam {
     fn encode_size(&self) -> usize {
-        1 + 8 // 1 byte tag + 8 byte value for all current variants
+        match self {
+            ProtocolParam::MinimumStake(_)
+            | ProtocolParam::MaximumStake(_)
+            | ProtocolParam::EpochLength(_)
+            | ProtocolParam::AllowedTimestampFuture(_) => 1 + 8, // 1 byte tag + 8 byte value
+            ProtocolParam::TreasuryAddress(_) => 1 + 20, // 1 byte tag + 20 byte address
+        }
     }
 }
 
@@ -120,6 +138,10 @@ impl Write for ProtocolParam {
                 buf.put_u8(0x03);
                 buf.put_u64(*value);
             }
+            ProtocolParam::TreasuryAddress(address) => {
+                buf.put_u8(0x04);
+                buf.put_slice(address.as_slice());
+            }
         }
     }
 }
@@ -129,11 +151,17 @@ impl Read for ProtocolParam {
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
         let tag = buf.get_u8();
-        let value = buf.get_u64();
         match tag {
-            0x00 => Ok(ProtocolParam::MinimumStake(value)),
-            0x01 => Ok(ProtocolParam::MaximumStake(value)),
+            0x00 => {
+                let value = buf.get_u64();
+                Ok(ProtocolParam::MinimumStake(value))
+            }
+            0x01 => {
+                let value = buf.get_u64();
+                Ok(ProtocolParam::MaximumStake(value))
+            }
             0x02 => {
+                let value = buf.get_u64();
                 if !(MIN_EPOCH_LENGTH..=MAX_EPOCH_LENGTH).contains(&value) {
                     return Err(Error::Invalid(
                         "ProtocolParam",
@@ -143,6 +171,7 @@ impl Read for ProtocolParam {
                 Ok(ProtocolParam::EpochLength(value))
             }
             0x03 => {
+                let value = buf.get_u64();
                 if !(MIN_ALLOWED_TIMESTAMP_FUTURE_MS..=MAX_ALLOWED_TIMESTAMP_FUTURE_MS)
                     .contains(&value)
                 {
@@ -152,6 +181,11 @@ impl Read for ProtocolParam {
                     ));
                 }
                 Ok(ProtocolParam::AllowedTimestampFuture(value))
+            }
+            0x04 => {
+                let mut bytes = [0u8; 20];
+                buf.copy_to_slice(&mut bytes);
+                Ok(ProtocolParam::TreasuryAddress(Address::from(bytes)))
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }

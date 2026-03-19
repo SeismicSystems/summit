@@ -294,6 +294,11 @@ impl SummitApiServer for SummitRpcServer {
         Ok(ms)
     }
 
+    async fn get_treasury_address(&self) -> RpcResult<String> {
+        let address = self.finalizer_mailbox.get_treasury_address().await;
+        Ok(address.to_string())
+    }
+
     async fn get_epoch_bounds(&self, epoch: u64) -> RpcResult<EpochBoundsResponse> {
         let bounds = self.finalizer_mailbox.get_epoch_bounds(epoch).await;
         match bounds {

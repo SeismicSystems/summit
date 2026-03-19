@@ -49,6 +49,13 @@ pub struct Genesis {
     /// and the local wall clock. Blocks with timestamps that exceed local
     /// time by more than this are rejected during verification.
     pub allowed_timestamp_future_ms: u64,
+    /// Address that receives treasury funds. Defaults to the zero address.
+    #[serde(default = "default_treasury_address")]
+    pub treasury_address: String,
+}
+
+fn default_treasury_address() -> String {
+    Address::ZERO.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +122,11 @@ impl Genesis {
             )
             .into());
         }
+        // Validate treasury_address is a valid address
+        genesis
+            .treasury_address
+            .parse::<Address>()
+            .map_err(|e| format!("invalid treasury_address: {e}"))?;
         Ok(genesis)
     }
 

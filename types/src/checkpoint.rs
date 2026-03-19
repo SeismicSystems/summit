@@ -329,6 +329,7 @@ mod tests {
     use crate::dynamic_epocher::DynamicEpocher;
     use crate::ssz_state_tree::SszStateTree;
     use crate::withdrawal::WithdrawalQueue;
+    use alloy_primitives::Address;
     use commonware_codec::DecodeExt;
     use commonware_cryptography::{Signer, bls12381, ed25519, sha256};
     use ssz::{Decode, Encode};
@@ -367,6 +368,7 @@ mod tests {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -492,6 +494,7 @@ mod tests {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -541,6 +544,7 @@ mod tests {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -673,6 +677,7 @@ mod tests {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -727,6 +732,7 @@ mod tests {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -786,6 +792,7 @@ mod tests {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -841,6 +848,7 @@ mod tests {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -941,6 +949,7 @@ mod tests {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
