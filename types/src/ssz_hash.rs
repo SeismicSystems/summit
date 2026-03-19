@@ -94,13 +94,14 @@ impl SszHashTreeRoot for ValidatorStatus {
 impl SszHashTreeRoot for ProtocolParam {
     /// ProtocolParam as a 2-field container: (tag, value).
     fn hash_tree_root(&self) -> [u8; 32] {
-        let (tag, value) = match self {
-            ProtocolParam::MinimumStake(v) => (0u64, *v),
-            ProtocolParam::MaximumStake(v) => (1u64, *v),
-            ProtocolParam::EpochLength(v) => (2u64, *v),
-            ProtocolParam::AllowedTimestampFuture(v) => (3u64, *v),
+        let (tag, value_hash) = match self {
+            ProtocolParam::MinimumStake(v) => (0u64, v.hash_tree_root()),
+            ProtocolParam::MaximumStake(v) => (1u64, v.hash_tree_root()),
+            ProtocolParam::EpochLength(v) => (2u64, v.hash_tree_root()),
+            ProtocolParam::AllowedTimestampFuture(v) => (3u64, v.hash_tree_root()),
+            ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
         };
-        merkleize(&[tag.hash_tree_root(), value.hash_tree_root()])
+        merkleize(&[tag.hash_tree_root(), value_hash])
     }
 }
 

@@ -297,6 +297,24 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         ms
     }
 
+    pub async fn get_treasury_address(&self) -> alloy_primitives::Address {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetTreasuryAddress;
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::TreasuryAddress(address) = res else {
+            unreachable!("request and response variants must match");
+        };
+        address
+    }
+
     pub async fn get_epoch_bounds(&self, epoch: u64) -> Option<(u64, u64)> {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetEpochBounds(epoch);

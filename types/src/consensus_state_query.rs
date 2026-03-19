@@ -5,6 +5,7 @@ use crate::ssz_state_tree::SszProof;
 use crate::ssz_tree_key::SszStateKey;
 use crate::withdrawal::PendingWithdrawal;
 use crate::{Block, FinalizedHeader, PublicKey};
+use alloy_primitives::Address;
 use commonware_cryptography::certificate::Scheme;
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
@@ -22,6 +23,7 @@ pub enum ConsensusStateRequest {
     GetMaximumStake,
     GetEpochLength,
     GetAllowedTimestampFuture,
+    GetTreasuryAddress,
     GetEpochBounds(u64),
     GetDeposit(usize),
     GetDepositCount,
@@ -42,6 +44,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     MaximumStake(u64),
     EpochLength(u64),
     AllowedTimestampFuture(u64),
+    TreasuryAddress(Address),
     EpochBounds(Option<(u64, u64)>),
     Deposit(Option<DepositRequest>),
     DepositCount(usize),
@@ -235,6 +238,20 @@ impl<S: Scheme> ConsensusStateQuery<S> {
             unreachable!("request and response variants must match");
         };
         ms
+    }
+
+    pub async fn get_treasury_address(&self) -> Address {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetTreasuryAddress;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::TreasuryAddress(address) = res else {
+            unreachable!("request and response variants must match");
+        };
+        address
     }
 
     pub async fn get_epoch_bounds(&self, epoch: u64) -> Option<(u64, u64)> {

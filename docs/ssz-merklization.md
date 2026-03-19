@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 18 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 18–31 are unused (zero-filled).
+32 leaf slots (depth 5), 19 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 19–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -58,6 +58,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 15 | `protocol_param_changes` | Collection root |
 | 16 | `added_validators` | Collection root |
 | 17 | `removed_validators` | Collection root |
+| 18 | `treasury_address` | Scalar |
 
 ### Collection Subtrees
 
@@ -146,7 +147,7 @@ All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 - **`bool`**: `0x01` or `0x00`, zero-padded to 32 bytes. Used by: has_pending_deposit, has_pending_withdrawal.
 - **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3), zero-padded to 32 bytes.
 - **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal).
-- **`Address` (20 bytes)**: Zero-padded to 32 bytes. Used by: withdrawal_credentials (validator), address (withdrawal).
+- **`Address` (20 bytes)**: Zero-padded to 32 bytes. Used by: withdrawal_credentials (validator), address (withdrawal), treasury_address.
 - **Ed25519 public key (32 bytes)**: Used directly as the leaf value. Used by: node_pubkey (deposit), node_key (added validator), removed validator pubkeys.
 - **BLS public key (48 bytes)**: `SHA256(bytes[0..32] || pad(bytes[32..48]))` — 2 chunks hashed. Used by: consensus_pubkey (validator, deposit), consensus_key (added validator).
 - **Ed25519 signature (64 bytes)**: `SHA256(bytes[0..32] || bytes[32..64])` — 2 chunks hashed. Used by: node_signature (deposit).
@@ -170,6 +171,7 @@ Single top-level leaf write + rehash of the 5-level path to root.
 | `set_minimum_stake()` | `ssz_tree.set_validator_minimum_stake()` |
 | `set_maximum_stake()` | `ssz_tree.set_validator_maximum_stake()` |
 | `set_allowed_timestamp_future_ms()` | `ssz_tree.set_allowed_timestamp_future_ms()` |
+| `set_treasury_address()` | `ssz_tree.set_treasury_address()` |
 | `set_next_withdrawal_index()` | `ssz_tree.set_next_withdrawal_index()` |
 | `set_forkchoice_head()` | `ssz_tree.set_forkchoice_head_block_hash()` |
 | `set_forkchoice_safe_and_finalized()` | Two setter calls (safe + finalized) |
@@ -395,6 +397,7 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | `validator_minimum_stake` | Minimum validator stake |
 | `validator_maximum_stake` | Maximum validator stake |
 | `allowed_timestamp_future_ms` | Allowed timestamp future (ms) |
+| `treasury_address` | Treasury address |
 | `next_withdrawal_index` | Next withdrawal index |
 | `forkchoice_head_block_hash` | Forkchoice head hash |
 | `forkchoice_safe_block_hash` | Forkchoice safe hash |
