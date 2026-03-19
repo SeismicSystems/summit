@@ -1,4 +1,5 @@
 use super::*;
+use summit_types::execution_request::ProtocolParamRequest;
 
 #[test_traced("INFO")]
 fn test_protocol_param_allowed_timestamp_future() {
@@ -625,6 +626,199 @@ fn test_protocol_param_stake_update_committee() {
         );
 
         common::assert_state_root_consensus_skip(&consensus_state_queries, &[9]).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
+fn test_protocol_param_treasury_address() {
+    // Tests that the treasury address protocol parameter controls suggested_fee_recipient:
+    // - Epoch 0: treasury_address is zero → fee_recipient = proposer's withdrawal credentials
+    // - Protocol param request at block 5 sets treasury_address to non-zero
+    // - After epoch 0 boundary is finalized: fee_recipient = treasury_address
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let treasury_address = Address::from([0xAB; 20]);
+    let withdrawal_cred = Address::from([0xCC; 20]);
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Create a treasury address protocol param request (param_id 0x04, 20-byte address)
+        let test_protocol_param = ProtocolParamRequest {
+            param_id: 0x04,
+            param: treasury_address.as_slice().to_vec(),
+        };
+
+        let execution_requests =
+            vec![ExecutionRequest::ProtocolParam(test_protocol_param)];
+        let requests = common::execution_requests_to_requests(execution_requests);
+
+        let last_epoch0 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0);
+        let first_epoch1 = last_epoch0 + 1;
+        let protocol_param_block_height = last_epoch0 / 2; // mid-epoch
+        let stop_height = first_epoch1 + 1; // one block into epoch 1
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(protocol_param_block_height, requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+
+        let withdrawal_creds = vec![withdrawal_cred; n as usize];
+        let initial_state = get_initial_state(
+            genesis_hash,
+            &validators,
+            Some(&withdrawal_creds),
+            None,
+            min_stake,
+        );
+
+        let mut public_keys = HashSet::new();
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // Poll metrics until all validators reach stop_height
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Before the epoch boundary, the treasury address is zero so fee_recipient
+        // should be the proposer's withdrawal credentials.
+        let fee_recipients = engine_client_network.get_fee_recipients();
+        let epoch0_check_height = last_epoch0 / 2;
+        let epoch0_recipient = fee_recipients.get(&epoch0_check_height).expect("epoch 0 block should exist");
+        assert_eq!(
+            *epoch0_recipient, withdrawal_cred,
+            "block {epoch0_check_height}: treasury is zero, fee_recipient should be withdrawal credentials"
+        );
+
+        // After the epoch boundary, treasury address is set so fee_recipient
+        // should be the treasury address.
+        let epoch1_recipient = fee_recipients.get(&first_epoch1).expect("epoch 1 block should exist");
+        assert_eq!(
+            *epoch1_recipient, treasury_address,
+            "block {first_epoch1}: treasury was set, fee_recipient should be treasury address"
+        );
+
+        // Verify that all nodes agree on the treasury address
+        for (_, query) in &consensus_state_queries {
+            assert_eq!(query.get_treasury_address().await, treasury_address);
+        }
+
+        // Check that all nodes have the same canonical chain
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()
     })

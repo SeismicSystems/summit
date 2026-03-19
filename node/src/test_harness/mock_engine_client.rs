@@ -88,6 +88,19 @@ impl MockEngineClient {
         chain
     }
 
+    /// Get fee recipients from the canonical chain, keyed by block number.
+    pub fn get_fee_recipients(&self) -> HashMap<u64, Address> {
+        let canonical_chain = self.get_canonical_chain();
+        let state = self.state.lock().unwrap();
+        let mut fee_recipients = HashMap::new();
+        for (height, block_hash) in canonical_chain {
+            if let Some(block) = state.canonical_blocks.get(&block_hash) {
+                fee_recipients.insert(height, block.payload_inner.payload_inner.fee_recipient);
+            }
+        }
+        fee_recipients
+    }
+
     /// Get all withdrawals from the canonical chain
     pub fn get_withdrawals(&self) -> HashMap<u64, Vec<Withdrawal>> {
         let canonical_chain = self.get_canonical_chain();
@@ -300,6 +313,7 @@ impl MockEngineState {
         timestamp: u64,
         client_id: &str,
         withdrawals: Vec<Withdrawal>,
+        suggested_fee_recipient: Address,
     ) -> ExecutionPayloadV3 {
         // Create deterministic but unique block hash
         use sha3::{Digest, Keccak256};
@@ -312,7 +326,7 @@ impl MockEngineState {
 
         let payload_v1 = ExecutionPayloadV1 {
             parent_hash,
-            fee_recipient: Address::from([1u8; 20]),
+            fee_recipient: suggested_fee_recipient,
             state_root: FixedBytes::from([1u8; 32]),
             receipts_root: FixedBytes::from([1u8; 32]),
             logs_bloom: Bloom::ZERO,
@@ -349,7 +363,7 @@ impl EngineClient for MockEngineClient {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
-        _suggested_fee_recipient: Address,
+        suggested_fee_recipient: Address,
         _parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] height: u64,
     ) -> Option<PayloadId> {
@@ -387,6 +401,7 @@ impl EngineClient for MockEngineClient {
             timestamp,
             &self.client_id,
             withdrawals,
+            suggested_fee_recipient,
         );
 
         // Wrap in envelope
@@ -714,6 +729,16 @@ impl MockEngineNetwork {
             .max_by_key(|c| c.get_chain_height())
             .expect("no clients");
         best_client.get_withdrawals()
+    }
+
+    /// Get fee recipients from the canonical chain of the best client.
+    pub fn get_fee_recipients(&self) -> HashMap<u64, Address> {
+        let clients = self.get_clients();
+        let best_client = clients
+            .iter()
+            .max_by_key(|c| c.get_chain_height())
+            .expect("no clients");
+        best_client.get_fee_recipients()
     }
 }
 
