@@ -406,8 +406,6 @@ impl Command {
             let backfiller =
                 network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
-            // Create network
-            let p2p = network.start();
             // create engine
             let engine: Engine<_, _, _, _> =
                 Engine::new(context.with_label("engine"), config).await;
@@ -416,6 +414,9 @@ impl Command {
 
             // Start engine
             let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+
+            // Create network
+            let p2p = network.start();
 
             // Start RPC server
             let key_store_path = flags.key_store_path.clone();
@@ -589,14 +590,15 @@ pub fn run_node_local(
         let backfiller =
             network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
-        // Create network
-        let p2p = network.start();
         // create engine
         let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
 
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Start engine
         let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+
+        // Create network
+        let p2p = network.start();
 
         // Start prometheus endpoint
         #[cfg(feature = "prom")]
