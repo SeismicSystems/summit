@@ -104,7 +104,7 @@ impl<
 {
     pub async fn new(
         context: R,
-        cfg: FinalizerConfig<C, O, V>,
+        mut cfg: FinalizerConfig<C, O, V>,
     ) -> (
         Self,
         ConsensusState,
@@ -164,6 +164,15 @@ impl<
             gauge
         };
 
+        // Initialize the current epoch with the validator set
+        // This ensures the orchestrator can start consensus immediately
+        let active_validators = state.get_active_validators();
+        let network_keys: Vec<_> = active_validators
+            .iter()
+            .map(|(node_key, _)| node_key.clone())
+            .collect();
+        cfg.oracle.track(state.get_epoch(), network_keys).await;
+
         (
             Self {
                 context: ContextCell::new(context),
@@ -202,17 +211,7 @@ impl<
         let mut signal = self.context.stopped().fuse();
         let cancellation_token = self.cancellation_token.clone();
 
-        // Initialize the current epoch with the validator set
-        // This ensures the orchestrator can start consensus immediately
         let active_validators = self.canonical_state.get_active_validators();
-        let network_keys: Vec<_> = active_validators
-            .iter()
-            .map(|(node_key, _)| node_key.clone())
-            .collect();
-        self.oracle
-            .track(self.canonical_state.get_epoch(), network_keys)
-            .await;
-
         orchestrator_mailbox
             .report(Message::Enter(EpochTransition {
                 epoch: Epoch::new(self.canonical_state.get_epoch()),
