@@ -171,7 +171,8 @@ impl<
             .iter()
             .map(|(node_key, _)| node_key.clone())
             .collect();
-        cfg.oracle.track(state.get_epoch(), network_keys).await;
+        cfg.oracle.track(state.get_epoch(), network_keys.clone()).await;
+        info!(epoch = state.get_epoch(), num_keys = network_keys.len(), ?network_keys, "tracked initial peer set");
 
         (
             Self {
