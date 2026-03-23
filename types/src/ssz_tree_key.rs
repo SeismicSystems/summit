@@ -68,6 +68,7 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "forkchoice_finalized_block_hash" => Ok(SszStateKey::Scalar(
             ssz_state_tree::FORKCHOICE_FINALIZED_BLOCK_HASH,
         )),
+        "treasury_address" => Ok(SszStateKey::Scalar(ssz_state_tree::TREASURY_ADDRESS)),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"

@@ -1,3 +1,4 @@
+use alloy_primitives::Address;
 use commonware_codec::Encode as _;
 use commonware_cryptography::{bls12381, ed25519};
 use commonware_math::algebra::Random;
@@ -130,6 +131,10 @@ pub fn create_test_finalizer_mailbox(
                     ConsensusStateRequest::GetAllowedTimestampFuture => {
                         let _ =
                             response.send(ConsensusStateResponse::AllowedTimestampFuture(10_000));
+                    }
+                    ConsensusStateRequest::GetTreasuryAddress => {
+                        let _ =
+                            response.send(ConsensusStateResponse::TreasuryAddress(Address::ZERO));
                     }
                     ConsensusStateRequest::GetEpochBounds(epoch) => {
                         let first = epoch * 10;

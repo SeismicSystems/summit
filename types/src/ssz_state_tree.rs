@@ -23,6 +23,7 @@ use crate::ssz_hash::{SszHashTreeRoot, hash_fixed_bytes_64, hash_fixed_bytes_96}
 use crate::ssz_tree::{SszTree, mix_in_length};
 use crate::withdrawal::PendingWithdrawal;
 use crate::withdrawal::WithdrawalQueue;
+use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -46,9 +47,10 @@ pub const WITHDRAWAL_QUEUE_ROOT: usize = 14;
 pub const PROTOCOL_PARAM_CHANGES_ROOT: usize = 15;
 pub const ADDED_VALIDATORS_ROOT: usize = 16;
 pub const REMOVED_VALIDATORS_ROOT: usize = 17;
+pub const TREASURY_ADDRESS: usize = 18;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 18;
+pub const NUM_TOP_LEAVES: usize = 19;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -210,6 +212,11 @@ impl SszStateTree {
     pub fn set_allowed_timestamp_future_ms(&mut self, ms: u64) {
         self.top
             .set_leaf(ALLOWED_TIMESTAMP_FUTURE_MS, ms.hash_tree_root());
+    }
+
+    pub fn set_treasury_address(&mut self, address: &Address) {
+        self.top
+            .set_leaf(TREASURY_ADDRESS, address.hash_tree_root());
     }
 
     pub fn set_next_withdrawal_index(&mut self, index: u64) {
@@ -751,14 +758,15 @@ impl SszStateTree {
     /// Set the 2 field leaves for protocol param at positional slot `i`.
     fn set_protocol_param_fields(tree: &mut SszTree, slot: usize, param: &ProtocolParam) {
         let base = slot * PROTOCOL_PARAM_FIELDS_PER_ITEM;
-        let (tag, value) = match param {
-            ProtocolParam::MinimumStake(v) => (0u64, *v),
-            ProtocolParam::MaximumStake(v) => (1u64, *v),
-            ProtocolParam::EpochLength(v) => (2u64, *v),
-            ProtocolParam::AllowedTimestampFuture(v) => (3u64, *v),
+        let (tag, value_hash) = match param {
+            ProtocolParam::MinimumStake(v) => (0u64, v.hash_tree_root()),
+            ProtocolParam::MaximumStake(v) => (1u64, v.hash_tree_root()),
+            ProtocolParam::EpochLength(v) => (2u64, v.hash_tree_root()),
+            ProtocolParam::AllowedTimestampFuture(v) => (3u64, v.hash_tree_root()),
+            ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
-        tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value.hash_tree_root());
+        tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value_hash);
     }
 
     fn update_protocol_param_collection_root(&mut self) {
@@ -862,6 +870,7 @@ impl SszStateTree {
         protocol_param_changes: &[ProtocolParam],
         added_validators: &BTreeMap<u64, Vec<AddedValidator>>,
         removed_validators: &[PublicKey],
+        treasury_address: &Address,
     ) {
         *self = Self::new();
 
@@ -878,6 +887,7 @@ impl SszStateTree {
         self.set_forkchoice_head_block_hash(forkchoice_head);
         self.set_forkchoice_safe_block_hash(forkchoice_safe);
         self.set_forkchoice_finalized_block_hash(forkchoice_finalized);
+        self.set_treasury_address(treasury_address);
 
         // Validators
         self.rebuild_validators(validator_accounts);
@@ -1780,6 +1790,7 @@ mod tests {
             &[],
             &BTreeMap::new(),
             &[],
+            &Address::ZERO,
         );
 
         assert_eq!(inc.root(), rb.root());
@@ -1811,6 +1822,7 @@ mod tests {
             &[],
             &BTreeMap::new(),
             &[],
+            &Address::ZERO,
         );
 
         let root = tree.root();

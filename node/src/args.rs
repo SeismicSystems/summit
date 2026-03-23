@@ -14,7 +14,7 @@ use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
 
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_utils::from_hex_formatted;
 use futures::{channel::oneshot, future::try_join_all};
@@ -273,20 +273,7 @@ impl Command {
                 warn!("checkpoint loaded without finalized headers chain - skipping verification");
             }
 
-            let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
-                .map(|hash_bytes| hash_bytes.try_into())
-                .expect("bad eth_genesis_hash")
-                .expect("bad eth_genesis_hash");
-            let initial_state = get_initial_state(
-                genesis_hash,
-                &committee,
-                maybe_checkpoint,
-                genesis.validator_minimum_stake,
-                genesis.validator_maximum_stake,
-                NonZeroU64::new(genesis.blocks_per_epoch)
-                    .expect("blocks_per_epoch must be nonzero"),
-                genesis.allowed_timestamp_future_ms,
-            );
+            let initial_state = get_initial_state(&genesis, &committee, maybe_checkpoint);
             let peers = initial_state.get_validator_keys();
 
             let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
@@ -492,19 +479,7 @@ pub fn run_node_local(
             genesis.get_validators().expect("Failed to get validators");
         committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
 
-        let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
-            .map(|hash_bytes| hash_bytes.try_into())
-            .expect("bad eth_genesis_hash")
-            .expect("bad eth_genesis_hash");
-        let initial_state = get_initial_state(
-            genesis_hash,
-            &committee,
-            checkpoint,
-            genesis.validator_minimum_stake,
-            genesis.validator_maximum_stake,
-            NonZeroU64::new(genesis.blocks_per_epoch).expect("blocks_per_epoch must be nonzero"),
-            genesis.allowed_timestamp_future_ms,
-        );
+        let initial_state = get_initial_state(&genesis, &committee, checkpoint);
         let peers = initial_state.get_validator_keys();
 
         let engine_ipc_path =
@@ -656,14 +631,20 @@ pub fn run_node_local(
 }
 
 fn get_initial_state(
-    genesis_hash: [u8; 32],
+    genesis: &Genesis,
     genesis_committee: &Vec<Validator>,
     checkpoint: Option<ConsensusState>,
-    validator_minimum_stake: u64,
-    validator_maximum_stake: u64,
-    epoch_length: NonZeroU64,
-    allowed_timestamp_future_ms: u64,
 ) -> ConsensusState {
+    let epoch_length =
+        NonZeroU64::new(genesis.blocks_per_epoch).expect("blocks_per_epoch must be nonzero");
+    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+        .map(|hash_bytes| hash_bytes.try_into())
+        .expect("bad eth_genesis_hash")
+        .expect("bad eth_genesis_hash");
+    let treasury_address = genesis
+        .treasury_address
+        .parse::<Address>()
+        .expect("invalid treasury_address");
     let genesis_hash: B256 = genesis_hash.into();
     checkpoint.unwrap_or_else(|| {
         let forkchoice = ForkchoiceState {
@@ -673,10 +654,11 @@ fn get_initial_state(
         };
         let mut state = ConsensusState::new(
             forkchoice,
-            validator_minimum_stake,
-            validator_maximum_stake,
+            genesis.validator_minimum_stake,
+            genesis.validator_maximum_stake,
             epoch_length,
-            allowed_timestamp_future_ms,
+            genesis.allowed_timestamp_future_ms,
+            treasury_address,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for validator in genesis_committee {
@@ -688,7 +670,7 @@ fn get_initial_state(
             let account = ValidatorAccount {
                 consensus_public_key: validator.consensus_public_key.clone(),
                 withdrawal_credentials: validator.withdrawal_credentials,
-                balance: validator_minimum_stake,
+                balance: genesis.validator_minimum_stake,
                 status: ValidatorStatus::Active,
                 has_pending_deposit: false,
                 has_pending_withdrawal: false,

@@ -7,6 +7,7 @@ use crate::protocol_params::ProtocolParam;
 use crate::ssz_state_tree::SszStateTree;
 use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use crate::{Digest, PublicKey};
+use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
 use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
@@ -37,6 +38,7 @@ pub struct ConsensusState {
     pub(crate) validator_minimum_stake: u64, // in gwei
     pub(crate) validator_maximum_stake: u64, // in gwei
     pub(crate) allowed_timestamp_future_ms: u64,
+    pub(crate) treasury_address: Address,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -84,6 +86,7 @@ impl Default for ConsensusState {
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 50,
+            treasury_address: Address::ZERO,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -104,6 +107,7 @@ impl ConsensusState {
         validator_maximum_stake: u64,
         epoch_length: NonZeroU64,
         allowed_timestamp_future_ms: u64,
+        treasury_address: Address,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -123,6 +127,7 @@ impl ConsensusState {
             validator_minimum_stake,
             validator_maximum_stake,
             allowed_timestamp_future_ms,
+            treasury_address,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -200,6 +205,15 @@ impl ConsensusState {
     pub fn set_allowed_timestamp_future_ms(&mut self, ms: u64) {
         self.allowed_timestamp_future_ms = ms;
         self.ssz_tree.set_allowed_timestamp_future_ms(ms);
+    }
+
+    pub fn get_treasury_address(&self) -> Address {
+        self.treasury_address
+    }
+
+    pub fn set_treasury_address(&mut self, address: Address) {
+        self.treasury_address = address;
+        self.ssz_tree.set_treasury_address(&address);
     }
 
     pub fn get_pending_checkpoint(&self) -> Option<&Checkpoint> {
@@ -660,6 +674,10 @@ impl ConsensusState {
                     self.allowed_timestamp_future_ms = ms;
                     self.ssz_tree.set_allowed_timestamp_future_ms(ms);
                 }
+                ProtocolParam::TreasuryAddress(address) => {
+                    self.treasury_address = address;
+                    self.ssz_tree.set_treasury_address(&address);
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
@@ -694,6 +712,7 @@ impl ConsensusState {
             &self.protocol_param_changes,
             &self.added_validators,
             &self.removed_validators,
+            &self.treasury_address,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -742,6 +761,7 @@ impl EncodeSize for ConsensusState {
         + 8 // validator_minimum_stake
         + 8 // validator_maximum_stake
         + 8 // allowed_timestamp_future_ms
+        + 20 // treasury_address
         + self.epocher.encode_size()
     }
 }
@@ -845,6 +865,10 @@ impl Read for ConsensusState {
         let validator_maximum_stake = buf.get_u64();
         let allowed_timestamp_future_ms = buf.get_u64();
 
+        let mut treasury_address_bytes = [0u8; 20];
+        buf.copy_to_slice(&mut treasury_address_bytes);
+        let treasury_address = Address::from(treasury_address_bytes);
+
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
         let mut state = Self {
@@ -865,6 +889,7 @@ impl Read for ConsensusState {
             validator_minimum_stake,
             validator_maximum_stake,
             allowed_timestamp_future_ms,
+            treasury_address,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -949,6 +974,9 @@ impl Write for ConsensusState {
         buf.put_u64(self.validator_minimum_stake);
         buf.put_u64(self.validator_maximum_stake);
         buf.put_u64(self.allowed_timestamp_future_ms);
+
+        // Write treasury_address
+        buf.put_slice(self.treasury_address.as_slice());
 
         // Write epocher
         self.epocher.write(buf);
@@ -1065,6 +1093,7 @@ mod tests {
             0,
             NonZeroU64::new(100).unwrap(),
             10_000,
+            Address::ZERO,
         );
 
         original_state.set_epoch(7);
@@ -1822,6 +1851,7 @@ mod tests {
             32_000_000_000,
             NonZeroU64::new(10).unwrap(),
             10_000,
+            Address::ZERO,
         );
 
         // Add 4 genesis validators (like the testnet)

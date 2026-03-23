@@ -18,6 +18,8 @@ pub struct GenesisConfig {
     namespace: String,
     blocks_per_epoch: u64,
     allowed_timestamp_future_ms: u64,
+    #[serde(default)]
+    treasury_address: Option<String>,
     pub validators: Vec<GenesisValidator>,
 }
 

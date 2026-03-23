@@ -50,7 +50,7 @@ pub struct BlockAuxData {
     pub added_validators: Vec<AddedValidator>,
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
-    pub withdrawal_credentials: Address,
+    pub suggested_fee_recipient: Address,
     pub state_root: [u8; 32],
     pub allowed_timestamp_future_ms: u64,
 }

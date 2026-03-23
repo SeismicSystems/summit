@@ -829,15 +829,23 @@ impl<
             return;
         };
 
-        let withdrawal_credentials = state
-            .get_account(
-                self.node_public_key
-                    .as_ref()
-                    .try_into()
-                    .expect("Safe: Ed pub key always 32 bytes"),
-            )
-            .map(|account| account.withdrawal_credentials)
-            .unwrap_or_default();
+        let treasury_address = state.get_treasury_address();
+        // The zero address is a sentinel value.
+        // If the treasury address is the zero address, the suggested_fee_recipient will be
+        // set to the validator's withdrawal credentials.
+        let suggested_fee_recipient = if treasury_address.is_zero() {
+            state
+                .get_account(
+                    self.node_public_key
+                        .as_ref()
+                        .try_into()
+                        .expect("Safe: Ed pub key always 32 bytes"),
+                )
+                .map(|account| account.withdrawal_credentials)
+                .unwrap_or_default()
+        } else {
+            treasury_address
+        };
 
         // Create checkpoint if we're at an epoch boundary.
         // The consensus state is saved every `epoch_num_blocks` blocks.
@@ -887,7 +895,7 @@ impl<
                     .unwrap_or_default(),
                 removed_validators: state.get_removed_validators().clone(),
                 forkchoice: *state.get_forkchoice(),
-                withdrawal_credentials,
+                suggested_fee_recipient,
                 state_root: state.get_state_root(),
                 allowed_timestamp_future_ms: state.get_allowed_timestamp_future_ms(),
             }
@@ -900,7 +908,7 @@ impl<
                 added_validators: vec![],
                 removed_validators: vec![],
                 forkchoice: *state.get_forkchoice(),
-                withdrawal_credentials,
+                suggested_fee_recipient,
                 state_root: state.get_state_root(),
                 allowed_timestamp_future_ms: state.get_allowed_timestamp_future_ms(),
             }
@@ -975,6 +983,10 @@ impl<
             ConsensusStateRequest::GetAllowedTimestampFuture => {
                 let ms = self.canonical_state.get_allowed_timestamp_future_ms();
                 let _ = sender.send(ConsensusStateResponse::AllowedTimestampFuture(ms));
+            }
+            ConsensusStateRequest::GetTreasuryAddress => {
+                let address = self.canonical_state.get_treasury_address();
+                let _ = sender.send(ConsensusStateResponse::TreasuryAddress(address));
             }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self
