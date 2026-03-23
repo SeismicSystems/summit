@@ -101,10 +101,8 @@ impl EngineClient for RethEngineClient {
         let payload_attributes = PayloadAttributes {
             timestamp,
             prev_randao: [0; 32].into(),
-            // todo(dalton): this should be the validators public key
             suggested_fee_recipient,
             withdrawals: Some(withdrawals),
-            // todo(dalton): we should make this something that we can associate with the simplex height
             parent_beacon_block_root,
         };
 
@@ -248,10 +246,8 @@ impl EngineClient for BadBlockEngineClient {
         let payload_attributes = PayloadAttributes {
             timestamp,
             prev_randao: [0; 32].into(),
-            // todo(dalton): this should be the validators public key
             suggested_fee_recipient,
             withdrawals: Some(withdrawals),
-            // todo(dalton): we should make this something that we can associate with the simplex height
             parent_beacon_block_root,
         };
 
