@@ -123,7 +123,3 @@ Tests a new validator joining by syncing from genesis with no checkpoint.
 ```bash
 cargo bench -p summit-finalizer
 ```
-
-Benchmarks consensus state write performance.
-
-```
