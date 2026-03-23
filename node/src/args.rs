@@ -107,8 +107,9 @@ pub struct RunFlags {
     #[arg(long, default_value_t = 3030)]
     pub rpc_port: u16,
 
-    #[arg(long, default_value_t = 4)]
-    pub worker_threads: usize,
+    /// Number of tokio worker threads (defaults to number of logical CPUs)
+    #[arg(long)]
+    pub worker_threads: Option<usize>,
 
     /// level for logs (error,warn,info,debug,trace)
     #[arg(
@@ -205,9 +206,12 @@ impl Command {
         let signer = key_store.node_key.clone();
 
         // Initialize runtime
+        let worker_threads = flags
+            .worker_threads
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
         let cfg = tokio::Config::default()
             .with_tcp_nodelay(Some(true))
-            .with_worker_threads(flags.worker_threads)
+            .with_worker_threads(worker_threads)
             .with_storage_directory(store_path)
             .with_catch_panics(false);
         let executor = tokio::Runner::new(cfg);
@@ -402,8 +406,6 @@ impl Command {
             let backfiller =
                 network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
-            // Create network
-            let p2p = network.start();
             // create engine
             let engine: Engine<_, _, _, _> =
                 Engine::new(context.with_label("engine"), config).await;
@@ -412,6 +414,9 @@ impl Command {
 
             // Start engine
             let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+
+            // Create network
+            let p2p = network.start();
 
             // Start RPC server
             let key_store_path = flags.key_store_path.clone();
@@ -585,14 +590,15 @@ pub fn run_node_local(
         let backfiller =
             network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
-        // Create network
-        let p2p = network.start();
         // create engine
         let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
 
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Start engine
         let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+
+        // Create network
+        let p2p = network.start();
 
         // Start prometheus endpoint
         #[cfg(feature = "prom")]
