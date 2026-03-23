@@ -366,6 +366,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 10_000,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -490,6 +491,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 10_000,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -538,6 +540,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 10_000,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -669,6 +672,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 10_000,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -722,6 +726,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 10_000,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -780,6 +785,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 10_000,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -834,6 +840,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 10_000,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -933,6 +940,7 @@ mod tests {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
+            allowed_timestamp_future_ms: 10_000,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),

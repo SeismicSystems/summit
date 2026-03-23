@@ -42,7 +42,6 @@ const BUFFER_POOL_PAGE_SIZE: u16 = 4_096; // 4KB
 const BUFFER_POOL_CAPACITY: NonZero<usize> = NZUsize!(8_192); // 32MB
 const PRUNABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(4_096);
 const IMMUTABLE_ITEMS_PER_SECTION: NonZero<u64> = NZU64!(262_144);
-const ALLOWED_TIMESTAMP_FUTURE: Duration = Duration::from_secs(10);
 const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
 const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
 const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
@@ -174,7 +173,6 @@ where
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
                 epocher: epocher.clone(),
-                allowed_timestamp_future: ALLOWED_TIMESTAMP_FUTURE,
                 cancellation_token: cancellation_token.clone(),
             },
         )

@@ -57,6 +57,9 @@ pub trait SummitApi {
     #[method(name = "getEpochLength")]
     async fn get_epoch_length(&self) -> RpcResult<u64>;
 
+    #[method(name = "getAllowedTimestampFuture")]
+    async fn get_allowed_timestamp_future(&self) -> RpcResult<u64>;
+
     #[method(name = "getEpochBounds")]
     async fn get_epoch_bounds(&self, epoch: u64) -> RpcResult<EpochBoundsResponse>;
 

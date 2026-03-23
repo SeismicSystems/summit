@@ -1,4 +1,5 @@
 use crate::PublicKey;
+use crate::protocol_params::{MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_ALLOWED_TIMESTAMP_FUTURE_MS};
 use alloy_primitives::Address;
 use anyhow::Context;
 use commonware_codec::DecodeExt;
@@ -44,6 +45,10 @@ pub struct Genesis {
     pub validator_maximum_stake: u64,
     /// Number of blocks in each epoch
     pub blocks_per_epoch: u64,
+    /// Maximum allowed delta (in milliseconds) between a block's timestamp
+    /// and the local wall clock. Blocks with timestamps that exceed local
+    /// time by more than this are rejected during verification.
+    pub allowed_timestamp_future_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +105,15 @@ impl Genesis {
         let genesis: Genesis = toml::from_str(&file_string)?;
         if genesis.blocks_per_epoch == 0 {
             return Err("blocks_per_epoch must be greater than 0".into());
+        }
+        if genesis.allowed_timestamp_future_ms < MIN_ALLOWED_TIMESTAMP_FUTURE_MS
+            || genesis.allowed_timestamp_future_ms > MAX_ALLOWED_TIMESTAMP_FUTURE_MS
+        {
+            return Err(format!(
+                "allowed_timestamp_future_ms must be between {} and {}",
+                MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_ALLOWED_TIMESTAMP_FUTURE_MS
+            )
+            .into());
         }
         Ok(genesis)
     }

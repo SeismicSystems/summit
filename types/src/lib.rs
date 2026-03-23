@@ -52,6 +52,7 @@ pub struct BlockAuxData {
     pub forkchoice: ForkchoiceState,
     pub withdrawal_credentials: Address,
     pub state_root: [u8; 32],
+    pub allowed_timestamp_future_ms: u64,
 }
 
 pub use commonware_cryptography::bls12381;

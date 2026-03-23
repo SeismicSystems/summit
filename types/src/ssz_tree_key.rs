@@ -55,6 +55,9 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "validator_maximum_stake" => {
             Ok(SszStateKey::Scalar(ssz_state_tree::VALIDATOR_MAXIMUM_STAKE))
         }
+        "allowed_timestamp_future_ms" => Ok(SszStateKey::Scalar(
+            ssz_state_tree::ALLOWED_TIMESTAMP_FUTURE_MS,
+        )),
         "next_withdrawal_index" => Ok(SszStateKey::Scalar(ssz_state_tree::NEXT_WITHDRAWAL_INDEX)),
         "forkchoice_head_block_hash" => Ok(SszStateKey::Scalar(
             ssz_state_tree::FORKCHOICE_HEAD_BLOCK_HASH,

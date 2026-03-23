@@ -119,7 +119,13 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         safe_block_hash: genesis_hash.into(),
         finalized_block_hash: genesis_hash.into(),
     };
-    let mut state = ConsensusState::new(forkchoice, 32_000_000_000, 64_000_000_000, epoch_length);
+    let mut state = ConsensusState::new(
+        forkchoice,
+        32_000_000_000,
+        64_000_000_000,
+        epoch_length,
+        10_000,
+    );
     state.set_validator_accounts(validator_accounts);
     state
 }
