@@ -31,11 +31,11 @@ tests/
 
 ## End-to-End Tests
 
-E2E tests run real Reth execution nodes alongside Summit consensus validators. They exercise the full stack: Engine API IPC, P2P networking, consensus, finalization, and on-chain contract interactions.
+E2E tests run real Reth instances alongside Summit. They exercise the full stack: Engine API IPC, P2P networking, consensus, finalization, and on-chain contract interactions.
 
 ### Important: Genesis Hash
 
-The `eth_genesis_hash` field in the Summit genesis config must match the genesis block hash produced by Reth. If they differ, Summit will fail to initialize. This applies both to production deployments and to e2e tests — when running e2e tests, the hash in the test configuration must match the Reth genesis file (`testnet/dev.json`).
+The `eth_genesis_hash` field in the Summit genesis config must match the genesis block hash produced by Reth. If they differ, Summit will fail to initialize. This applies both to production deployments and to e2e tests — when running e2e tests, the hash in the test configuration must match the Reth genesis file.
 
 ### Prerequisites
 
@@ -67,7 +67,6 @@ All E2E tests share:
 - **4 Reth instances** with IPC Engine API at `/tmp/reth_engine_api{0-3}.ipc`
 - **4 genesis validators** (some tests add a 5th joining validator)
 - **`blocks_per_epoch = 50`** (reduced from production default of 10,000 to accelerate epoch transitions)
-- **Pre-funded test accounts** from `testnet/dev.json`
 
 ### Test Descriptions
 
