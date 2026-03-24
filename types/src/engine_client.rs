@@ -142,7 +142,7 @@ impl EngineClient for RethEngineClient {
                     .await
                     .expect("Failed to get payload after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("failed to retrieve payload, error: {}", e),
         }
     }
 
@@ -170,7 +170,7 @@ impl EngineClient for RethEngineClient {
                     .await
                     .expect("Failed to check payload after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("failed to check payload, error: {}", e),
         }
     }
 
@@ -188,7 +188,7 @@ impl EngineClient for RethEngineClient {
                     .await
                     .expect("Failed to commit hash after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("failed to commit hash, error: {}", e),
         }
     }
 }
