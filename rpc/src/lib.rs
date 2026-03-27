@@ -17,6 +17,8 @@ pub use api::{
 use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
@@ -27,8 +29,9 @@ pub async fn start_rpc_server(
     key_store_path: String,
     port: u16,
     stop_signal: Signal,
+    paused: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    let rpc_impl = SummitRpcServer::new(key_store_path, finalizer_mailbox);
+    let rpc_impl = SummitRpcServer::new(key_store_path, finalizer_mailbox, paused);
 
     let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());
     methods.merge(SummitProofApiServer::into_rpc(rpc_impl))?;
@@ -57,8 +60,9 @@ pub async fn start_rpc_server_with_handle(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
     port: u16,
+    paused: Arc<AtomicBool>,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
-    let rpc_impl = SummitRpcServer::new(key_store_path, finalizer_mailbox);
+    let rpc_impl = SummitRpcServer::new(key_store_path, finalizer_mailbox, paused);
 
     let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());
     methods.merge(SummitProofApiServer::into_rpc(rpc_impl))?;

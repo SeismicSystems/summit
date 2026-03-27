@@ -77,6 +77,15 @@ pub trait SummitApi {
         &self,
         public_key: String,
     ) -> RpcResult<PendingWithdrawalResponse>;
+
+    #[method(name = "pause")]
+    async fn pause(&self) -> RpcResult<bool>;
+
+    #[method(name = "unpause")]
+    async fn unpause(&self) -> RpcResult<bool>;
+
+    #[method(name = "isPaused")]
+    async fn is_paused(&self) -> RpcResult<bool>;
 }
 
 #[rpc(server, client)]

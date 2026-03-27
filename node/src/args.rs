@@ -411,6 +411,7 @@ impl Command {
                 Engine::new(context.with_label("engine"), config).await;
 
             let finalizer_mailbox = engine.finalizer_mailbox.clone();
+            let paused = engine.paused.clone();
 
             // Start engine
             let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
@@ -424,7 +425,7 @@ impl Command {
             let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
                 if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
+                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal, paused).await
                 {
                     error!("RPC server failed: {}", e);
                 }
@@ -594,6 +595,7 @@ pub fn run_node_local(
         let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
 
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
+        let paused = engine.paused.clone();
         // Start engine
         let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
@@ -623,7 +625,7 @@ pub fn run_node_local(
         let stop_signal = context.stopped();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
             if let Err(e) =
-                start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
+                start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal, paused).await
             {
                 error!("RPC server failed: {}", e);
             }

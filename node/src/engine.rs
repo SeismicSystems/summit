@@ -19,6 +19,8 @@ use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
 use std::num::NonZero;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
@@ -109,6 +111,7 @@ pub struct Engine<
     sync_start: SyncStart,
     checkpoint: Option<SyncCheckpoint<Block, MultisigScheme>>,
     cancellation_token: CancellationToken,
+    pub paused: Arc<AtomicBool>,
 }
 
 impl<
@@ -136,6 +139,7 @@ where
             SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
 
         let cancellation_token = CancellationToken::new();
+        let paused = Arc::new(AtomicBool::new(false));
 
         // create finalizer
         let (finalizer, initial_state, finalizer_mailbox) = Finalizer::new(
@@ -174,6 +178,7 @@ where
                 genesis_hash: cfg.genesis_hash,
                 epocher: epocher.clone(),
                 cancellation_token: cancellation_token.clone(),
+                paused: paused.clone(),
             },
         )
         .await;
@@ -357,6 +362,7 @@ where
             sync_start,
             checkpoint,
             cancellation_token,
+            paused,
         }
     }
 

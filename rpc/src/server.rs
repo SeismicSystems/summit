@@ -15,6 +15,8 @@ use ssz::Encode as _;
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},
@@ -24,16 +26,19 @@ use summit_types::{
 pub struct SummitRpcServer {
     key_store_path: String,
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    paused: Arc<AtomicBool>,
 }
 
 impl SummitRpcServer {
     pub fn new(
         key_store_path: String,
         finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+        paused: Arc<AtomicBool>,
     ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
+            paused,
         }
     }
 }
@@ -359,6 +364,22 @@ impl SummitApiServer for SummitRpcServer {
             }),
             None => Err(RpcError::WithdrawalNotFound.into()),
         }
+    }
+
+    async fn pause(&self) -> RpcResult<bool> {
+        self.paused.store(true, Ordering::SeqCst);
+        tracing::info!("consensus paused via RPC");
+        Ok(true)
+    }
+
+    async fn unpause(&self) -> RpcResult<bool> {
+        self.paused.store(false, Ordering::SeqCst);
+        tracing::info!("consensus unpaused via RPC");
+        Ok(true)
+    }
+
+    async fn is_paused(&self) -> RpcResult<bool> {
+        Ok(self.paused.load(Ordering::SeqCst))
     }
 }
 
