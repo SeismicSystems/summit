@@ -20,7 +20,10 @@ use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
 use std::marker::PhantomData;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use summit_finalizer::FinalizerMailbox;
@@ -47,6 +50,7 @@ pub struct Actor<
     genesis_hash: [u8; 32],
     epocher: ES,
     cancellation_token: CancellationToken,
+    paused: Arc<AtomicBool>,
     _scheme_marker: PhantomData<S>,
     _key_marker: PhantomData<P>,
     _signer_marker: PhantomData<K>,
@@ -77,6 +81,7 @@ impl<
                 genesis_hash,
                 epocher: cfg.epocher,
                 cancellation_token: cfg.cancellation_token,
+                paused: cfg.paused,
                 _scheme_marker: PhantomData,
                 _key_marker: PhantomData,
                 _signer_marker: PhantomData,
@@ -126,6 +131,11 @@ impl<
                             parent,
                             mut response,
                         } => {
+                            if self.paused.load(Ordering::SeqCst) {
+                                warn!("consensus paused, skipping proposal for round {round}");
+                                continue;
+                            }
+
                             debug!("{rand_id} application: Handling message Propose for round {} (epoch {}, view {}), parent view: {}",
                                 round, round.epoch(), round.view(), parent.0);
 
@@ -190,6 +200,11 @@ impl<
                             }
                         }
                         Message::Broadcast { payload: _ } => {
+                            if self.paused.load(Ordering::SeqCst) {
+                                warn!("consensus paused, skipping broadcast");
+                                continue;
+                            }
+
                             info!("{rand_id} Handling message Broadcast");
 
                             let built_block = self.built_block.lock().expect("poisoned lock").take();
@@ -207,6 +222,12 @@ impl<
                             payload,
                             mut response,
                         } => {
+                            if self.paused.load(Ordering::SeqCst) {
+                                warn!("consensus paused, rejecting verify for round {round}");
+                                let _ = response.send(false);
+                                continue;
+                            }
+
                             debug!("{rand_id} application: Handling message Verify for round {} (epoch {}, view {}), parent view: {}",
                                 round, round.epoch(), round.view(), parent.0);
 

@@ -1,4 +1,6 @@
 use commonware_consensus::types::Epocher;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use summit_types::EngineClient;
 use tokio_util::sync::CancellationToken;
 
@@ -18,4 +20,8 @@ pub struct ApplicationConfig<C: EngineClient, ES: Epocher> {
     pub epocher: ES,
 
     pub cancellation_token: CancellationToken,
+
+    /// When true, the node will not participate in consensus
+    /// (skip proposals, reject verifications, skip broadcasts).
+    pub paused: Arc<AtomicBool>,
 }
