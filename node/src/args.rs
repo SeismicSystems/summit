@@ -148,6 +148,11 @@ pub struct RunFlags {
     /// When set, events emitted with target "critical" are written to files in this directory.
     #[arg(long)]
     pub critical_log_dir: Option<String>,
+
+    /// Bearer token for authenticating admin RPC calls (pause, unpause).
+    /// When set, these endpoints require an `Authorization: Bearer <token>` header.
+    #[arg(long)]
+    pub admin_token: Option<String>,
 }
 
 impl Command {
@@ -423,6 +428,7 @@ impl Command {
             // Start RPC server
             let key_store_path = flags.key_store_path.clone();
             let rpc_port = flags.rpc_port;
+            let admin_token = flags.admin_token.clone();
             let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
                 if let Err(e) =
@@ -433,6 +439,7 @@ impl Command {
                         stop_signal,
                         #[cfg(feature = "permissioned")]
                         paused,
+                        admin_token
                     ).await
                 {
                     error!("RPC server failed: {}", e);
@@ -631,6 +638,7 @@ pub fn run_node_local(
         // Start RPC server
         let key_store_path = flags.key_store_path.clone();
         let rpc_port = flags.rpc_port;
+        let admin_token = flags.admin_token.clone();
         let stop_signal = context.stopped();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
             if let Err(e) =
@@ -641,6 +649,7 @@ pub fn run_node_local(
                     stop_signal,
                     #[cfg(feature = "permissioned")]
                     paused,
+                    admin_token
                 ).await
             {
                 error!("RPC server failed: {}", e);

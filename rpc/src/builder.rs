@@ -1,4 +1,6 @@
+use crate::auth::{AdminAuthLayer, BearerTokenLayer};
 use http::{HeaderValue, Method};
+use jsonrpsee::server::middleware::rpc::RpcServiceBuilder;
 use jsonrpsee::server::{ServerBuilder, ServerConfigBuilder, ServerHandle};
 use std::net::SocketAddr;
 use tower::ServiceBuilder;
@@ -8,15 +10,14 @@ pub struct RpcServerBuilder {
     addr: SocketAddr,
     config: ServerConfigBuilder,
     cors_domains: Option<String>,
+    admin_token: Option<String>,
 }
 
+/// Opaque wrapper that hides the concrete `Server<HttpMiddleware, RpcMiddleware>` type.
+/// Callers interact through `start()` and `local_addr()` only.
 pub struct RpcServer {
-    inner: jsonrpsee::server::Server<
-        tower::layer::util::Stack<
-            tower::util::Either<CorsLayer, tower::layer::util::Identity>,
-            tower::layer::util::Identity,
-        >,
-    >,
+    handle_fn: Box<dyn FnOnce(jsonrpsee::server::Methods) -> ServerHandle + Send>,
+    addr: SocketAddr,
 }
 
 impl RpcServer {
@@ -24,11 +25,11 @@ impl RpcServer {
     where
         M: Into<jsonrpsee::server::Methods>,
     {
-        self.inner.start(methods)
+        (self.handle_fn)(methods.into())
     }
 
     pub fn local_addr(&self) -> anyhow::Result<SocketAddr> {
-        self.inner.local_addr().map_err(Into::into)
+        Ok(self.addr)
     }
 }
 
@@ -38,6 +39,7 @@ impl RpcServerBuilder {
             addr: SocketAddr::from(([0, 0, 0, 0], port)),
             config: ServerConfigBuilder::new(),
             cors_domains: None,
+            admin_token: None,
         }
     }
 
@@ -61,6 +63,11 @@ impl RpcServerBuilder {
         self
     }
 
+    pub fn with_admin_token(mut self, admin_token: Option<String>) -> Self {
+        self.admin_token = admin_token;
+        self
+    }
+
     pub async fn build(self) -> anyhow::Result<RpcServer> {
         let cors_layer = self
             .cors_domains
@@ -68,15 +75,45 @@ impl RpcServerBuilder {
             .map(create_cors_layer)
             .transpose()?;
 
-        let http_middleware = ServiceBuilder::new().option_layer(cors_layer);
+        let config = self.config.build();
+        let addr = self.addr;
 
-        let server = ServerBuilder::new()
-            .set_config(self.config.build())
-            .set_http_middleware(http_middleware)
-            .build(self.addr)
-            .await?;
+        if let Some(token) = self.admin_token {
+            // With admin auth: add BearerTokenLayer (HTTP) + AdminAuthLayer (RPC)
+            let http_middleware = ServiceBuilder::new()
+                .option_layer(cors_layer)
+                .layer(BearerTokenLayer);
 
-        Ok(RpcServer { inner: server })
+            let rpc_middleware = RpcServiceBuilder::new().layer(AdminAuthLayer::new(token));
+
+            let server = ServerBuilder::new()
+                .set_config(config)
+                .set_http_middleware(http_middleware)
+                .set_rpc_middleware(rpc_middleware)
+                .build(addr)
+                .await?;
+
+            let bound_addr = server.local_addr()?;
+            Ok(RpcServer {
+                handle_fn: Box::new(move |methods| server.start(methods)),
+                addr: bound_addr,
+            })
+        } else {
+            // No admin auth: original middleware stack
+            let http_middleware = ServiceBuilder::new().option_layer(cors_layer);
+
+            let server = ServerBuilder::new()
+                .set_config(config)
+                .set_http_middleware(http_middleware)
+                .build(addr)
+                .await?;
+
+            let bound_addr = server.local_addr()?;
+            Ok(RpcServer {
+                handle_fn: Box::new(move |methods| server.start(methods)),
+                addr: bound_addr,
+            })
+        }
     }
 }
 

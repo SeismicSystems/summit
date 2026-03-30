@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod builder;
 mod error;
 mod genesis;
@@ -34,6 +35,7 @@ pub async fn start_rpc_server(
     port: u16,
     stop_signal: Signal,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+    admin_token: Option<String>,
 ) -> anyhow::Result<()> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
@@ -52,6 +54,7 @@ pub async fn start_rpc_server(
         .with_max_request_body_size(10 * 1024 * 1024)
         .with_max_response_body_size(10 * 1024 * 1024)
         .with_cors(Some("*".to_string()))
+        .with_admin_token(admin_token)
         .build()
         .await?;
 
@@ -72,6 +75,7 @@ pub async fn start_rpc_server_with_handle(
     key_store_path: String,
     port: u16,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+    admin_token: Option<String>,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
@@ -90,6 +94,7 @@ pub async fn start_rpc_server_with_handle(
         .with_max_request_body_size(10 * 1024 * 1024)
         .with_max_response_body_size(10 * 1024 * 1024)
         .with_cors(Some("*".to_string()))
+        .with_admin_token(admin_token)
         .build()
         .await?;
 

@@ -24,6 +24,7 @@ async fn test_health_endpoint() {
             0,
             #[cfg(feature = "permissioned")]
             Arc::new(AtomicBool::new(false)),
+            None
         )
         .await
         .unwrap();
@@ -56,6 +57,7 @@ async fn test_get_latest_height() {
             0,
             #[cfg(feature = "permissioned")]
             Arc::new(AtomicBool::new(false)),
+            None
         )
         .await
         .unwrap();
@@ -88,6 +90,7 @@ async fn test_get_latest_epoch() {
             0,
             #[cfg(feature = "permissioned")]
             Arc::new(AtomicBool::new(false)),
+            None
         )
         .await
         .unwrap();
@@ -116,6 +119,7 @@ async fn test_validator_balance_not_found() {
             0,
             #[cfg(feature = "permissioned")]
             Arc::new(AtomicBool::new(false)),
+            None
         )
         .await
         .unwrap();
@@ -148,6 +152,7 @@ async fn test_get_public_keys() {
             0,
             #[cfg(feature = "permissioned")]
             Arc::new(AtomicBool::new(false)),
+            None
         )
         .await
         .unwrap();
@@ -245,6 +250,7 @@ async fn test_get_minimum_stake() {
             0,
             #[cfg(feature = "permissioned")]
             Arc::new(AtomicBool::new(false)),
+            None
         )
         .await
         .unwrap();
@@ -277,6 +283,7 @@ async fn test_get_maximum_stake() {
             0,
             #[cfg(feature = "permissioned")]
             Arc::new(AtomicBool::new(false)),
+            None
         )
         .await
         .unwrap();
