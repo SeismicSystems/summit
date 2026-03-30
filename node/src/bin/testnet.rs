@@ -199,6 +199,6 @@ fn get_node_flags(node: usize) -> RunFlags {
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,
-        admin_token: None,
+        admin_token_file: None,
     }
 }

@@ -149,10 +149,22 @@ pub struct RunFlags {
     #[arg(long)]
     pub critical_log_dir: Option<String>,
 
-    /// Bearer token for authenticating admin RPC calls (pause, unpause).
+    /// Path to a file containing the bearer token for admin RPC calls (pause, unpause).
+    /// The file should contain the token as a single line (whitespace is trimmed).
     /// When set, these endpoints require an `Authorization: Bearer <token>` header.
     #[arg(long)]
-    pub admin_token: Option<String>,
+    pub admin_token_file: Option<String>,
+}
+
+fn read_admin_token(path: &Option<String>) -> Option<String> {
+    let path = path.as_ref()?;
+    let contents = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read admin token file {path}: {e}"));
+    let token = contents.trim().to_string();
+    if token.is_empty() {
+        panic!("admin token file {path} is empty");
+    }
+    Some(token)
 }
 
 impl Command {
@@ -428,7 +440,7 @@ impl Command {
             // Start RPC server
             let key_store_path = flags.key_store_path.clone();
             let rpc_port = flags.rpc_port;
-            let admin_token = flags.admin_token.clone();
+            let admin_token = read_admin_token(&flags.admin_token_file);
             let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
                 if let Err(e) =
@@ -638,7 +650,7 @@ pub fn run_node_local(
         // Start RPC server
         let key_store_path = flags.key_store_path.clone();
         let rpc_port = flags.rpc_port;
-        let admin_token = flags.admin_token.clone();
+        let admin_token = read_admin_token(&flags.admin_token_file);
         let stop_signal = context.stopped();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
             if let Err(e) =

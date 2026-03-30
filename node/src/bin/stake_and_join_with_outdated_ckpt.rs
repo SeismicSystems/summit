@@ -817,7 +817,7 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,
-        admin_token: None,
+        admin_token_file: None,
     }
 }
 
