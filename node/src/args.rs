@@ -424,8 +424,14 @@ impl Command {
             let rpc_port = flags.rpc_port;
             let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal, paused).await
+                if let Err(e) = start_rpc_server(
+                    finalizer_mailbox,
+                    key_store_path,
+                    rpc_port,
+                    stop_signal,
+                    paused,
+                )
+                .await
                 {
                     error!("RPC server failed: {}", e);
                 }
@@ -624,8 +630,14 @@ pub fn run_node_local(
         let rpc_port = flags.rpc_port;
         let stop_signal = context.stopped();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            if let Err(e) =
-                start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal, paused).await
+            if let Err(e) = start_rpc_server(
+                finalizer_mailbox,
+                key_store_path,
+                rpc_port,
+                stop_signal,
+                paused,
+            )
+            .await
             {
                 error!("RPC server failed: {}", e);
             }

@@ -17,8 +17,8 @@ pub use api::{
 use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;

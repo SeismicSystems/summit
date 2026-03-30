@@ -131,7 +131,14 @@ impl<
                             parent,
                             mut response,
                         } => {
-                            if self.paused.load(Ordering::SeqCst) {
+                            #[cfg(feature = "prom")]
+                            let paused_load_start = std::time::Instant::now();
+                            let paused = self.paused.load(Ordering::SeqCst);
+                            #[cfg(feature = "prom")]
+                            histogram!("application_paused_propose_load_duration_micros")
+                                .record(paused_load_start.elapsed().as_micros() as f64);
+
+                            if paused {
                                 warn!("consensus paused, skipping proposal for round {round}");
                                 continue;
                             }
@@ -200,7 +207,14 @@ impl<
                             }
                         }
                         Message::Broadcast { payload: _ } => {
-                            if self.paused.load(Ordering::SeqCst) {
+                            #[cfg(feature = "prom")]
+                            let paused_load_start = std::time::Instant::now();
+                            let paused = self.paused.load(Ordering::SeqCst);
+                            #[cfg(feature = "prom")]
+                            histogram!("application_paused_broadcast_load_duration_micros")
+                                .record(paused_load_start.elapsed().as_micros() as f64);
+
+                            if paused {
                                 warn!("consensus paused, skipping broadcast");
                                 continue;
                             }
@@ -222,7 +236,14 @@ impl<
                             payload,
                             mut response,
                         } => {
-                            if self.paused.load(Ordering::SeqCst) {
+                            #[cfg(feature = "prom")]
+                            let paused_load_start = std::time::Instant::now();
+                            let paused = self.paused.load(Ordering::SeqCst);
+                            #[cfg(feature = "prom")]
+                            histogram!("application_paused_verify_load_duration_micros")
+                                .record(paused_load_start.elapsed().as_micros() as f64);
+
+                            if paused {
                                 warn!("consensus paused, rejecting verify for round {round}");
                                 let _ = response.send(false);
                                 continue;

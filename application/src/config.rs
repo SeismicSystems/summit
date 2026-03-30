@@ -1,6 +1,6 @@
 use commonware_consensus::types::Epocher;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use summit_types::EngineClient;
 use tokio_util::sync::CancellationToken;
 

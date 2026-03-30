@@ -12,11 +12,11 @@ use commonware_cryptography::{Hasher as _, Sha256, Signer};
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
 use ssz::Encode as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},

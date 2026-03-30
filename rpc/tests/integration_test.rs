@@ -1,8 +1,8 @@
 mod utils;
 
 use jsonrpsee::http_client::HttpClientBuilder;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use summit_rpc::{
     PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_with_handle,
 };
@@ -16,9 +16,10 @@ async fn test_health_endpoint() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-        .await
-        .unwrap();
+    let (handle, addr) =
+        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -42,9 +43,10 @@ async fn test_get_latest_height() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-        .await
-        .unwrap();
+    let (handle, addr) =
+        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -68,9 +70,10 @@ async fn test_get_latest_epoch() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-        .await
-        .unwrap();
+    let (handle, addr) =
+        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -90,9 +93,10 @@ async fn test_validator_balance_not_found() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-        .await
-        .unwrap();
+    let (handle, addr) =
+        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -116,9 +120,10 @@ async fn test_get_public_keys() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-        .await
-        .unwrap();
+    let (handle, addr) =
+        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -207,9 +212,10 @@ async fn test_get_minimum_stake() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-        .await
-        .unwrap();
+    let (handle, addr) =
+        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -233,9 +239,10 @@ async fn test_get_maximum_stake() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-        .await
-        .unwrap();
+    let (handle, addr) =
+        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
