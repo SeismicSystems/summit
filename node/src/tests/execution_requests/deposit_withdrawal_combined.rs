@@ -482,8 +482,8 @@ fn test_deposit_blocked_by_pending_withdrawal() {
     // - Genesis validators start with 32 ETH each
     // - Submit withdrawal at block 3, then deposit at block 4
     // - Withdrawal should be processed, deposit should be rejected and refunded
-    // - Because both target the same validator, the refund is merged into the
-    //   existing pending withdrawal (32 + 5 = 37 ETH), producing a single withdrawal
+    // - The deposit refund is queued under a refund-only key, so it stays separate from the
+    //   validator's real withdrawal even though both pay the same address
     let n = 5;
     let min_stake = 32_000_000_000;
     let max_stake = 100_000_000_000;
@@ -648,20 +648,236 @@ fn test_deposit_blocked_by_pending_withdrawal() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        // Verify withdrawal occurred and rejected deposit was refunded.
-        // The refund is merged into the existing withdrawal for the same validator,
-        // producing a single withdrawal of 32 + 5 = 37 ETH.
+        // Verify withdrawal occurred and rejected deposit was refunded as a separate entry.
         let withdrawals = engine_client_network.get_withdrawals();
         assert_eq!(withdrawals.len(), 1);
 
         let epoch_withdrawals = withdrawals.get(&withdrawal_height).unwrap();
-        assert_eq!(epoch_withdrawals.len(), 1);
-        assert_eq!(epoch_withdrawals[0].amount, min_stake + deposit_amount);
+        assert_eq!(epoch_withdrawals.len(), 2);
+
+        let withdrawal_amounts: Vec<u64> = epoch_withdrawals
+            .iter()
+            .map(|withdrawal| withdrawal.amount)
+            .collect();
+        assert!(withdrawal_amounts.contains(&min_stake));
+        assert!(withdrawal_amounts.contains(&deposit_amount));
+        assert!(
+            epoch_withdrawals
+                .iter()
+                .all(|withdrawal| withdrawal.address == withdrawal_address)
+        );
 
         let validator0_client_id = format!("validator_{}", validators[0].0);
         assert!(
             engine_client_network
                 .verify_consensus_skip(None, Some(stop_height), &[&validator0_client_id])
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
+fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
+    // Tests that an invalid deposit refund cannot poison the withdrawal queue for an
+    // existing validator.
+    //
+    // Test setup:
+    // - Genesis validator 0 starts with 32 ETH and victim withdrawal credentials
+    // - Block 3 includes an invalid deposit request that targets validator 0's pubkey but uses
+    //   attacker-controlled withdrawal credentials
+    // - Block 4 includes validator 0's legitimate withdrawal request to the victim address
+    // - The invalid deposit refund is queued under a synthetic refund key
+    // - The later legitimate withdrawal remains keyed by the real validator pubkey
+    // - Both withdrawals are processed independently at the same withdrawal height
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let max_stake = 100_000_000_000;
+    let deposit_amount = 5_000_000_000; // 5 ETH
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        let mut addresses = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+            addresses.push(Address::from([i as u8; 20]));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let victim_pubkey: [u8; 32] = validators[0].0.as_ref().try_into().unwrap();
+        let victim_address = addresses[0];
+        let attacker_address = addresses[1];
+
+        let mut attacker_withdrawal_credentials = [0u8; 32];
+        attacker_withdrawal_credentials[0] = 0x01;
+        attacker_withdrawal_credentials[12..32].copy_from_slice(attacker_address.as_ref());
+
+        let (mut invalid_deposit, _, _) = common::create_deposit_request(
+            99,
+            deposit_amount,
+            common::get_domain(),
+            None,
+            Some(attacker_withdrawal_credentials),
+        );
+        // Re-target the deposit to the existing validator after signing so signature verification
+        // fails but the refund path still keys the withdrawal to the victim validator pubkey.
+        invalid_deposit.node_pubkey = validators[0].0.clone();
+
+        let victim_withdrawal =
+            common::create_withdrawal_request(victim_address, victim_pubkey, min_stake);
+
+        let invalid_deposit_block_height = 3;
+        let legitimate_withdrawal_block_height = 4;
+        let withdrawal_epoch = (legitimate_withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH)
+            + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let stop_height = withdrawal_height + 1;
+
+        let requests1 = common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(
+            invalid_deposit.clone(),
+        )]);
+        let requests2 = common::execution_requests_to_requests(vec![ExecutionRequest::Withdrawal(
+            victim_withdrawal.clone(),
+        )]);
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(invalid_deposit_block_height, requests1);
+        execution_requests_map.insert(legitimate_withdrawal_block_height, requests2);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+
+        let mut initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+        initial_state.set_maximum_stake(max_stake);
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 1 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(withdrawals.len(), 1);
+
+        let epoch_withdrawals = withdrawals
+            .get(&withdrawal_height)
+            .expect("missing withdrawals");
+        assert_eq!(epoch_withdrawals.len(), 2);
+
+        let attacker_withdrawal = epoch_withdrawals
+            .iter()
+            .find(|withdrawal| withdrawal.address == attacker_address)
+            .expect("missing attacker refund");
+        assert_eq!(attacker_withdrawal.amount, deposit_amount);
+
+        let victim_withdrawal = epoch_withdrawals
+            .iter()
+            .find(|withdrawal| withdrawal.address == victim_address)
+            .expect("missing victim withdrawal");
+        assert_eq!(victim_withdrawal.amount, min_stake);
+
+        let victim_client_id = format!("validator_{}", validators[0].0);
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &[&victim_client_id])
                 .is_ok()
         );
 
