@@ -20,9 +20,9 @@ use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
 use std::net::SocketAddr;
 #[cfg(feature = "permissioned")]
-use std::sync::atomic::AtomicBool;
-#[cfg(feature = "permissioned")]
 use std::sync::Arc;
+#[cfg(feature = "permissioned")]
+use std::sync::atomic::AtomicBool;
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;

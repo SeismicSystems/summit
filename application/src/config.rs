@@ -1,8 +1,8 @@
 use commonware_consensus::types::Epocher;
 #[cfg(feature = "permissioned")]
-use std::sync::atomic::AtomicBool;
-#[cfg(feature = "permissioned")]
 use std::sync::Arc;
+#[cfg(feature = "permissioned")]
+use std::sync::atomic::AtomicBool;
 use summit_types::EngineClient;
 use tokio_util::sync::CancellationToken;
 

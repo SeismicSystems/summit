@@ -77,7 +77,6 @@ pub trait SummitApi {
         &self,
         public_key: String,
     ) -> RpcResult<PendingWithdrawalResponse>;
-
 }
 
 #[cfg(feature = "permissioned")]
