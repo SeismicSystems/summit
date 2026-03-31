@@ -562,16 +562,14 @@ pub fn create_protocol_param_request(param_id: u8, value: u64) -> ProtocolParamR
 pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>) -> Requests {
     let mut deposit_payload = Vec::new();
     let mut withdrawal_payload = Vec::new();
-    let mut protocol_param_entries = Vec::new();
+    let mut protocol_param_payload = Vec::new();
 
     for execution_request in execution_requests {
         match execution_request {
             ExecutionRequest::Deposit(deposit) => deposit.write(&mut deposit_payload),
             ExecutionRequest::Withdrawal(withdrawal) => withdrawal.write(&mut withdrawal_payload),
             ExecutionRequest::ProtocolParam(protocol_param) => {
-                let mut request_bytes = vec![0xFF];
-                protocol_param.write(&mut request_bytes);
-                protocol_param_entries.push(Bytes::from(request_bytes));
+                protocol_param.write(&mut protocol_param_payload)
             }
         }
     }
@@ -587,7 +585,11 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
         request_bytes.extend_from_slice(&withdrawal_payload);
         requests_bytes.push(Bytes::from(request_bytes));
     }
-    requests_bytes.extend(protocol_param_entries);
+    if !protocol_param_payload.is_empty() {
+        let mut request_bytes = vec![0xFF];
+        request_bytes.extend_from_slice(&protocol_param_payload);
+        requests_bytes.push(Bytes::from(request_bytes));
+    }
 
     Requests::from(requests_bytes)
 }

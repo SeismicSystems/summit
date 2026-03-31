@@ -2,6 +2,160 @@ use super::*;
 use summit_types::execution_request::ProtocolParamRequest;
 
 #[test_traced("INFO")]
+fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
+    // Adds two protocol param requests in a single grouped type-0xFF EIP-7685 entry
+    // and verifies that both values are applied at the end of the epoch.
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let new_min_stake = 16_000_000_000u64;
+        let new_max_stake = 64_000_000_000u64;
+        let min_request = common::create_protocol_param_request(0x00, new_min_stake);
+        let max_request = common::create_protocol_param_request(0x01, new_max_stake);
+
+        let requests = common::execution_requests_to_requests(vec![
+            ExecutionRequest::ProtocolParam(min_request),
+            ExecutionRequest::ProtocolParam(max_request),
+        ]);
+
+        let protocol_param_block_height = 5;
+        let stop_height = DEFAULT_BLOCKS_PER_EPOCH + 1;
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(protocol_param_block_height, requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        assert_eq!(state_query.get_minimum_stake().await, new_min_stake);
+        assert_eq!(state_query.get_maximum_stake().await, new_max_stake);
+
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
 fn test_protocol_param_allowed_timestamp_future() {
     // Adds a protocol param request for allowed_timestamp_future to the block at height 5
     // and verifies that the value is changed at the end of the epoch.

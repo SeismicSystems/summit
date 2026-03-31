@@ -61,10 +61,12 @@ impl ExecutionRequest {
                     .map(ExecutionRequest::Withdrawal)
                     .collect::<Vec<_>>()
             }),
-            0xFF => {
-                let protocol_param = ProtocolParamRequest::try_from_eth_bytes(&bytes[1..])?;
-                Ok(vec![ExecutionRequest::ProtocolParam(protocol_param)])
-            }
+            0xFF => ProtocolParamRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
+                requests
+                    .into_iter()
+                    .map(ExecutionRequest::ProtocolParam)
+                    .collect::<Vec<_>>()
+            }),
             _request_type => Err("Unknown execution request type"),
         }
     }
@@ -274,6 +276,19 @@ impl ProtocolParamRequest {
         let param = bytes[2..2 + param_len].to_vec();
 
         Ok(ProtocolParamRequest { param_id, param })
+    }
+
+    pub fn try_from_eth_entry_bytes(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+        let mut buf = bytes;
+        let mut requests = Vec::new();
+
+        while !buf.is_empty() {
+            let request = Self::read_cfg(&mut buf, &())
+                .map_err(|_| "Failed to parse grouped protocol param request payload")?;
+            requests.push(request);
+        }
+
+        Ok(requests)
     }
 }
 
