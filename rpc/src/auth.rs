@@ -59,7 +59,7 @@ where
 
 // -- RPC middleware that gates admin methods behind bearer token auth --
 
-const ADMIN_METHODS: &[&str] = &["pause", "unpause"];
+const ADMIN_METHODS: &[&str] = &["pause", "unpause", "getDepositSignature", "sendGenesis"];
 
 #[derive(Clone)]
 pub struct AdminAuthLayer {
