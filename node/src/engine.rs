@@ -20,9 +20,9 @@ use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
 use std::num::NonZero;
 #[cfg(feature = "permissioned")]
-use std::sync::atomic::AtomicBool;
-#[cfg(feature = "permissioned")]
 use std::sync::Arc;
+#[cfg(feature = "permissioned")]
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;

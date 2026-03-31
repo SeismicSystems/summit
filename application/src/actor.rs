@@ -19,10 +19,10 @@ use commonware_consensus::types::{Epoch, Epocher, Round, View};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 #[cfg(feature = "permissioned")]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use summit_finalizer::FinalizerMailbox;
 use tracing::{debug, info, warn};
 

@@ -1,6 +1,6 @@
-use crate::api::{SummitApiServer, SummitProofApiServer};
 #[cfg(feature = "permissioned")]
 use crate::api::SummitPermissionedApiServer;
+use crate::api::{SummitApiServer, SummitProofApiServer};
 use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
@@ -14,13 +14,13 @@ use commonware_cryptography::{Hasher as _, Sha256, Signer};
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
 use ssz::Encode as _;
+#[cfg(feature = "permissioned")]
+use std::sync::Arc;
+#[cfg(feature = "permissioned")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
-#[cfg(feature = "permissioned")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "permissioned")]
-use std::sync::Arc;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
     execution_request::{DepositRequest, compute_deposit_data_root},
@@ -371,7 +371,6 @@ impl SummitApiServer for SummitRpcServer {
             None => Err(RpcError::WithdrawalNotFound.into()),
         }
     }
-
 }
 
 #[cfg(feature = "permissioned")]

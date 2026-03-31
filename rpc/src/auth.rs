@@ -124,7 +124,11 @@ where
             if !authorized {
                 return MethodResponse::error(
                     req.id,
-                    ErrorObject::owned(-32001, "Unauthorized: valid admin token required", None::<()>),
+                    ErrorObject::owned(
+                        -32001,
+                        "Unauthorized: valid admin token required",
+                        None::<()>,
+                    ),
                 );
             }
             service.call(req).await

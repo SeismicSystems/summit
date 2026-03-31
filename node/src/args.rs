@@ -443,16 +443,16 @@ impl Command {
             let admin_token = read_admin_token(&flags.admin_token_file);
             let stop_signal = context.stopped();
             let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                if let Err(e) =
-                    start_rpc_server(
-                        finalizer_mailbox,
-                        key_store_path,
-                        rpc_port,
-                        stop_signal,
-                        #[cfg(feature = "permissioned")]
-                        paused,
-                        admin_token
-                    ).await
+                if let Err(e) = start_rpc_server(
+                    finalizer_mailbox,
+                    key_store_path,
+                    rpc_port,
+                    stop_signal,
+                    #[cfg(feature = "permissioned")]
+                    paused,
+                    admin_token,
+                )
+                .await
                 {
                     error!("RPC server failed: {}", e);
                 }
@@ -653,16 +653,16 @@ pub fn run_node_local(
         let admin_token = read_admin_token(&flags.admin_token_file);
         let stop_signal = context.stopped();
         let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            if let Err(e) =
-                start_rpc_server(
-                    finalizer_mailbox,
-                    key_store_path,
-                    rpc_port,
-                    stop_signal,
-                    #[cfg(feature = "permissioned")]
-                    paused,
-                    admin_token
-                ).await
+            if let Err(e) = start_rpc_server(
+                finalizer_mailbox,
+                key_store_path,
+                rpc_port,
+                stop_signal,
+                #[cfg(feature = "permissioned")]
+                paused,
+                admin_token,
+            )
+            .await
             {
                 error!("RPC server failed: {}", e);
             }

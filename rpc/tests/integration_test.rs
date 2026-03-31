@@ -2,9 +2,9 @@ mod utils;
 
 use jsonrpsee::http_client::HttpClientBuilder;
 #[cfg(feature = "permissioned")]
-use std::sync::atomic::AtomicBool;
-#[cfg(feature = "permissioned")]
 use std::sync::Arc;
+#[cfg(feature = "permissioned")]
+use std::sync::atomic::AtomicBool;
 use summit_rpc::{
     PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_with_handle,
 };
@@ -19,15 +19,15 @@ async fn test_health_endpoint() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
     let (handle, addr) = start_rpc_server_with_handle(
-            mailbox,
-            key_store_path,
-            0,
-            #[cfg(feature = "permissioned")]
-            Arc::new(AtomicBool::new(false)),
-            None
-        )
-        .await
-        .unwrap();
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -52,15 +52,15 @@ async fn test_get_latest_height() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
     let (handle, addr) = start_rpc_server_with_handle(
-            mailbox,
-            key_store_path,
-            0,
-            #[cfg(feature = "permissioned")]
-            Arc::new(AtomicBool::new(false)),
-            None
-        )
-        .await
-        .unwrap();
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -85,15 +85,15 @@ async fn test_get_latest_epoch() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
     let (handle, addr) = start_rpc_server_with_handle(
-            mailbox,
-            key_store_path,
-            0,
-            #[cfg(feature = "permissioned")]
-            Arc::new(AtomicBool::new(false)),
-            None
-        )
-        .await
-        .unwrap();
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -114,15 +114,15 @@ async fn test_validator_balance_not_found() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
     let (handle, addr) = start_rpc_server_with_handle(
-            mailbox,
-            key_store_path,
-            0,
-            #[cfg(feature = "permissioned")]
-            Arc::new(AtomicBool::new(false)),
-            None
-        )
-        .await
-        .unwrap();
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -147,15 +147,15 @@ async fn test_get_public_keys() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
     let (handle, addr) = start_rpc_server_with_handle(
-            mailbox,
-            key_store_path,
-            0,
-            #[cfg(feature = "permissioned")]
-            Arc::new(AtomicBool::new(false)),
-            None
-        )
-        .await
-        .unwrap();
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -245,15 +245,15 @@ async fn test_get_minimum_stake() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
     let (handle, addr) = start_rpc_server_with_handle(
-            mailbox,
-            key_store_path,
-            0,
-            #[cfg(feature = "permissioned")]
-            Arc::new(AtomicBool::new(false)),
-            None
-        )
-        .await
-        .unwrap();
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -278,15 +278,15 @@ async fn test_get_maximum_stake() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
     let (handle, addr) = start_rpc_server_with_handle(
-            mailbox,
-            key_store_path,
-            0,
-            #[cfg(feature = "permissioned")]
-            Arc::new(AtomicBool::new(false)),
-            None
-        )
-        .await
-        .unwrap();
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
