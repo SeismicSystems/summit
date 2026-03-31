@@ -4,7 +4,7 @@ use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 #[allow(unused)]
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::{DecodeExt as _, ReadExt as _, Write as _};
 use commonware_consensus::Reporter;
 use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::Finalization;
@@ -1404,30 +1404,65 @@ async fn parse_execution_requests<
     all_requests.extend(block.execution_requests.iter().cloned());
 
     for request_bytes in &all_requests {
-        match ExecutionRequest::try_from_eth_bytes(request_bytes.as_ref()) {
-            Ok(execution_request) => {
-                match execution_request {
-                    ExecutionRequest::Deposit(deposit_request) => {
-                        match verify_deposit_request(
-                            context,
-                            &deposit_request,
-                            state,
-                            protocol_version_digest,
-                            new_height,
-                            state.get_minimum_stake(),
-                            state.get_maximum_stake(),
-                        ) {
-                            Ok(()) => {
-                                // Mark account as having a pending deposit
-                                let validator_pubkey: [u8; 32] =
-                                    deposit_request.node_pubkey.as_ref().try_into().unwrap();
-                                if let Some(mut account) =
-                                    state.get_account(&validator_pubkey).cloned()
-                                {
-                                    account.has_pending_deposit = true;
-                                    state.set_account(validator_pubkey, account);
-                                } else {
-                                    // Create account early with Inactive status for new validators
+        match ExecutionRequest::try_from_eth_entry(request_bytes.as_ref()) {
+            Ok(execution_requests) => {
+                for execution_request in execution_requests {
+                    match execution_request {
+                        ExecutionRequest::Deposit(deposit_request) => {
+                            match verify_deposit_request(
+                                context,
+                                &deposit_request,
+                                state,
+                                protocol_version_digest,
+                                new_height,
+                                state.get_minimum_stake(),
+                                state.get_maximum_stake(),
+                            ) {
+                                Ok(()) => {
+                                    // Mark account as having a pending deposit
+                                    let validator_pubkey: [u8; 32] =
+                                        deposit_request.node_pubkey.as_ref().try_into().unwrap();
+                                    if let Some(mut account) =
+                                        state.get_account(&validator_pubkey).cloned()
+                                    {
+                                        account.has_pending_deposit = true;
+                                        state.set_account(validator_pubkey, account);
+                                    } else {
+                                        // Create account early with Inactive status for new validators
+                                        let withdrawal_credentials =
+                                            match parse_withdrawal_credentials(
+                                                deposit_request.withdrawal_credentials,
+                                            ) {
+                                                Ok(withdrawal_credentials) => {
+                                                    withdrawal_credentials
+                                                }
+                                                Err(e) => {
+                                                    // The deposited funds would be lost in this case.
+                                                    // The deposit contract verifies that the withdrawal credentials
+                                                    // follow the expected format, so this should never happen.
+                                                    warn!(
+                                                        "Failed to parse withdrawal credentials: {e}"
+                                                    );
+                                                    continue;
+                                                }
+                                            };
+                                        let new_account = ValidatorAccount {
+                                            consensus_public_key: deposit_request
+                                                .consensus_pubkey
+                                                .clone(),
+                                            withdrawal_credentials,
+                                            balance: 0, // Balance will be set when deposit is processed
+                                            status: ValidatorStatus::Inactive,
+                                            has_pending_deposit: true,
+                                            has_pending_withdrawal: false,
+                                            joining_epoch: 0, // Will be set when deposit is processed
+                                            last_deposit_index: deposit_request.index,
+                                        };
+                                        state.set_account(validator_pubkey, new_account);
+                                    }
+                                    state.push_deposit(deposit_request.clone());
+                                }
+                                Err(reason) => {
                                     let withdrawal_credentials = match parse_withdrawal_credentials(
                                         deposit_request.withdrawal_credentials,
                                     ) {
@@ -1440,180 +1475,158 @@ async fn parse_execution_requests<
                                             continue;
                                         }
                                     };
-                                    let new_account = ValidatorAccount {
-                                        consensus_public_key: deposit_request
-                                            .consensus_pubkey
-                                            .clone(),
-                                        withdrawal_credentials,
-                                        balance: 0, // Balance will be set when deposit is processed
-                                        status: ValidatorStatus::Inactive,
-                                        has_pending_deposit: true,
-                                        has_pending_withdrawal: false,
-                                        joining_epoch: 0, // Will be set when deposit is processed
-                                        last_deposit_index: deposit_request.index,
-                                    };
-                                    state.set_account(validator_pubkey, new_account);
-                                }
-                                state.push_deposit(deposit_request.clone());
-                            }
-                            Err(reason) => {
-                                let withdrawal_credentials = match parse_withdrawal_credentials(
-                                    deposit_request.withdrawal_credentials,
-                                ) {
-                                    Ok(withdrawal_credentials) => withdrawal_credentials,
-                                    Err(e) => {
-                                        // The deposited funds would be lost in this case.
-                                        // The deposit contract verifies that the withdrawal credentials
-                                        // follow the expected format, so this should never happen.
-                                        warn!("Failed to parse withdrawal credentials: {e}");
-                                        continue;
-                                    }
-                                };
 
-                                let refund_pubkey = match reason {
-                                    DepositRejectionReason::Refund => refunded_deposit_key(
-                                        withdrawal_credentials,
-                                        deposit_request.index,
-                                    ),
-                                    DepositRejectionReason::InvalidSignature => {
-                                        invalid_signature_refund_key(
+                                    let refund_pubkey = match reason {
+                                        DepositRejectionReason::Refund => refunded_deposit_key(
                                             withdrawal_credentials,
                                             deposit_request.index,
-                                        )
+                                        ),
+                                        DepositRejectionReason::InvalidSignature => {
+                                            invalid_signature_refund_key(
+                                                withdrawal_credentials,
+                                                deposit_request.index,
+                                            )
+                                        }
+                                    };
+                                    let withdrawal_request = WithdrawalRequest {
+                                        source_address: withdrawal_credentials,
+                                        validator_pubkey: refund_pubkey,
+                                        amount: deposit_request.amount,
+                                    };
+                                    let withdrawal_epoch =
+                                        state.get_epoch() + consts.validator_withdrawal_num_epochs;
+
+                                    state.push_withdrawal_request(
+                                        withdrawal_request.clone(),
+                                        withdrawal_epoch,
+                                        0, // deposit was never credited to balance
+                                    );
+                                }
+                            }
+                        }
+                        ExecutionRequest::Withdrawal(mut withdrawal_request) => {
+                            // Only add the withdrawal request if the validator exists and has sufficient balance
+                            if let Some(mut account) = state
+                                .get_account(&withdrawal_request.validator_pubkey)
+                                .cloned()
+                            {
+                                // If the validator already has a pending deposit request, we skip this withdrawal request
+                                if account.has_pending_deposit {
+                                    info!(
+                                        "Skipping withdrawal request because the validator has a pending deposit request: {withdrawal_request:?}"
+                                    );
+                                    continue; // Skip this withdrawal request
+                                }
+
+                                // If the validator already has a pending withdrawal request, we skip this withdrawal request
+                                if account.has_pending_withdrawal {
+                                    info!(
+                                        "Skipping withdrawal request because the validator already has a pending withdrawal request: {withdrawal_request:?}"
+                                    );
+                                    continue; // Skip this withdrawal request
+                                }
+
+                                // The balance minus any pending withdrawals have to be larger than the amount of the withdrawal request
+                                if account.balance < withdrawal_request.amount {
+                                    info!(
+                                        "Skipping withdrawal request due to insufficient balance: {withdrawal_request:?}"
+                                    );
+                                    continue; // Skip this withdrawal request
+                                }
+
+                                // The source address must match the validators withdrawal address
+                                if withdrawal_request.source_address
+                                    != account.withdrawal_credentials
+                                {
+                                    info!(
+                                        "Skipping withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
+                                    );
+                                    continue; // Skip this withdrawal request
+                                }
+
+                                // Skip the request if the public key is malformatted
+                                let Ok(public_key) =
+                                    PublicKey::decode(&withdrawal_request.validator_pubkey[..])
+                                else {
+                                    info!(
+                                        "Skipping withdrawal request because the public key is malformatted: {withdrawal_request:?}"
+                                    );
+                                    continue; // Skip this withdrawal request
+                                };
+
+                                // We don't support partial withdrawals, so the withdrawal amount will be
+                                // set to the entire balance
+                                let remaining_balance = account.balance;
+                                withdrawal_request.amount = remaining_balance;
+
+                                // If the validator is in the warm-up phase after depositing the stake
+                                // and before joining the committee, then the onboarding is aborted
+                                if account.joining_epoch > state.get_epoch() {
+                                    // Cancel validator's pending activation
+                                    if state
+                                        .remove_added_validator(account.joining_epoch, &public_key)
+                                    {
+                                        info!(
+                                            validator = ?public_key,
+                                            activation_epoch = account.joining_epoch,
+                                            current_epoch = state.get_epoch(),
+                                            "cancelled pending validator activation due to withdrawal request"
+                                        );
                                     }
-                                };
-                                let withdrawal_request = WithdrawalRequest {
-                                    source_address: withdrawal_credentials,
-                                    validator_pubkey: refund_pubkey,
-                                    amount: deposit_request.amount,
-                                };
+                                } else if is_last_block_of_epoch(state.get_epocher(), new_height) {
+                                    // On the last block of an epoch, buffer the withdrawal request
+                                    // to be processed at the penultimate block of the next epoch.
+                                    // This ensures the validator is included in removed_validators
+                                    // which can be properly reflected in the header.
+                                    info!(
+                                        validator =
+                                            hex::encode(withdrawal_request.validator_pubkey),
+                                        current_epoch = state.get_epoch(),
+                                        "buffering withdrawal request for active validator on last block of epoch"
+                                    );
+                                    let mut deferred_request = vec![0x01];
+                                    withdrawal_request.write(&mut deferred_request);
+                                    state.push_pending_execution_request(deferred_request.into());
+                                    continue;
+                                } else {
+                                    // Validator is already active - add to removed_validators
+                                    state.push_removed_validator(public_key);
+                                    account.status = ValidatorStatus::SubmittedExitRequest;
+                                }
+
+                                // Move balance out
+                                account.balance = 0;
+                                account.has_pending_withdrawal = true;
+                                state.set_account(withdrawal_request.validator_pubkey, account);
+
+                                // The withdrawal will be completed in `validator_withdrawal_num_epochs` epochs
                                 let withdrawal_epoch =
                                     state.get_epoch() + consts.validator_withdrawal_num_epochs;
-
+                                info!(
+                                    validator = hex::encode(withdrawal_request.validator_pubkey),
+                                    amount = remaining_balance,
+                                    withdrawal_epoch,
+                                    current_epoch = state.get_epoch(),
+                                    "scheduled full withdrawal for validator"
+                                );
                                 state.push_withdrawal_request(
                                     withdrawal_request.clone(),
                                     withdrawal_epoch,
-                                    0, // deposit was never credited to balance
+                                    remaining_balance,
                                 );
                             }
                         }
-                    }
-                    ExecutionRequest::Withdrawal(mut withdrawal_request) => {
-                        // Only add the withdrawal request if the validator exists and has sufficient balance
-                        if let Some(mut account) = state
-                            .get_account(&withdrawal_request.validator_pubkey)
-                            .cloned()
-                        {
-                            // If the validator already has a pending deposit request, we skip this withdrawal request
-                            if account.has_pending_deposit {
-                                info!(
-                                    "Skipping withdrawal request because the validator has a pending deposit request: {withdrawal_request:?}"
-                                );
-                                continue; // Skip this withdrawal request
-                            }
+                        ExecutionRequest::ProtocolParam(protocol_param_request) => {
+                            info!("Received protocol param request: {protocol_param_request:?}");
 
-                            // If the validator already has a pending withdrawal request, we skip this withdrawal request
-                            if account.has_pending_withdrawal {
-                                info!(
-                                    "Skipping withdrawal request because the validator already has a pending withdrawal request: {withdrawal_request:?}"
-                                );
-                                continue; // Skip this withdrawal request
-                            }
-
-                            // The balance minus any pending withdrawals have to be larger than the amount of the withdrawal request
-                            if account.balance < withdrawal_request.amount {
-                                info!(
-                                    "Skipping withdrawal request due to insufficient balance: {withdrawal_request:?}"
-                                );
-                                continue; // Skip this withdrawal request
-                            }
-
-                            // The source address must match the validators withdrawal address
-                            if withdrawal_request.source_address != account.withdrawal_credentials {
-                                info!(
-                                    "Skipping withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
-                                );
-                                continue; // Skip this withdrawal request
-                            }
-
-                            // Skip the request if the public key is malformatted
-                            let Ok(public_key) =
-                                PublicKey::decode(&withdrawal_request.validator_pubkey[..])
-                            else {
-                                info!(
-                                    "Skipping withdrawal request because the public key is malformatted: {withdrawal_request:?}"
-                                );
-                                continue; // Skip this withdrawal request
-                            };
-
-                            // We don't support partial withdrawals, so the withdrawal amount will be
-                            // set to the entire balance
-                            let remaining_balance = account.balance;
-                            withdrawal_request.amount = remaining_balance;
-
-                            // If the validator is in the warm-up phase after depositing the stake
-                            // and before joining the committee, then the onboarding is aborted
-                            if account.joining_epoch > state.get_epoch() {
-                                // Cancel validator's pending activation
-                                if state.remove_added_validator(account.joining_epoch, &public_key)
-                                {
-                                    info!(
-                                        validator = ?public_key,
-                                        activation_epoch = account.joining_epoch,
-                                        current_epoch = state.get_epoch(),
-                                        "cancelled pending validator activation due to withdrawal request"
-                                    );
+                            match ProtocolParam::try_from(protocol_param_request) {
+                                Ok(protocol_param) => {
+                                    info!("Adding protocol param change: {protocol_param:?}");
+                                    state.push_protocol_param_change(protocol_param);
                                 }
-                            } else if is_last_block_of_epoch(state.get_epocher(), new_height) {
-                                // On the last block of an epoch, buffer the withdrawal request
-                                // to be processed at the penultimate block of the next epoch.
-                                // This ensures the validator is included in removed_validators
-                                // which can be properly reflected in the header.
-                                info!(
-                                    validator = hex::encode(withdrawal_request.validator_pubkey),
-                                    current_epoch = state.get_epoch(),
-                                    "buffering withdrawal request for active validator on last block of epoch"
-                                );
-                                state.push_pending_execution_request(request_bytes.clone());
-                                continue;
-                            } else {
-                                // Validator is already active - add to removed_validators
-                                state.push_removed_validator(public_key);
-                                account.status = ValidatorStatus::SubmittedExitRequest;
-                            }
-
-                            // Move balance out
-                            account.balance = 0;
-                            account.has_pending_withdrawal = true;
-                            state.set_account(withdrawal_request.validator_pubkey, account);
-
-                            // The withdrawal will be completed in `validator_withdrawal_num_epochs` epochs
-                            let withdrawal_epoch =
-                                state.get_epoch() + consts.validator_withdrawal_num_epochs;
-                            info!(
-                                validator = hex::encode(withdrawal_request.validator_pubkey),
-                                amount = remaining_balance,
-                                withdrawal_epoch,
-                                current_epoch = state.get_epoch(),
-                                "scheduled full withdrawal for validator"
-                            );
-                            state.push_withdrawal_request(
-                                withdrawal_request.clone(),
-                                withdrawal_epoch,
-                                remaining_balance,
-                            );
-                        }
-                    }
-                    ExecutionRequest::ProtocolParam(protocol_param_request) => {
-                        info!("Received protocol param request: {protocol_param_request:?}");
-
-                        match ProtocolParam::try_from(protocol_param_request) {
-                            Ok(protocol_param) => {
-                                info!("Adding protocol param change: {protocol_param:?}");
-                                state.push_protocol_param_change(protocol_param);
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse protocol param request: {e}");
+                                Err(e) => {
+                                    warn!("Failed to parse protocol param request: {e}");
+                                }
                             }
                         }
                     }

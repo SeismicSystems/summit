@@ -44,7 +44,9 @@ If signature verification fails, a refund withdrawal is created immediately. No 
 
 ## Withdrawal Flow
 
-Withdrawals are parsed in `parse_execution_requests` and processed when included in a block.
+Withdrawals are parsed in `parse_execution_requests` and processed when included in a block, unless
+they are deferred at an epoch boundary and retried from `pending_execution_requests` in the next
+epoch.
 
 ### Withdrawal Scenarios
 
@@ -96,12 +98,16 @@ User-initiated withdrawals are still limited to one at a time via the `has_pendi
 
 Withdrawal requests for active validators received on the **last block of an epoch** are deferred to the next epoch. This ensures that `removed_validators` in the finalized header accurately reflects all validator exits, since the header is created at the penultimate block.
 
-Deferred requests are stored in `pending_execution_requests` and processed at the start of the next epoch.
+Deferred requests are stored in `pending_execution_requests` and processed at the start of the next
+epoch. Deferred withdrawals are re-queued individually.
 
 ## Invariants
 
 - A validator will join the committee `VALIDATOR_NUM_WARM_UP_EPOCHS` epochs after submitting a valid deposit request. The phase after submitting the deposit request, and before joining the committee is called the `onboarding phase`.
-- If a withdrawal request is submitted in epoch `n`, then the validator will be removed from the committee at the end of epoch `n`. The withdrawal will be processed in epoch `n + VALIDATOR_WITHDRAWAL_NUM_EPOCHS`.
+- If a withdrawal request is submitted in epoch `n`, then it is normally handled in epoch `n`, and
+  the withdrawal will be processed in epoch `n + VALIDATOR_WITHDRAWAL_NUM_EPOCHS`. Exception:
+  requests received on the last block of epoch `n` are deferred to the next epoch before being
+  scheduled.
 - There are two parameters that govern the staking amount: `validator_min_stake` and `validator_max_stake`. The balance of a validator must always be in range `[validator_min_stake, validator_max_stake]`.
 - Any deposit request with resulting balance outside `[validator_min_stake, validator_max_stake]` will be rejected and refunded.
 - A validator can only have one pending deposit request at a time. Subsequent deposit requests will be ignored.

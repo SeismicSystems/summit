@@ -1,5 +1,217 @@
 use super::*;
+use alloy_eips::eip7685::Requests;
+use alloy_primitives::Bytes;
 use alloy_primitives::hex;
+use commonware_codec::Write;
+
+#[test_traced("INFO")]
+fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
+    // Adds two deposits so both validators are active, then submits two withdrawal requests
+    // packed into a single type-0x01 EIP-7685 entry.
+    // Both withdrawals should be decoded from the grouped entry and processed.
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(3);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let (deposit1, _, _) =
+            common::create_deposit_request(n as u64, min_stake, common::get_domain(), None, None);
+        let (deposit2, _, _) = common::create_deposit_request(
+            (n + 1) as u64,
+            min_stake,
+            common::get_domain(),
+            None,
+            None,
+        );
+
+        let withdrawal1 = common::create_withdrawal_request(
+            Address::from_slice(&deposit1.withdrawal_credentials[12..32]),
+            deposit1.node_pubkey.as_ref().try_into().unwrap(),
+            min_stake,
+        );
+        let withdrawal2 = common::create_withdrawal_request(
+            Address::from_slice(&deposit2.withdrawal_credentials[12..32]),
+            deposit2.node_pubkey.as_ref().try_into().unwrap(),
+            min_stake,
+        );
+
+        let requests_deposit_1 =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(
+                deposit1.clone(),
+            )]);
+        let requests_deposit_2 =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(
+                deposit2.clone(),
+            )]);
+
+        // Canonical EIP-7685 shape: one top-level withdrawal entry containing multiple
+        // SSZ-encoded withdrawal requests of the same type.
+        let mut grouped_withdrawals = Vec::new();
+        grouped_withdrawals.push(0x01);
+        withdrawal1.write(&mut grouped_withdrawals);
+        withdrawal2.write(&mut grouped_withdrawals);
+        let grouped_withdrawal_requests = Requests::from(vec![Bytes::from(grouped_withdrawals)]);
+
+        let deposit_block_height = 5;
+        let withdrawal_block_height = 11;
+        let withdrawal_epoch =
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let stop_height = withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(deposit_block_height, requests_deposit_1);
+        execution_requests_map.insert(deposit_block_height + 1, requests_deposit_2);
+        execution_requests_map.insert(withdrawal_block_height, grouped_withdrawal_requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(41)
+            .build();
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+
+            // Iterate over all lines
+            let mut success = false;
+            for line in metrics.lines() {
+                // Ensure it is a metrics line
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                // Split metric and value
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                // If ends with peers_blocked, ensure it is zero
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            // Still waiting for all validators to complete
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        let withdrawal_epoch =
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let withdrawals = withdrawals
+            .get(&withdrawal_height)
+            .expect("missing grouped withdrawal entry");
+
+        assert_eq!(
+            withdrawals.len(),
+            2,
+            "both withdrawals packed into the same EIP-7685 entry should be processed"
+        );
+        assert!(withdrawals.iter().any(|w| {
+            w.address == withdrawal1.source_address && w.amount == withdrawal1.amount
+        }));
+        assert!(withdrawals.iter().any(|w| {
+            w.address == withdrawal2.source_address && w.amount == withdrawal2.amount
+        }));
+
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
+        context.auditor().state()
+    })
+}
 
 #[test_traced("INFO")]
 fn test_partial_withdrawal_balance_below_minimum_stake() {
@@ -1209,6 +1421,199 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
         );
 
         common::assert_state_root_consensus_skip(&consensus_state_queries, &[last_idx]).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
+fn test_grouped_withdrawal_on_last_block_of_epoch_only_requeues_deferred_request() {
+    // Tests that a grouped type-0x01 EIP-7685 entry is not re-queued as a whole
+    // when withdrawals are submitted on the last block of an epoch.
+    //
+    // Test setup:
+    // - 5 genesis validators start with 32 ETH each
+    // - Submit two withdrawals together on block 9 in a single grouped entry
+    // - Both should be deferred to the next epoch boundary
+    // - Each withdrawal should execute exactly once at the deferred height
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(43);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let addresses: Vec<Address> = (0..n).map(|i| Address::from([i as u8; 20])).collect();
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let idx_a = validators.len() - 2;
+        let idx_b = validators.len() - 1;
+
+        let withdrawal_a = common::create_withdrawal_request(
+            addresses[idx_a],
+            validators[idx_a].0.as_ref().try_into().unwrap(),
+            min_stake,
+        );
+        let withdrawal_b = common::create_withdrawal_request(
+            addresses[idx_b],
+            validators[idx_b].0.as_ref().try_into().unwrap(),
+            min_stake,
+        );
+
+        let grouped_requests = common::execution_requests_to_requests(vec![
+            ExecutionRequest::Withdrawal(withdrawal_a.clone()),
+            ExecutionRequest::Withdrawal(withdrawal_b.clone()),
+        ]);
+
+        let withdrawal_block_height = DEFAULT_BLOCKS_PER_EPOCH - 1; // block 9
+        let deferred_withdrawal_epoch = 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let deferred_withdrawal_height =
+            (deferred_withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let stop_height = deferred_withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(withdrawal_block_height, grouped_requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+
+        let mut consensus_state_queries = HashMap::new();
+        let mut withdrawn_validator_uids = Vec::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            if idx == idx_a || idx == idx_b {
+                withdrawn_validator_uids.push(uid.clone());
+            }
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 2 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(
+            withdrawals.len(),
+            1,
+            "expected a single deferred withdrawal height"
+        );
+
+        let deferred_epoch_withdrawals = withdrawals
+            .get(&deferred_withdrawal_height)
+            .expect("missing deferred withdrawal height");
+        assert_eq!(deferred_epoch_withdrawals.len(), 2);
+        assert!(
+            deferred_epoch_withdrawals
+                .iter()
+                .any(|w| w.address == withdrawal_a.source_address && w.amount == min_stake)
+        );
+        assert!(
+            deferred_epoch_withdrawals
+                .iter()
+                .any(|w| w.address == withdrawal_b.source_address && w.amount == min_stake)
+        );
+
+        let skip_refs: Vec<&str> = withdrawn_validator_uids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &skip_refs)
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[idx_a, idx_b]).await;
 
         context.auditor().state()
     })

@@ -42,6 +42,32 @@ impl ExecutionRequest {
             _request_type => Err("Unknown execution request type"),
         }
     }
+
+    pub fn try_from_eth_entry(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+        if bytes.is_empty() {
+            return Err("ExecutionRequest cannot be empty");
+        }
+
+        match bytes[0] {
+            0x00 => DepositRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
+                requests
+                    .into_iter()
+                    .map(ExecutionRequest::Deposit)
+                    .collect::<Vec<_>>()
+            }),
+            0x01 => WithdrawalRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
+                requests
+                    .into_iter()
+                    .map(ExecutionRequest::Withdrawal)
+                    .collect::<Vec<_>>()
+            }),
+            0xFF => {
+                let protocol_param = ProtocolParamRequest::try_from_eth_bytes(&bytes[1..])?;
+                Ok(vec![ExecutionRequest::ProtocolParam(protocol_param)])
+            }
+            _request_type => Err("Unknown execution request type"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +110,17 @@ impl WithdrawalRequest {
             validator_pubkey,
             amount,
         })
+    }
+
+    pub fn try_from_eth_entry_bytes(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+        if !bytes.len().is_multiple_of(<Self as FixedSize>::SIZE) {
+            return Err("WithdrawalRequest payload length must be a multiple of 76 bytes");
+        }
+
+        bytes
+            .chunks_exact(<Self as FixedSize>::SIZE)
+            .map(Self::try_from_eth_bytes)
+            .collect()
     }
 }
 
@@ -159,6 +196,17 @@ impl DepositRequest {
             consensus_signature,
             index,
         })
+    }
+
+    pub fn try_from_eth_entry_bytes(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+        if !bytes.len().is_multiple_of(<Self as FixedSize>::SIZE) {
+            return Err("DepositRequest payload length must be a multiple of 288 bytes");
+        }
+
+        bytes
+            .chunks_exact(<Self as FixedSize>::SIZE)
+            .map(Self::try_from_eth_bytes)
+            .collect()
     }
 
     pub fn as_message(&self, domain: Digest) -> Digest {
