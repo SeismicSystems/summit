@@ -50,6 +50,28 @@ use tracing::{debug, error, info, trace, warn};
 
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DepositRejectionReason {
+    Refund,
+    InvalidSignature,
+}
+
+fn deposit_refund_key(domain_tag: u8, withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    key[0] = domain_tag;
+    key[1..9].copy_from_slice(&deposit_index.to_le_bytes());
+    key[12..32].copy_from_slice(withdrawal_address.as_ref());
+    key
+}
+
+fn refunded_deposit_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
+    deposit_refund_key(0xFE, withdrawal_address, deposit_index)
+}
+
+fn invalid_signature_refund_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
+    deposit_refund_key(0xFF, withdrawal_address, deposit_index)
+}
+
 /// Tracks the consensus state for a notarized (but not yet finalized) block
 #[derive(Clone, Debug)]
 struct ForkState {
@@ -1386,7 +1408,7 @@ async fn parse_execution_requests<
             Ok(execution_request) => {
                 match execution_request {
                     ExecutionRequest::Deposit(deposit_request) => {
-                        if verify_deposit_request(
+                        match verify_deposit_request(
                             context,
                             &deposit_request,
                             state,
@@ -1395,15 +1417,46 @@ async fn parse_execution_requests<
                             state.get_minimum_stake(),
                             state.get_maximum_stake(),
                         ) {
-                            // Mark account as having a pending deposit
-                            let validator_pubkey: [u8; 32] =
-                                deposit_request.node_pubkey.as_ref().try_into().unwrap();
-                            if let Some(mut account) = state.get_account(&validator_pubkey).cloned()
-                            {
-                                account.has_pending_deposit = true;
-                                state.set_account(validator_pubkey, account);
-                            } else {
-                                // Create account early with Inactive status for new validators
+                            Ok(()) => {
+                                // Mark account as having a pending deposit
+                                let validator_pubkey: [u8; 32] =
+                                    deposit_request.node_pubkey.as_ref().try_into().unwrap();
+                                if let Some(mut account) =
+                                    state.get_account(&validator_pubkey).cloned()
+                                {
+                                    account.has_pending_deposit = true;
+                                    state.set_account(validator_pubkey, account);
+                                } else {
+                                    // Create account early with Inactive status for new validators
+                                    let withdrawal_credentials = match parse_withdrawal_credentials(
+                                        deposit_request.withdrawal_credentials,
+                                    ) {
+                                        Ok(withdrawal_credentials) => withdrawal_credentials,
+                                        Err(e) => {
+                                            // The deposited funds would be lost in this case.
+                                            // The deposit contract verifies that the withdrawal credentials
+                                            // follow the expected format, so this should never happen.
+                                            warn!("Failed to parse withdrawal credentials: {e}");
+                                            continue;
+                                        }
+                                    };
+                                    let new_account = ValidatorAccount {
+                                        consensus_public_key: deposit_request
+                                            .consensus_pubkey
+                                            .clone(),
+                                        withdrawal_credentials,
+                                        balance: 0, // Balance will be set when deposit is processed
+                                        status: ValidatorStatus::Inactive,
+                                        has_pending_deposit: true,
+                                        has_pending_withdrawal: false,
+                                        joining_epoch: 0, // Will be set when deposit is processed
+                                        last_deposit_index: deposit_request.index,
+                                    };
+                                    state.set_account(validator_pubkey, new_account);
+                                }
+                                state.push_deposit(deposit_request.clone());
+                            }
+                            Err(reason) => {
                                 let withdrawal_credentials = match parse_withdrawal_credentials(
                                     deposit_request.withdrawal_credentials,
                                 ) {
@@ -1416,51 +1469,33 @@ async fn parse_execution_requests<
                                         continue;
                                     }
                                 };
-                                let new_account = ValidatorAccount {
-                                    consensus_public_key: deposit_request.consensus_pubkey.clone(),
-                                    withdrawal_credentials,
-                                    balance: 0, // Balance will be set when deposit is processed
-                                    status: ValidatorStatus::Inactive,
-                                    has_pending_deposit: true,
-                                    has_pending_withdrawal: false,
-                                    joining_epoch: 0, // Will be set when deposit is processed
-                                    last_deposit_index: deposit_request.index,
+
+                                let refund_pubkey = match reason {
+                                    DepositRejectionReason::Refund => refunded_deposit_key(
+                                        withdrawal_credentials,
+                                        deposit_request.index,
+                                    ),
+                                    DepositRejectionReason::InvalidSignature => {
+                                        invalid_signature_refund_key(
+                                            withdrawal_credentials,
+                                            deposit_request.index,
+                                        )
+                                    }
                                 };
-                                state.set_account(validator_pubkey, new_account);
+                                let withdrawal_request = WithdrawalRequest {
+                                    source_address: withdrawal_credentials,
+                                    validator_pubkey: refund_pubkey,
+                                    amount: deposit_request.amount,
+                                };
+                                let withdrawal_epoch =
+                                    state.get_epoch() + consts.validator_withdrawal_num_epochs;
+
+                                state.push_withdrawal_request(
+                                    withdrawal_request.clone(),
+                                    withdrawal_epoch,
+                                    0, // deposit was never credited to balance
+                                );
                             }
-                            state.push_deposit(deposit_request.clone());
-                        } else {
-                            // If the signatures fail, we create an immediate withdrawal request for the deposited amount.
-                            // Since the signatures are invalid, the validator cannot be added to the committee.
-                            // However, the deposited funds are still burned in the deposit contract, so we have to withdraw them.
-                            let withdrawal_credentials = match parse_withdrawal_credentials(
-                                deposit_request.withdrawal_credentials,
-                            ) {
-                                Ok(withdrawal_credentials) => withdrawal_credentials,
-                                Err(e) => {
-                                    // The deposited funds would be lost in this case.
-                                    // The deposit contract verifies that the withdrawal credentials
-                                    // follow the expected format, so this should never happen.
-                                    warn!("Failed to parse withdrawal credentials: {e}");
-                                    continue;
-                                }
-                            };
-
-                            let validator_pubkey: [u8; 32] =
-                                deposit_request.node_pubkey.as_ref().try_into().unwrap();
-                            let withdrawal_request = WithdrawalRequest {
-                                source_address: withdrawal_credentials,
-                                validator_pubkey,
-                                amount: deposit_request.amount,
-                            };
-                            let withdrawal_epoch =
-                                state.get_epoch() + consts.validator_withdrawal_num_epochs;
-
-                            state.push_withdrawal_request(
-                                withdrawal_request.clone(),
-                                withdrawal_epoch,
-                                0, // deposit was never credited to balance
-                            );
                         }
                     }
                     ExecutionRequest::Withdrawal(mut withdrawal_request) => {
@@ -1801,7 +1836,7 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
     #[allow(unused)] new_height: u64,
     validator_minimum_stake: u64,
     validator_maximum_stake: u64,
-) -> bool {
+) -> Result<(), DepositRejectionReason> {
     // Check if validator already exists
     let validator_pubkey: [u8; 32] = deposit_request.node_pubkey.as_ref().try_into().unwrap();
     let account = state.get_account(&validator_pubkey);
@@ -1813,13 +1848,13 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
             info!(
                 "Skipping deposit request because the validator already has a pending deposit request: {deposit_request:?}"
             );
-            return false;
+            return Err(DepositRejectionReason::Refund);
         }
         if acc.has_pending_withdrawal {
             info!(
                 "Skipping deposit request because the validator already has a pending withdrawal request: {deposit_request:?}"
             );
-            return false;
+            return Err(DepositRejectionReason::Refund);
         }
     }
 
@@ -1835,7 +1870,7 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
             existing_balance,
             deposit_request.amount
         );
-        return false;
+        return Err(DepositRejectionReason::Refund);
     }
 
     let message = deposit_request.as_message(protocol_version_digest);
@@ -1843,7 +1878,7 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
     let mut node_signature_bytes = &deposit_request.node_signature[..];
     let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
         info!("Failed to parse node signature from deposit request: {deposit_request:?}");
-        return false;
+        return Err(DepositRejectionReason::InvalidSignature);
     };
     if !deposit_request
         .node_pubkey
@@ -1863,13 +1898,13 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
             );
         }
         info!("Failed to verify node signature from deposit request: {deposit_request:?}");
-        return false;
+        return Err(DepositRejectionReason::InvalidSignature);
     }
 
     let mut consensus_signature_bytes = &deposit_request.consensus_signature[..];
     let Ok(consensus_signature) = bls12381::Signature::read(&mut consensus_signature_bytes) else {
         info!("Failed to parse consensus signature from deposit request: {deposit_request:?}");
-        return false;
+        return Err(DepositRejectionReason::InvalidSignature);
     };
     if !deposit_request
         .consensus_pubkey
@@ -1889,9 +1924,9 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
             );
         }
         info!("Failed to verify consensus signature from deposit request: {deposit_request:?}");
-        return false;
+        return Err(DepositRejectionReason::InvalidSignature);
     }
-    true
+    Ok(())
 }
 
 impl<
