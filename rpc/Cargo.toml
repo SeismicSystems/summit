@@ -36,6 +36,9 @@ hyper = "1.0"
 bytes = { workspace = true }
 http-body-util = { workspace = true }
 
+[features]
+permissioned = []
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }

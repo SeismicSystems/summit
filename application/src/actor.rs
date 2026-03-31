@@ -19,13 +19,10 @@ use commonware_consensus::types::{Epoch, Epocher, Round, View};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
 use std::marker::PhantomData;
-use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+#[cfg(feature = "permissioned")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use summit_finalizer::FinalizerMailbox;
 use tracing::{debug, info, warn};
 
@@ -50,6 +47,7 @@ pub struct Actor<
     genesis_hash: [u8; 32],
     epocher: ES,
     cancellation_token: CancellationToken,
+    #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
     _scheme_marker: PhantomData<S>,
     _key_marker: PhantomData<P>,
@@ -81,6 +79,7 @@ impl<
                 genesis_hash,
                 epocher: cfg.epocher,
                 cancellation_token: cfg.cancellation_token,
+                #[cfg(feature = "permissioned")]
                 paused: cfg.paused,
                 _scheme_marker: PhantomData,
                 _key_marker: PhantomData,
@@ -131,6 +130,7 @@ impl<
                             parent,
                             mut response,
                         } => {
+                            #[cfg(feature = "permissioned")]
                             if self.paused.load(Ordering::Relaxed) {
                                 warn!("consensus paused, skipping proposal for round {round}");
                                 continue;
@@ -200,6 +200,7 @@ impl<
                             }
                         }
                         Message::Broadcast { payload: _ } => {
+                            #[cfg(feature = "permissioned")]
                             if self.paused.load(Ordering::Relaxed) {
                                 warn!("consensus paused, skipping broadcast");
                                 continue;
@@ -222,6 +223,7 @@ impl<
                             payload,
                             mut response,
                         } => {
+                            #[cfg(feature = "permissioned")]
                             if self.paused.load(Ordering::Relaxed) {
                                 warn!("consensus paused, rejecting verify for round {round}");
                                 let _ = response.send(false);

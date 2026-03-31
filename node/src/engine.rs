@@ -19,7 +19,9 @@ use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
 use std::num::NonZero;
+#[cfg(feature = "permissioned")]
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "permissioned")]
 use std::sync::Arc;
 use std::time::Duration;
 use summit_application::ApplicationConfig;
@@ -106,6 +108,7 @@ pub struct Engine<
     sync_start: SyncStart,
     checkpoint: Option<SyncCheckpoint<Block, MultisigScheme>>,
     cancellation_token: CancellationToken,
+    #[cfg(feature = "permissioned")]
     pub paused: Arc<AtomicBool>,
 }
 
@@ -134,6 +137,7 @@ where
             SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
 
         let cancellation_token = CancellationToken::new();
+        #[cfg(feature = "permissioned")]
         let paused = Arc::new(AtomicBool::new(false));
 
         // create finalizer
@@ -171,6 +175,7 @@ where
                 genesis_hash: cfg.genesis_hash,
                 epocher: epocher.clone(),
                 cancellation_token: cancellation_token.clone(),
+                #[cfg(feature = "permissioned")]
                 paused: paused.clone(),
             },
         )
@@ -355,6 +360,7 @@ where
             sync_start,
             checkpoint,
             cancellation_token,
+            #[cfg(feature = "permissioned")]
             paused,
         }
     }

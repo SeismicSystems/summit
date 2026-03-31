@@ -13,11 +13,15 @@ pub use api::{
     SummitApiClient, SummitApiServer, SummitGenesisApiClient, SummitGenesisApiServer,
     SummitProofApiClient, SummitProofApiServer,
 };
+#[cfg(feature = "permissioned")]
+pub use api::{SummitPermissionedApiClient, SummitPermissionedApiServer};
 
 use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
 use std::net::SocketAddr;
+#[cfg(feature = "permissioned")]
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "permissioned")]
 use std::sync::Arc;
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
@@ -29,12 +33,19 @@ pub async fn start_rpc_server(
     key_store_path: String,
     port: u16,
     stop_signal: Signal,
-    paused: Arc<AtomicBool>,
+    #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    let rpc_impl = SummitRpcServer::new(key_store_path, finalizer_mailbox, paused);
+    let rpc_impl = SummitRpcServer::new(
+        key_store_path,
+        finalizer_mailbox,
+        #[cfg(feature = "permissioned")]
+        paused,
+    );
 
     let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());
-    methods.merge(SummitProofApiServer::into_rpc(rpc_impl))?;
+    methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
+    #[cfg(feature = "permissioned")]
+    methods.merge(SummitPermissionedApiServer::into_rpc(rpc_impl))?;
 
     let server = builder::RpcServerBuilder::new(port)
         .with_max_connections(1000)
@@ -60,12 +71,19 @@ pub async fn start_rpc_server_with_handle(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
     port: u16,
-    paused: Arc<AtomicBool>,
+    #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
-    let rpc_impl = SummitRpcServer::new(key_store_path, finalizer_mailbox, paused);
+    let rpc_impl = SummitRpcServer::new(
+        key_store_path,
+        finalizer_mailbox,
+        #[cfg(feature = "permissioned")]
+        paused,
+    );
 
     let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());
-    methods.merge(SummitProofApiServer::into_rpc(rpc_impl))?;
+    methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
+    #[cfg(feature = "permissioned")]
+    methods.merge(SummitPermissionedApiServer::into_rpc(rpc_impl))?;
 
     let server = builder::RpcServerBuilder::new(port)
         .with_max_connections(1000)

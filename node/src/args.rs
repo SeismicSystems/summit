@@ -635,11 +635,7 @@ async fn start_network_and_engine<S, EC>(
     initial_state: ConsensusState,
     checkpoint_last_block: Option<Block>,
     checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
-) -> (
-    Handle<()>,
-    Handle<()>,
-    Handle<()>,
-)
+) -> (Handle<()>, Handle<()>, Handle<()>)
 where
     S: Signer<PublicKey = PublicKey>,
     EC: EngineClient,
@@ -676,6 +672,7 @@ where
     let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
     let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
+    #[cfg(feature = "permissioned")]
     let paused = engine.paused.clone();
 
     let finalizer_mailbox = engine.finalizer_mailbox.clone();
@@ -688,8 +685,15 @@ where
     let rpc_port = flags.rpc_port;
     let stop_signal = context.stopped();
     let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-        if let Err(e) =
-            start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal, paused).await
+        if let Err(e) = start_rpc_server(
+            finalizer_mailbox,
+            key_store_path,
+            rpc_port,
+            stop_signal,
+            #[cfg(feature = "permissioned")]
+            paused,
+        )
+        .await
         {
             error!("RPC server failed: {}", e);
         }

@@ -1,4 +1,6 @@
 use crate::api::{SummitApiServer, SummitProofApiServer};
+#[cfg(feature = "permissioned")]
+use crate::api::SummitPermissionedApiServer;
 use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
@@ -15,7 +17,9 @@ use ssz::Encode as _;
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
+#[cfg(feature = "permissioned")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "permissioned")]
 use std::sync::Arc;
 use summit_types::{
     KeyPaths, PROTOCOL_VERSION, PublicKey,
@@ -26,6 +30,7 @@ use summit_types::{
 pub struct SummitRpcServer {
     key_store_path: String,
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
 }
 
@@ -33,11 +38,12 @@ impl SummitRpcServer {
     pub fn new(
         key_store_path: String,
         finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
-        paused: Arc<AtomicBool>,
+        #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
     ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
+            #[cfg(feature = "permissioned")]
             paused,
         }
     }
@@ -366,6 +372,11 @@ impl SummitApiServer for SummitRpcServer {
         }
     }
 
+}
+
+#[cfg(feature = "permissioned")]
+#[async_trait]
+impl SummitPermissionedApiServer for SummitRpcServer {
     async fn pause(&self) -> RpcResult<bool> {
         self.paused.store(true, Ordering::Relaxed);
         tracing::info!("consensus paused via RPC");
