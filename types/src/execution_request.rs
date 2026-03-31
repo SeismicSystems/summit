@@ -42,6 +42,34 @@ impl ExecutionRequest {
             _request_type => Err("Unknown execution request type"),
         }
     }
+
+    pub fn try_from_eth_entry(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+        if bytes.is_empty() {
+            return Err("ExecutionRequest cannot be empty");
+        }
+
+        match bytes[0] {
+            0x00 => DepositRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
+                requests
+                    .into_iter()
+                    .map(ExecutionRequest::Deposit)
+                    .collect::<Vec<_>>()
+            }),
+            0x01 => WithdrawalRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
+                requests
+                    .into_iter()
+                    .map(ExecutionRequest::Withdrawal)
+                    .collect::<Vec<_>>()
+            }),
+            0xFF => ProtocolParamRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
+                requests
+                    .into_iter()
+                    .map(ExecutionRequest::ProtocolParam)
+                    .collect::<Vec<_>>()
+            }),
+            _request_type => Err("Unknown execution request type"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +112,17 @@ impl WithdrawalRequest {
             validator_pubkey,
             amount,
         })
+    }
+
+    pub fn try_from_eth_entry_bytes(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+        if !bytes.len().is_multiple_of(<Self as FixedSize>::SIZE) {
+            return Err("WithdrawalRequest payload length must be a multiple of 76 bytes");
+        }
+
+        bytes
+            .chunks_exact(<Self as FixedSize>::SIZE)
+            .map(Self::try_from_eth_bytes)
+            .collect()
     }
 }
 
@@ -161,6 +200,17 @@ impl DepositRequest {
         })
     }
 
+    pub fn try_from_eth_entry_bytes(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+        if !bytes.len().is_multiple_of(<Self as FixedSize>::SIZE) {
+            return Err("DepositRequest payload length must be a multiple of 288 bytes");
+        }
+
+        bytes
+            .chunks_exact(<Self as FixedSize>::SIZE)
+            .map(Self::try_from_eth_bytes)
+            .collect()
+    }
+
     pub fn as_message(&self, domain: Digest) -> Digest {
         let mut node_pubkey_bytes = [0u8; 32];
         node_pubkey_bytes.copy_from_slice(&self.node_pubkey.encode());
@@ -226,6 +276,19 @@ impl ProtocolParamRequest {
         let param = bytes[2..2 + param_len].to_vec();
 
         Ok(ProtocolParamRequest { param_id, param })
+    }
+
+    pub fn try_from_eth_entry_bytes(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+        let mut buf = bytes;
+        let mut requests = Vec::new();
+
+        while !buf.is_empty() {
+            let request = Self::read_cfg(&mut buf, &())
+                .map_err(|_| "Failed to parse grouped protocol param request payload")?;
+            requests.push(request);
+        }
+
+        Ok(requests)
     }
 }
 

@@ -560,12 +560,34 @@ pub fn create_protocol_param_request(param_id: u8, value: u64) -> ProtocolParamR
 /// # Returns
 /// * `Requests` - The corresponding Requests value for use with the engine
 pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>) -> Requests {
-    let mut requests_bytes = Vec::new();
+    let mut deposit_payload = Vec::new();
+    let mut withdrawal_payload = Vec::new();
+    let mut protocol_param_payload = Vec::new();
 
     for execution_request in execution_requests {
-        // Serialize the ExecutionRequest to bytes
-        let mut request_bytes = Vec::new();
-        execution_request.write(&mut request_bytes);
+        match execution_request {
+            ExecutionRequest::Deposit(deposit) => deposit.write(&mut deposit_payload),
+            ExecutionRequest::Withdrawal(withdrawal) => withdrawal.write(&mut withdrawal_payload),
+            ExecutionRequest::ProtocolParam(protocol_param) => {
+                protocol_param.write(&mut protocol_param_payload)
+            }
+        }
+    }
+
+    let mut requests_bytes = Vec::new();
+    if !deposit_payload.is_empty() {
+        let mut request_bytes = vec![0x00];
+        request_bytes.extend_from_slice(&deposit_payload);
+        requests_bytes.push(Bytes::from(request_bytes));
+    }
+    if !withdrawal_payload.is_empty() {
+        let mut request_bytes = vec![0x01];
+        request_bytes.extend_from_slice(&withdrawal_payload);
+        requests_bytes.push(Bytes::from(request_bytes));
+    }
+    if !protocol_param_payload.is_empty() {
+        let mut request_bytes = vec![0xFF];
+        request_bytes.extend_from_slice(&protocol_param_payload);
         requests_bytes.push(Bytes::from(request_bytes));
     }
 
