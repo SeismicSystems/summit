@@ -1,5 +1,7 @@
 use commonware_consensus::types::Epocher;
+#[cfg(feature = "permissioned")]
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "permissioned")]
 use std::sync::Arc;
 use summit_types::EngineClient;
 use tokio_util::sync::CancellationToken;
@@ -23,5 +25,6 @@ pub struct ApplicationConfig<C: EngineClient, ES: Epocher> {
 
     /// When true, the node will not participate in consensus
     /// (skip proposals, reject verifications, skip broadcasts).
+    #[cfg(feature = "permissioned")]
     pub paused: Arc<AtomicBool>,
 }
