@@ -367,19 +367,19 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn pause(&self) -> RpcResult<bool> {
-        self.paused.store(true, Ordering::SeqCst);
+        self.paused.store(true, Ordering::Relaxed);
         tracing::info!("consensus paused via RPC");
         Ok(true)
     }
 
     async fn unpause(&self) -> RpcResult<bool> {
-        self.paused.store(false, Ordering::SeqCst);
+        self.paused.store(false, Ordering::Relaxed);
         tracing::info!("consensus unpaused via RPC");
         Ok(true)
     }
 
     async fn is_paused(&self) -> RpcResult<bool> {
-        Ok(self.paused.load(Ordering::SeqCst))
+        Ok(self.paused.load(Ordering::Relaxed))
     }
 }
 
