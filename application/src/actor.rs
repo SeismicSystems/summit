@@ -131,7 +131,7 @@ impl<
                             parent,
                             mut response,
                         } => {
-                            if self.paused.load(Ordering::SeqCst) {
+                            if self.paused.load(Ordering::Relaxed) {
                                 warn!("consensus paused, skipping proposal for round {round}");
                                 continue;
                             }
@@ -200,7 +200,7 @@ impl<
                             }
                         }
                         Message::Broadcast { payload: _ } => {
-                            if self.paused.load(Ordering::SeqCst) {
+                            if self.paused.load(Ordering::Relaxed) {
                                 warn!("consensus paused, skipping broadcast");
                                 continue;
                             }
@@ -222,7 +222,7 @@ impl<
                             payload,
                             mut response,
                         } => {
-                            if self.paused.load(Ordering::SeqCst) {
+                            if self.paused.load(Ordering::Relaxed) {
                                 warn!("consensus paused, rejecting verify for round {round}");
                                 let _ = response.send(false);
                                 continue;
