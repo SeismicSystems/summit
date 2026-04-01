@@ -39,7 +39,7 @@ pub struct ConsensusState {
     pub(crate) validator_maximum_stake: u64, // in gwei
     pub(crate) allowed_timestamp_future_ms: u64,
     pub(crate) treasury_address: Address,
-    pub(crate) max_joining_per_epoch: u64,
+    pub(crate) max_deposits_per_epoch: u64,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -88,7 +88,7 @@ impl Default for ConsensusState {
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 50,
             treasury_address: Address::ZERO,
-            max_joining_per_epoch: 3,
+            max_deposits_per_epoch: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -110,7 +110,7 @@ impl ConsensusState {
         epoch_length: NonZeroU64,
         allowed_timestamp_future_ms: u64,
         treasury_address: Address,
-        max_joining_per_epoch: u64,
+        max_deposits_per_epoch: u64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -131,7 +131,7 @@ impl ConsensusState {
             validator_maximum_stake,
             allowed_timestamp_future_ms,
             treasury_address,
-            max_joining_per_epoch,
+            max_deposits_per_epoch,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -211,13 +211,13 @@ impl ConsensusState {
         self.ssz_tree.set_allowed_timestamp_future_ms(ms);
     }
 
-    pub fn get_max_joining_per_epoch(&self) -> u64 {
-        self.max_joining_per_epoch
+    pub fn get_max_deposits_per_epoch(&self) -> u64 {
+        self.max_deposits_per_epoch
     }
 
-    pub fn set_max_joining_per_epoch(&mut self, value: u64) {
-        self.max_joining_per_epoch = value;
-        self.ssz_tree.set_max_joining_per_epoch(value);
+    pub fn set_max_deposits_per_epoch(&mut self, value: u64) {
+        self.max_deposits_per_epoch = value;
+        self.ssz_tree.set_max_deposits_per_epoch(value);
     }
 
     pub fn get_treasury_address(&self) -> Address {
@@ -691,9 +691,9 @@ impl ConsensusState {
                     self.treasury_address = address;
                     self.ssz_tree.set_treasury_address(&address);
                 }
-                ProtocolParam::MaxJoiningPerEpoch(value) => {
-                    self.max_joining_per_epoch = value;
-                    self.ssz_tree.set_max_joining_per_epoch(value);
+                ProtocolParam::MaxDepositsPerEpoch(value) => {
+                    self.max_deposits_per_epoch = value;
+                    self.ssz_tree.set_max_deposits_per_epoch(value);
                 }
             }
         }
@@ -730,7 +730,7 @@ impl ConsensusState {
             &self.added_validators,
             &self.removed_validators,
             &self.treasury_address,
-            self.max_joining_per_epoch,
+            self.max_deposits_per_epoch,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -780,7 +780,7 @@ impl EncodeSize for ConsensusState {
         + 8 // validator_maximum_stake
         + 8 // allowed_timestamp_future_ms
         + 20 // treasury_address
-        + 8 // max_joining_per_epoch
+        + 8 // max_deposits_per_epoch
         + self.epocher.encode_size()
     }
 }
@@ -888,7 +888,7 @@ impl Read for ConsensusState {
         buf.copy_to_slice(&mut treasury_address_bytes);
         let treasury_address = Address::from(treasury_address_bytes);
 
-        let max_joining_per_epoch = buf.get_u64();
+        let max_deposits_per_epoch = buf.get_u64();
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
@@ -911,7 +911,7 @@ impl Read for ConsensusState {
             validator_maximum_stake,
             allowed_timestamp_future_ms,
             treasury_address,
-            max_joining_per_epoch,
+            max_deposits_per_epoch,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -1000,8 +1000,8 @@ impl Write for ConsensusState {
         // Write treasury_address
         buf.put_slice(self.treasury_address.as_slice());
 
-        // Write max_joining_per_epoch
-        buf.put_u64(self.max_joining_per_epoch);
+        // Write max_deposits_per_epoch
+        buf.put_u64(self.max_deposits_per_epoch);
 
         // Write epocher
         self.epocher.write(buf);

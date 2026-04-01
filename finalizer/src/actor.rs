@@ -1010,9 +1010,9 @@ impl<
                 let address = self.canonical_state.get_treasury_address();
                 let _ = sender.send(ConsensusStateResponse::TreasuryAddress(address));
             }
-            ConsensusStateRequest::GetMaxJoiningPerEpoch => {
-                let value = self.canonical_state.get_max_joining_per_epoch();
-                let _ = sender.send(ConsensusStateResponse::MaxJoiningPerEpoch(value));
+            ConsensusStateRequest::GetMaxDepositsPerEpoch => {
+                let value = self.canonical_state.get_max_deposits_per_epoch();
+                let _ = sender.send(ConsensusStateResponse::MaxDepositsPerEpoch(value));
             }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self
@@ -1653,7 +1653,7 @@ async fn process_execution_requests<
     consts: &ProtocolConsts,
 ) {
     if is_penultimate_block_of_epoch(state.get_epocher(), new_height) {
-        for _ in 0..state.get_max_joining_per_epoch() as usize {
+        for _ in 0..state.get_max_deposits_per_epoch() as usize {
             if let Some(request) = state.pop_deposit() {
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
 

@@ -24,7 +24,7 @@ pub enum ConsensusStateRequest {
     GetEpochLength,
     GetAllowedTimestampFuture,
     GetTreasuryAddress,
-    GetMaxJoiningPerEpoch,
+    GetMaxDepositsPerEpoch,
     GetEpochBounds(u64),
     GetDeposit(usize),
     GetDepositCount,
@@ -46,7 +46,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     EpochLength(u64),
     AllowedTimestampFuture(u64),
     TreasuryAddress(Address),
-    MaxJoiningPerEpoch(u64),
+    MaxDepositsPerEpoch(u64),
     EpochBounds(Option<(u64, u64)>),
     Deposit(Option<DepositRequest>),
     DepositCount(usize),
@@ -256,15 +256,15 @@ impl<S: Scheme> ConsensusStateQuery<S> {
         address
     }
 
-    pub async fn get_max_joining_per_epoch(&self) -> u64 {
+    pub async fn get_max_deposits_per_epoch(&self) -> u64 {
         let (tx, rx) = oneshot::channel();
-        let req = ConsensusStateRequest::GetMaxJoiningPerEpoch;
+        let req = ConsensusStateRequest::GetMaxDepositsPerEpoch;
         let _ = self.sender.clone().send((req, tx)).await;
 
         let res = rx
             .await
             .expect("consensus state query response sender dropped");
-        let ConsensusStateResponse::MaxJoiningPerEpoch(value) = res else {
+        let ConsensusStateResponse::MaxDepositsPerEpoch(value) = res else {
             unreachable!("request and response variants must match");
         };
         value

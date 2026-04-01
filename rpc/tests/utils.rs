@@ -136,8 +136,8 @@ pub fn create_test_finalizer_mailbox(
                         let _ =
                             response.send(ConsensusStateResponse::TreasuryAddress(Address::ZERO));
                     }
-                    ConsensusStateRequest::GetMaxJoiningPerEpoch => {
-                        let _ = response.send(ConsensusStateResponse::MaxJoiningPerEpoch(3));
+                    ConsensusStateRequest::GetMaxDepositsPerEpoch => {
+                        let _ = response.send(ConsensusStateResponse::MaxDepositsPerEpoch(3));
                     }
                     ConsensusStateRequest::GetEpochBounds(epoch) => {
                         let first = epoch * 10;

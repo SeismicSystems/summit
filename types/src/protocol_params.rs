@@ -8,8 +8,8 @@ pub const MIN_EPOCH_LENGTH: u64 = 10;
 pub const MAX_EPOCH_LENGTH: u64 = 1_814_400;
 pub const MIN_ALLOWED_TIMESTAMP_FUTURE_MS: u64 = 1_000;
 pub const MAX_ALLOWED_TIMESTAMP_FUTURE_MS: u64 = 600_000;
-pub const MIN_MAX_JOINING_PER_EPOCH: u64 = 0;
-pub const MAX_MAX_JOINING_PER_EPOCH: u64 = 256;
+pub const MIN_MAX_DEPOSITS_PER_EPOCH: u64 = 0;
+pub const MAX_MAX_DEPOSITS_PER_EPOCH: u64 = 256;
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {
@@ -18,7 +18,7 @@ pub enum ProtocolParam {
     EpochLength(u64),
     AllowedTimestampFuture(u64),
     TreasuryAddress(Address),
-    MaxJoiningPerEpoch(u64),
+    MaxDepositsPerEpoch(u64),
 }
 
 impl TryFrom<ProtocolParamRequest> for ProtocolParam {
@@ -106,18 +106,18 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
             0x05 => {
                 if request.param.len() != 8 {
                     return Err(anyhow!(
-                        "Failed to parse max joining per epoch protocol param, invalid length {}",
+                        "Failed to parse max deposits per epoch protocol param, invalid length {}",
                         request.param.len()
                     ));
                 }
                 let bytes: [u8; 8] = request.param.as_slice().try_into()?;
-                let max_joining_per_epoch = u64::from_le_bytes(bytes);
-                if max_joining_per_epoch > MAX_MAX_JOINING_PER_EPOCH {
+                let max_deposits_per_epoch = u64::from_le_bytes(bytes);
+                if max_deposits_per_epoch > MAX_MAX_DEPOSITS_PER_EPOCH {
                     return Err(anyhow!(
-                        "Max joining per epoch {max_joining_per_epoch} exceeds maximum {MAX_MAX_JOINING_PER_EPOCH}"
+                        "Max joining per epoch {max_deposits_per_epoch} exceeds maximum {MAX_MAX_DEPOSITS_PER_EPOCH}"
                     ));
                 }
-                Ok(ProtocolParam::MaxJoiningPerEpoch(max_joining_per_epoch))
+                Ok(ProtocolParam::MaxDepositsPerEpoch(max_deposits_per_epoch))
             }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
@@ -133,7 +133,7 @@ impl EncodeSize for ProtocolParam {
             | ProtocolParam::MaximumStake(_)
             | ProtocolParam::EpochLength(_)
             | ProtocolParam::AllowedTimestampFuture(_)
-            | ProtocolParam::MaxJoiningPerEpoch(_) => 1 + 8, // 1 byte tag + 8 byte value
+            | ProtocolParam::MaxDepositsPerEpoch(_) => 1 + 8, // 1 byte tag + 8 byte value
             ProtocolParam::TreasuryAddress(_) => 1 + 20, // 1 byte tag + 20 byte address
         }
     }
@@ -162,7 +162,7 @@ impl Write for ProtocolParam {
                 buf.put_u8(0x04);
                 buf.put_slice(address.as_slice());
             }
-            ProtocolParam::MaxJoiningPerEpoch(value) => {
+            ProtocolParam::MaxDepositsPerEpoch(value) => {
                 buf.put_u8(0x05);
                 buf.put_u64(*value);
             }
@@ -213,13 +213,13 @@ impl Read for ProtocolParam {
             }
             0x05 => {
                 let value = buf.get_u64();
-                if value > MAX_MAX_JOINING_PER_EPOCH {
+                if value > MAX_MAX_DEPOSITS_PER_EPOCH {
                     return Err(Error::Invalid(
                         "ProtocolParam",
-                        "max joining per epoch out of bounds",
+                        "max deposits per epoch out of bounds",
                     ));
                 }
-                Ok(ProtocolParam::MaxJoiningPerEpoch(value))
+                Ok(ProtocolParam::MaxDepositsPerEpoch(value))
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }

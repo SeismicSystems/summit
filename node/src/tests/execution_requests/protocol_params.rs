@@ -1,6 +1,6 @@
 use super::*;
 use summit_types::execution_request::ProtocolParamRequest;
-use summit_types::protocol_params::MAX_MAX_JOINING_PER_EPOCH;
+use summit_types::protocol_params::MAX_MAX_DEPOSITS_PER_EPOCH;
 
 #[test_traced("INFO")]
 fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
@@ -980,8 +980,8 @@ fn test_protocol_param_treasury_address() {
 }
 
 #[test_traced("INFO")]
-fn test_protocol_param_max_joining_per_epoch() {
-    // Submits a protocol param request for max_joining_per_epoch (param_id 0x05)
+fn test_protocol_param_max_deposits_per_epoch() {
+    // Submits a protocol param request for max_deposits_per_epoch (param_id 0x05)
     // and verifies that the value is applied at the end of the epoch.
     let n = 5;
     let min_stake = 32_000_000_000;
@@ -1118,7 +1118,7 @@ fn test_protocol_param_max_joining_per_epoch() {
 
         let state_query = consensus_state_queries.get(&0).unwrap();
         assert_eq!(
-            state_query.get_max_joining_per_epoch().await,
+            state_query.get_max_deposits_per_epoch().await,
             new_max_joining
         );
 
@@ -1135,8 +1135,8 @@ fn test_protocol_param_max_joining_per_epoch() {
 }
 
 #[test_traced("INFO")]
-fn test_protocol_param_max_joining_per_epoch_rejected_above_max() {
-    // Submits a protocol param request for max_joining_per_epoch with a value above the
+fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
+    // Submits a protocol param request for max_deposits_per_epoch with a value above the
     // maximum bound (256). The request should be rejected and the value should remain
     // at the initial default.
     let n = 5;
@@ -1190,8 +1190,8 @@ fn test_protocol_param_max_joining_per_epoch_rejected_above_max() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        // Value above MAX_MAX_JOINING_PER_EPOCH (256)
-        let invalid_value = MAX_MAX_JOINING_PER_EPOCH + 1;
+        // Value above MAX_MAX_DEPOSITS_PER_EPOCH (256)
+        let invalid_value = MAX_MAX_DEPOSITS_PER_EPOCH + 1;
         let test_protocol_param = common::create_protocol_param_request(0x05, invalid_value);
 
         let execution_requests = vec![ExecutionRequest::ProtocolParam(test_protocol_param)];
@@ -1275,7 +1275,7 @@ fn test_protocol_param_max_joining_per_epoch_rejected_above_max() {
 
         // Value should remain at the initial default (10, set in test harness)
         let state_query = consensus_state_queries.get(&0).unwrap();
-        assert_eq!(state_query.get_max_joining_per_epoch().await, 10);
+        assert_eq!(state_query.get_max_deposits_per_epoch().await, 10);
 
         assert!(
             engine_client_network

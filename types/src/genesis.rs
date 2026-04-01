@@ -53,15 +53,15 @@ pub struct Genesis {
     #[serde(default = "default_treasury_address")]
     pub treasury_address: String,
     /// Maximum number of validators that can join per epoch via deposits.
-    #[serde(default = "default_max_joining_per_epoch")]
-    pub max_joining_per_epoch: u64,
+    #[serde(default = "default_max_deposits_per_epoch")]
+    pub max_deposits_per_epoch: u64,
 }
 
 fn default_treasury_address() -> String {
     Address::ZERO.to_string()
 }
 
-fn default_max_joining_per_epoch() -> u64 {
+fn default_max_deposits_per_epoch() -> u64 {
     3
 }
 

@@ -69,7 +69,7 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
             ssz_state_tree::FORKCHOICE_FINALIZED_BLOCK_HASH,
         )),
         "treasury_address" => Ok(SszStateKey::Scalar(ssz_state_tree::TREASURY_ADDRESS)),
-        "max_joining_per_epoch" => Ok(SszStateKey::Scalar(ssz_state_tree::MAX_JOINING_PER_EPOCH)),
+        "max_deposits_per_epoch" => Ok(SszStateKey::Scalar(ssz_state_tree::MAX_DEPOSITS_PER_EPOCH)),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"

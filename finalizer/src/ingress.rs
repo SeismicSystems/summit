@@ -315,9 +315,9 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         address
     }
 
-    pub async fn get_max_joining_per_epoch(&self) -> u64 {
+    pub async fn get_max_deposits_per_epoch(&self) -> u64 {
         let (response, rx) = oneshot::channel();
-        let request = ConsensusStateRequest::GetMaxJoiningPerEpoch;
+        let request = ConsensusStateRequest::GetMaxDepositsPerEpoch;
         let _ = self
             .sender
             .clone()
@@ -327,7 +327,7 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         let res = rx
             .await
             .expect("consensus state query response sender dropped");
-        let ConsensusStateResponse::MaxJoiningPerEpoch(value) = res else {
+        let ConsensusStateResponse::MaxDepositsPerEpoch(value) = res else {
             unreachable!("request and response variants must match");
         };
         value

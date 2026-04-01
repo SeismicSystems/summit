@@ -48,7 +48,7 @@ pub const PROTOCOL_PARAM_CHANGES_ROOT: usize = 15;
 pub const ADDED_VALIDATORS_ROOT: usize = 16;
 pub const REMOVED_VALIDATORS_ROOT: usize = 17;
 pub const TREASURY_ADDRESS: usize = 18;
-pub const MAX_JOINING_PER_EPOCH: usize = 19;
+pub const MAX_DEPOSITS_PER_EPOCH: usize = 19;
 
 /// Number of used leaf slots in the top-level tree.
 pub const NUM_TOP_LEAVES: usize = 20;
@@ -215,9 +215,9 @@ impl SszStateTree {
             .set_leaf(ALLOWED_TIMESTAMP_FUTURE_MS, ms.hash_tree_root());
     }
 
-    pub fn set_max_joining_per_epoch(&mut self, value: u64) {
+    pub fn set_max_deposits_per_epoch(&mut self, value: u64) {
         self.top
-            .set_leaf(MAX_JOINING_PER_EPOCH, value.hash_tree_root());
+            .set_leaf(MAX_DEPOSITS_PER_EPOCH, value.hash_tree_root());
     }
 
     pub fn set_treasury_address(&mut self, address: &Address) {
@@ -770,7 +770,7 @@ impl SszStateTree {
             ProtocolParam::EpochLength(v) => (2u64, v.hash_tree_root()),
             ProtocolParam::AllowedTimestampFuture(v) => (3u64, v.hash_tree_root()),
             ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
-            ProtocolParam::MaxJoiningPerEpoch(v) => (5u64, v.hash_tree_root()),
+            ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value_hash);
@@ -878,7 +878,7 @@ impl SszStateTree {
         added_validators: &BTreeMap<u64, Vec<AddedValidator>>,
         removed_validators: &[PublicKey],
         treasury_address: &Address,
-        max_joining_per_epoch: u64,
+        max_deposits_per_epoch: u64,
     ) {
         *self = Self::new();
 
@@ -896,7 +896,7 @@ impl SszStateTree {
         self.set_forkchoice_safe_block_hash(forkchoice_safe);
         self.set_forkchoice_finalized_block_hash(forkchoice_finalized);
         self.set_treasury_address(treasury_address);
-        self.set_max_joining_per_epoch(max_joining_per_epoch);
+        self.set_max_deposits_per_epoch(max_deposits_per_epoch);
 
         // Validators
         self.rebuild_validators(validator_accounts);
@@ -1772,7 +1772,7 @@ mod tests {
         inc.set_forkchoice_safe_block_hash(&[0xDD; 32]);
         inc.set_forkchoice_finalized_block_hash(&[0xEE; 32]);
         inc.set_treasury_address(&Address::ZERO);
-        inc.set_max_joining_per_epoch(3);
+        inc.set_max_deposits_per_epoch(3);
         inc.rebuild_validators(&accounts);
         inc.rebuild_deposits(&VecDeque::new());
         inc.rebuild_withdrawals(&WithdrawalQueue::default());
