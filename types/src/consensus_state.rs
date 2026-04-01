@@ -677,7 +677,7 @@ impl ConsensusState {
                     min_or_max_stake_changed = true;
                 }
                 ProtocolParam::EpochLength(length) => {
-                    let new_length = std::num::NonZeroU64::new(length)
+                    let new_length = NonZeroU64::new(length)
                         .expect("EpochLength must be nonzero (validated at parse time)");
                     self.epocher
                         .update_length(new_length)

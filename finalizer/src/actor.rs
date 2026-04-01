@@ -143,8 +143,12 @@ impl<
             page_cache: cfg.page_cache,
         };
 
-        let db =
-            FinalizerState::<R, V>::new(context.with_label("finalizer_state"), state_cfg).await;
+        let db = FinalizerState::<R, V>::new(
+            context.with_label("finalizer_state"),
+            state_cfg,
+            cfg.cancellation_token.clone(),
+        )
+        .await;
 
         // Check if the state exists in the database. Otherwise, use the initial state.
         // The initial state could be from the genesis or a checkpoint.
