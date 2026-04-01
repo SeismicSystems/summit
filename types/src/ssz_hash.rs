@@ -100,6 +100,7 @@ impl SszHashTreeRoot for ProtocolParam {
             ProtocolParam::EpochLength(v) => (2u64, v.hash_tree_root()),
             ProtocolParam::AllowedTimestampFuture(v) => (3u64, v.hash_tree_root()),
             ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
+            ProtocolParam::MaxJoiningPerEpoch(v) => (5u64, v.hash_tree_root()),
         };
         merkleize(&[tag.hash_tree_root(), value_hash])
     }

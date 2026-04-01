@@ -7,8 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 /// Fixed protocol-level constants governing validator lifecycle.
 pub struct ProtocolConsts {
-    /// The maximum number of validators that will be onboarded at the same time.
-    pub validator_onboarding_limit_per_block: usize,
     /// Number of epochs to wait before activating validators after deposit.
     pub validator_num_warm_up_epochs: u64,
     /// Number of epochs after a withdrawal request until the payout.
