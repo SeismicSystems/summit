@@ -238,6 +238,31 @@ impl WithdrawalQueue {
             .unwrap_or_default()
     }
 
+    /// Move all remaining withdrawals from one epoch to another.
+    /// Used to reschedule overflow withdrawals that exceeded the per-epoch cap.
+    /// Rescheduled withdrawals are placed at the front of the target epoch's queue
+    /// since they were scheduled earlier and should have priority.
+    pub fn reschedule_epoch(&mut self, from_epoch: u64, to_epoch: u64) {
+        if let Some(mut pubkeys) = self.schedule.remove(&from_epoch) {
+            if pubkeys.is_empty() {
+                return;
+            }
+            // Update the epoch on each withdrawal entry
+            for pk in &pubkeys {
+                if let Some(w) = self.withdrawals.get_mut(pk) {
+                    w.epoch = to_epoch;
+                }
+            }
+            // Prepend to the target epoch's schedule (rescheduled withdrawals get priority)
+            if let Some(existing) = self.schedule.get_mut(&to_epoch) {
+                pubkeys.extend(existing.iter().copied());
+                *existing = pubkeys;
+            } else {
+                self.schedule.insert(to_epoch, pubkeys);
+            }
+        }
+    }
+
     /// Get the number of pending withdrawals for a specific epoch.
     pub fn count_for_epoch(&self, epoch: u64) -> usize {
         self.schedule.get(&epoch).map(|q| q.len()).unwrap_or(0)
@@ -843,5 +868,56 @@ mod tests {
         queue.pop(5);
         assert_eq!(queue.num_epochs(), 0);
         assert!(queue.epochs_with_withdrawals().is_empty());
+    }
+
+    #[test]
+    fn test_reschedule_epoch_moves_all_withdrawals() {
+        let mut queue = WithdrawalQueue::default();
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([2u8; 32], 200), 5, 200);
+
+        assert_eq!(queue.count_for_epoch(5), 2);
+        assert_eq!(queue.count_for_epoch(6), 0);
+
+        queue.reschedule_epoch(5, 6);
+
+        assert_eq!(queue.count_for_epoch(5), 0);
+        assert_eq!(queue.count_for_epoch(6), 2);
+        // Epochs on the withdrawal entries should be updated
+        assert_eq!(queue.get_for_epoch(6)[0].epoch, 6);
+        assert_eq!(queue.get_for_epoch(6)[1].epoch, 6);
+    }
+
+    #[test]
+    fn test_reschedule_epoch_prepends_to_existing() {
+        let mut queue = WithdrawalQueue::default();
+        // Two withdrawals in epoch 5 (will be rescheduled)
+        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([2u8; 32], 200), 5, 200);
+        // One withdrawal already in epoch 6
+        queue.push_request(make_request([3u8; 32], 300), 6, 300);
+
+        queue.reschedule_epoch(5, 6);
+
+        assert_eq!(queue.count_for_epoch(5), 0);
+        assert_eq!(queue.count_for_epoch(6), 3);
+
+        // Rescheduled withdrawals should be at the front
+        let epoch6 = queue.get_for_epoch(6);
+        assert_eq!(epoch6[0].pubkey, [1u8; 32]);
+        assert_eq!(epoch6[1].pubkey, [2u8; 32]);
+        assert_eq!(epoch6[2].pubkey, [3u8; 32]);
+    }
+
+    #[test]
+    fn test_reschedule_epoch_noop_when_empty() {
+        let mut queue = WithdrawalQueue::default();
+        queue.push_request(make_request([1u8; 32], 100), 6, 100);
+
+        queue.reschedule_epoch(5, 6);
+
+        // Nothing should change
+        assert_eq!(queue.count_for_epoch(6), 1);
+        assert_eq!(queue.get_for_epoch(6)[0].pubkey, [1u8; 32]);
     }
 }
