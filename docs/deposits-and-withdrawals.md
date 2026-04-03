@@ -101,13 +101,26 @@ Withdrawal requests for active validators received on the **last block of an epo
 Deferred requests are stored in `pending_execution_requests` and processed at the start of the next
 epoch. Deferred withdrawals are re-queued individually.
 
+## Per-Epoch Caps
+
+### Deposit Cap
+
+The `max_deposits_per_epoch` protocol parameter (range: 0–256) limits how many deposits from the deposit queue are processed at the penultimate block of each epoch. Excess deposits remain in the queue and are processed in subsequent epochs. Setting this to 0 pauses all new validator onboarding.
+
+### Withdrawal Cap
+
+The `max_withdrawals_per_epoch` protocol parameter (range: 1–256) limits how many withdrawals can be included in the last block of each epoch. If more withdrawals are scheduled for an epoch than the cap allows, only the first `max_withdrawals_per_epoch` withdrawals (in queue order) are included. The remaining overflow withdrawals are rescheduled to the next epoch, placed at the **front** of that epoch's queue so they have priority over withdrawals originally scheduled for that epoch.
+
+This means a withdrawal may be delayed beyond its originally scheduled epoch if the cap is consistently exceeded. The withdrawal queue guarantees that rescheduled entries maintain their relative ordering and are always processed before newly scheduled entries. The minimum of 1 ensures that withdrawals can never be permanently blocked.
+
 ## Invariants
 
-- A validator will join the committee `VALIDATOR_NUM_WARM_UP_EPOCHS` epochs after submitting a valid deposit request. The phase after submitting the deposit request, and before joining the committee is called the `onboarding phase`.
+- A validator will join the committee `VALIDATOR_NUM_WARM_UP_EPOCHS` epochs after submitting a valid deposit request (subject to `max_deposits_per_epoch`). The phase after submitting the deposit request, and before joining the committee is called the `onboarding phase`.
 - If a withdrawal request is submitted in epoch `n`, then it is normally handled in epoch `n`, and
-  the withdrawal will be processed in epoch `n + VALIDATOR_WITHDRAWAL_NUM_EPOCHS`. Exception:
-  requests received on the last block of epoch `n` are deferred to the next epoch before being
-  scheduled.
+  the withdrawal will be processed in epoch `n + VALIDATOR_WITHDRAWAL_NUM_EPOCHS` (subject to
+  `max_withdrawals_per_epoch`). Exceptions: requests received on the last block of epoch `n` are
+  deferred to the next epoch before being scheduled; if the per-epoch cap is exceeded, overflow
+  withdrawals are rescheduled to the following epoch.
 - There are two parameters that govern the staking amount: `validator_min_stake` and `validator_max_stake`. The balance of a validator must always be in range `[validator_min_stake, validator_max_stake]`.
 - Any deposit request with resulting balance outside `[validator_min_stake, validator_max_stake]` will be rejected and refunded.
 - A validator can only have one pending deposit request at a time. Subsequent deposit requests will be ignored.

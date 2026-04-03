@@ -101,6 +101,7 @@ impl SszHashTreeRoot for ProtocolParam {
             ProtocolParam::AllowedTimestampFuture(v) => (3u64, v.hash_tree_root()),
             ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
             ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
+            ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
         };
         merkleize(&[tag.hash_tree_root(), value_hash])
     }

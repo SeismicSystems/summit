@@ -10,6 +10,8 @@ pub const MIN_ALLOWED_TIMESTAMP_FUTURE_MS: u64 = 1_000;
 pub const MAX_ALLOWED_TIMESTAMP_FUTURE_MS: u64 = 600_000;
 pub const MIN_MAX_DEPOSITS_PER_EPOCH: u64 = 0;
 pub const MAX_MAX_DEPOSITS_PER_EPOCH: u64 = 256;
+pub const MAX_WITHDRAWALS_PER_EPOCH_MIN: u64 = 1;
+pub const MAX_WITHDRAWALS_PER_EPOCH_MAX: u64 = 256;
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {
@@ -19,6 +21,7 @@ pub enum ProtocolParam {
     AllowedTimestampFuture(u64),
     TreasuryAddress(Address),
     MaxDepositsPerEpoch(u64),
+    MaxWithdrawalsPerEpoch(u64),
 }
 
 impl TryFrom<ProtocolParamRequest> for ProtocolParam {
@@ -119,6 +122,29 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                 }
                 Ok(ProtocolParam::MaxDepositsPerEpoch(max_deposits_per_epoch))
             }
+            0x06 => {
+                if request.param.len() != 8 {
+                    return Err(anyhow!(
+                        "Failed to parse max withdrawals per epoch protocol param, invalid length {}",
+                        request.param.len()
+                    ));
+                }
+                let bytes: [u8; 8] = request.param.as_slice().try_into()?;
+                let max_withdrawals_per_epoch = u64::from_le_bytes(bytes);
+                if max_withdrawals_per_epoch < MAX_WITHDRAWALS_PER_EPOCH_MIN {
+                    return Err(anyhow!(
+                        "Max withdrawals per epoch {max_withdrawals_per_epoch} is below minimum {MAX_WITHDRAWALS_PER_EPOCH_MIN}"
+                    ));
+                }
+                if max_withdrawals_per_epoch > MAX_WITHDRAWALS_PER_EPOCH_MAX {
+                    return Err(anyhow!(
+                        "Max withdrawals per epoch {max_withdrawals_per_epoch} exceeds maximum {MAX_WITHDRAWALS_PER_EPOCH_MAX}"
+                    ));
+                }
+                Ok(ProtocolParam::MaxWithdrawalsPerEpoch(
+                    max_withdrawals_per_epoch,
+                ))
+            }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
             )),
@@ -133,7 +159,8 @@ impl EncodeSize for ProtocolParam {
             | ProtocolParam::MaximumStake(_)
             | ProtocolParam::EpochLength(_)
             | ProtocolParam::AllowedTimestampFuture(_)
-            | ProtocolParam::MaxDepositsPerEpoch(_) => 1 + 8, // 1 byte tag + 8 byte value
+            | ProtocolParam::MaxDepositsPerEpoch(_)
+            | ProtocolParam::MaxWithdrawalsPerEpoch(_) => 1 + 8, // 1 byte tag + 8 byte value
             ProtocolParam::TreasuryAddress(_) => 1 + 20, // 1 byte tag + 20 byte address
         }
     }
@@ -164,6 +191,10 @@ impl Write for ProtocolParam {
             }
             ProtocolParam::MaxDepositsPerEpoch(value) => {
                 buf.put_u8(0x05);
+                buf.put_u64(*value);
+            }
+            ProtocolParam::MaxWithdrawalsPerEpoch(value) => {
+                buf.put_u8(0x06);
                 buf.put_u64(*value);
             }
         }
@@ -220,6 +251,17 @@ impl Read for ProtocolParam {
                     ));
                 }
                 Ok(ProtocolParam::MaxDepositsPerEpoch(value))
+            }
+            0x06 => {
+                let value = buf.get_u64();
+                if !(MAX_WITHDRAWALS_PER_EPOCH_MIN..=MAX_WITHDRAWALS_PER_EPOCH_MAX).contains(&value)
+                {
+                    return Err(Error::Invalid(
+                        "ProtocolParam",
+                        "max withdrawals per epoch out of bounds",
+                    ));
+                }
+                Ok(ProtocolParam::MaxWithdrawalsPerEpoch(value))
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }

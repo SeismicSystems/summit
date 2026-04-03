@@ -19,7 +19,6 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub engine_client: C,
     pub oracle: O,
     pub protocol_consts: ProtocolConsts,
-    pub validator_max_withdrawals_per_block: usize,
     pub page_cache: CacheRef,
     pub genesis_hash: [u8; 32],
     /// Optional initial state to initialize the finalizer with

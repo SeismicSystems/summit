@@ -55,6 +55,9 @@ pub struct Genesis {
     /// Maximum number of validators that can join per epoch via deposits.
     #[serde(default = "default_max_deposits_per_epoch")]
     pub max_deposits_per_epoch: u64,
+    /// Maximum number of withdrawals that can be processed per epoch.
+    #[serde(default = "default_max_withdrawals_per_epoch")]
+    pub max_withdrawals_per_epoch: u64,
 }
 
 fn default_treasury_address() -> String {
@@ -63,6 +66,10 @@ fn default_treasury_address() -> String {
 
 fn default_max_deposits_per_epoch() -> u64 {
     3
+}
+
+fn default_max_withdrawals_per_epoch() -> u64 {
+    16
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

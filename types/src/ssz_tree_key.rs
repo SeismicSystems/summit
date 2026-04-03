@@ -70,6 +70,9 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         )),
         "treasury_address" => Ok(SszStateKey::Scalar(ssz_state_tree::TREASURY_ADDRESS)),
         "max_deposits_per_epoch" => Ok(SszStateKey::Scalar(ssz_state_tree::MAX_DEPOSITS_PER_EPOCH)),
+        "max_withdrawals_per_epoch" => Ok(SszStateKey::Scalar(
+            ssz_state_tree::MAX_WITHDRAWALS_PER_EPOCH,
+        )),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"

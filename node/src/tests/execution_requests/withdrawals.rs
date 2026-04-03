@@ -1840,3 +1840,227 @@ fn test_stake_bounds_skips_zero_balance_validator() {
         context.auditor().state()
     })
 }
+
+#[test_traced("INFO")]
+fn test_withdrawal_overflow_rescheduled_to_next_epoch() {
+    // Tests that when more withdrawals are scheduled for an epoch than max_withdrawals_per_epoch
+    // allows, the overflow withdrawals are rescheduled to the next epoch and processed ahead
+    // of that epoch's own withdrawals.
+    //
+    // Setup:
+    // - 7 genesis validators with 32 ETH each
+    // - max_withdrawals_per_epoch = 2
+    // - Epoch 0, block 3: submit withdrawal requests for validators 0, 1, 2
+    //   → scheduled for epoch 2 (current_epoch + VALIDATOR_WITHDRAWAL_NUM_EPOCHS)
+    // - Epoch 1, block 13: submit withdrawal request for validator 3
+    //   → scheduled for epoch 3
+    //
+    // Expected:
+    // - Epoch 2 end (block 29): only 2 of 3 withdrawals processed (validators 0, 1)
+    //   Validator 2's withdrawal overflows to epoch 3
+    // - Epoch 3 end (block 39): validator 2's overflow withdrawal processed first (priority),
+    //   then validator 3's withdrawal
+    //
+    // Quorum: 7 validators, 2/3+1 = 5. After epoch 2 removes 2 → 5 active (ok).
+    // After epoch 3 removes 2 more → 3 active, quorum = 3 (ok).
+    let n = 7;
+    let min_stake = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: Some(n as usize * 10),
+            },
+        );
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let validator_pubkeys: Vec<[u8; 32]> = validators
+            .iter()
+            .map(|(pk, _)| pk.as_ref().try_into().unwrap())
+            .collect();
+
+        let withdrawal0 =
+            common::create_withdrawal_request(Address::ZERO, validator_pubkeys[0], min_stake);
+        let withdrawal1 =
+            common::create_withdrawal_request(Address::ZERO, validator_pubkeys[1], min_stake);
+        let withdrawal2 =
+            common::create_withdrawal_request(Address::ZERO, validator_pubkeys[2], min_stake);
+        let withdrawal3 =
+            common::create_withdrawal_request(Address::ZERO, validator_pubkeys[3], min_stake);
+
+        // Epoch 0, block 3: three withdrawal requests → scheduled for epoch 2
+        let epoch0_requests = common::execution_requests_to_requests(vec![
+            ExecutionRequest::Withdrawal(withdrawal0.clone()),
+            ExecutionRequest::Withdrawal(withdrawal1.clone()),
+            ExecutionRequest::Withdrawal(withdrawal2.clone()),
+        ]);
+
+        // Epoch 1, block 13: one withdrawal request → scheduled for epoch 3
+        let epoch1_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Withdrawal(
+                withdrawal3.clone(),
+            )]);
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(3, epoch0_requests);
+        execution_requests_map.insert(13, epoch1_requests);
+
+        // Epoch 3 ends at block 39
+        let stop_height = 40;
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        initial_state.set_max_withdrawals_per_epoch(2);
+
+        let mut consensus_state_queries = HashMap::new();
+        let mut withdrawn_uids = Vec::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            if idx < 4 {
+                withdrawn_uids.push(uid.clone());
+            }
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                // 4 of 7 validators are withdrawn; only 3 remain active
+                if height_reached.len() >= (n as usize - 4) {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+
+        // Epoch 2 ends at block 29: should have exactly 2 withdrawals (validators 0 and 1)
+        let epoch2_withdrawals = withdrawals
+            .get(&29)
+            .expect("expected withdrawals at epoch 2 end (block 29)");
+        assert_eq!(
+            epoch2_withdrawals.len(),
+            2,
+            "max_withdrawals_per_epoch=2 should cap epoch 2 to 2 withdrawals"
+        );
+
+        // Epoch 3 ends at block 39: should have 2 withdrawals
+        // - validator 2 (overflow from epoch 2, should be first)
+        // - validator 3 (originally scheduled for epoch 3)
+        let epoch3_withdrawals = withdrawals
+            .get(&39)
+            .expect("expected withdrawals at epoch 3 end (block 39)");
+        assert_eq!(
+            epoch3_withdrawals.len(),
+            2,
+            "overflow withdrawal + epoch 3 withdrawal should both be processed"
+        );
+
+        // Verify ordering: overflow withdrawal (validator 2) should come before
+        // the epoch 3 withdrawal (validator 3). Validator 2's withdrawal was
+        // created before validator 3's, so it has a lower withdrawal index.
+        assert!(
+            epoch3_withdrawals[0].index < epoch3_withdrawals[1].index,
+            "overflow withdrawal (lower index) should be processed before epoch 3's own withdrawal"
+        );
+
+        let skip_refs: Vec<&str> = withdrawn_uids.iter().map(|s| s.as_str()).collect();
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &skip_refs)
+                .is_ok()
+        );
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0, 1, 2, 3]).await;
+
+        context.auditor().state()
+    })
+}

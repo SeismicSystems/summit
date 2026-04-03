@@ -526,6 +526,25 @@ impl<
             // Build the committee for the next epoch.
             self.validator_exit = self.update_validator_committee(stake_changed);
 
+            // Reschedule any overflow withdrawals that exceeded max_withdrawals_per_epoch
+            // to the next epoch (placed at the front of the queue for priority).
+            let current_epoch = self.canonical_state.get_epoch();
+            if self
+                .canonical_state
+                .get_withdrawal_count_for_epoch(current_epoch)
+                > 0
+            {
+                let overflow_count = self
+                    .canonical_state
+                    .get_withdrawal_count_for_epoch(current_epoch);
+                info!(
+                    current_epoch,
+                    overflow_count, "rescheduling overflow withdrawals to next epoch"
+                );
+                self.canonical_state
+                    .reschedule_withdrawal_epoch(current_epoch, current_epoch + 1);
+            }
+
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
             // This pending checkpoint should always exist, because it was created at the previous height.
@@ -900,11 +919,13 @@ impl<
                     self.genesis_hash.into()
                 };
 
-            // Only submit withdrawals at the end of an epoch
+            // Only submit withdrawals at the end of an epoch, capped by max_withdrawals_per_epoch
             let current_epoch = state.get_epoch();
-            let ready_withdrawals = state
+            let max_withdrawals = state.get_max_withdrawals_per_epoch() as usize;
+            let ready_withdrawals: Vec<_> = state
                 .get_withdrawals_for_epoch(current_epoch)
                 .into_iter()
+                .take(max_withdrawals)
                 .cloned()
                 .collect();
             let next_epoch = state.get_epoch() + 1;
@@ -1017,6 +1038,10 @@ impl<
             ConsensusStateRequest::GetMaxDepositsPerEpoch => {
                 let value = self.canonical_state.get_max_deposits_per_epoch();
                 let _ = sender.send(ConsensusStateResponse::MaxDepositsPerEpoch(value));
+            }
+            ConsensusStateRequest::GetMaxWithdrawalsPerEpoch => {
+                let value = self.canonical_state.get_max_withdrawals_per_epoch();
+                let _ = sender.send(ConsensusStateResponse::MaxWithdrawalsPerEpoch(value));
             }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self

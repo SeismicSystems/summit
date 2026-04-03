@@ -56,7 +56,6 @@ const MAX_REPAIR: NonZero<usize> = NZUsize!(10);
 pub const VALIDATOR_NUM_WARM_UP_EPOCHS: u64 = 2;
 // Number of epochs after a withdrawal request until the payout
 pub const VALIDATOR_WITHDRAWAL_NUM_EPOCHS: u64 = 2;
-const VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK: usize = 16;
 //
 
 pub struct Engine<
@@ -145,7 +144,6 @@ where
                     validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
                     validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
                 },
-                validator_max_withdrawals_per_block: VALIDATOR_MAX_WITHDRAWALS_PER_BLOCK,
                 page_cache: page_cache.clone(),
                 genesis_hash: cfg.genesis_hash,
                 initial_state: cfg.initial_state,

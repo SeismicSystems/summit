@@ -121,6 +121,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         10_000,
         Address::ZERO,
         10,
+        16,
     );
     state.set_validator_accounts(validator_accounts);
     state
@@ -181,7 +182,7 @@ fn test_initial_startup_sync_waits_for_valid() {
             engine_client,
             oracle: MockNetworkOracle,
             protocol_consts: default_protocol_consts(),
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -251,7 +252,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: default_protocol_consts(),
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -321,7 +322,7 @@ fn test_execute_block_retries_on_syncing() {
             engine_client,
             oracle: MockNetworkOracle,
             protocol_consts: default_protocol_consts(),
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -406,7 +407,7 @@ fn test_notarized_block_retries_on_syncing() {
             engine_client,
             oracle: MockNetworkOracle,
             protocol_consts: default_protocol_consts(),
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -483,7 +484,7 @@ fn test_checkpoint_startup_full_flow() {
             engine_client,
             oracle: MockNetworkOracle,
             protocol_consts: default_protocol_consts(),
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
