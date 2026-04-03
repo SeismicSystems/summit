@@ -126,6 +126,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         epoch_length,
         10_000,
         Address::ZERO,
+        10,
     );
     state.set_validator_accounts(validator_accounts);
     state
@@ -165,7 +166,6 @@ fn test_validator_exit_triggers_cancellation() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
-                validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },

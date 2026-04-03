@@ -50,12 +50,8 @@ const FREEZER_TABLE_INITIAL_SIZE: u32 = 1024 * 1024; // 100mb
 const MAX_REPAIR: NonZero<usize> = NZUsize!(10);
 
 //
-// Onboarding config (set arbitrarily for now)
+// Onboarding config
 
-#[cfg(debug_assertions)]
-const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 10;
-#[cfg(not(debug_assertions))]
-const VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK: usize = 3;
 // Number of epochs after a deposit until a validator joins the committee
 pub const VALIDATOR_NUM_WARM_UP_EPOCHS: u64 = 2;
 // Number of epochs after a withdrawal request until the payout
@@ -146,7 +142,6 @@ where
                 engine_client: cfg.engine_client.clone(),
                 oracle: cfg.oracle.clone(),
                 protocol_consts: ProtocolConsts {
-                    validator_onboarding_limit_per_block: VALIDATOR_ONBOARDING_LIMIT_PER_BLOCK,
                     validator_num_warm_up_epochs: VALIDATOR_NUM_WARM_UP_EPOCHS,
                     validator_withdrawal_num_epochs: VALIDATOR_WITHDRAWAL_NUM_EPOCHS,
                 },
