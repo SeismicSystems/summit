@@ -119,7 +119,7 @@ impl EngineClient for RethEngineClient {
                     .await
                     .expect("Failed to update fork choice after reconnect")
             }
-            Err(_) => panic!("Unable to get a response"),
+            Err(e) => panic!("failed to start building block: {e:?}"),
         };
 
         if res.is_invalid() {
