@@ -49,7 +49,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     /// Log a database error and initiate graceful shutdown.
     fn handle_db_error(&self, e: impl std::fmt::Display, op: &str) {
-        error!(%e, op, "fatal database error, initiating shutdown");
+        error!(target: "critical", %e, op, "fatal database error, initiating shutdown");
         self.cancellation_token.cancel();
     }
 

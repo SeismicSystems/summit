@@ -589,15 +589,27 @@ fn handle_verify<ES: Epocher>(
 
     // Basic structural validation
     if block.parent() != parent.digest() {
-        warn!("block parent mismatch");
+        warn!(
+            "block parent mismatch: expected {}, received: {}",
+            parent.digest(),
+            block.parent()
+        );
         return false;
     }
     if block.height() != parent.height() + 1 {
-        warn!("block height mismatch");
+        warn!(
+            "block height mismatch: expected {}, received: {}",
+            parent.height() + 1,
+            block.height()
+        );
         return false;
     }
     if block.timestamp() <= parent.timestamp() {
-        warn!("block timestamp not increasing");
+        warn!(
+            "block timestamp not increasing: parent timestamp is {}, block timestamp is {}",
+            parent.timestamp(),
+            block.timestamp()
+        );
         return false;
     }
     if block.timestamp() > now_millis + aux_data.allowed_timestamp_future_ms {
