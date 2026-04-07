@@ -353,7 +353,7 @@ impl<
                             // Since the finalizer increments `self.canonical_state.epoch` before sending the message to the
                             // orchestrator, the finalizer should never receive a GetEpochGenesisHash request for the wrong epoch.
                             if epoch != self.canonical_state.get_epoch() {
-                                error!("Finalizer received epoch genesis hash request from a diffent epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.get_epoch(), epoch);
+                                error!("Finalizer received epoch genesis hash request from a different epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.get_epoch(), epoch);
                             }
                             let _ = response.send(self.canonical_state.get_epoch_genesis_hash());
                         },
