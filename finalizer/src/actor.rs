@@ -1481,7 +1481,7 @@ async fn parse_execution_requests<
                                                     // The deposited funds would be lost in this case.
                                                     // The deposit contract verifies that the withdrawal credentials
                                                     // follow the expected format, so this should never happen.
-                                                    warn!(target: "critical", reason = "failed to parse withdrawal credentials", ?deposit_request);
+                                                    error!(target: "critical", reason = "failed to parse withdrawal credentials", ?deposit_request);
                                                     warn!(
                                                         "Failed to parse withdrawal credentials: {e}"
                                                     );
@@ -1513,7 +1513,7 @@ async fn parse_execution_requests<
                                             // The deposited funds would be lost in this case.
                                             // The deposit contract verifies that the withdrawal credentials
                                             // follow the expected format, so this should never happen.
-                                            warn!(target: "critical", reason = "failed to parse withdrawal credentials", ?deposit_request);
+                                            error!(target: "critical", reason = "failed to parse withdrawal credentials", ?deposit_request);
                                             warn!("Failed to parse withdrawal credentials: {e}");
                                             continue;
                                         }

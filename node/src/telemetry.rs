@@ -52,7 +52,7 @@ pub fn init(level: Level, critical_log_dir: Option<&Path>) -> CriticalLogGuard {
             .with_file(true)
             .with_thread_ids(true)
             .json()
-            .with_filter(filter::Targets::new().with_target("critical", Level::WARN))
+            .with_filter(filter::Targets::new().with_target("critical", Level::ERROR))
             .boxed();
 
         (Some(layer), Some(guard))
