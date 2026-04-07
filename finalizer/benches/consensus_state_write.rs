@@ -10,6 +10,7 @@ use summit_types::Block;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
+use tokio_util::sync::CancellationToken;
 
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 
@@ -96,7 +97,8 @@ fn main() {
             ),
         };
 
-        let mut db = FinalizerState::<_, MinPk>::new(context, config).await;
+        let mut db =
+            FinalizerState::<_, MinPk>::new(context, config, CancellationToken::new()).await;
 
         let mut write_times: Vec<(u64, u128)> = Vec::new();
         let mut checkpoint_times: Vec<(u64, u128)> = Vec::new();

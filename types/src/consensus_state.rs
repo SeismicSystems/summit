@@ -39,6 +39,8 @@ pub struct ConsensusState {
     pub(crate) validator_maximum_stake: u64, // in gwei
     pub(crate) allowed_timestamp_future_ms: u64,
     pub(crate) treasury_address: Address,
+    pub(crate) max_deposits_per_epoch: u64,
+    pub(crate) max_withdrawals_per_epoch: u64,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -87,6 +89,8 @@ impl Default for ConsensusState {
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 50,
             treasury_address: Address::ZERO,
+            max_deposits_per_epoch: 3,
+            max_withdrawals_per_epoch: 16,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -101,6 +105,7 @@ impl Default for ConsensusState {
 }
 
 impl ConsensusState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         forkchoice: ForkchoiceState,
         validator_minimum_stake: u64,
@@ -108,6 +113,8 @@ impl ConsensusState {
         epoch_length: NonZeroU64,
         allowed_timestamp_future_ms: u64,
         treasury_address: Address,
+        max_deposits_per_epoch: u64,
+        max_withdrawals_per_epoch: u64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -128,6 +135,8 @@ impl ConsensusState {
             validator_maximum_stake,
             allowed_timestamp_future_ms,
             treasury_address,
+            max_deposits_per_epoch,
+            max_withdrawals_per_epoch,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -205,6 +214,24 @@ impl ConsensusState {
     pub fn set_allowed_timestamp_future_ms(&mut self, ms: u64) {
         self.allowed_timestamp_future_ms = ms;
         self.ssz_tree.set_allowed_timestamp_future_ms(ms);
+    }
+
+    pub fn get_max_deposits_per_epoch(&self) -> u64 {
+        self.max_deposits_per_epoch
+    }
+
+    pub fn set_max_deposits_per_epoch(&mut self, value: u64) {
+        self.max_deposits_per_epoch = value;
+        self.ssz_tree.set_max_deposits_per_epoch(value);
+    }
+
+    pub fn get_max_withdrawals_per_epoch(&self) -> u64 {
+        self.max_withdrawals_per_epoch
+    }
+
+    pub fn set_max_withdrawals_per_epoch(&mut self, value: u64) {
+        self.max_withdrawals_per_epoch = value;
+        self.ssz_tree.set_max_withdrawals_per_epoch(value);
     }
 
     pub fn get_treasury_address(&self) -> Address {
@@ -576,6 +603,12 @@ impl ConsensusState {
         self.withdrawal_queue.count_for_epoch(epoch)
     }
 
+    /// Move remaining withdrawals from one epoch to another.
+    pub fn reschedule_withdrawal_epoch(&mut self, from_epoch: u64, to_epoch: u64) {
+        self.withdrawal_queue.reschedule_epoch(from_epoch, to_epoch);
+        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
+    }
+
     /// Get all epochs that have pending withdrawals
     pub fn get_epochs_with_withdrawals(&self) -> Vec<u64> {
         self.withdrawal_queue.epochs_with_withdrawals()
@@ -664,7 +697,7 @@ impl ConsensusState {
                     min_or_max_stake_changed = true;
                 }
                 ProtocolParam::EpochLength(length) => {
-                    let new_length = std::num::NonZeroU64::new(length)
+                    let new_length = NonZeroU64::new(length)
                         .expect("EpochLength must be nonzero (validated at parse time)");
                     self.epocher
                         .update_length(new_length)
@@ -677,6 +710,14 @@ impl ConsensusState {
                 ProtocolParam::TreasuryAddress(address) => {
                     self.treasury_address = address;
                     self.ssz_tree.set_treasury_address(&address);
+                }
+                ProtocolParam::MaxDepositsPerEpoch(value) => {
+                    self.max_deposits_per_epoch = value;
+                    self.ssz_tree.set_max_deposits_per_epoch(value);
+                }
+                ProtocolParam::MaxWithdrawalsPerEpoch(value) => {
+                    self.max_withdrawals_per_epoch = value;
+                    self.ssz_tree.set_max_withdrawals_per_epoch(value);
                 }
             }
         }
@@ -713,6 +754,8 @@ impl ConsensusState {
             &self.added_validators,
             &self.removed_validators,
             &self.treasury_address,
+            self.max_deposits_per_epoch,
+            self.max_withdrawals_per_epoch,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -762,6 +805,8 @@ impl EncodeSize for ConsensusState {
         + 8 // validator_maximum_stake
         + 8 // allowed_timestamp_future_ms
         + 20 // treasury_address
+        + 8 // max_deposits_per_epoch
+        + 8 // max_withdrawals_per_epoch
         + self.epocher.encode_size()
     }
 }
@@ -869,6 +914,9 @@ impl Read for ConsensusState {
         buf.copy_to_slice(&mut treasury_address_bytes);
         let treasury_address = Address::from(treasury_address_bytes);
 
+        let max_deposits_per_epoch = buf.get_u64();
+        let max_withdrawals_per_epoch = buf.get_u64();
+
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
         let mut state = Self {
@@ -890,6 +938,8 @@ impl Read for ConsensusState {
             validator_maximum_stake,
             allowed_timestamp_future_ms,
             treasury_address,
+            max_deposits_per_epoch,
+            max_withdrawals_per_epoch,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -977,6 +1027,12 @@ impl Write for ConsensusState {
 
         // Write treasury_address
         buf.put_slice(self.treasury_address.as_slice());
+
+        // Write max_deposits_per_epoch
+        buf.put_u64(self.max_deposits_per_epoch);
+
+        // Write max_withdrawals_per_epoch
+        buf.put_u64(self.max_withdrawals_per_epoch);
 
         // Write epocher
         self.epocher.write(buf);
@@ -1094,6 +1150,8 @@ mod tests {
             NonZeroU64::new(100).unwrap(),
             10_000,
             Address::ZERO,
+            3,
+            16,
         );
 
         original_state.set_epoch(7);
@@ -1852,6 +1910,8 @@ mod tests {
             NonZeroU64::new(10).unwrap(),
             10_000,
             Address::ZERO,
+            3,
+            16,
         );
 
         // Add 4 genesis validators (like the testnet)
@@ -2025,6 +2085,39 @@ mod tests {
             remove_root,
             state.ssz_tree().root(),
             "remove validator: incremental != rebuild"
+        );
+    }
+
+    #[test]
+    fn test_reschedule_withdrawal_epoch_updates_ssz_root() {
+        let mut state = ConsensusState::default();
+
+        // Add two withdrawals in epoch 5 and one in epoch 6
+        let w1 = create_test_withdrawal(1, 100, 5);
+        let w2 = create_test_withdrawal(2, 200, 5);
+        let w3 = create_test_withdrawal(3, 300, 6);
+        state.push_withdrawal(w1);
+        state.push_withdrawal(w2);
+        state.push_withdrawal(w3);
+
+        let root_before = state.ssz_tree().root();
+
+        // Reschedule epoch 5 → epoch 6
+        state.reschedule_withdrawal_epoch(5, 6);
+
+        // Root should change
+        let root_after = state.ssz_tree().root();
+        assert_ne!(
+            root_before, root_after,
+            "root should change after rescheduling"
+        );
+
+        // Verify incremental update matches full rebuild
+        state.rebuild_ssz_tree();
+        assert_eq!(
+            root_after,
+            state.ssz_tree().root(),
+            "incremental reschedule root should match full rebuild"
         );
     }
 }

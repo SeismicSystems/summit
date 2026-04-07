@@ -348,6 +348,8 @@ pub fn get_initial_state(
             NonZeroU64::new(DEFAULT_BLOCKS_PER_EPOCH).unwrap(),
             10_000, // 10 seconds
             Address::ZERO,
+            10,
+            16,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for ((node_pubkey, consensus_pubkey), address) in committee.iter().zip(addresses.iter()) {

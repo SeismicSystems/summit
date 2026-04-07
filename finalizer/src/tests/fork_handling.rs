@@ -120,6 +120,8 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         epoch_length,
         10_000,
         Address::ZERO,
+        10,
+        16,
     );
     state.set_validator_accounts(validator_accounts);
     state
@@ -147,11 +149,10 @@ fn test_orphaned_block_processed_when_parent_arrives() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
-                validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -229,11 +230,10 @@ fn test_multiple_forks_tracked() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
-                validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -312,11 +312,10 @@ fn test_dead_fork_block_discarded() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
-                validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -411,11 +410,10 @@ fn test_fork_states_pruned_after_finalization() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
-                validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -529,11 +527,10 @@ fn test_orphaned_blocks_pruned_after_finalization() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
-                validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -639,11 +636,10 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
-                validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
@@ -745,11 +741,10 @@ fn test_competing_fork_pruned_on_finalization() {
             engine_client: MockEngineClient::new(),
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
-                validator_onboarding_limit_per_block: 10,
                 validator_num_warm_up_epochs: 2,
                 validator_withdrawal_num_epochs: 2,
             },
-            validator_max_withdrawals_per_block: 16,
+
             page_cache: CacheRef::from_pooler(
                 &context,
                 std::num::NonZero::new(4096).unwrap(),
