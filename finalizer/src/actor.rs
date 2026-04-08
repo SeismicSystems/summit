@@ -266,7 +266,12 @@ impl<
                         warn!("execution client still syncing, waiting 5s...");
                         self.context.sleep(std::time::Duration::from_secs(5)).await;
                     } else {
-                        panic!("finalizer started with invalid forkchoice");
+                        error!(target: "critical", "finalizer started with invalid forkchoice: {forkchoice:?}, height: {}, epoch: {}", self.canonical_state.get_latest_height(), self.canonical_state.get_epoch());
+                        panic!(
+                            "finalizer started with invalid forkchoice: {forkchoice:?}, height: {}, epoch: {}",
+                            self.canonical_state.get_latest_height(),
+                            self.canonical_state.get_epoch()
+                        );
                     }
                 }
             }
@@ -353,7 +358,7 @@ impl<
                             // Since the finalizer increments `self.canonical_state.epoch` before sending the message to the
                             // orchestrator, the finalizer should never receive a GetEpochGenesisHash request for the wrong epoch.
                             if epoch != self.canonical_state.get_epoch() {
-                                error!("Finalizer received epoch genesis hash request from a diffent epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.get_epoch(), epoch);
+                                error!(target: "critical", "Finalizer received epoch genesis hash request from a different epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.get_epoch(), epoch);
                             }
                             let _ = response.send(self.canonical_state.get_epoch_genesis_hash());
                         },
@@ -395,9 +400,9 @@ impl<
             .and_then(|forks_at_height| forks_at_height.get(&block_digest))
         {
             // Block was already executed when notarized, reuse the fork state
-            debug_assert_eq!(
+            assert_eq!(
                 fork_state.block_digest, block_digest,
-                "Fork state digest mismatch: expected {:?}, stored {:?}",
+                "Fork state digest mismatch at height {height}: expected {:?}, stored {:?}",
                 block_digest, fork_state.block_digest
             );
             debug!(
@@ -1365,10 +1370,13 @@ async fn execute_block<
     } else {
         let payload_valid = payload_status.is_valid();
         let parent_matches = state.get_forkchoice().head_block_hash == block.eth_parent_hash();
+        let eth_block_hash = block.eth_block_hash();
         warn!(
+            target: "critical",
             new_height,
             payload_valid,
             parent_matches,
+            ?eth_block_hash,
             "block validation failed, not executing but keeping in chain"
         );
     }
@@ -1473,6 +1481,7 @@ async fn parse_execution_requests<
                                                     // The deposited funds would be lost in this case.
                                                     // The deposit contract verifies that the withdrawal credentials
                                                     // follow the expected format, so this should never happen.
+                                                    error!(target: "critical", reason = "failed to parse withdrawal credentials (this is not a Summit error)", ?deposit_request);
                                                     warn!(
                                                         "Failed to parse withdrawal credentials: {e}"
                                                     );
@@ -1504,6 +1513,7 @@ async fn parse_execution_requests<
                                             // The deposited funds would be lost in this case.
                                             // The deposit contract verifies that the withdrawal credentials
                                             // follow the expected format, so this should never happen.
+                                            error!(target: "critical", reason = "failed to parse withdrawal credentials (this is not a Summit error)", ?deposit_request);
                                             warn!("Failed to parse withdrawal credentials: {e}");
                                             continue;
                                         }

@@ -203,7 +203,7 @@ types/                 Shared types & engine client
   src/scheme.rs          BLS12-381 multisig scheme
 
 docs/                  Architecture docs, protocol descriptions
-testnet/               Local testnet config (4 validators, JWT, genesis JSON)
+testnet/               Local testnet config (4 validators, genesis JSON)
 ```
 
 ## Architecture

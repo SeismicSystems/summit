@@ -14,7 +14,7 @@ Summit establishes several critical trust boundaries:
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
 │  │   P2P Net   │  │   RPC API    │  │     Engine API      │ │  ← Authenticated
-│  │  (Auth'd)   │  │   (Public)   │  │     (JWT Auth)      │ │
+│  │  (Auth'd)   │  │   (Public)   │  │      (via IPC)      │ │
 │  └─────────────┘  └──────────────┘  └─────────────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │                  Summit Consensus Core                      │  ← Trusted
@@ -201,7 +201,6 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
    - Validate peer verification logic
 
 4. **Engine API Integration**
-   - Review JWT authentication implementation
    - Validate input sanitization and error handling
    - Audit payload verification logic
 
