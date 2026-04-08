@@ -1,6 +1,7 @@
 #[cfg(feature = "permissioned")]
 use crate::api::SummitPermissionedApiServer;
 use crate::api::{SummitApiServer, SummitProofApiServer};
+use crate::auth::BearerToken;
 use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
@@ -13,6 +14,7 @@ use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_cryptography::{Hasher as _, Sha256, Signer};
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
+use jsonrpsee::types::{ErrorObject, Extensions};
 use ssz::Encode as _;
 #[cfg(feature = "permissioned")]
 use std::sync::Arc;
@@ -32,6 +34,7 @@ pub struct SummitRpcServer {
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
+    admin_token: Option<String>,
 }
 
 impl SummitRpcServer {
@@ -39,13 +42,34 @@ impl SummitRpcServer {
         key_store_path: String,
         finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
         #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+        admin_token: Option<String>,
     ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
             #[cfg(feature = "permissioned")]
             paused,
+            admin_token,
         }
+    }
+
+    fn require_admin(&self, ext: &Extensions) -> RpcResult<()> {
+        let Some(expected) = &self.admin_token else {
+            return Ok(());
+        };
+        let authorized = ext
+            .get::<BearerToken>()
+            .map(|t| t.0 == *expected)
+            .unwrap_or(false);
+        if !authorized {
+            return Err(ErrorObject::owned(
+                -32001,
+                "Unauthorized: valid admin token required",
+                None::<()>,
+            )
+            .into());
+        }
+        Ok(())
     }
 }
 
@@ -213,9 +237,11 @@ impl SummitApiServer for SummitRpcServer {
 
     async fn get_deposit_signature(
         &self,
+        ext: &Extensions,
         amount: u64,
         address: String,
     ) -> RpcResult<DepositTransactionResponse> {
+        self.require_admin(ext)?;
         let mut withdrawal_credentials = [0u8; 32];
         withdrawal_credentials[0] = 0x01;
 
@@ -376,13 +402,15 @@ impl SummitApiServer for SummitRpcServer {
 #[cfg(feature = "permissioned")]
 #[async_trait]
 impl SummitPermissionedApiServer for SummitRpcServer {
-    async fn pause(&self) -> RpcResult<bool> {
+    async fn pause(&self, ext: &Extensions) -> RpcResult<bool> {
+        self.require_admin(ext)?;
         self.paused.store(true, Ordering::Relaxed);
         tracing::info!("consensus paused via RPC");
         Ok(true)
     }
 
-    async fn unpause(&self) -> RpcResult<bool> {
+    async fn unpause(&self, ext: &Extensions) -> RpcResult<bool> {
+        self.require_admin(ext)?;
         self.paused.store(false, Ordering::Relaxed);
         tracing::info!("consensus unpaused via RPC");
         Ok(true)

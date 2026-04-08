@@ -41,7 +41,7 @@ pub trait SummitApi {
         public_key: String,
     ) -> RpcResult<ValidatorAccountResponse>;
 
-    #[method(name = "getDepositSignature")]
+    #[method(name = "getDepositSignature", with_extensions)]
     async fn get_deposit_signature(
         &self,
         amount: u64,
@@ -82,10 +82,10 @@ pub trait SummitApi {
 #[cfg(feature = "permissioned")]
 #[rpc(server, client)]
 pub trait SummitPermissionedApi {
-    #[method(name = "pause")]
+    #[method(name = "pause", with_extensions)]
     async fn pause(&self) -> RpcResult<bool>;
 
-    #[method(name = "unpause")]
+    #[method(name = "unpause", with_extensions)]
     async fn unpause(&self) -> RpcResult<bool>;
 
     #[method(name = "isPaused")]

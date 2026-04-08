@@ -42,6 +42,7 @@ pub async fn start_rpc_server(
         finalizer_mailbox,
         #[cfg(feature = "permissioned")]
         paused,
+        admin_token.clone(),
     );
 
     let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());
@@ -82,6 +83,7 @@ pub async fn start_rpc_server_with_handle(
         finalizer_mailbox,
         #[cfg(feature = "permissioned")]
         paused,
+        admin_token.clone(),
     );
 
     let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());

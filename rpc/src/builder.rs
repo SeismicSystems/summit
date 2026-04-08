@@ -1,6 +1,5 @@
-use crate::auth::{AdminAuthLayer, BearerTokenLayer};
+use crate::auth::BearerTokenLayer;
 use http::{HeaderValue, Method};
-use jsonrpsee::server::middleware::rpc::RpcServiceBuilder;
 use jsonrpsee::server::{ServerBuilder, ServerConfigBuilder, ServerHandle};
 use std::net::SocketAddr;
 use tower::ServiceBuilder;
@@ -78,42 +77,23 @@ impl RpcServerBuilder {
         let config = self.config.build();
         let addr = self.addr;
 
-        if let Some(token) = self.admin_token {
-            // With admin auth: add BearerTokenLayer (HTTP) + AdminAuthLayer (RPC)
-            let http_middleware = ServiceBuilder::new()
-                .option_layer(cors_layer)
-                .layer(BearerTokenLayer);
+        let bearer_layer = self.admin_token.map(|_| BearerTokenLayer);
 
-            let rpc_middleware = RpcServiceBuilder::new().layer(AdminAuthLayer::new(token));
+        let http_middleware = ServiceBuilder::new()
+            .option_layer(cors_layer)
+            .option_layer(bearer_layer);
 
-            let server = ServerBuilder::new()
-                .set_config(config)
-                .set_http_middleware(http_middleware)
-                .set_rpc_middleware(rpc_middleware)
-                .build(addr)
-                .await?;
+        let server = ServerBuilder::new()
+            .set_config(config)
+            .set_http_middleware(http_middleware)
+            .build(addr)
+            .await?;
 
-            let bound_addr = server.local_addr()?;
-            Ok(RpcServer {
-                handle_fn: Box::new(move |methods| server.start(methods)),
-                addr: bound_addr,
-            })
-        } else {
-            // No admin auth: original middleware stack
-            let http_middleware = ServiceBuilder::new().option_layer(cors_layer);
-
-            let server = ServerBuilder::new()
-                .set_config(config)
-                .set_http_middleware(http_middleware)
-                .build(addr)
-                .await?;
-
-            let bound_addr = server.local_addr()?;
-            Ok(RpcServer {
-                handle_fn: Box::new(move |methods| server.start(methods)),
-                addr: bound_addr,
-            })
-        }
+        let bound_addr = server.local_addr()?;
+        Ok(RpcServer {
+            handle_fn: Box::new(move |methods| server.start(methods)),
+            addr: bound_addr,
+        })
     }
 }
 
