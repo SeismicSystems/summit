@@ -18,7 +18,7 @@ engine_newPayloadV3 : This is called to store(not commit) and validate blocks re
 
 */
 use alloy_eips::eip4895::Withdrawal;
-use alloy_primitives::{Address, FixedBytes};
+use alloy_primitives::{Address, FixedBytes, address};
 use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV4, ForkchoiceState, ForkchoiceUpdated, PayloadAttributes, PayloadId,
@@ -94,14 +94,14 @@ impl EngineClient for RethEngineClient {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
-        suggested_fee_recipient: Address,
+        _suggested_fee_recipient: Address,
         parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] _height: u64,
     ) -> Option<PayloadId> {
         let payload_attributes = PayloadAttributes {
             timestamp,
             prev_randao: [0; 32].into(),
-            suggested_fee_recipient,
+            suggested_fee_recipient: address!("0xD9b09DCAe1B5D2fFd36200E12f2617414D5fcC30"),
             withdrawals: Some(withdrawals),
             parent_beacon_block_root,
         };
