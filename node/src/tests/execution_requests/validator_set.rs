@@ -30,7 +30,7 @@ fn test_added_validators_at_epoch_boundary() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -251,7 +251,7 @@ fn test_removed_validators_at_epoch_boundary() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 

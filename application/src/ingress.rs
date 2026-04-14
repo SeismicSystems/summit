@@ -101,8 +101,10 @@ impl<P: PublicKey> CertifiableAutomaton for Mailbox<P> {
 
 impl<P: PublicKey> Relay for Mailbox<P> {
     type Digest = Digest;
+    type PublicKey = P;
+    type Plan = commonware_consensus::simplex::Plan<P>;
 
-    async fn broadcast(&mut self, digest: Self::Digest) {
+    async fn broadcast(&mut self, digest: Self::Digest, _plan: Self::Plan) {
         self.sender
             .send(Message::Broadcast { payload: digest })
             .await

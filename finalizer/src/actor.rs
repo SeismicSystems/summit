@@ -134,13 +134,15 @@ impl<
     ) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
         let state_cfg = StateConfig {
-            log_partition: format!("{}-finalizer_state-log", cfg.db_prefix),
-            log_write_buffer: WRITE_BUFFER,
-            log_compression: None,
-            log_codec_config: ((), ()),
-            log_items_per_section: NZU64!(262_144),
+            log: commonware_storage::journal::contiguous::variable::Config {
+                partition: format!("{}-finalizer_state-log", cfg.db_prefix),
+                write_buffer: WRITE_BUFFER,
+                compression: None,
+                codec_config: ((), ()),
+                items_per_section: NZU64!(262_144),
+                page_cache: cfg.page_cache,
+            },
             translator: EightCap,
-            page_cache: cfg.page_cache,
         };
 
         let db = FinalizerState::<R, V>::new(

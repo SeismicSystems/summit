@@ -25,7 +25,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
         network.start();
@@ -238,7 +238,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -466,7 +466,7 @@ fn test_duplicate_withdrawal_blocked() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -648,7 +648,7 @@ fn test_withdrawal_wrong_source_address_rejected() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -828,7 +828,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -1010,7 +1010,7 @@ fn test_withdrawal_during_onboarding_aborts() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -1222,7 +1222,7 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -1452,7 +1452,7 @@ fn test_grouped_withdrawal_on_last_block_of_epoch_only_requeues_deferred_request
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
         network.start();
@@ -1658,7 +1658,7 @@ fn test_stake_bounds_skips_zero_balance_validator() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -1879,7 +1879,7 @@ fn test_withdrawal_overflow_rescheduled_to_next_epoch() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
         network.start();

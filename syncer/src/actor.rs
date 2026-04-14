@@ -6,9 +6,9 @@ use super::{
         mailbox::{Mailbox, Message},
     },
 };
-use crate::{Update, ingress::mailbox::Identifier as BlockID};
+use crate::{Update, ingress::mailbox::Identifier as BlockID, variant::Buffer as _};
 use bytes::Bytes;
-use commonware_broadcast::{Broadcaster, buffered};
+use commonware_broadcast::buffered;
 use commonware_codec::{Decode, Encode};
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::simplex::types::{
@@ -386,9 +386,9 @@ where
     where
         R: Resolver<
                 Key = handler::Request<B::Digest>,
-                PublicKey = <P::Scheme as commonware_cryptography::certificate::Scheme>::PublicKey,
+                PublicKey = <P::Scheme as CertificateScheme>::PublicKey,
             >,
-        K: PublicKey,
+        K: PublicKey + From<<P::Scheme as CertificateScheme>::PublicKey>,
     {
         spawn_cell!(
             self.context,
@@ -408,9 +408,9 @@ where
     ) where
         R: Resolver<
                 Key = handler::Request<B::Digest>,
-                PublicKey = <P::Scheme as commonware_cryptography::certificate::Scheme>::PublicKey,
+                PublicKey = <P::Scheme as CertificateScheme>::PublicKey,
             >,
-        K: PublicKey,
+        K: PublicKey + From<<P::Scheme as CertificateScheme>::PublicKey>,
     {
         let SyncStart {
             height: sync_height,
@@ -458,9 +458,9 @@ where
             self.finalized_height.set(height.get() as i64);
         }
 
-        // Attempt to dispatch the next finalized block to the application, if it is ready.
-        self.try_dispatch_blocks(&mut application, &mut resolver)
-            .await;
+        // Load persisted cache epochs so find_block can discover blocks
+        // written before the last shutdown.
+        self.cache.load_persisted_epochs().await;
 
         // Attempt to repair any gaps in the finalized blocks archive, if there are any.
         if self
@@ -469,6 +469,10 @@ where
         {
             self.sync_finalized().await;
         }
+
+        // Attempt to dispatch the next finalized block to the application, if it is ready.
+        self.try_dispatch_blocks(&mut application, &mut resolver)
+            .await;
 
         select_loop! {
             self.context,
@@ -553,7 +557,22 @@ where
                     }
                     Message::Proposed { round, block } => {
                         self.cache_verified(round, block.digest(), block.clone()).await;
-                        let _peers = buffer.broadcast(Recipients::All, block).await;
+                        buffer.send(round, block, Recipients::All).await;
+                    }
+                    Message::Forward {
+                        round,
+                        commitment,
+                        peers,
+                    } => {
+                        if peers.is_empty() {
+                            continue;
+                        }
+                        let Some(block) = self.find_block(&mut buffer, commitment).await else {
+                            debug!(?commitment, "block not found for forwarding");
+                            continue;
+                        };
+                        let peers: Vec<K> = peers.into_iter().map(K::from).collect();
+                        buffer.send(round, block, Recipients::Some(peers)).await;
                     }
                     Message::Verified { round, block } => {
                         self.cache_verified(round, block.digest(), block).await;
@@ -897,12 +916,22 @@ where
             Request::Finalized { height } => {
                 let height = Height::new(height);
                 let Some(bounds) = self.epocher.containing(height) else {
-                    response.send_lossy(false);
+                    debug!(
+                        %height,
+                        floor = %self.last_processed_height,
+                        "ignoring stale delivery"
+                    );
+                    response.send_lossy(true);
                     return false;
                 };
                 let epoch = bounds.epoch();
                 let Some(scheme) = self.get_scheme_certificate_verifier(epoch) else {
-                    response.send_lossy(false);
+                    debug!(
+                        %height,
+                        floor = %self.last_processed_height,
+                        "ignoring stale delivery"
+                    );
+                    response.send_lossy(true);
                     return false;
                 };
 
@@ -935,7 +964,12 @@ where
             }
             Request::Notarized { round } => {
                 let Some(scheme) = self.get_scheme_certificate_verifier(round.epoch()) else {
-                    response.send_lossy(false);
+                    debug!(
+                        ?round,
+                        floor = %self.last_processed_height,
+                        "ignoring stale delivery"
+                    );
+                    response.send_lossy(true);
                     return false;
                 };
 

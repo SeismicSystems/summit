@@ -25,7 +25,7 @@ fn test_deposit_and_withdrawal_request_single() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -244,7 +244,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -501,7 +501,7 @@ fn test_deposit_blocked_by_pending_withdrawal() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -711,7 +711,7 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -912,7 +912,7 @@ fn test_withdrawal_blocked_by_pending_deposit() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -1113,7 +1113,7 @@ fn test_deposit_and_withdrawal_same_block() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
