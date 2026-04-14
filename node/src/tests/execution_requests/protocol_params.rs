@@ -22,7 +22,7 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -177,7 +177,7 @@ fn test_protocol_param_allowed_timestamp_future() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -340,7 +340,7 @@ fn test_protocol_param_max_stake() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -539,7 +539,7 @@ fn test_protocol_param_stake_update_committee() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -809,7 +809,7 @@ fn test_protocol_param_treasury_address() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -999,7 +999,7 @@ fn test_protocol_param_max_deposits_per_epoch() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -1155,7 +1155,7 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 

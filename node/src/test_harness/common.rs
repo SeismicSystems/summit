@@ -10,12 +10,12 @@ use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::Write;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
-use commonware_p2p::{Blocker, Manager, Provider};
+use commonware_p2p::{Blocker, Manager, PeerSetUpdate, Provider, TrackedPeers};
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
     deterministic::{self, Runner},
 };
-use commonware_utils::{from_hex_formatted, ordered};
+use commonware_utils::{NZUsize, from_hex_formatted};
 use governor::Quota;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -147,7 +147,7 @@ pub fn run_until_height(
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -692,23 +692,20 @@ impl<E: Clock> Blocker for SimulatedOracle<E> {
 impl<E: Clock> Provider for SimulatedOracle<E> {
     type PublicKey = PublicKey;
 
-    async fn peer_set(&mut self, id: u64) -> Option<ordered::Set<Self::PublicKey>> {
+    async fn peer_set(&mut self, id: u64) -> Option<TrackedPeers<Self::PublicKey>> {
         self.inner.peer_set(id).await
     }
 
-    async fn subscribe(
-        &mut self,
-    ) -> mpsc::UnboundedReceiver<(
-        u64,
-        ordered::Set<Self::PublicKey>,
-        ordered::Set<Self::PublicKey>,
-    )> {
+    async fn subscribe(&mut self) -> mpsc::UnboundedReceiver<PeerSetUpdate<Self::PublicKey>> {
         self.inner.subscribe().await
     }
 }
 
 impl<E: Clock> Manager for SimulatedOracle<E> {
-    async fn track(&mut self, id: u64, peers: ordered::Set<Self::PublicKey>) {
+    async fn track<R>(&mut self, id: u64, peers: R)
+    where
+        R: Into<TrackedPeers<Self::PublicKey>> + Send,
+    {
         self.inner.track(id, peers).await
     }
 }

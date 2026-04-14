@@ -23,7 +23,7 @@ fn test_deposit_request_single() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         // Start network
@@ -208,7 +208,7 @@ fn test_deposit_request_top_up() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -447,7 +447,7 @@ fn test_deposit_less_than_min_stake_rejected() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
 
@@ -649,7 +649,7 @@ fn test_deposit_greater_than_max_stake_rejected() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 
@@ -841,7 +841,7 @@ fn test_deposit_request_invalid_node_signature() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
         network.start();
@@ -1039,7 +1039,7 @@ fn test_deposit_request_invalid_consensus_signature() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
         network.start();
@@ -1246,7 +1246,7 @@ fn test_duplicate_deposit_blocked() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10),
+                tracked_peer_sets: NZUsize!(n as usize * 10),
             },
         );
 

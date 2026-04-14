@@ -31,7 +31,7 @@ pub struct Config<B, A, St, ES>
 where
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest>,
+        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>,
     St: Strategy + Default,
     ES: Epocher,
 {
@@ -65,7 +65,7 @@ where
     E: BufferPooler + Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest>,
+        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>,
     St: Strategy + Default,
     ES: Epocher,
 {
@@ -98,7 +98,7 @@ where
     E: BufferPooler + Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest>,
+        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>,
     St: Strategy + Default,
     ES: Epocher,
 {
@@ -316,6 +316,7 @@ where
                 skip_timeout: self.skip_timeout,
                 fetch_concurrent: 2,
                 page_cache: self.page_cache.clone(),
+                forwarding: simplex::ForwardingPolicy::SilentVoters,
             },
         );
 

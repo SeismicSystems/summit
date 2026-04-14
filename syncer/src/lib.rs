@@ -144,7 +144,7 @@ mod tests {
         Clock, Metrics, Quota, Runner, buffer::paged::CacheRef, deterministic,
     };
     use commonware_storage::archive::immutable;
-    use commonware_utils::{NZU64, NZUsize};
+    use commonware_utils::{NZU64, NZUsize, ordered};
     use rand::{Rng, seq::SliceRandom};
     use std::{
         collections::BTreeMap,
@@ -371,7 +371,7 @@ mod tests {
 
     fn setup_network(
         context: deterministic::Context,
-        tracked_peer_sets: Option<usize>,
+        tracked_peer_sets: NonZeroUsize,
     ) -> Oracle<K, deterministic::Context> {
         let (network, oracle) = Network::new(
             context.with_label("network"),
@@ -432,7 +432,7 @@ mod tests {
                 .with_timeout(Some(Duration::from_secs(300))),
         );
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), Some(3));
+            let mut oracle = setup_network(context.clone(), NZUsize!(3));
             let Fixture {
                 participants,
                 schemes,
@@ -446,7 +446,7 @@ mod tests {
             // Register the initial peer set.
             let mut manager = oracle.manager();
             manager
-                .track(0, participants.clone().try_into().unwrap())
+                .track(0, ordered::Set::try_from(participants.clone()).unwrap())
                 .await;
             for (i, validator) in participants.iter().enumerate() {
                 let (application, actor, _processed_height) = setup_validator(
@@ -559,7 +559,7 @@ mod tests {
     fn test_subscribe_basic_block_delivery() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -614,7 +614,7 @@ mod tests {
     fn test_subscribe_multiple_subscriptions() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -689,7 +689,7 @@ mod tests {
     fn test_subscribe_canceled_subscriptions() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -756,12 +756,17 @@ mod tests {
     fn test_subscribe_blocks_from_different_sources() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
                 ..
             } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+
+            let mut manager = oracle.manager();
+            manager
+                .track(0, ordered::Set::try_from(participants.clone()).unwrap())
+                .await;
 
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
@@ -867,7 +872,7 @@ mod tests {
     fn test_get_info_basic_queries_present_and_missing() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -933,7 +938,7 @@ mod tests {
     fn test_get_info_latest_progression_multiple_finalizations() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1015,7 +1020,7 @@ mod tests {
     fn test_get_block_by_height_and_latest() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1074,7 +1079,7 @@ mod tests {
     fn test_get_block_by_commitment_from_sources_and_missing() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1132,7 +1137,7 @@ mod tests {
     fn test_get_finalization_by_height() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1186,7 +1191,7 @@ mod tests {
     fn test_finalize_same_height_different_views() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1304,7 +1309,7 @@ mod tests {
     fn test_broadcast_caches_block() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), None);
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,

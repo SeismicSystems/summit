@@ -101,7 +101,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
         if let Err(e) = self
             .store
-            .write_batch([(key, Some(Value::U64(epoch)))])
+            .apply_batch([(key, Some(Value::U64(epoch)))].into())
             .await
         {
             self.handle_db_error(e, "set_latest_consensus_state_epoch");
@@ -125,7 +125,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
         if let Err(e) = self
             .store
-            .write_batch([(key, Some(Value::U64(epoch)))])
+            .apply_batch([(key, Some(Value::U64(epoch)))].into())
             .await
         {
             self.handle_db_error(e, "set_latest_finalized_header_epoch");
@@ -149,7 +149,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
         if let Err(e) = self
             .store
-            .write_batch([(key, Some(Value::U64(epoch)))])
+            .apply_batch([(key, Some(Value::U64(epoch)))].into())
             .await
         {
             self.handle_db_error(e, "set_latest_checkpoint_epoch");
@@ -161,7 +161,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         let key = Self::make_consensus_state_key(epoch);
         if let Err(e) = self
             .store
-            .write_batch([(key, Some(Value::ConsensusState(Box::new(state.clone()))))])
+            .apply_batch([(key, Some(Value::ConsensusState(Box::new(state.clone()))))].into())
             .await
         {
             self.handle_db_error(e, "store_consensus_state");
@@ -202,7 +202,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn delete_consensus_state(&mut self, epoch: u64) {
         if let Err(e) = self
             .store
-            .write_batch([(Self::make_consensus_state_key(epoch), None)])
+            .apply_batch([(Self::make_consensus_state_key(epoch), None)].into())
             .await
         {
             self.handle_db_error(e, "delete_consensus_state");
@@ -220,13 +220,16 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         let key = Self::make_checkpoint_key(epoch);
         if let Err(e) = self
             .store
-            .write_batch([(
-                key,
-                Some(Value::Checkpoint(Box::new((
-                    checkpoint.clone(),
-                    last_block,
-                )))),
-            )])
+            .apply_batch(
+                [(
+                    key,
+                    Some(Value::Checkpoint(Box::new((
+                        checkpoint.clone(),
+                        last_block,
+                    )))),
+                )]
+                .into(),
+            )
             .await
         {
             self.handle_db_error(e, "store_finalized_checkpoint");
@@ -268,7 +271,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         let key = Self::make_finalized_header_key(epoch);
         if let Err(e) = self
             .store
-            .write_batch([(key, Some(Value::FinalizedHeader(Box::new(header.clone()))))])
+            .apply_batch([(key, Some(Value::FinalizedHeader(Box::new(header.clone()))))].into())
             .await
         {
             self.handle_db_error(e, "store_finalized_header");
@@ -307,7 +310,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
 
     // Commit all pending changes to the database
     pub async fn commit(&mut self) {
-        if let Err(e) = self.store.commit(None).await {
+        if let Err(e) = self.store.commit().await {
             self.handle_db_error(e, "commit");
         }
     }
@@ -408,17 +411,19 @@ mod tests {
         context: E,
     ) -> FinalizerState<E, V> {
         let config = Config {
-            log_partition: format!("{}-log", partition),
-            log_write_buffer: NZUsize!(64 * 1024),
-            log_compression: None,
-            log_codec_config: ((), ()),
-            log_items_per_section: NZU64!(4),
+            log: commonware_storage::journal::contiguous::variable::Config {
+                partition: format!("{}-log", partition),
+                write_buffer: NZUsize!(64 * 1024),
+                compression: None,
+                codec_config: ((), ()),
+                items_per_section: NZU64!(4),
+                page_cache: CacheRef::from_pooler(
+                    &context,
+                    std::num::NonZero::new(77u16).unwrap(),
+                    NZUsize!(9),
+                ),
+            },
             translator: EightCap,
-            page_cache: CacheRef::from_pooler(
-                &context,
-                std::num::NonZero::new(77u16).unwrap(),
-                NZUsize!(9),
-            ),
         };
         FinalizerState::<E, V>::new(context, config, CancellationToken::new()).await
     }

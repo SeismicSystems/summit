@@ -11,7 +11,7 @@ use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-use commonware_utils::from_hex_formatted;
+use commonware_utils::{NZUsize, from_hex_formatted};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
@@ -39,7 +39,7 @@ fn test_single_engine_with_checkpoint() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(10),
+                tracked_peer_sets: NZUsize!(10),
             },
         );
         // Start network
@@ -154,7 +154,7 @@ fn test_node_joins_later_with_checkpoint() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         let stop_height = 3 * DEFAULT_BLOCKS_PER_EPOCH;
@@ -392,7 +392,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
-                tracked_peer_sets: Some(n as usize * 10), // Each engine may subscribe multiple times
+                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
             },
         );
         let stop_height = end_epoch * DEFAULT_BLOCKS_PER_EPOCH;
