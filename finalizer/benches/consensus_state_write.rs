@@ -84,17 +84,19 @@ fn main() {
 
     executor.start(|context| async move {
         let config = Config {
-            log_partition: "bench-log".to_string(),
-            log_write_buffer: NZUsize!(64 * 1024),
-            log_compression: None,
-            log_codec_config: ((), ()),
-            log_items_per_section: NZU64!(4),
+            log: commonware_storage::journal::contiguous::variable::Config {
+                partition: "bench-log".to_string(),
+                write_buffer: NZUsize!(64 * 1024),
+                compression: None,
+                codec_config: ((), ()),
+                items_per_section: NZU64!(4),
+                page_cache: CacheRef::from_pooler(
+                    &context,
+                    std::num::NonZero::new(77u16).unwrap(),
+                    NZUsize!(9),
+                ),
+            },
             translator: EightCap,
-            page_cache: CacheRef::from_pooler(
-                &context,
-                std::num::NonZero::new(77u16).unwrap(),
-                NZUsize!(9),
-            ),
         };
 
         let mut db =
