@@ -118,6 +118,7 @@ tikv-jemalloc-ctl = { version = "0.6", optional = true, features = ["stats"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = { version = "0.17.0", optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 commonware-macros.workspace = true
@@ -146,6 +147,7 @@ prom = [
   "http",
   "eyre",
   "procfs",
+  "libc",
   "summit-types/prom",
 ]
 tokio-console = ["console-subscriber"]

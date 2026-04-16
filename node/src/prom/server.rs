@@ -67,6 +67,7 @@ impl MetricServer {
         Collector::default().describe();
         describe_memory_stats();
         describe_io_stats();
+        describe_disk_stats();
 
         Ok(())
     }
@@ -261,6 +262,33 @@ fn describe_io_stats() {
 
 #[cfg(not(target_os = "linux"))]
 const fn describe_io_stats() {}
+
+#[cfg(target_os = "linux")]
+fn describe_disk_stats() {
+    describe_gauge!(
+        "disk.total_bytes",
+        Unit::Bytes,
+        "Total size of the filesystem"
+    );
+    describe_gauge!(
+        "disk.free_bytes",
+        Unit::Bytes,
+        "Free bytes on the filesystem (including reserved)"
+    );
+    describe_gauge!(
+        "disk.available_bytes",
+        Unit::Bytes,
+        "Bytes available to non-root users"
+    );
+    describe_gauge!(
+        "disk.used_bytes",
+        Unit::Bytes,
+        "Used bytes on the filesystem"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn describe_disk_stats() {}
 
 #[cfg(test)]
 mod tests {
