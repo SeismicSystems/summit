@@ -64,6 +64,7 @@ impl MetricServer {
         describe_db_metrics();
         describe_static_file_metrics();
         describe_ssz_metrics();
+        describe_critical_error_metrics();
         Collector::default().describe();
         describe_memory_stats();
         describe_io_stats();
@@ -202,6 +203,15 @@ fn describe_ssz_metrics() {
     describe_histogram!(
         "ssz_capture_state_root_micros",
         "Time to snapshot the SSZ tree for proof generation (microseconds)"
+    );
+}
+
+fn describe_critical_error_metrics() {
+    use metrics::describe_counter;
+
+    describe_counter!(
+        "critical_errors_total",
+        "Critical errors requiring immediate attention (labelled by reason)"
     );
 }
 
