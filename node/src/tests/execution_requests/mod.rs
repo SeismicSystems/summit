@@ -23,7 +23,7 @@ pub(crate) use commonware_p2p::simulated;
 pub(crate) use commonware_p2p::simulated::{Link, Network};
 pub(crate) use commonware_runtime::deterministic::Runner;
 pub(crate) use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-pub(crate) use commonware_utils::from_hex_formatted;
+pub(crate) use commonware_utils::{NZUsize, from_hex_formatted};
 pub(crate) use rand::SeedableRng;
 pub(crate) use rand::rngs::StdRng;
 pub(crate) use std::collections::{HashMap, HashSet};

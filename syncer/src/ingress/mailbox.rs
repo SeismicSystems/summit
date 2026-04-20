@@ -122,6 +122,15 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         /// The block to broadcast.
         block: B,
     },
+    /// A request to forward a block to a set of peers.
+    Forward {
+        /// The round in which the block was proposed.
+        round: Round,
+        /// The commitment of the block to forward.
+        commitment: B::Digest,
+        /// The peers to forward the block to.
+        peers: Vec<S::PublicKey>,
+    },
     /// A notification that a block has been verified by the application.
     Verified {
         /// The round in which the block was verified.
@@ -309,6 +318,22 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
             .is_err()
         {
             error!("failed to send proposed message to actor: receiver dropped");
+        }
+    }
+
+    /// Forward a block to a set of peers.
+    pub async fn forward(&self, round: Round, commitment: B::Digest, peers: Vec<S::PublicKey>) {
+        if self
+            .sender
+            .send(Message::Forward {
+                round,
+                commitment,
+                peers,
+            })
+            .await
+            .is_err()
+        {
+            error!("failed to send forward message to actor: receiver dropped");
         }
     }
 
