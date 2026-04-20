@@ -269,6 +269,9 @@ impl<
                         self.context.sleep(std::time::Duration::from_secs(5)).await;
                     } else {
                         error!(target: "critical", "finalizer started with invalid forkchoice: {forkchoice:?}, height: {}, epoch: {}", self.canonical_state.get_latest_height(), self.canonical_state.get_epoch());
+                        #[cfg(feature = "prom")]
+                        counter!("critical_errors_total", "reason" => "invalid_forkchoice", "severity" => "critical")
+                            .increment(1);
                         panic!(
                             "finalizer started with invalid forkchoice: {forkchoice:?}, height: {}, epoch: {}",
                             self.canonical_state.get_latest_height(),
@@ -361,6 +364,8 @@ impl<
                             // orchestrator, the finalizer should never receive a GetEpochGenesisHash request for the wrong epoch.
                             if epoch != self.canonical_state.get_epoch() {
                                 error!(target: "critical", "Finalizer received epoch genesis hash request from a different epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.get_epoch(), epoch);
+                                #[cfg(feature = "prom")]
+                                counter!("critical_errors_total", "reason" => "epoch_mismatch", "severity" => "critical").increment(1);
                             }
                             let _ = response.send(self.canonical_state.get_epoch_genesis_hash());
                         },
@@ -1381,6 +1386,8 @@ async fn execute_block<
             ?eth_block_hash,
             "block validation failed, not executing but keeping in chain"
         );
+        #[cfg(feature = "prom")]
+        counter!("critical_errors_total", "reason" => "block_validation_failed", "severity" => "critical").increment(1);
     }
 
     state.set_latest_height(new_height);
@@ -1484,6 +1491,8 @@ async fn parse_execution_requests<
                                                     // The deposit contract verifies that the withdrawal credentials
                                                     // follow the expected format, so this should never happen.
                                                     error!(target: "critical", reason = "failed to parse withdrawal credentials (this is not a Summit error)", ?deposit_request);
+                                                    #[cfg(feature = "prom")]
+                                                    counter!("critical_errors_total", "reason" => "invalid_withdrawal_credentials", "severity" => "critical").increment(1);
                                                     warn!(
                                                         "Failed to parse withdrawal credentials: {e}"
                                                     );
@@ -1516,6 +1525,8 @@ async fn parse_execution_requests<
                                             // The deposit contract verifies that the withdrawal credentials
                                             // follow the expected format, so this should never happen.
                                             error!(target: "critical", reason = "failed to parse withdrawal credentials (this is not a Summit error)", ?deposit_request);
+                                            #[cfg(feature = "prom")]
+                                            counter!("critical_errors_total", "reason" => "invalid_withdrawal_credentials", "severity" => "critical").increment(1);
                                             warn!("Failed to parse withdrawal credentials: {e}");
                                             continue;
                                         }

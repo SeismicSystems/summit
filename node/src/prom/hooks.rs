@@ -48,6 +48,7 @@ impl Default for HooksBuilder {
                 Box::new(|| Collector::default().collect()),
                 Box::new(collect_memory_stats),
                 Box::new(collect_io_stats),
+                Box::new(collect_disk_stats),
             ],
         }
     }
@@ -175,3 +176,56 @@ fn collect_io_stats() {
 
 #[cfg(not(target_os = "linux"))]
 const fn collect_io_stats() {}
+
+#[cfg(target_os = "linux")]
+fn collect_disk_stats() {
+    use metrics::gauge;
+    use std::ffi::CString;
+    use std::fs;
+    use std::mem::MaybeUninit;
+    use tracing::error;
+
+    let Ok(contents) = fs::read_to_string("/proc/mounts")
+        .map_err(|error| error!(%error, "Failed to read /proc/mounts"))
+    else {
+        return;
+    };
+
+    for line in contents.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 3 {
+            continue;
+        }
+        let device = fields[0];
+        if !device.starts_with('/') {
+            continue;
+        }
+        let mount_point = fields[1];
+
+        let Some(c_path) = CString::new(mount_point).ok() else {
+            continue;
+        };
+
+        let mut buf = MaybeUninit::<libc::statvfs>::uninit();
+        let ret = unsafe { libc::statvfs(c_path.as_ptr(), buf.as_mut_ptr()) };
+        if ret != 0 {
+            continue;
+        }
+        let stat = unsafe { buf.assume_init() };
+
+        let block_size = stat.f_frsize;
+        let total = stat.f_blocks * block_size;
+        let free = stat.f_bfree * block_size;
+        let available = stat.f_bavail * block_size;
+        let used = total.saturating_sub(free);
+
+        gauge!("disk.total_bytes", "mountpoint" => mount_point.to_string()).set(total as f64);
+        gauge!("disk.free_bytes", "mountpoint" => mount_point.to_string()).set(free as f64);
+        gauge!("disk.available_bytes", "mountpoint" => mount_point.to_string())
+            .set(available as f64);
+        gauge!("disk.used_bytes", "mountpoint" => mount_point.to_string()).set(used as f64);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn collect_disk_stats() {}

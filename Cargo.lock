@@ -5988,6 +5988,7 @@ dependencies = [
  "http",
  "jsonrpsee",
  "jsonrpsee-server 0.25.1",
+ "libc",
  "logroller",
  "metrics",
  "metrics-exporter-prometheus",

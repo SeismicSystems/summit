@@ -64,9 +64,11 @@ impl MetricServer {
         describe_db_metrics();
         describe_static_file_metrics();
         describe_ssz_metrics();
+        describe_critical_error_metrics();
         Collector::default().describe();
         describe_memory_stats();
         describe_io_stats();
+        describe_disk_stats();
 
         Ok(())
     }
@@ -204,6 +206,15 @@ fn describe_ssz_metrics() {
     );
 }
 
+fn describe_critical_error_metrics() {
+    use metrics::describe_counter;
+
+    describe_counter!(
+        "critical_errors_total",
+        "Critical errors requiring immediate attention (labelled by reason)"
+    );
+}
+
 #[cfg(all(feature = "jemalloc", unix))]
 fn describe_memory_stats() {
     describe_gauge!(
@@ -261,6 +272,33 @@ fn describe_io_stats() {
 
 #[cfg(not(target_os = "linux"))]
 const fn describe_io_stats() {}
+
+#[cfg(target_os = "linux")]
+fn describe_disk_stats() {
+    describe_gauge!(
+        "disk.total_bytes",
+        Unit::Bytes,
+        "Total size of the filesystem"
+    );
+    describe_gauge!(
+        "disk.free_bytes",
+        Unit::Bytes,
+        "Free bytes on the filesystem (including reserved)"
+    );
+    describe_gauge!(
+        "disk.available_bytes",
+        Unit::Bytes,
+        "Bytes available to non-root users"
+    );
+    describe_gauge!(
+        "disk.used_bytes",
+        Unit::Bytes,
+        "Used bytes on the filesystem"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn describe_disk_stats() {}
 
 #[cfg(test)]
 mod tests {
