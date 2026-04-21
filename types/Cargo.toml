@@ -25,6 +25,7 @@ futures.workspace = true
 # for reth.rs module (e2e feature only)
 alloy-genesis = { workspace = true, optional = true }
 rand.workspace = true
+rand_core.workspace = true
 url = { workspace = true, optional = true }
 anyhow.workspace = true
 dirs.workspace = true

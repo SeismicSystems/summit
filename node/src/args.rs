@@ -11,6 +11,7 @@ use commonware_codec::Read;
 use commonware_cryptography::{Signer, certificate::Scheme};
 use commonware_p2p::{Ingress, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
+use summit_finalizer::FinalizerMailbox;
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
 
@@ -39,11 +40,13 @@ use summit_types::FinalizedHeader;
 use summit_types::RethEngineClient;
 use summit_types::bootstrap::Bootstrappers;
 use summit_types::checkpoint::{self, Checkpoint};
+use summit_types::ext_private_key::ExtPrivateKey;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{
-    Block,
+    Block, EngineClient,
     account::{ValidatorAccount, ValidatorStatus},
+    bls12381,
 };
 use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use summit_types::{consensus_state::ConsensusState, scheme::MultisigScheme};
@@ -148,6 +151,10 @@ pub struct RunFlags {
     /// When set, events emitted with target "critical" are written to files in this directory.
     #[arg(long)]
     pub critical_log_dir: Option<String>,
+
+    /// Observer mode: RPC-only node that follows the chain without proposing or voting on blocks.
+    #[arg(long, default_value_t = false)]
+    pub observer: bool,
 }
 
 impl Command {
@@ -203,7 +210,6 @@ impl Command {
 
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
         let key_store = expect_key_store(&flags.key_store_path);
-        let signer = key_store.node_key.clone();
 
         // Initialize runtime
         let worker_threads = flags
@@ -309,7 +315,7 @@ impl Command {
                 .map(|v| (v.node_public_key, v.ip_address))
                 .collect();
 
-            let our_public_key = signer.public_key();
+            let our_public_key = key_store.node_key.public_key();
             if !network_committee
                 .iter()
                 .any(|(key, _)| key == &our_public_key)
@@ -358,65 +364,59 @@ impl Command {
                         .collect()
                 };
 
-            let mut p2p_cfg = authenticated::discovery::Config::recommended(
-                signer.clone(),
-                genesis.namespace.as_bytes(),
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
-                our_ip,
-                network_committee_ingress,
-                genesis.max_message_size_bytes as u32,
-            );
-            p2p_cfg.mailbox_size = MAILBOX_SIZE;
+            let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
+            let namespace = genesis.namespace.as_bytes();
+            let max_message_size = genesis.max_message_size_bytes as u32;
 
-            // Start p2p
-            let (mut network, oracle) =
-                authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
-
-            let oracle = DiscoveryOracle::new(oracle);
-            let config = EngineConfig::get_engine_config(
-                engine_client,
-                oracle,
-                key_store,
-                peers,
-                flags.db_prefix.clone(),
-                &genesis,
-                initial_state,
-                maybe_last_block,
-                maybe_finalized_header,
-            )
-            .unwrap();
-
-            // Register pending channel
-            let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
-            let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
-
-            // Register recovered channel
-            let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
-            let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
-
-            // Register resolver channel
-            let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
-            let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
-
-            // Register broadcast channel
-            let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
-            let broadcaster =
-                network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
-
-            let backfiller =
-                network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
-
-            // create engine
-            let engine: Engine<_, _, _, _> =
-                Engine::new(context.with_label("engine"), config).await;
-
-            let finalizer_mailbox = engine.finalizer_mailbox.clone();
-
-            // Start engine
-            let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
-
-            // Create network
-            let p2p = network.start();
+            let (engine, p2p, finalizer_mailbox) = if flags.observer {
+                let signer = ExtPrivateKey::new(key_store.node_key.clone());
+                let mut p2p_cfg = authenticated::discovery::Config::recommended(
+                    signer,
+                    namespace,
+                    listen,
+                    our_ip,
+                    network_committee_ingress,
+                    max_message_size,
+                );
+                p2p_cfg.mailbox_size = MAILBOX_SIZE;
+                start_network_and_engine(
+                    context.clone(),
+                    p2p_cfg,
+                    engine_client,
+                    key_store,
+                    peers,
+                    flags.db_prefix.clone(),
+                    &genesis,
+                    initial_state,
+                    maybe_last_block,
+                    maybe_finalized_header,
+                )
+                .await
+            } else {
+                let signer = key_store.node_key.clone();
+                let mut p2p_cfg = authenticated::discovery::Config::recommended(
+                    signer,
+                    namespace,
+                    listen,
+                    our_ip,
+                    network_committee_ingress,
+                    max_message_size,
+                );
+                p2p_cfg.mailbox_size = MAILBOX_SIZE;
+                start_network_and_engine(
+                    context.clone(),
+                    p2p_cfg,
+                    engine_client,
+                    key_store,
+                    peers,
+                    flags.db_prefix.clone(),
+                    &genesis,
+                    initial_state,
+                    maybe_last_block,
+                    maybe_finalized_header,
+                )
+                .await
+            };
 
             // Start RPC server
             let key_store_path = flags.key_store_path.clone();
@@ -542,63 +542,59 @@ pub fn run_node_local(
                     .collect()
             };
 
-        let mut p2p_cfg = authenticated::discovery::Config::local(
-            key_store.node_key.clone(),
-            genesis.namespace.as_bytes(),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port),
-            our_ip,
-            network_committee_ingress,
-            genesis.max_message_size_bytes as u32,
-        );
-        p2p_cfg.mailbox_size = MAILBOX_SIZE;
+        let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
+        let namespace = genesis.namespace.as_bytes();
+        let max_message_size = genesis.max_message_size_bytes as u32;
 
-        // Start p2p
-        let (mut network, oracle) =
-            authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
-
-        let oracle = DiscoveryOracle::new(oracle);
-
-        let config = EngineConfig::get_engine_config(
-            engine_client,
-            oracle,
-            key_store,
-            peers,
-            flags.db_prefix.clone(),
-            &genesis,
-            initial_state,
-            checkpoint_parent_block,
-            None,
-        )
-        .unwrap();
-
-        // Register pending channel
-        let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
-        let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
-
-        // Register recovered channel
-        let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
-        let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
-
-        // Register resolver channel
-        let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
-        let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
-
-        // Register broadcast channel
-        let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
-        let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
-
-        let backfiller =
-            network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
-
-        // create engine
-        let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
-
-        let finalizer_mailbox = engine.finalizer_mailbox.clone();
-        // Start engine
-        let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
-
-        // Create network
-        let p2p = network.start();
+        let (engine, p2p, finalizer_mailbox) = if flags.observer {
+            let signer = ExtPrivateKey::new(key_store.node_key.clone());
+            let mut p2p_cfg = authenticated::discovery::Config::local(
+                signer,
+                namespace,
+                listen,
+                our_ip,
+                network_committee_ingress,
+                max_message_size,
+            );
+            p2p_cfg.mailbox_size = MAILBOX_SIZE;
+            start_network_and_engine(
+                context.clone(),
+                p2p_cfg,
+                engine_client,
+                key_store,
+                peers,
+                flags.db_prefix.clone(),
+                &genesis,
+                initial_state,
+                checkpoint_parent_block,
+                None,
+            )
+            .await
+        } else {
+            let signer = key_store.node_key.clone();
+            let mut p2p_cfg = authenticated::discovery::Config::local(
+                signer,
+                namespace,
+                listen,
+                our_ip,
+                network_committee_ingress,
+                max_message_size,
+            );
+            p2p_cfg.mailbox_size = MAILBOX_SIZE;
+            start_network_and_engine(
+                context.clone(),
+                p2p_cfg,
+                engine_client,
+                key_store,
+                peers,
+                flags.db_prefix.clone(),
+                &genesis,
+                initial_state,
+                checkpoint_parent_block,
+                None,
+            )
+            .await
+        };
 
         // Start prometheus endpoint
         #[cfg(feature = "prom")]
@@ -634,6 +630,67 @@ pub fn run_node_local(
             error!(?e, "task failed");
         }
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_network_and_engine<S, EC>(
+    context: tokio::Context,
+    p2p_cfg: authenticated::discovery::Config<S>,
+    engine_client: EC,
+    key_store: KeyStore<PrivateKey>,
+    peers: Vec<(PublicKey, bls12381::PublicKey)>,
+    db_prefix: String,
+    genesis: &Genesis,
+    initial_state: ConsensusState,
+    checkpoint_last_block: Option<Block>,
+    checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
+) -> (
+    Handle<()>,
+    Handle<()>,
+    FinalizerMailbox<MultisigScheme, Block>,
+)
+where
+    S: Signer<PublicKey = PublicKey>,
+    EC: EngineClient,
+{
+    let (mut network, oracle) =
+        authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
+
+    let oracle = DiscoveryOracle::new(oracle);
+    let config = EngineConfig::get_engine_config(
+        engine_client,
+        oracle,
+        key_store,
+        peers,
+        db_prefix,
+        genesis,
+        initial_state,
+        checkpoint_last_block,
+        checkpoint_finalized_header,
+    )
+    .unwrap();
+
+    let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
+    let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
+
+    let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
+    let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
+
+    let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
+    let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
+
+    let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
+    let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
+
+    let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
+
+    let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
+    let finalizer_mailbox = engine.finalizer_mailbox.clone();
+    let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
+
+    let p2p = network.start();
+
+    (engine, p2p, finalizer_mailbox)
 }
 
 fn get_initial_state(
