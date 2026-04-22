@@ -374,7 +374,7 @@ async fn run_node_inner(
     let max_message_size = genesis.max_message_size_bytes as u32;
 
     let (engine, p2p, finalizer_mailbox) = if let Some(index) = flags.observer {
-        let signer = ExtPrivateKey::new(key_store.node_key.clone(), index);
+        let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, index);
         let mut p2p_cfg = authenticated::discovery::Config::recommended(
             signer,
             namespace,
@@ -564,7 +564,7 @@ async fn run_node_local_inner(
     let max_message_size = genesis.max_message_size_bytes as u32;
 
     let (engine, p2p, finalizer_mailbox) = if let Some(index) = flags.observer {
-        let signer = ExtPrivateKey::new(key_store.node_key.clone(), index);
+        let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, index);
         let mut p2p_cfg = authenticated::discovery::Config::local(
             signer,
             namespace,
