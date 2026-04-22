@@ -32,6 +32,7 @@ use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
 use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
+use summit_types::ext_private_key::derive_observer_keys;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::protocol_params::ProtocolParam;
 use summit_types::scheme::EpochTransition;
@@ -106,6 +107,7 @@ pub struct Finalizer<
     protocol_version_digest: Digest,
     oracle: O,
     node_public_key: PublicKey,
+    observers_per_validator: u32,
     validator_exit: bool,
     cancellation_token: CancellationToken,
     _signer_marker: PhantomData<S>,
@@ -207,6 +209,7 @@ impl<
                 protocol_consts: cfg.protocol_consts,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
                 node_public_key: cfg.node_public_key,
+                observers_per_validator: cfg.observers_per_validator,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,
                 _signer_marker: PhantomData,
@@ -237,8 +240,13 @@ impl<
             .iter()
             .map(|(node_key, _)| node_key.clone())
             .collect();
+        let observer_keys = derive_observer_keys(&network_keys, self.observers_per_validator);
         self.oracle
-            .track(self.canonical_state.get_epoch(), network_keys)
+            .track(
+                self.canonical_state.get_epoch(),
+                network_keys,
+                observer_keys,
+            )
             .await;
 
         orchestrator_mailbox
@@ -646,12 +654,17 @@ impl<
             // Create the list of validators for the p2p network for the next epoch.
             // We also include the validators that already staked and are waiting to join the committee.
             let active_validators = self.canonical_state.get_active_or_joining_validators();
-            let network_keys = active_validators
+            let network_keys: Vec<_> = active_validators
                 .iter()
                 .map(|(node_key, _)| node_key.clone())
                 .collect();
+            let observer_keys = derive_observer_keys(&network_keys, self.observers_per_validator);
             self.oracle
-                .track(self.canonical_state.get_epoch(), network_keys)
+                .track(
+                    self.canonical_state.get_epoch(),
+                    network_keys,
+                    observer_keys,
+                )
                 .await;
 
             // Send the new validator list to the orchestrator and start the Simplex engine

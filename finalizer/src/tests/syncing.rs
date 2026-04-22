@@ -192,6 +192,7 @@ fn test_initial_startup_sync_waits_for_valid() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -262,6 +263,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -332,6 +334,7 @@ fn test_execute_block_retries_on_syncing() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -417,6 +420,7 @@ fn test_notarized_block_retries_on_syncing() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -494,6 +498,7 @@ fn test_checkpoint_startup_full_flow() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };

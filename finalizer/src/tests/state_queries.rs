@@ -171,6 +171,7 @@ fn test_get_latest_epoch() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -280,6 +281,7 @@ fn test_get_epoch_genesis_hash() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -377,6 +379,7 @@ fn test_get_aux_data_from_canonical_chain() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -448,6 +451,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };

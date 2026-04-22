@@ -649,6 +649,7 @@ where
         checkpoint_last_block: None,
         checkpoint_finalized_header: None,
         blocks_per_epoch: DEFAULT_BLOCKS_PER_EPOCH,
+        observers_per_validator: 0,
     }
 }
 
@@ -672,10 +673,12 @@ impl<E: Clock> SimulatedOracle<E> {
 }
 
 impl<E: Clock> NetworkOracle<PublicKey> for SimulatedOracle<E> {
-    async fn track(&mut self, index: u64, peers: Vec<PublicKey>) {
+    async fn track(&mut self, index: u64, primary: Vec<PublicKey>, secondary: Vec<PublicKey>) {
         use commonware_utils::ordered::Set;
+        let primary = Set::try_from(primary).expect("primary peers should be unique");
+        let secondary = Set::try_from(secondary).expect("secondary peers should be unique");
         self.inner
-            .track(index, Set::try_from(peers).expect("peers should be unique"))
+            .track(index, TrackedPeers::new(primary, secondary))
             .await
     }
 }

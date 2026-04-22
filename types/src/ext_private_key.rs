@@ -118,6 +118,15 @@ pub fn derive_child_public(master_pk: PublicKey, index: u32) -> PublicKey {
     PublicKey::decode(bytes.as_ref()).expect("child pubkey is a valid Ed25519 point")
 }
 
+/// For each validator master pubkey, derive the first `n` child pubkeys via
+/// [`derive_child_public`] and flatten into a single list.
+pub fn derive_observer_keys(validator_pks: &[PublicKey], n: u32) -> Vec<PublicKey> {
+    validator_pks
+        .iter()
+        .flat_map(|pk| (0..n).map(move |i| derive_child_public(pk.clone(), i)))
+        .collect()
+}
+
 fn expand_seed(seed: &[u8; 32]) -> (Scalar, [u8; 32]) {
     let h = Sha512::digest(seed);
     let mut a_bytes = [0u8; 32];

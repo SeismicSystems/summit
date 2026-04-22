@@ -100,6 +100,7 @@ fn test_checkpoint_verification_fixed_committee() {
             treasury_address: Address::ZERO.to_string(),
             max_deposits_per_epoch: 10,
             max_withdrawals_per_epoch: 16,
+            observers_per_validator: 0,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -320,6 +321,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             treasury_address: Address::ZERO.to_string(),
             max_deposits_per_epoch: 10,
             max_withdrawals_per_epoch: 16,
+            observers_per_validator: 0,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();

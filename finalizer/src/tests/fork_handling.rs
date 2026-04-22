@@ -162,6 +162,7 @@ fn test_orphaned_block_processed_when_parent_arrives() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -243,6 +244,7 @@ fn test_multiple_forks_tracked() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -325,6 +327,7 @@ fn test_dead_fork_block_discarded() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -423,6 +426,7 @@ fn test_fork_states_pruned_after_finalization() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -540,6 +544,7 @@ fn test_orphaned_blocks_pruned_after_finalization() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -649,6 +654,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -754,6 +760,7 @@ fn test_competing_fork_pruned_on_finalization() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
+            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };

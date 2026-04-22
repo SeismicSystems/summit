@@ -180,6 +180,7 @@ fn test_validator_exit_triggers_cancellation() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_pubkey,
+            observers_per_validator: 0,
             cancellation_token,
             _variant_marker: PhantomData,
         };

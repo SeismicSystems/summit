@@ -203,7 +203,7 @@ impl EngineClient for MockEngineClient {
 pub struct MockNetworkOracle;
 
 impl NetworkOracle<PublicKey> for MockNetworkOracle {
-    async fn track(&mut self, _index: u64, _peers: Vec<PublicKey>) {}
+    async fn track(&mut self, _index: u64, _primary: Vec<PublicKey>, _secondary: Vec<PublicKey>) {}
 }
 
 impl commonware_p2p::Blocker for MockNetworkOracle {

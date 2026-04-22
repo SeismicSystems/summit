@@ -27,6 +27,8 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub protocol_version: u32,
     /// The node's own public key
     pub node_public_key: PublicKey,
+    /// Number of observer keys authorized per validator as secondary p2p peers.
+    pub observers_per_validator: u32,
     pub cancellation_token: CancellationToken,
     pub _variant_marker: PhantomData<V>,
 }
