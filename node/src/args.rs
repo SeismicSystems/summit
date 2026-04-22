@@ -1,7 +1,7 @@
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
+        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_ext_key_store, expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -40,7 +40,6 @@ use summit_types::FinalizedHeader;
 use summit_types::RethEngineClient;
 use summit_types::bootstrap::Bootstrappers;
 use summit_types::checkpoint::{self, Checkpoint};
-use summit_types::ext_private_key::ExtPrivateKey;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{
@@ -48,7 +47,7 @@ use summit_types::{
     account::{ValidatorAccount, ValidatorStatus},
     bls12381,
 };
-use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
+use summit_types::{Genesis, PublicKey, Validator, utils::get_expanded_path};
 use summit_types::{consensus_state::ConsensusState, scheme::MultisigScheme};
 use tracing::{Level, error, info, warn};
 
@@ -204,12 +203,7 @@ impl Command {
                 finalized_headers_chain: None,
             }
         };
-        let maybe_checkpoint = loaded.consensus_state;
-        let maybe_last_block = loaded.last_block;
-        let maybe_finalized_header = loaded.finalized_header;
-
         let store_path = get_expanded_path(&flags.store_path).expect("Invalid store path");
-        let key_store = expect_key_store(&flags.key_store_path);
 
         // Initialize runtime
         let worker_threads = flags
@@ -222,219 +216,207 @@ impl Command {
             .with_catch_panics(false);
         let executor = tokio::Runner::new(cfg);
 
+        let flags = flags.clone();
+
         executor.start(|context| async move {
-            let context = context.with_label("summit_cw");
-            let (genesis_tx, genesis_rx) = oneshot::channel();
-
-            let cancel_token = CancellationToken::new();
-            let cloned_token = cancel_token.clone();
-
-            // use the context async move to spawn a new runtime
-            let genesis_path = flags.genesis_path.clone();
-            let key_store_path = flags.key_store_path.clone();
-            let rpc_port = flags.rpc_port;
-            let _rpc_handle = context
-                .with_label("rpc_genesis")
-                .spawn(move |_context| async move {
-                    let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                    if let Err(e) = start_rpc_server_for_genesis(
-                        genesis_sender,
-                        key_store_path,
-                        rpc_port,
-                        cloned_token,
-                    )
-                    .await
-                    {
-                        error!("RPC server failed: {}", e);
-                    }
-                });
-
-            // Wait for genesis if needed
-            let _ = genesis_rx.await;
-            // Shut down the genesis rpc server after receiving the genesis file
-            cancel_token.cancel();
-
-            let genesis =
-                Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
-
-            let mut committee: Vec<Validator> =
-                genesis.get_validators().expect("Failed to get validators");
-            committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
-
-            info!(
-                namespace = genesis.namespace,
-                genesis_validators = committee.len(),
-                min_stake = genesis.validator_minimum_stake,
-                max_stake = genesis.validator_maximum_stake,
-                "loaded genesis configuration"
-            );
-
-            // Verify checkpoint if finalized headers chain was provided
-            if let (Some(raw_checkpoint), Some(headers_chain)) =
-                (&loaded.raw_checkpoint, &loaded.finalized_headers_chain)
-            {
-                checkpoint::verify_checkpoint_chain(&genesis, headers_chain, raw_checkpoint)
-                    .expect("checkpoint verification failed");
-                info!(
-                    epochs_verified = headers_chain.len(),
-                    "checkpoint verified successfully"
-                );
-            } else if loaded.raw_checkpoint.is_some() {
-                warn!("checkpoint loaded without finalized headers chain - skipping verification");
-            }
-
-            let initial_state = get_initial_state(&genesis, &committee, maybe_checkpoint);
-            let peers = initial_state.get_validator_keys();
-
-            let engine_ipc_path = get_expanded_path(&flags.engine_ipc_path)
-                .expect("failed to expand engine ipc path");
-
-            #[allow(unused)]
-            #[cfg(feature = "bench")]
-            let engine_client = {
-                let block_dir = flags
-                    .bench_block_dir
-                    .as_ref()
-                    .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
-                    .expect("bench_block_dir is required when using bench feature");
-                EthereumHistoricalEngineClient::new(
-                    engine_ipc_path.to_string_lossy().to_string(),
-                    block_dir,
-                )
-                .await
-            };
-
-            #[cfg(not(feature = "bench"))]
-            let engine_client =
-                RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
-
-            let our_ip = get_node_ip(flags, &key_store, &committee).await;
-
-            let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
-                .into_iter()
-                .map(|v| (v.node_public_key, v.ip_address))
-                .collect();
-
-            let our_public_key = key_store.node_key.public_key();
-            if !network_committee
-                .iter()
-                .any(|(key, _)| key == &our_public_key)
-            {
-                network_committee.push((our_public_key, our_ip));
-                network_committee.sort();
-            }
-
-            // Configure telemetry with optional critical file logger
-            let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
-            let critical_log_dir = flags
-                .critical_log_dir
-                .as_ref()
-                .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
-            let _critical_log_guard =
-                crate::telemetry::init(log_level, critical_log_dir.as_deref());
-
-            // Start prometheus endpoint (merges Summit + commonware runtime metrics)
-            #[cfg(feature = "prom")]
-            {
-                use crate::prom::hooks::Hooks;
-                use crate::prom::server::{MetricServer, MetricServerConfig};
-                use std::net::SocketAddr;
-
-                let hooks = Hooks::builder().build();
-
-                let listen_addr = format!("{}:{}", flags.prom_ip, flags.prom_port)
-                    .parse::<SocketAddr>()
-                    .unwrap();
-                let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
-                let stop_signal = context.stopped();
-                MetricServer::new(config).serve(stop_signal).await.unwrap();
-            }
-
-            // configure network
-            let network_committee_ingress: Vec<_> =
-                if let Some(ref bootstrappers_path) = flags.bootstrappers {
-                    Bootstrappers::load_from_file(bootstrappers_path)
-                        .expect("Failed to load bootstrappers file")
-                        .to_ingress_list()
-                        .expect("Failed to parse bootstrappers")
-                } else {
-                    network_committee
-                        .iter()
-                        .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
-                        .collect()
-                };
-
-            let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
-            let namespace = genesis.namespace.as_bytes();
-            let max_message_size = genesis.max_message_size_bytes as u32;
-
-            let (engine, p2p, finalizer_mailbox) = if flags.observer {
-                let signer = ExtPrivateKey::new(key_store.node_key.clone());
-                let mut p2p_cfg = authenticated::discovery::Config::recommended(
-                    signer,
-                    namespace,
-                    listen,
-                    our_ip,
-                    network_committee_ingress,
-                    max_message_size,
-                );
-                p2p_cfg.mailbox_size = MAILBOX_SIZE;
-                start_network_and_engine(
-                    context.clone(),
-                    p2p_cfg,
-                    engine_client,
-                    key_store,
-                    peers,
-                    flags.db_prefix.clone(),
-                    &genesis,
-                    initial_state,
-                    maybe_last_block,
-                    maybe_finalized_header,
-                )
-                .await
+            if flags.observer {
+                let key_store = expect_ext_key_store(&flags.key_store_path);
+                run_node_inner(context, flags, key_store, loaded).await;
             } else {
-                let signer = key_store.node_key.clone();
-                let mut p2p_cfg = authenticated::discovery::Config::recommended(
-                    signer,
-                    namespace,
-                    listen,
-                    our_ip,
-                    network_committee_ingress,
-                    max_message_size,
-                );
-                p2p_cfg.mailbox_size = MAILBOX_SIZE;
-                start_network_and_engine(
-                    context.clone(),
-                    p2p_cfg,
-                    engine_client,
-                    key_store,
-                    peers,
-                    flags.db_prefix.clone(),
-                    &genesis,
-                    initial_state,
-                    maybe_last_block,
-                    maybe_finalized_header,
-                )
-                .await
-            };
-
-            // Start RPC server
-            let key_store_path = flags.key_store_path.clone();
-            let rpc_port = flags.rpc_port;
-            let stop_signal = context.stopped();
-            let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-                if let Err(e) =
-                    start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
-                {
-                    error!("RPC server failed: {}", e);
-                }
-            });
-
-            // Wait for any task to error
-            if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
-                error!(?e, "task failed");
+                let key_store = expect_key_store(&flags.key_store_path);
+                run_node_inner(context, flags, key_store, loaded).await;
             }
         })
+    }
+}
+
+async fn run_node_inner<S>(
+    context: tokio::Context,
+    flags: RunFlags,
+    key_store: KeyStore<S>,
+    loaded: LoadedCheckpoint<MultisigScheme>,
+) where
+    S: Signer<PublicKey = PublicKey> + Clone + 'static,
+{
+    let context = context.with_label("summit_cw");
+    let (genesis_tx, genesis_rx) = oneshot::channel();
+
+    let cancel_token = CancellationToken::new();
+    let cloned_token = cancel_token.clone();
+
+    let genesis_path = flags.genesis_path.clone();
+    let genesis_key_store_path = flags.key_store_path.clone();
+    let genesis_rpc_port = flags.rpc_port;
+    let _rpc_handle = context
+        .with_label("rpc_genesis")
+        .spawn(move |_context| async move {
+            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+            if let Err(e) = start_rpc_server_for_genesis(
+                genesis_sender,
+                genesis_key_store_path,
+                genesis_rpc_port,
+                cloned_token,
+            )
+            .await
+            {
+                error!("RPC server failed: {}", e);
+            }
+        });
+
+    // Wait for genesis if needed
+    let _ = genesis_rx.await;
+    // Shut down the genesis rpc server after receiving the genesis file
+    cancel_token.cancel();
+
+    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+
+    let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
+    committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
+
+    info!(
+        namespace = genesis.namespace,
+        genesis_validators = committee.len(),
+        min_stake = genesis.validator_minimum_stake,
+        max_stake = genesis.validator_maximum_stake,
+        "loaded genesis configuration"
+    );
+
+    // Verify checkpoint if finalized headers chain was provided
+    if let (Some(raw_checkpoint), Some(headers_chain)) =
+        (&loaded.raw_checkpoint, &loaded.finalized_headers_chain)
+    {
+        checkpoint::verify_checkpoint_chain(&genesis, headers_chain, raw_checkpoint)
+            .expect("checkpoint verification failed");
+        info!(
+            epochs_verified = headers_chain.len(),
+            "checkpoint verified successfully"
+        );
+    } else if loaded.raw_checkpoint.is_some() {
+        warn!("checkpoint loaded without finalized headers chain - skipping verification");
+    }
+
+    let initial_state = get_initial_state(&genesis, &committee, loaded.consensus_state);
+    let peers = initial_state.get_validator_keys();
+
+    let engine_ipc_path =
+        get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
+
+    #[allow(unused)]
+    #[cfg(feature = "bench")]
+    let engine_client = {
+        let block_dir = flags
+            .bench_block_dir
+            .as_ref()
+            .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+            .expect("bench_block_dir is required when using bench feature");
+        EthereumHistoricalEngineClient::new(
+            engine_ipc_path.to_string_lossy().to_string(),
+            block_dir,
+        )
+        .await
+    };
+
+    #[cfg(not(feature = "bench"))]
+    let engine_client = RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
+
+    let our_ip = get_node_ip(&flags, &key_store, &committee).await;
+
+    let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
+        .into_iter()
+        .map(|v| (v.node_public_key, v.ip_address))
+        .collect();
+
+    let our_public_key = key_store.node_key.public_key();
+    if !network_committee
+        .iter()
+        .any(|(key, _)| key == &our_public_key)
+    {
+        network_committee.push((our_public_key, our_ip));
+        network_committee.sort();
+    }
+
+    // Configure telemetry with optional critical file logger
+    let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
+    let critical_log_dir = flags
+        .critical_log_dir
+        .as_ref()
+        .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
+    let _critical_log_guard = crate::telemetry::init(log_level, critical_log_dir.as_deref());
+
+    // Start prometheus endpoint (merges Summit + commonware runtime metrics)
+    #[cfg(feature = "prom")]
+    {
+        use crate::prom::hooks::Hooks;
+        use crate::prom::server::{MetricServer, MetricServerConfig};
+        use std::net::SocketAddr;
+
+        let hooks = Hooks::builder().build();
+
+        let listen_addr = format!("{}:{}", flags.prom_ip, flags.prom_port)
+            .parse::<SocketAddr>()
+            .unwrap();
+        let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
+        let stop_signal = context.stopped();
+        MetricServer::new(config).serve(stop_signal).await.unwrap();
+    }
+
+    // configure network
+    let network_committee_ingress: Vec<_> =
+        if let Some(ref bootstrappers_path) = flags.bootstrappers {
+            Bootstrappers::load_from_file(bootstrappers_path)
+                .expect("Failed to load bootstrappers file")
+                .to_ingress_list()
+                .expect("Failed to parse bootstrappers")
+        } else {
+            network_committee
+                .iter()
+                .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
+                .collect()
+        };
+
+    let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
+    let namespace = genesis.namespace.as_bytes();
+    let max_message_size = genesis.max_message_size_bytes as u32;
+
+    let signer = key_store.node_key.clone();
+    let mut p2p_cfg = authenticated::discovery::Config::recommended(
+        signer,
+        namespace,
+        listen,
+        our_ip,
+        network_committee_ingress,
+        max_message_size,
+    );
+    p2p_cfg.mailbox_size = MAILBOX_SIZE;
+    let (engine, p2p, finalizer_mailbox) = start_network_and_engine(
+        context.clone(),
+        p2p_cfg,
+        engine_client,
+        key_store,
+        peers,
+        flags.db_prefix.clone(),
+        &genesis,
+        initial_state,
+        loaded.last_block,
+        loaded.finalized_header,
+    )
+    .await;
+
+    // Start RPC server
+    let key_store_path = flags.key_store_path.clone();
+    let rpc_port = flags.rpc_port;
+    let stop_signal = context.stopped();
+    let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+        if let Err(e) =
+            start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
+        {
+            error!("RPC server failed: {}", e);
+        }
+    });
+
+    // Wait for any task to error
+    if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
+        error!(?e, "task failed");
     }
 }
 
@@ -445,191 +427,192 @@ pub fn run_node_local(
     checkpoint_parent_block: Option<Block>,
 ) -> Handle<()> {
     context.spawn(async move |context| {
-        let context = context.with_label("summit_cw");
-        let key_store = expect_key_store(&flags.key_store_path);
-
-        let (genesis_tx, genesis_rx) = oneshot::channel();
-
-        let cancel_token = CancellationToken::new();
-        let cloned_token = cancel_token.clone();
-        // use the context async move to spawn a new runtime
-        let rpc_port = flags.rpc_port;
-        let genesis_path = flags.genesis_path.clone();
-        let key_store_path = flags.key_store_path.clone();
-        let _rpc_handle = context
-            .with_label("rpc_genesis")
-            .spawn(move |_context| async move {
-                let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-                if let Err(e) = start_rpc_server_for_genesis(
-                    genesis_sender,
-                    key_store_path,
-                    rpc_port,
-                    cloned_token,
-                )
-                .await
-                {
-                    error!("RPC server failed: {}", e);
-                }
-            });
-
-        // Wait for genesis if needed
-        let _ = genesis_rx.await;
-        // Shut down the genesis rpc server after receiving the genesis file
-        cancel_token.cancel();
-
-        let genesis =
-            Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
-
-        let mut committee: Vec<Validator> =
-            genesis.get_validators().expect("Failed to get validators");
-        committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
-
-        let initial_state = get_initial_state(&genesis, &committee, checkpoint);
-        let peers = initial_state.get_validator_keys();
-
-        let engine_ipc_path =
-            get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
-
-        #[allow(unused)]
-        #[cfg(feature = "bench")]
-        let engine_client = {
-            let block_dir = flags
-                .bench_block_dir
-                .as_ref()
-                .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
-                .expect("bench_block_dir is required when using bench feature");
-            EthereumHistoricalEngineClient::new(
-                engine_ipc_path.to_string_lossy().to_string(),
-                block_dir,
-            )
-            .await
-        };
-
-        #[cfg(feature = "bad-blocks")]
-        let engine_client =
-            BadBlockEngineClient::new(engine_ipc_path.to_string_lossy().to_string(), 4).await; // make every 4th block a bad eth payload
-
-        #[cfg(all(not(feature = "bench"), not(feature = "bad-blocks")))]
-        let engine_client =
-            RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
-
-        let our_ip = get_node_ip(&flags, &key_store, &committee).await;
-
-        let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
-            .into_iter()
-            .map(|v| (v.node_public_key, v.ip_address))
-            .collect();
-        let our_public_key = key_store.node_key.public_key();
-        if !network_committee
-            .iter()
-            .any(|(key, _)| key == &our_public_key)
-        {
-            network_committee.push((our_public_key, our_ip));
-            network_committee.sort();
-        }
-
-        // configure network
-        let network_committee_ingress: Vec<_> =
-            if let Some(ref bootstrappers_path) = flags.bootstrappers {
-                Bootstrappers::load_from_file(bootstrappers_path)
-                    .expect("Failed to load bootstrappers file")
-                    .to_ingress_list()
-                    .expect("Failed to parse bootstrappers")
-            } else {
-                network_committee
-                    .iter()
-                    .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
-                    .collect()
-            };
-
-        let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
-        let namespace = genesis.namespace.as_bytes();
-        let max_message_size = genesis.max_message_size_bytes as u32;
-
-        let (engine, p2p, finalizer_mailbox) = if flags.observer {
-            let signer = ExtPrivateKey::new(key_store.node_key.clone());
-            let mut p2p_cfg = authenticated::discovery::Config::local(
-                signer,
-                namespace,
-                listen,
-                our_ip,
-                network_committee_ingress,
-                max_message_size,
-            );
-            p2p_cfg.mailbox_size = MAILBOX_SIZE;
-            start_network_and_engine(
-                context.clone(),
-                p2p_cfg,
-                engine_client,
+        if flags.observer {
+            let key_store = expect_ext_key_store(&flags.key_store_path);
+            run_node_local_inner(
+                context,
+                flags,
                 key_store,
-                peers,
-                flags.db_prefix.clone(),
-                &genesis,
-                initial_state,
+                checkpoint,
                 checkpoint_parent_block,
-                None,
             )
-            .await
+            .await;
         } else {
-            let signer = key_store.node_key.clone();
-            let mut p2p_cfg = authenticated::discovery::Config::local(
-                signer,
-                namespace,
-                listen,
-                our_ip,
-                network_committee_ingress,
-                max_message_size,
-            );
-            p2p_cfg.mailbox_size = MAILBOX_SIZE;
-            start_network_and_engine(
-                context.clone(),
-                p2p_cfg,
-                engine_client,
+            let key_store = expect_key_store(&flags.key_store_path);
+            run_node_local_inner(
+                context,
+                flags,
                 key_store,
-                peers,
-                flags.db_prefix.clone(),
-                &genesis,
-                initial_state,
+                checkpoint,
                 checkpoint_parent_block,
-                None,
+            )
+            .await;
+        }
+    })
+}
+
+async fn run_node_local_inner<S>(
+    context: tokio::Context,
+    flags: RunFlags,
+    key_store: KeyStore<S>,
+    checkpoint: Option<ConsensusState>,
+    checkpoint_parent_block: Option<Block>,
+) where
+    S: Signer<PublicKey = PublicKey> + Clone + 'static,
+{
+    let context = context.with_label("summit_cw");
+
+    let (genesis_tx, genesis_rx) = oneshot::channel();
+
+    let cancel_token = CancellationToken::new();
+    let cloned_token = cancel_token.clone();
+    let genesis_rpc_port = flags.rpc_port;
+    let genesis_path = flags.genesis_path.clone();
+    let genesis_key_store_path = flags.key_store_path.clone();
+    let _rpc_handle = context
+        .with_label("rpc_genesis")
+        .spawn(move |_context| async move {
+            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+            if let Err(e) = start_rpc_server_for_genesis(
+                genesis_sender,
+                genesis_key_store_path,
+                genesis_rpc_port,
+                cloned_token,
             )
             .await
-        };
-
-        // Start prometheus endpoint
-        #[cfg(feature = "prom")]
-        {
-            use crate::prom::hooks::Hooks;
-            use crate::prom::server::{MetricServer, MetricServerConfig};
-            use std::net::SocketAddr;
-
-            let hooks = Hooks::builder().build();
-
-            let listen_addr = format!("{}:{}", flags.prom_ip, flags.prom_port)
-                .parse::<SocketAddr>()
-                .unwrap();
-            let stop_signal = context.stopped();
-            let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
-            MetricServer::new(config).serve(stop_signal).await.unwrap();
-        }
-
-        // Start RPC server
-        let key_store_path = flags.key_store_path.clone();
-        let rpc_port = flags.rpc_port;
-        let stop_signal = context.stopped();
-        let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-            if let Err(e) =
-                start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
             {
                 error!("RPC server failed: {}", e);
             }
         });
 
-        // Wait for any task to error
-        if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
-            error!(?e, "task failed");
+    // Wait for genesis if needed
+    let _ = genesis_rx.await;
+    // Shut down the genesis rpc server after receiving the genesis file
+    cancel_token.cancel();
+
+    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+
+    let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
+    committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
+
+    let initial_state = get_initial_state(&genesis, &committee, checkpoint);
+    let peers = initial_state.get_validator_keys();
+
+    let engine_ipc_path =
+        get_expanded_path(&flags.engine_ipc_path).expect("failed to expand engine ipc path");
+
+    #[allow(unused)]
+    #[cfg(feature = "bench")]
+    let engine_client = {
+        let block_dir = flags
+            .bench_block_dir
+            .as_ref()
+            .map(|p| get_expanded_path(p).expect("Invalid block directory path"))
+            .expect("bench_block_dir is required when using bench feature");
+        EthereumHistoricalEngineClient::new(
+            engine_ipc_path.to_string_lossy().to_string(),
+            block_dir,
+        )
+        .await
+    };
+
+    #[cfg(feature = "bad-blocks")]
+    let engine_client =
+        BadBlockEngineClient::new(engine_ipc_path.to_string_lossy().to_string(), 4).await;
+
+    #[cfg(all(not(feature = "bench"), not(feature = "bad-blocks")))]
+    let engine_client = RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
+
+    let our_ip = get_node_ip(&flags, &key_store, &committee).await;
+
+    let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
+        .into_iter()
+        .map(|v| (v.node_public_key, v.ip_address))
+        .collect();
+    let our_public_key = key_store.node_key.public_key();
+    if !network_committee
+        .iter()
+        .any(|(key, _)| key == &our_public_key)
+    {
+        network_committee.push((our_public_key, our_ip));
+        network_committee.sort();
+    }
+
+    // configure network
+    let network_committee_ingress: Vec<_> =
+        if let Some(ref bootstrappers_path) = flags.bootstrappers {
+            Bootstrappers::load_from_file(bootstrappers_path)
+                .expect("Failed to load bootstrappers file")
+                .to_ingress_list()
+                .expect("Failed to parse bootstrappers")
+        } else {
+            network_committee
+                .iter()
+                .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
+                .collect()
+        };
+
+    let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
+    let namespace = genesis.namespace.as_bytes();
+    let max_message_size = genesis.max_message_size_bytes as u32;
+
+    let signer = key_store.node_key.clone();
+    let mut p2p_cfg = authenticated::discovery::Config::local(
+        signer,
+        namespace,
+        listen,
+        our_ip,
+        network_committee_ingress,
+        max_message_size,
+    );
+    p2p_cfg.mailbox_size = MAILBOX_SIZE;
+    let (engine, p2p, finalizer_mailbox) = start_network_and_engine(
+        context.clone(),
+        p2p_cfg,
+        engine_client,
+        key_store,
+        peers,
+        flags.db_prefix.clone(),
+        &genesis,
+        initial_state,
+        checkpoint_parent_block,
+        None,
+    )
+    .await;
+
+    // Start prometheus endpoint
+    #[cfg(feature = "prom")]
+    {
+        use crate::prom::hooks::Hooks;
+        use crate::prom::server::{MetricServer, MetricServerConfig};
+        use std::net::SocketAddr;
+
+        let hooks = Hooks::builder().build();
+
+        let listen_addr = format!("{}:{}", flags.prom_ip, flags.prom_port)
+            .parse::<SocketAddr>()
+            .unwrap();
+        let stop_signal = context.stopped();
+        let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
+        MetricServer::new(config).serve(stop_signal).await.unwrap();
+    }
+
+    // Start RPC server
+    let key_store_path = flags.key_store_path.clone();
+    let rpc_port = flags.rpc_port;
+    let stop_signal = context.stopped();
+    let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+        if let Err(e) =
+            start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
+        {
+            error!("RPC server failed: {}", e);
         }
-    })
+    });
+
+    // Wait for any task to error
+    if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
+        error!(?e, "task failed");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -637,7 +620,7 @@ async fn start_network_and_engine<S, EC>(
     context: tokio::Context,
     p2p_cfg: authenticated::discovery::Config<S>,
     engine_client: EC,
-    key_store: KeyStore<PrivateKey>,
+    key_store: KeyStore<S>,
     peers: Vec<(PublicKey, bls12381::PublicKey)>,
     db_prefix: String,
     genesis: &Genesis,
@@ -753,11 +736,14 @@ fn get_initial_state(
     })
 }
 
-async fn get_node_ip(
+async fn get_node_ip<S>(
     flags: &RunFlags,
-    key_store: &KeyStore<PrivateKey>,
+    key_store: &KeyStore<S>,
     committee: &[Validator],
-) -> SocketAddr {
+) -> SocketAddr
+where
+    S: Signer<PublicKey = PublicKey>,
+{
     if let Some(ref ip_str) = flags.ip {
         ip_str
             .parse::<SocketAddr>()

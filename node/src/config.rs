@@ -7,6 +7,8 @@ use governor::Quota;
 use std::{num::NonZeroU32, time::Duration};
 use summit_types::Block;
 use summit_types::consensus_state::ConsensusState;
+use summit_types::ext_private_key::ExtPrivateKey;
+use summit_types::key_paths::KeyPaths;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::MultisigScheme;
@@ -119,6 +121,30 @@ pub(crate) fn expect_key_store(key_store_path: &str) -> KeyStore<PrivateKey> {
     match load_key_store(key_store_path) {
         Ok(key_store) => key_store,
         Err(e) => panic!("Key store error @ path {key_store_path}: {e}\n"),
+    }
+}
+
+pub(crate) fn load_ext_key_store(key_store_path: &str) -> Result<KeyStore<ExtPrivateKey>> {
+    let key_paths = KeyPaths::new(key_store_path.to_string());
+    let node_key = key_paths
+        .read_ext_node_key_from_file()
+        .context("failed to load ext node key")?;
+    let consensus_key = key_paths
+        .read_bls_key_from_file()
+        .context("failed to load consensus key")?;
+    Ok(KeyStore {
+        node_key,
+        consensus_key,
+    })
+}
+
+pub(crate) fn expect_ext_key_store(key_store_path: &str) -> KeyStore<ExtPrivateKey> {
+    match load_ext_key_store(key_store_path) {
+        Ok(key_store) => key_store,
+        Err(e) => panic!(
+            "Failed to load observer keystore at '{key_store_path}': {e:#}\n\
+             Observer mode requires 'ext_node_key.pem' and 'consensus_key.pem' in the keystore directory."
+        ),
     }
 }
 

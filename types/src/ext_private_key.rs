@@ -1,4 +1,6 @@
 use crate::{PrivateKey, PublicKey, Signature};
+use anyhow::{Context, Result};
+use commonware_codec::DecodeExt;
 use commonware_cryptography::Signer;
 use commonware_math::algebra::Random;
 use rand_core::CryptoRngCore;
@@ -12,6 +14,11 @@ pub struct ExtPrivateKey {
 impl ExtPrivateKey {
     pub fn new(private_key: PrivateKey) -> Self {
         Self { private_key }
+    }
+
+    pub fn decode_from_bytes(bytes: &[u8]) -> Result<Self> {
+        let private_key = PrivateKey::decode(bytes).context("Unable to decode ext private key")?;
+        Ok(Self { private_key })
     }
 }
 
