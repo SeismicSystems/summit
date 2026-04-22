@@ -407,6 +407,6 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,
-        observer: false,
+        observer: None,
     }
 }

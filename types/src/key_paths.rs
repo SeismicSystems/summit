@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use crate::ext_private_key::ExtPrivateKey;
 use crate::{PrivateKey, utils::get_expanded_path};
 use anyhow::{Context, Result};
 use commonware_codec::DecodeExt;
@@ -13,7 +12,6 @@ use commonware_utils::from_hex_formatted;
 /// The key store directory should contain:
 /// - `node_key.pem`: ED25519 private key for node identity (node key)
 /// - `share.pem`: BLS12-381 DKG share (consensus key)
-/// - `ext_node_key.pem`: extended node key (observer mode only)
 pub struct KeyPaths(String);
 
 impl KeyPaths {
@@ -36,21 +34,12 @@ impl KeyPaths {
         format!("{}/consensus_key.pem", self.0)
     }
 
-    /// Get the path to the extended node key file (observer mode)
-    pub fn ext_node_key_path_str(&self) -> String {
-        format!("{}/ext_node_key.pem", self.0)
-    }
-
     pub fn node_key_path(&self) -> anyhow::Result<PathBuf> {
         get_expanded_path(&self.node_key_path_str())
     }
 
     pub fn consensus_key_path(&self) -> anyhow::Result<PathBuf> {
         get_expanded_path(&self.consensus_key_path_str())
-    }
-
-    pub fn ext_node_key_path(&self) -> anyhow::Result<PathBuf> {
-        get_expanded_path(&self.ext_node_key_path_str())
     }
 
     /// Load the node private key (ED25519) from the key store
@@ -93,14 +82,5 @@ impl KeyPaths {
         let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for BLS key")?;
         let pk = BlsPrivateKey::decode(&*key).context("Unable to decode BLS private key")?;
         Ok(pk)
-    }
-
-    /// Read the extended node private key from file (observer mode)
-    pub fn read_ext_node_key_from_file(&self) -> Result<ExtPrivateKey> {
-        let path = self.ext_node_key_path()?;
-        let encoded_pk = std::fs::read_to_string(&path)
-            .context(format!("Failed to read ext node key from {:?}", path))?;
-        let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for ext node key")?;
-        ExtPrivateKey::decode_from_bytes(&key)
     }
 }

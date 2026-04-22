@@ -1,7 +1,7 @@
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_ext_key_store, expect_key_store,
+        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -40,6 +40,7 @@ use summit_types::FinalizedHeader;
 use summit_types::RethEngineClient;
 use summit_types::bootstrap::Bootstrappers;
 use summit_types::checkpoint::{self, Checkpoint};
+use summit_types::ext_private_key::ExtPrivateKey;
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::DiscoveryOracle;
 use summit_types::{
@@ -47,7 +48,7 @@ use summit_types::{
     account::{ValidatorAccount, ValidatorStatus},
     bls12381,
 };
-use summit_types::{Genesis, PublicKey, Validator, utils::get_expanded_path};
+use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use summit_types::{consensus_state::ConsensusState, scheme::MultisigScheme};
 use tracing::{Level, error, info, warn};
 
@@ -152,8 +153,9 @@ pub struct RunFlags {
     pub critical_log_dir: Option<String>,
 
     /// Observer mode: RPC-only node that follows the chain without proposing or voting on blocks.
-    #[arg(long, default_value_t = false)]
-    pub observer: bool,
+    /// The value is a derivation index that produces a distinct identity from the base node key.
+    #[arg(long)]
+    pub observer: Option<u32>,
 }
 
 impl Command {
@@ -219,25 +221,18 @@ impl Command {
         let flags = flags.clone();
 
         executor.start(|context| async move {
-            if flags.observer {
-                let key_store = expect_ext_key_store(&flags.key_store_path);
-                run_node_inner(context, flags, key_store, loaded).await;
-            } else {
-                let key_store = expect_key_store(&flags.key_store_path);
-                run_node_inner(context, flags, key_store, loaded).await;
-            }
+            let key_store = expect_key_store(&flags.key_store_path);
+            run_node_inner(context, flags, key_store, loaded).await;
         })
     }
 }
 
-async fn run_node_inner<S>(
+async fn run_node_inner(
     context: tokio::Context,
     flags: RunFlags,
-    key_store: KeyStore<S>,
+    key_store: KeyStore<PrivateKey>,
     loaded: LoadedCheckpoint<MultisigScheme>,
-) where
-    S: Signer<PublicKey = PublicKey> + Clone + 'static,
-{
+) {
     let context = context.with_label("summit_cw");
     let (genesis_tx, genesis_rx) = oneshot::channel();
 
@@ -378,29 +373,55 @@ async fn run_node_inner<S>(
     let namespace = genesis.namespace.as_bytes();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
-    let signer = key_store.node_key.clone();
-    let mut p2p_cfg = authenticated::discovery::Config::recommended(
-        signer,
-        namespace,
-        listen,
-        our_ip,
-        network_committee_ingress,
-        max_message_size,
-    );
-    p2p_cfg.mailbox_size = MAILBOX_SIZE;
-    let (engine, p2p, finalizer_mailbox) = start_network_and_engine(
-        context.clone(),
-        p2p_cfg,
-        engine_client,
-        key_store,
-        peers,
-        flags.db_prefix.clone(),
-        &genesis,
-        initial_state,
-        loaded.last_block,
-        loaded.finalized_header,
-    )
-    .await;
+    let (engine, p2p, finalizer_mailbox) = if let Some(index) = flags.observer {
+        let signer = ExtPrivateKey::new(key_store.node_key.clone(), index);
+        let mut p2p_cfg = authenticated::discovery::Config::recommended(
+            signer,
+            namespace,
+            listen,
+            our_ip,
+            network_committee_ingress,
+            max_message_size,
+        );
+        p2p_cfg.mailbox_size = MAILBOX_SIZE;
+        start_network_and_engine(
+            context.clone(),
+            p2p_cfg,
+            engine_client,
+            key_store,
+            peers,
+            flags.db_prefix.clone(),
+            &genesis,
+            initial_state,
+            loaded.last_block,
+            loaded.finalized_header,
+        )
+        .await
+    } else {
+        let signer = key_store.node_key.clone();
+        let mut p2p_cfg = authenticated::discovery::Config::recommended(
+            signer,
+            namespace,
+            listen,
+            our_ip,
+            network_committee_ingress,
+            max_message_size,
+        );
+        p2p_cfg.mailbox_size = MAILBOX_SIZE;
+        start_network_and_engine(
+            context.clone(),
+            p2p_cfg,
+            engine_client,
+            key_store,
+            peers,
+            flags.db_prefix.clone(),
+            &genesis,
+            initial_state,
+            loaded.last_block,
+            loaded.finalized_header,
+        )
+        .await
+    };
 
     // Start RPC server
     let key_store_path = flags.key_store_path.clone();
@@ -427,39 +448,25 @@ pub fn run_node_local(
     checkpoint_parent_block: Option<Block>,
 ) -> Handle<()> {
     context.spawn(async move |context| {
-        if flags.observer {
-            let key_store = expect_ext_key_store(&flags.key_store_path);
-            run_node_local_inner(
-                context,
-                flags,
-                key_store,
-                checkpoint,
-                checkpoint_parent_block,
-            )
-            .await;
-        } else {
-            let key_store = expect_key_store(&flags.key_store_path);
-            run_node_local_inner(
-                context,
-                flags,
-                key_store,
-                checkpoint,
-                checkpoint_parent_block,
-            )
-            .await;
-        }
+        let key_store = expect_key_store(&flags.key_store_path);
+        run_node_local_inner(
+            context,
+            flags,
+            key_store,
+            checkpoint,
+            checkpoint_parent_block,
+        )
+        .await;
     })
 }
 
-async fn run_node_local_inner<S>(
+async fn run_node_local_inner(
     context: tokio::Context,
     flags: RunFlags,
-    key_store: KeyStore<S>,
+    key_store: KeyStore<PrivateKey>,
     checkpoint: Option<ConsensusState>,
     checkpoint_parent_block: Option<Block>,
-) where
-    S: Signer<PublicKey = PublicKey> + Clone + 'static,
-{
+) {
     let context = context.with_label("summit_cw");
 
     let (genesis_tx, genesis_rx) = oneshot::channel();
@@ -556,29 +563,55 @@ async fn run_node_local_inner<S>(
     let namespace = genesis.namespace.as_bytes();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
-    let signer = key_store.node_key.clone();
-    let mut p2p_cfg = authenticated::discovery::Config::local(
-        signer,
-        namespace,
-        listen,
-        our_ip,
-        network_committee_ingress,
-        max_message_size,
-    );
-    p2p_cfg.mailbox_size = MAILBOX_SIZE;
-    let (engine, p2p, finalizer_mailbox) = start_network_and_engine(
-        context.clone(),
-        p2p_cfg,
-        engine_client,
-        key_store,
-        peers,
-        flags.db_prefix.clone(),
-        &genesis,
-        initial_state,
-        checkpoint_parent_block,
-        None,
-    )
-    .await;
+    let (engine, p2p, finalizer_mailbox) = if let Some(index) = flags.observer {
+        let signer = ExtPrivateKey::new(key_store.node_key.clone(), index);
+        let mut p2p_cfg = authenticated::discovery::Config::local(
+            signer,
+            namespace,
+            listen,
+            our_ip,
+            network_committee_ingress,
+            max_message_size,
+        );
+        p2p_cfg.mailbox_size = MAILBOX_SIZE;
+        start_network_and_engine(
+            context.clone(),
+            p2p_cfg,
+            engine_client,
+            key_store,
+            peers,
+            flags.db_prefix.clone(),
+            &genesis,
+            initial_state,
+            checkpoint_parent_block,
+            None,
+        )
+        .await
+    } else {
+        let signer = key_store.node_key.clone();
+        let mut p2p_cfg = authenticated::discovery::Config::local(
+            signer,
+            namespace,
+            listen,
+            our_ip,
+            network_committee_ingress,
+            max_message_size,
+        );
+        p2p_cfg.mailbox_size = MAILBOX_SIZE;
+        start_network_and_engine(
+            context.clone(),
+            p2p_cfg,
+            engine_client,
+            key_store,
+            peers,
+            flags.db_prefix.clone(),
+            &genesis,
+            initial_state,
+            checkpoint_parent_block,
+            None,
+        )
+        .await
+    };
 
     // Start prometheus endpoint
     #[cfg(feature = "prom")]
@@ -620,7 +653,7 @@ async fn start_network_and_engine<S, EC>(
     context: tokio::Context,
     p2p_cfg: authenticated::discovery::Config<S>,
     engine_client: EC,
-    key_store: KeyStore<S>,
+    key_store: KeyStore<PrivateKey>,
     peers: Vec<(PublicKey, bls12381::PublicKey)>,
     db_prefix: String,
     genesis: &Genesis,
@@ -736,14 +769,11 @@ fn get_initial_state(
     })
 }
 
-async fn get_node_ip<S>(
+async fn get_node_ip(
     flags: &RunFlags,
-    key_store: &KeyStore<S>,
+    key_store: &KeyStore<PrivateKey>,
     committee: &[Validator],
-) -> SocketAddr
-where
-    S: Signer<PublicKey = PublicKey>,
-{
+) -> SocketAddr {
     if let Some(ref ip_str) = flags.ip {
         ip_str
             .parse::<SocketAddr>()

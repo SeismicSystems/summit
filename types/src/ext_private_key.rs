@@ -1,24 +1,19 @@
 use crate::{PrivateKey, PublicKey, Signature};
-use anyhow::{Context, Result};
-use commonware_codec::DecodeExt;
 use commonware_cryptography::Signer;
 use commonware_math::algebra::Random;
 use rand_core::CryptoRngCore;
 
-/// Wraps the ed25519 [`PrivateKey`] used by the networking layer.
+/// An extended private key derived from a base [`PrivateKey`] and a derivation index.
+/// Used by observer nodes to obtain a distinct identity without provisioning a separate key.
 #[derive(Clone)]
 pub struct ExtPrivateKey {
     pub private_key: PrivateKey,
+    pub index: u32,
 }
 
 impl ExtPrivateKey {
-    pub fn new(private_key: PrivateKey) -> Self {
-        Self { private_key }
-    }
-
-    pub fn decode_from_bytes(bytes: &[u8]) -> Result<Self> {
-        let private_key = PrivateKey::decode(bytes).context("Unable to decode ext private key")?;
-        Ok(Self { private_key })
+    pub fn new(private_key: PrivateKey, index: u32) -> Self {
+        Self { private_key, index }
     }
 }
 
@@ -26,6 +21,7 @@ impl Random for ExtPrivateKey {
     fn random(rng: impl CryptoRngCore) -> Self {
         Self {
             private_key: PrivateKey::random(rng),
+            index: 0,
         }
     }
 }
