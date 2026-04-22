@@ -608,19 +608,20 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 ///
 /// # Returns
 /// * `EngineConfig<C>` - A fully configured engine config with sensible defaults for testing
-pub fn get_default_engine_config<C, O>(
+pub fn get_default_engine_config<C, O, S>(
     engine_client: C,
     oracle: O,
     partition_prefix: String,
     genesis_hash: [u8; 32],
     namespace: String,
-    key_store: KeyStore<PrivateKey>,
+    key_store: KeyStore<S>,
     participants: Vec<(PublicKey, bls12381::PublicKey)>,
     initial_state: ConsensusState,
-) -> EngineConfig<C, PrivateKey, O>
+) -> EngineConfig<C, S, O>
 where
     C: EngineClient,
     O: NetworkOracle<PublicKey> + Blocker<PublicKey = PublicKey>,
+    S: Signer<PublicKey = PublicKey>,
 {
     // For tests, generate a dummy BLS key
 
