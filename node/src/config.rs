@@ -120,7 +120,10 @@ pub(crate) fn load_key_store(key_store_path: &str) -> Result<KeyStore<PrivateKey
 pub(crate) fn expect_key_store(key_store_path: &str) -> KeyStore<PrivateKey> {
     match load_key_store(key_store_path) {
         Ok(key_store) => key_store,
-        Err(e) => panic!("Key store error @ path {key_store_path}: {e}\n"),
+        Err(e) => panic!(
+            "Failed to load keystore at '{key_store_path}': {e:#}\n\
+             Validator mode requires 'node_key.pem' and 'consensus_key.pem' in the keystore directory."
+        ),
     }
 }
 
