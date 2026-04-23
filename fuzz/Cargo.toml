@@ -27,3 +27,10 @@ path = "fuzz_targets/protocol_param_read.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "consensus_state_read"
+path = "fuzz_targets/consensus_state_read.rs"
+test = false
+doc = false
+bench = false

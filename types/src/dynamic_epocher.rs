@@ -210,16 +210,16 @@ impl Read for DynamicEpocher {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> core::result::Result<Self, Error> {
-        let current_epoch = Epoch::new(buf.get_u64());
-        let segments_len = buf.get_u32() as usize;
+        let current_epoch = Epoch::new(buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?);
+        let segments_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         if segments_len == 0 {
             return Err(Error::Invalid("DynamicEpocher", "no segments"));
         }
-        let mut segments = Vec::with_capacity(segments_len);
+        let mut segments = Vec::with_capacity(segments_len.min(buf.remaining()));
         for _ in 0..segments_len {
-            let start_epoch = Epoch::new(buf.get_u64());
-            let start_height = Height::new(buf.get_u64());
-            let length = buf.get_u64();
+            let start_epoch = Epoch::new(buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?);
+            let start_height = Height::new(buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?);
+            let length = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
             if length == 0 {
                 return Err(Error::Invalid("DynamicEpocher", "zero-length segment"));
             }

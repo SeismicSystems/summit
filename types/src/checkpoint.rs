@@ -109,8 +109,8 @@ impl Read for Checkpoint {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let len: u32 = buf.get_u32();
-        if len > buf.remaining() as u32 {
+        let len: u32 = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
+        if len as usize > buf.remaining() {
             return Err(Error::Invalid("Checkpoint", "improper encoded length"));
         }
 

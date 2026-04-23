@@ -358,26 +358,28 @@ impl Read for WithdrawalQueue {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let next_index = buf.get_u64();
+        let next_index = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
 
-        let withdrawals_len = buf.get_u32() as usize;
+        let withdrawals_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut withdrawals = BTreeMap::new();
         for _ in 0..withdrawals_len {
             let mut pubkey = [0u8; 32];
-            buf.copy_to_slice(&mut pubkey);
+            buf.try_copy_to_slice(&mut pubkey)
+                .map_err(|_| Error::EndOfBuffer)?;
             let withdrawal = PendingWithdrawal::read_cfg(buf, &())?;
             withdrawals.insert(pubkey, withdrawal);
         }
 
-        let schedule_len = buf.get_u32() as usize;
+        let schedule_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut schedule = BTreeMap::new();
         for _ in 0..schedule_len {
-            let epoch = buf.get_u64();
-            let pubkeys_len = buf.get_u32() as usize;
-            let mut pubkeys = VecDeque::with_capacity(pubkeys_len);
+            let epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+            let pubkeys_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            let mut pubkeys = VecDeque::with_capacity(pubkeys_len.min(buf.remaining()));
             for _ in 0..pubkeys_len {
                 let mut pubkey = [0u8; 32];
-                buf.copy_to_slice(&mut pubkey);
+                buf.try_copy_to_slice(&mut pubkey)
+                    .map_err(|_| Error::EndOfBuffer)?;
                 pubkeys.push_back(pubkey);
             }
             schedule.insert(epoch, pubkeys);
