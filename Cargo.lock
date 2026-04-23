@@ -5953,7 +5953,7 @@ checksum = "734676eb262c623cec13c3155096e08d1f8f29adce39ba17948b18dad1e54142"
 
 [[package]]
 name = "summit"
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -6024,7 +6024,7 @@ dependencies = [
 
 [[package]]
 name = "summit-application"
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 dependencies = [
  "anyhow",
  "commonware-consensus",
@@ -6046,7 +6046,7 @@ dependencies = [
 
 [[package]]
 name = "summit-finalizer"
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -6077,7 +6077,7 @@ dependencies = [
 
 [[package]]
 name = "summit-orchestrator"
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 dependencies = [
  "bytes",
  "commonware-broadcast",
@@ -6103,7 +6103,7 @@ dependencies = [
 
 [[package]]
 name = "summit-rpc"
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 dependencies = [
  "alloy-primitives",
  "anyhow",
@@ -6139,7 +6139,7 @@ dependencies = [
 
 [[package]]
 name = "summit-syncer"
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 dependencies = [
  "bytes",
  "commonware-broadcast",
@@ -6168,7 +6168,7 @@ dependencies = [
 
 [[package]]
 name = "summit-types"
-version = "0.0.2-alpha"
+version = "0.0.3-alpha"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
