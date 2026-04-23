@@ -12,6 +12,8 @@ pub const MIN_MAX_DEPOSITS_PER_EPOCH: u64 = 0;
 pub const MAX_MAX_DEPOSITS_PER_EPOCH: u64 = 256;
 pub const MAX_WITHDRAWALS_PER_EPOCH_MIN: u64 = 1;
 pub const MAX_WITHDRAWALS_PER_EPOCH_MAX: u64 = 256;
+pub const MIN_OBSERVERS_PER_VALIDATOR: u64 = 0;
+pub const MAX_OBSERVERS_PER_VALIDATOR: u64 = 256;
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {
@@ -22,6 +24,7 @@ pub enum ProtocolParam {
     TreasuryAddress(Address),
     MaxDepositsPerEpoch(u64),
     MaxWithdrawalsPerEpoch(u64),
+    ObserversPerValidator(u64),
 }
 
 impl TryFrom<ProtocolParamRequest> for ProtocolParam {
@@ -145,6 +148,24 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                     max_withdrawals_per_epoch,
                 ))
             }
+            0x07 => {
+                if request.param.len() != 8 {
+                    return Err(anyhow!(
+                        "Failed to parse observers per validator protocol param, invalid length {}",
+                        request.param.len()
+                    ));
+                }
+                let bytes: [u8; 8] = request.param.as_slice().try_into()?;
+                let observers_per_validator = u64::from_le_bytes(bytes);
+                if observers_per_validator > MAX_OBSERVERS_PER_VALIDATOR {
+                    return Err(anyhow!(
+                        "Observers per validator {observers_per_validator} exceeds maximum {MAX_OBSERVERS_PER_VALIDATOR}"
+                    ));
+                }
+                Ok(ProtocolParam::ObserversPerValidator(
+                    observers_per_validator,
+                ))
+            }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
             )),
@@ -160,7 +181,8 @@ impl EncodeSize for ProtocolParam {
             | ProtocolParam::EpochLength(_)
             | ProtocolParam::AllowedTimestampFuture(_)
             | ProtocolParam::MaxDepositsPerEpoch(_)
-            | ProtocolParam::MaxWithdrawalsPerEpoch(_) => 1 + 8, // 1 byte tag + 8 byte value
+            | ProtocolParam::MaxWithdrawalsPerEpoch(_)
+            | ProtocolParam::ObserversPerValidator(_) => 1 + 8, // 1 byte tag + 8 byte value
             ProtocolParam::TreasuryAddress(_) => 1 + 20, // 1 byte tag + 20 byte address
         }
     }
@@ -195,6 +217,10 @@ impl Write for ProtocolParam {
             }
             ProtocolParam::MaxWithdrawalsPerEpoch(value) => {
                 buf.put_u8(0x06);
+                buf.put_u64(*value);
+            }
+            ProtocolParam::ObserversPerValidator(value) => {
+                buf.put_u8(0x07);
                 buf.put_u64(*value);
             }
         }
@@ -262,6 +288,16 @@ impl Read for ProtocolParam {
                     ));
                 }
                 Ok(ProtocolParam::MaxWithdrawalsPerEpoch(value))
+            }
+            0x07 => {
+                let value = buf.get_u64();
+                if value > MAX_OBSERVERS_PER_VALIDATOR {
+                    return Err(Error::Invalid(
+                        "ProtocolParam",
+                        "observers per validator out of bounds",
+                    ));
+                }
+                Ok(ProtocolParam::ObserversPerValidator(value))
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }
@@ -580,5 +616,53 @@ mod tests {
             ProtocolParam::EpochLength(v) => assert_eq!(v, 500),
             _ => panic!("Expected EpochLength"),
         }
+    }
+
+    #[test]
+    fn test_observers_per_validator_encode_decode() {
+        let param = ProtocolParam::ObserversPerValidator(7);
+
+        let mut buf = BytesMut::new();
+        param.write(&mut buf);
+
+        assert_eq!(buf.len(), param.encode_size());
+        assert_eq!(buf.len(), 9);
+        assert_eq!(buf[0], 0x07);
+
+        let decoded = ProtocolParam::read(&mut buf.as_ref()).unwrap();
+        match decoded {
+            ProtocolParam::ObserversPerValidator(v) => assert_eq!(v, 7),
+            _ => panic!("Expected ObserversPerValidator variant"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_observers_per_validator() {
+        let request = ProtocolParamRequest {
+            param_id: 0x07,
+            param: 5u64.to_le_bytes().to_vec(),
+        };
+        let param = ProtocolParam::try_from(request).unwrap();
+        match param {
+            ProtocolParam::ObserversPerValidator(v) => assert_eq!(v, 5),
+            _ => panic!("Expected ObserversPerValidator variant"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_observers_per_validator_above_maximum() {
+        let request = ProtocolParamRequest {
+            param_id: 0x07,
+            param: (MAX_OBSERVERS_PER_VALIDATOR + 1).to_le_bytes().to_vec(),
+        };
+        assert!(ProtocolParam::try_from(request).is_err());
+    }
+
+    #[test]
+    fn test_decode_observers_per_validator_out_of_bounds() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(0x07);
+        buf.put_u64(MAX_OBSERVERS_PER_VALIDATOR + 1);
+        assert!(ProtocolParam::read(&mut buf.as_ref()).is_err());
     }
 }

@@ -128,6 +128,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         Address::ZERO,
         10,
         16,
+        0,
     );
     state.set_validator_accounts(validator_accounts);
     state
@@ -171,7 +172,6 @@ fn test_get_latest_epoch() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -281,7 +281,6 @@ fn test_get_epoch_genesis_hash() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -379,7 +378,6 @@ fn test_get_aux_data_from_canonical_chain() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -451,7 +449,6 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };

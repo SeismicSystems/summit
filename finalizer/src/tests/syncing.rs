@@ -122,6 +122,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         Address::ZERO,
         10,
         16,
+        0,
     );
     state.set_validator_accounts(validator_accounts);
     state
@@ -192,7 +193,6 @@ fn test_initial_startup_sync_waits_for_valid() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -263,7 +263,6 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -334,7 +333,6 @@ fn test_execute_block_retries_on_syncing() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -420,7 +418,6 @@ fn test_notarized_block_retries_on_syncing() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };
@@ -498,7 +495,6 @@ fn test_checkpoint_startup_full_flow() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_key.public_key(),
-            observers_per_validator: 0,
             cancellation_token: CancellationToken::new(),
             _variant_marker: PhantomData,
         };

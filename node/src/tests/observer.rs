@@ -90,8 +90,9 @@ fn test_observer_reaches_end_height() {
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_stop_at(stop_height)
             .build();
-        let initial_state =
+        let mut initial_state =
             get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
+        initial_state.set_observers_per_validator(observers_per_validator);
 
         // Start validator engines with observers_per_validator set so the finalizer
         // authorizes the observer's derived pubkey as a secondary peer.
@@ -99,7 +100,7 @@ fn test_observer_reaches_end_height() {
             let public_key = key_store.node_key.public_key();
             let uid = format!("validator_{public_key}");
             let engine_client = engine_client_network.create_client(uid.clone());
-            let mut config = get_default_engine_config(
+            let config = get_default_engine_config(
                 engine_client,
                 SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
@@ -109,7 +110,6 @@ fn test_observer_reaches_end_height() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            config.observers_per_validator = observers_per_validator;
 
             let engine = Engine::new(context.with_label(&uid), config).await;
 

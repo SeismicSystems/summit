@@ -149,7 +149,6 @@ where
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
                 node_public_key: cfg.key_store.node_key.public_key().clone(),
-                observers_per_validator: cfg.observers_per_validator,
                 cancellation_token: cancellation_token.clone(),
                 _variant_marker: PhantomData,
             },

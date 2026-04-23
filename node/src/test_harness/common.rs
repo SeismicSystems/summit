@@ -350,6 +350,7 @@ pub fn get_initial_state(
             Address::ZERO,
             10,
             16,
+            0,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for ((node_pubkey, consensus_pubkey), address) in committee.iter().zip(addresses.iter()) {
@@ -650,7 +651,6 @@ where
         checkpoint_last_block: None,
         checkpoint_finalized_header: None,
         blocks_per_epoch: DEFAULT_BLOCKS_PER_EPOCH,
-        observers_per_validator: 0,
     }
 }
 

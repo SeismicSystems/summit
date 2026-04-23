@@ -60,7 +60,9 @@ pub struct Genesis {
     pub max_withdrawals_per_epoch: u64,
     /// Number of observer keys authorized per validator as secondary p2p peers.
     /// Each validator's node key implicitly authorizes observers with derivation
-    /// indices `0..observers_per_validator`.
+    /// indices `0..observers_per_validator`. Mutable via the
+    /// [`ObserversPerValidator`](crate::protocol_params::ProtocolParam::ObserversPerValidator)
+    /// execution request.
     #[serde(default = "default_observers_per_validator")]
     pub observers_per_validator: u32,
 }

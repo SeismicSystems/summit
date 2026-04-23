@@ -107,7 +107,6 @@ pub struct Finalizer<
     protocol_version_digest: Digest,
     oracle: O,
     node_public_key: PublicKey,
-    observers_per_validator: u32,
     validator_exit: bool,
     cancellation_token: CancellationToken,
     _signer_marker: PhantomData<S>,
@@ -209,7 +208,6 @@ impl<
                 protocol_consts: cfg.protocol_consts,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
                 node_public_key: cfg.node_public_key,
-                observers_per_validator: cfg.observers_per_validator,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,
                 _signer_marker: PhantomData,
@@ -240,7 +238,10 @@ impl<
             .iter()
             .map(|(node_key, _)| node_key.clone())
             .collect();
-        let observer_keys = derive_observer_keys(&network_keys, self.observers_per_validator);
+        let observer_keys = derive_observer_keys(
+            &network_keys,
+            self.canonical_state.get_observers_per_validator(),
+        );
         self.oracle
             .track(
                 self.canonical_state.get_epoch(),
@@ -658,7 +659,10 @@ impl<
                 .iter()
                 .map(|(node_key, _)| node_key.clone())
                 .collect();
-            let observer_keys = derive_observer_keys(&network_keys, self.observers_per_validator);
+            let observer_keys = derive_observer_keys(
+                &network_keys,
+                self.canonical_state.get_observers_per_validator(),
+            );
             self.oracle
                 .track(
                     self.canonical_state.get_epoch(),
@@ -1067,6 +1071,10 @@ impl<
             ConsensusStateRequest::GetMaxWithdrawalsPerEpoch => {
                 let value = self.canonical_state.get_max_withdrawals_per_epoch();
                 let _ = sender.send(ConsensusStateResponse::MaxWithdrawalsPerEpoch(value));
+            }
+            ConsensusStateRequest::GetObserversPerValidator => {
+                let value = self.canonical_state.get_observers_per_validator();
+                let _ = sender.send(ConsensusStateResponse::ObserversPerValidator(value));
             }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self

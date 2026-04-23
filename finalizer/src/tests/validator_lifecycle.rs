@@ -128,6 +128,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         Address::ZERO,
         10,
         16,
+        0,
     );
     state.set_validator_accounts(validator_accounts);
     state
@@ -180,7 +181,6 @@ fn test_validator_exit_triggers_cancellation() {
             initial_state,
             protocol_version: 1,
             node_public_key: node_pubkey,
-            observers_per_validator: 0,
             cancellation_token,
             _variant_marker: PhantomData,
         };

@@ -41,6 +41,7 @@ pub struct ConsensusState {
     pub(crate) treasury_address: Address,
     pub(crate) max_deposits_per_epoch: u64,
     pub(crate) max_withdrawals_per_epoch: u64,
+    pub(crate) observers_per_validator: u32,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -91,6 +92,7 @@ impl Default for ConsensusState {
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
+            observers_per_validator: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -115,6 +117,7 @@ impl ConsensusState {
         treasury_address: Address,
         max_deposits_per_epoch: u64,
         max_withdrawals_per_epoch: u64,
+        observers_per_validator: u32,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -137,6 +140,7 @@ impl ConsensusState {
             treasury_address,
             max_deposits_per_epoch,
             max_withdrawals_per_epoch,
+            observers_per_validator,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -232,6 +236,15 @@ impl ConsensusState {
     pub fn set_max_withdrawals_per_epoch(&mut self, value: u64) {
         self.max_withdrawals_per_epoch = value;
         self.ssz_tree.set_max_withdrawals_per_epoch(value);
+    }
+
+    pub fn get_observers_per_validator(&self) -> u32 {
+        self.observers_per_validator
+    }
+
+    pub fn set_observers_per_validator(&mut self, value: u32) {
+        self.observers_per_validator = value;
+        self.ssz_tree.set_observers_per_validator(value);
     }
 
     pub fn get_treasury_address(&self) -> Address {
@@ -719,6 +732,13 @@ impl ConsensusState {
                     self.max_withdrawals_per_epoch = value;
                     self.ssz_tree.set_max_withdrawals_per_epoch(value);
                 }
+                ProtocolParam::ObserversPerValidator(value) => {
+                    // Bounded by MAX_OBSERVERS_PER_VALIDATOR (256) at parse time.
+                    let value =
+                        u32::try_from(value).expect("observers_per_validator must fit in u32");
+                    self.observers_per_validator = value;
+                    self.ssz_tree.set_observers_per_validator(value);
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
@@ -756,6 +776,7 @@ impl ConsensusState {
             &self.treasury_address,
             self.max_deposits_per_epoch,
             self.max_withdrawals_per_epoch,
+            self.observers_per_validator,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -807,6 +828,7 @@ impl EncodeSize for ConsensusState {
         + 20 // treasury_address
         + 8 // max_deposits_per_epoch
         + 8 // max_withdrawals_per_epoch
+        + 4 // observers_per_validator
         + self.epocher.encode_size()
     }
 }
@@ -916,6 +938,7 @@ impl Read for ConsensusState {
 
         let max_deposits_per_epoch = buf.get_u64();
         let max_withdrawals_per_epoch = buf.get_u64();
+        let observers_per_validator = buf.get_u32();
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
@@ -940,6 +963,7 @@ impl Read for ConsensusState {
             treasury_address,
             max_deposits_per_epoch,
             max_withdrawals_per_epoch,
+            observers_per_validator,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -1033,6 +1057,9 @@ impl Write for ConsensusState {
 
         // Write max_withdrawals_per_epoch
         buf.put_u64(self.max_withdrawals_per_epoch);
+
+        // Write observers_per_validator
+        buf.put_u32(self.observers_per_validator);
 
         // Write epocher
         self.epocher.write(buf);
@@ -1152,6 +1179,7 @@ mod tests {
             Address::ZERO,
             3,
             16,
+            0,
         );
 
         original_state.set_epoch(7);
@@ -1912,6 +1940,7 @@ mod tests {
             Address::ZERO,
             3,
             16,
+            0,
         );
 
         // Add 4 genesis validators (like the testnet)

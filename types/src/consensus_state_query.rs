@@ -26,6 +26,7 @@ pub enum ConsensusStateRequest {
     GetTreasuryAddress,
     GetMaxDepositsPerEpoch,
     GetMaxWithdrawalsPerEpoch,
+    GetObserversPerValidator,
     GetEpochBounds(u64),
     GetDeposit(usize),
     GetDepositCount,
@@ -49,6 +50,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     TreasuryAddress(Address),
     MaxDepositsPerEpoch(u64),
     MaxWithdrawalsPerEpoch(u64),
+    ObserversPerValidator(u32),
     EpochBounds(Option<(u64, u64)>),
     Deposit(Option<DepositRequest>),
     DepositCount(usize),
@@ -281,6 +283,20 @@ impl<S: Scheme> ConsensusStateQuery<S> {
             .await
             .expect("consensus state query response sender dropped");
         let ConsensusStateResponse::MaxWithdrawalsPerEpoch(value) = res else {
+            unreachable!("request and response variants must match");
+        };
+        value
+    }
+
+    pub async fn get_observers_per_validator(&self) -> u32 {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetObserversPerValidator;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::ObserversPerValidator(value) = res else {
             unreachable!("request and response variants must match");
         };
         value

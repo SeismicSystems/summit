@@ -740,6 +740,7 @@ fn get_initial_state(
             treasury_address,
             genesis.max_deposits_per_epoch,
             genesis.max_withdrawals_per_epoch,
+            genesis.observers_per_validator,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for validator in genesis_committee {
