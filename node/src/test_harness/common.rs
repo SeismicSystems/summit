@@ -350,6 +350,7 @@ pub fn get_initial_state(
             Address::ZERO,
             10,
             16,
+            0,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for ((node_pubkey, consensus_pubkey), address) in committee.iter().zip(addresses.iter()) {
@@ -608,19 +609,20 @@ pub fn execution_requests_to_requests(execution_requests: Vec<ExecutionRequest>)
 ///
 /// # Returns
 /// * `EngineConfig<C>` - A fully configured engine config with sensible defaults for testing
-pub fn get_default_engine_config<C, O>(
+pub fn get_default_engine_config<C, O, S>(
     engine_client: C,
     oracle: O,
     partition_prefix: String,
     genesis_hash: [u8; 32],
     namespace: String,
-    key_store: KeyStore<PrivateKey>,
+    key_store: KeyStore<S>,
     participants: Vec<(PublicKey, bls12381::PublicKey)>,
     initial_state: ConsensusState,
-) -> EngineConfig<C, PrivateKey, O>
+) -> EngineConfig<C, S, O>
 where
     C: EngineClient,
     O: NetworkOracle<PublicKey> + Blocker<PublicKey = PublicKey>,
+    S: Signer<PublicKey = PublicKey>,
 {
     // For tests, generate a dummy BLS key
 
@@ -672,10 +674,12 @@ impl<E: Clock> SimulatedOracle<E> {
 }
 
 impl<E: Clock> NetworkOracle<PublicKey> for SimulatedOracle<E> {
-    async fn track(&mut self, index: u64, peers: Vec<PublicKey>) {
+    async fn track(&mut self, index: u64, primary: Vec<PublicKey>, secondary: Vec<PublicKey>) {
         use commonware_utils::ordered::Set;
+        let primary = Set::try_from(primary).expect("primary peers should be unique");
+        let secondary = Set::try_from(secondary).expect("secondary peers should be unique");
         self.inner
-            .track(index, Set::try_from(peers).expect("peers should be unique"))
+            .track(index, TrackedPeers::new(primary, secondary))
             .await
     }
 }

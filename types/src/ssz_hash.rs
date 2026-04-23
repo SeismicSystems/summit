@@ -29,6 +29,14 @@ impl SszHashTreeRoot for u64 {
     }
 }
 
+impl SszHashTreeRoot for u32 {
+    fn hash_tree_root(&self) -> [u8; 32] {
+        let mut chunk = [0u8; 32];
+        chunk[0..4].copy_from_slice(&self.to_le_bytes());
+        chunk
+    }
+}
+
 impl SszHashTreeRoot for bool {
     fn hash_tree_root(&self) -> [u8; 32] {
         let mut chunk = [0u8; 32];
@@ -102,6 +110,7 @@ impl SszHashTreeRoot for ProtocolParam {
             ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
             ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
             ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
+            ProtocolParam::ObserversPerValidator(v) => (7u64, v.hash_tree_root()),
         };
         merkleize(&[tag.hash_tree_root(), value_hash])
     }

@@ -50,9 +50,10 @@ pub const REMOVED_VALIDATORS_ROOT: usize = 17;
 pub const TREASURY_ADDRESS: usize = 18;
 pub const MAX_DEPOSITS_PER_EPOCH: usize = 19;
 pub const MAX_WITHDRAWALS_PER_EPOCH: usize = 20;
+pub const OBSERVERS_PER_VALIDATOR: usize = 21;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 21;
+pub const NUM_TOP_LEAVES: usize = 22;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -224,6 +225,11 @@ impl SszStateTree {
     pub fn set_max_withdrawals_per_epoch(&mut self, value: u64) {
         self.top
             .set_leaf(MAX_WITHDRAWALS_PER_EPOCH, value.hash_tree_root());
+    }
+
+    pub fn set_observers_per_validator(&mut self, value: u32) {
+        self.top
+            .set_leaf(OBSERVERS_PER_VALIDATOR, value.hash_tree_root());
     }
 
     pub fn set_treasury_address(&mut self, address: &Address) {
@@ -778,6 +784,7 @@ impl SszStateTree {
             ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
             ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
             ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
+            ProtocolParam::ObserversPerValidator(v) => (7u64, v.hash_tree_root()),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value_hash);
@@ -887,6 +894,7 @@ impl SszStateTree {
         treasury_address: &Address,
         max_deposits_per_epoch: u64,
         max_withdrawals_per_epoch: u64,
+        observers_per_validator: u32,
     ) {
         *self = Self::new();
 
@@ -906,6 +914,7 @@ impl SszStateTree {
         self.set_treasury_address(treasury_address);
         self.set_max_deposits_per_epoch(max_deposits_per_epoch);
         self.set_max_withdrawals_per_epoch(max_withdrawals_per_epoch);
+        self.set_observers_per_validator(observers_per_validator);
 
         // Validators
         self.rebuild_validators(validator_accounts);
@@ -1783,6 +1792,7 @@ mod tests {
         inc.set_treasury_address(&Address::ZERO);
         inc.set_max_deposits_per_epoch(3);
         inc.set_max_withdrawals_per_epoch(16);
+        inc.set_observers_per_validator(5);
         inc.rebuild_validators(&accounts);
         inc.rebuild_deposits(&VecDeque::new());
         inc.rebuild_withdrawals(&WithdrawalQueue::default());
@@ -1814,6 +1824,7 @@ mod tests {
             &Address::ZERO,
             3,
             16,
+            5,
         );
 
         assert_eq!(inc.root(), rb.root());
@@ -1848,6 +1859,7 @@ mod tests {
             &Address::ZERO,
             3,
             16,
+            0,
         );
 
         let root = tree.root();

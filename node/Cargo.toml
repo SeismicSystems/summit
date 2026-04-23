@@ -17,6 +17,11 @@ path = "src/bin/stake_and_checkpoint.rs"
 required-features = ["e2e"]
 
 [[bin]]
+name = "observer"
+path = "src/bin/observer.rs"
+required-features = ["e2e"]
+
+[[bin]]
 name = "stake-and-join-with-outdated-checkpoint"
 path = "src/bin/stake_and_join_with_outdated_ckpt.rs"
 required-features = ["e2e"]

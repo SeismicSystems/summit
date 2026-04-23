@@ -7,7 +7,12 @@ use std::future::Future;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub trait NetworkOracle<C: PublicKey>: Send + Sync + 'static {
-    fn track(&mut self, index: u64, peers: Vec<C>) -> impl Future<Output = ()> + Send;
+    fn track(
+        &mut self,
+        index: u64,
+        primary: Vec<C>,
+        secondary: Vec<C>,
+    ) -> impl Future<Output = ()> + Send;
 }
 
 #[derive(Clone, Debug)]
@@ -22,9 +27,9 @@ impl<C: PublicKey> DiscoveryOracle<C> {
 }
 
 impl<C: PublicKey> NetworkOracle<C> for DiscoveryOracle<C> {
-    async fn track(&mut self, index: u64, peers: Vec<C>) {
-        let primary = OrderedSet::from_iter_dedup(peers);
-        let secondary = OrderedSet::default();
+    async fn track(&mut self, index: u64, primary: Vec<C>, secondary: Vec<C>) {
+        let primary = OrderedSet::from_iter_dedup(primary);
+        let secondary = OrderedSet::from_iter_dedup(secondary);
         self.oracle
             .track(index, TrackedPeers::new(primary, secondary))
             .await;

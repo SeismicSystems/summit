@@ -142,6 +142,9 @@ pub fn create_test_finalizer_mailbox(
                     ConsensusStateRequest::GetMaxWithdrawalsPerEpoch => {
                         let _ = response.send(ConsensusStateResponse::MaxWithdrawalsPerEpoch(16));
                     }
+                    ConsensusStateRequest::GetObserversPerValidator => {
+                        let _ = response.send(ConsensusStateResponse::ObserversPerValidator(0));
+                    }
                     ConsensusStateRequest::GetEpochBounds(epoch) => {
                         let first = epoch * 10;
                         let last = first + 9;
