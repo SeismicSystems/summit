@@ -109,30 +109,37 @@ impl Read for PendingWithdrawal {
         }
 
         let mut index_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut index_bytes);
+        buf.try_copy_to_slice(&mut index_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let index = u64::from_le_bytes(index_bytes);
 
         let mut validator_index_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut validator_index_bytes);
+        buf.try_copy_to_slice(&mut validator_index_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let validator_index = u64::from_le_bytes(validator_index_bytes);
 
         let mut address_bytes = [0u8; 20];
-        buf.copy_to_slice(&mut address_bytes);
+        buf.try_copy_to_slice(&mut address_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let address = Address::from(address_bytes);
 
         let mut amount_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut amount_bytes);
+        buf.try_copy_to_slice(&mut amount_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let amount = u64::from_le_bytes(amount_bytes);
 
         let mut pubkey = [0u8; 32];
-        buf.copy_to_slice(&mut pubkey);
+        buf.try_copy_to_slice(&mut pubkey)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         let mut balance_deduction_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut balance_deduction_bytes);
+        buf.try_copy_to_slice(&mut balance_deduction_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let balance_deduction = u64::from_le_bytes(balance_deduction_bytes);
 
         let mut epoch_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut epoch_bytes);
+        buf.try_copy_to_slice(&mut epoch_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let epoch = u64::from_le_bytes(epoch_bytes);
 
         Ok(PendingWithdrawal {

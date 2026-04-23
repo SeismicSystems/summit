@@ -114,7 +114,10 @@ impl Read for Checkpoint {
             return Err(Error::Invalid("Checkpoint", "improper encoded length"));
         }
 
-        Self::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk())
+        let mut payload = vec![0u8; len as usize];
+        buf.try_copy_to_slice(&mut payload)
+            .map_err(|_| Error::EndOfBuffer)?;
+        Self::from_ssz_bytes(&payload)
             .map_err(|_| Error::Invalid("Checkpoint", "Unable to decode SSZ bytes for checkpoint"))
     }
 }

@@ -142,24 +142,27 @@ impl Read for ValidatorAccount {
         }
 
         let mut consensus_key_bytes = [0u8; 48];
-        buf.copy_to_slice(&mut consensus_key_bytes);
+        buf.try_copy_to_slice(&mut consensus_key_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let consensus_public_key = bls12381::PublicKey::decode(&consensus_key_bytes[..])
             .map_err(|_| Error::Invalid("ValidatorAccount", "Invalid consensus public key"))?;
 
         let mut withdrawal_credentials_bytes = [0u8; 20];
-        buf.copy_to_slice(&mut withdrawal_credentials_bytes);
+        buf.try_copy_to_slice(&mut withdrawal_credentials_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let withdrawal_credentials = Address::from(withdrawal_credentials_bytes);
 
         let mut balance_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut balance_bytes);
+        buf.try_copy_to_slice(&mut balance_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let balance = u64::from_le_bytes(balance_bytes);
 
-        let status_byte = buf.get_u8();
+        let status_byte = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)?;
         let status = ValidatorStatus::from_u8(status_byte)
             .map_err(|_| Error::Invalid("ValidatorAccount", "Invalid status value"))?;
 
         // Extract has_pending_deposit (1 byte)
-        let has_pending_deposit = match buf.get_u8() {
+        let has_pending_deposit = match buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? {
             0x0 => Ok(false),
             0x1 => Ok(true),
             _ => Err(Error::Invalid(
@@ -169,7 +172,7 @@ impl Read for ValidatorAccount {
         }?;
 
         // Extract has_pending_withdrawal (1 byte)
-        let has_pending_withdrawal = match buf.get_u8() {
+        let has_pending_withdrawal = match buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? {
             0x0 => Ok(false),
             0x1 => Ok(true),
             _ => Err(Error::Invalid(
@@ -179,11 +182,13 @@ impl Read for ValidatorAccount {
         }?;
 
         let mut joining_epoch_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut joining_epoch_bytes);
+        buf.try_copy_to_slice(&mut joining_epoch_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let joining_epoch = u64::from_le_bytes(joining_epoch_bytes);
 
         let mut last_deposit_index_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut last_deposit_index_bytes);
+        buf.try_copy_to_slice(&mut last_deposit_index_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let last_deposit_index = u64::from_le_bytes(last_deposit_index_bytes);
 
         Ok(ValidatorAccount {

@@ -341,9 +341,11 @@ impl<V: Variant> Read for Value<V> {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let value_type = buf.get_u8();
+        let value_type = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)?;
         match value_type {
-            0x01 => Ok(Self::U64(buf.get_u64())),
+            0x01 => Ok(Self::U64(
+                buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?,
+            )),
             0x05 => Ok(Self::ConsensusState(Box::new(ConsensusState::read_cfg(
                 buf,
                 &(),
@@ -388,6 +390,7 @@ impl<V: Variant> Write for Value<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commonware_codec::ReadExt;
     use commonware_consensus::simplex::types::{Finalization, Proposal};
     use commonware_consensus::types::{Epoch, Round, View};
     use commonware_cryptography::bls12381::primitives::{
@@ -404,6 +407,26 @@ mod tests {
     use rand::SeedableRng as _;
     use rand::rngs::StdRng;
     use summit_types::Block;
+
+    #[test]
+    fn test_value_read_truncated_input_returns_err() {
+        // Empty buffer — must not panic.
+        let empty: &[u8] = &[];
+        assert!(matches!(
+            Value::<MinPk>::read(&mut empty.as_ref()),
+            Err(Error::EndOfBuffer)
+        ));
+
+        // Tag 0x01 (U64) with 0..8 payload bytes — all truncated.
+        for n in 0..8 {
+            let mut buf = vec![0x01u8];
+            buf.extend(std::iter::repeat_n(0u8, n));
+            assert!(matches!(
+                Value::<MinPk>::read(&mut buf.as_ref()),
+                Err(Error::EndOfBuffer)
+            ));
+        }
+    }
 
     async fn create_test_db_with_context<
         E: Clock + Storage + Metrics + commonware_runtime::BufferPooler,
