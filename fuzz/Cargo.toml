@@ -1,0 +1,29 @@
+[package]
+name = "summit-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+summit-types = { path = "../types" }
+commonware-codec = "2026.4.0"
+bytes = "1.10.1"
+
+# Prevent this crate from being picked up by the parent workspace; cargo-fuzz
+# needs its own build settings and nightly toolchain.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "protocol_param_read"
+path = "fuzz_targets/protocol_param_read.rs"
+test = false
+doc = false
+bench = false

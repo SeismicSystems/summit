@@ -231,18 +231,18 @@ impl Read for ProtocolParam {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let tag = buf.get_u8();
+        let tag = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)?;
         match tag {
             0x00 => {
-                let value = buf.get_u64();
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
                 Ok(ProtocolParam::MinimumStake(value))
             }
             0x01 => {
-                let value = buf.get_u64();
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
                 Ok(ProtocolParam::MaximumStake(value))
             }
             0x02 => {
-                let value = buf.get_u64();
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
                 if !(MIN_EPOCH_LENGTH..=MAX_EPOCH_LENGTH).contains(&value) {
                     return Err(Error::Invalid(
                         "ProtocolParam",
@@ -252,7 +252,7 @@ impl Read for ProtocolParam {
                 Ok(ProtocolParam::EpochLength(value))
             }
             0x03 => {
-                let value = buf.get_u64();
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
                 if !(MIN_ALLOWED_TIMESTAMP_FUTURE_MS..=MAX_ALLOWED_TIMESTAMP_FUTURE_MS)
                     .contains(&value)
                 {
@@ -265,11 +265,12 @@ impl Read for ProtocolParam {
             }
             0x04 => {
                 let mut bytes = [0u8; 20];
-                buf.copy_to_slice(&mut bytes);
+                buf.try_copy_to_slice(&mut bytes)
+                    .map_err(|_| Error::EndOfBuffer)?;
                 Ok(ProtocolParam::TreasuryAddress(Address::from(bytes)))
             }
             0x05 => {
-                let value = buf.get_u64();
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
                 if value > MAX_MAX_DEPOSITS_PER_EPOCH {
                     return Err(Error::Invalid(
                         "ProtocolParam",
@@ -279,7 +280,7 @@ impl Read for ProtocolParam {
                 Ok(ProtocolParam::MaxDepositsPerEpoch(value))
             }
             0x06 => {
-                let value = buf.get_u64();
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
                 if !(MAX_WITHDRAWALS_PER_EPOCH_MIN..=MAX_WITHDRAWALS_PER_EPOCH_MAX).contains(&value)
                 {
                     return Err(Error::Invalid(
@@ -290,7 +291,7 @@ impl Read for ProtocolParam {
                 Ok(ProtocolParam::MaxWithdrawalsPerEpoch(value))
             }
             0x07 => {
-                let value = buf.get_u64();
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
                 if value > MAX_OBSERVERS_PER_VALIDATOR {
                     return Err(Error::Invalid(
                         "ProtocolParam",
@@ -664,5 +665,46 @@ mod tests {
         buf.put_u8(0x07);
         buf.put_u64(MAX_OBSERVERS_PER_VALIDATOR + 1);
         assert!(ProtocolParam::read(&mut buf.as_ref()).is_err());
+    }
+
+    #[test]
+    fn test_decode_truncated_input_returns_err() {
+        // Empty buffer — must not panic.
+        let empty: &[u8] = &[];
+        assert!(matches!(
+            ProtocolParam::read(&mut empty.as_ref()),
+            Err(Error::EndOfBuffer)
+        ));
+
+        // Tag only, no payload.
+        for tag in 0x00u8..=0x07 {
+            let mut buf = BytesMut::new();
+            buf.put_u8(tag);
+            assert!(
+                matches!(
+                    ProtocolParam::read(&mut buf.as_ref()),
+                    Err(Error::EndOfBuffer)
+                ),
+                "tag {tag:#x} must return EndOfBuffer on truncated payload"
+            );
+        }
+
+        // Tag + partial u64 (7 bytes instead of 8).
+        let mut buf = BytesMut::new();
+        buf.put_u8(0x00);
+        buf.put_slice(&[0u8; 7]);
+        assert!(matches!(
+            ProtocolParam::read(&mut buf.as_ref()),
+            Err(Error::EndOfBuffer)
+        ));
+
+        // Treasury address tag + truncated 20-byte payload.
+        let mut buf = BytesMut::new();
+        buf.put_u8(0x04);
+        buf.put_slice(&[0u8; 19]);
+        assert!(matches!(
+            ProtocolParam::read(&mut buf.as_ref()),
+            Err(Error::EndOfBuffer)
+        ));
     }
 }
