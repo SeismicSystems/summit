@@ -135,12 +135,12 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
      │    (key-value)   │                                                                                             
      │  • Consensus     │                                                                                             
      │    state by      │                                                                                             
-     │    height        │                                                                                             
+     │    epoch         │                                                                                             
      │  • Checkpoints   │                                                                                             
      │    by epoch      │                                                                                             
      │  • Finalized     │                                                                                             
      │    headers       │                                                                                             
-     │    by height     │                                                                                             
+     │    by epoch      │                                                                                             
      │                  │                                                                                             
      │  finalizer/src/  │                                                                                             
      │  db.rs           │                                                                                             

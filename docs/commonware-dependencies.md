@@ -240,7 +240,7 @@ use commonware_macros::test_traced;
 
 ### Upgrade Path
 
-Summit pins Commonware to a versioned release in the workspace `Cargo.toml`. All 12 crates are bumped in lockstep:
+Summit pins Commonware to a versioned release in the workspace `Cargo.toml`. All 12 `commonware-*` workspace dependencies are bumped in lockstep:
 
 ```toml
 commonware-consensus = "2026.4.0"
