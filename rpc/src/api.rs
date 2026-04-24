@@ -79,6 +79,19 @@ pub trait SummitApi {
     ) -> RpcResult<PendingWithdrawalResponse>;
 }
 
+#[cfg(feature = "permissioned")]
+#[rpc(server, client)]
+pub trait SummitPermissionedApi {
+    #[method(name = "pause")]
+    async fn pause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool>;
+
+    #[method(name = "unpause")]
+    async fn unpause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool>;
+
+    #[method(name = "isPaused")]
+    async fn is_paused(&self) -> RpcResult<bool>;
+}
+
 #[rpc(server, client)]
 pub trait SummitProofApi {
     #[method(name = "getStateRoot")]

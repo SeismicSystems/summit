@@ -1,6 +1,10 @@
 mod utils;
 
 use jsonrpsee::http_client::HttpClientBuilder;
+#[cfg(feature = "permissioned")]
+use std::sync::Arc;
+#[cfg(feature = "permissioned")]
+use std::sync::atomic::AtomicBool;
 use summit_rpc::{
     PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_with_handle,
 };
@@ -14,9 +18,15 @@ async fn test_health_endpoint() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -40,9 +50,15 @@ async fn test_get_latest_height() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -66,9 +82,15 @@ async fn test_get_latest_epoch() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -88,9 +110,15 @@ async fn test_validator_balance_not_found() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -114,9 +142,15 @@ async fn test_get_public_keys() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -205,9 +239,15 @@ async fn test_get_minimum_stake() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -215,6 +255,96 @@ async fn test_get_minimum_stake() {
     let response = client.get_minimum_stake().await;
     assert!(response.is_ok());
     assert_eq!(response.unwrap(), 40_000_000_000);
+
+    handle.stop().unwrap();
+}
+
+#[cfg(feature = "permissioned")]
+#[tokio::test]
+async fn test_pause_rejects_invalid_signature() {
+    use jsonrpsee::core::client::Error as ClientError;
+    use summit_rpc::SummitPermissionedApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+    let paused = Arc::new(AtomicBool::new(false));
+
+    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, paused.clone())
+        .await
+        .unwrap();
+
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let bogus_sig = format!("0x{}", "ab".repeat(64));
+    let err = client.pause(now, bogus_sig).await.unwrap_err();
+
+    match err {
+        ClientError::Call(obj) => assert_eq!(obj.code(), 4002),
+        other => panic!("expected 4002 InvalidSignature, got {other:?}"),
+    }
+    assert!(
+        !paused.load(std::sync::atomic::Ordering::Relaxed),
+        "pause flag must not flip on a rejected request"
+    );
+
+    handle.stop().unwrap();
+}
+
+#[cfg(feature = "permissioned")]
+#[tokio::test]
+async fn test_pause_rejects_stale_timestamp() {
+    use jsonrpsee::core::client::Error as ClientError;
+    use summit_rpc::SummitPermissionedApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+    let paused = Arc::new(AtomicBool::new(false));
+
+    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, paused.clone())
+        .await
+        .unwrap();
+
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
+
+    let stale_ts = 1; // way outside the 30s window
+    let sig = format!("0x{}", "ab".repeat(64));
+    let err = client.pause(stale_ts, sig).await.unwrap_err();
+
+    match err {
+        ClientError::Call(obj) => assert_eq!(obj.code(), 4001),
+        other => panic!("expected 4001 TimestampOutOfWindow, got {other:?}"),
+    }
+    assert!(!paused.load(std::sync::atomic::Ordering::Relaxed));
+
+    handle.stop().unwrap();
+}
+
+#[cfg(feature = "permissioned")]
+#[tokio::test]
+async fn test_is_paused_open_access() {
+    use summit_rpc::SummitPermissionedApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) =
+        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
+            .await
+            .unwrap();
+
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
+
+    assert_eq!(client.is_paused().await.unwrap(), false);
 
     handle.stop().unwrap();
 }
@@ -231,9 +361,15 @@ async fn test_get_maximum_stake() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0)
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();

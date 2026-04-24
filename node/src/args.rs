@@ -11,7 +11,6 @@ use commonware_codec::Read;
 use commonware_cryptography::{Signer, certificate::Scheme};
 use commonware_p2p::{Ingress, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
-use summit_finalizer::FinalizerMailbox;
 use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
 use tokio_util::sync::CancellationToken;
 
@@ -373,7 +372,7 @@ async fn run_node_inner(
     let namespace = genesis.namespace.as_bytes();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
-    let (engine, p2p, finalizer_mailbox) = if let Some(index) = flags.observer {
+    let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
         let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, index);
         let mut p2p_cfg = authenticated::discovery::Config::recommended(
             signer,
@@ -390,7 +389,7 @@ async fn run_node_inner(
             engine_client,
             key_store,
             peers,
-            flags.db_prefix.clone(),
+            flags,
             &genesis,
             initial_state,
             loaded.last_block,
@@ -414,7 +413,7 @@ async fn run_node_inner(
             engine_client,
             key_store,
             peers,
-            flags.db_prefix.clone(),
+            flags,
             &genesis,
             initial_state,
             loaded.last_block,
@@ -422,18 +421,6 @@ async fn run_node_inner(
         )
         .await
     };
-
-    // Start RPC server
-    let key_store_path = flags.key_store_path.clone();
-    let rpc_port = flags.rpc_port;
-    let stop_signal = context.stopped();
-    let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-        if let Err(e) =
-            start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
-        {
-            error!("RPC server failed: {}", e);
-        }
-    });
 
     // Wait for any task to error
     if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
@@ -563,7 +550,7 @@ async fn run_node_local_inner(
     let namespace = genesis.namespace.as_bytes();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
-    let (engine, p2p, finalizer_mailbox) = if let Some(index) = flags.observer {
+    let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
         let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, index);
         let mut p2p_cfg = authenticated::discovery::Config::local(
             signer,
@@ -580,7 +567,7 @@ async fn run_node_local_inner(
             engine_client,
             key_store,
             peers,
-            flags.db_prefix.clone(),
+            flags.clone(),
             &genesis,
             initial_state,
             checkpoint_parent_block,
@@ -604,7 +591,7 @@ async fn run_node_local_inner(
             engine_client,
             key_store,
             peers,
-            flags.db_prefix.clone(),
+            flags.clone(),
             &genesis,
             initial_state,
             checkpoint_parent_block,
@@ -630,18 +617,6 @@ async fn run_node_local_inner(
         MetricServer::new(config).serve(stop_signal).await.unwrap();
     }
 
-    // Start RPC server
-    let key_store_path = flags.key_store_path.clone();
-    let rpc_port = flags.rpc_port;
-    let stop_signal = context.stopped();
-    let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
-        if let Err(e) =
-            start_rpc_server(finalizer_mailbox, key_store_path, rpc_port, stop_signal).await
-        {
-            error!("RPC server failed: {}", e);
-        }
-    });
-
     // Wait for any task to error
     if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
         error!(?e, "task failed");
@@ -655,16 +630,12 @@ async fn start_network_and_engine<S, EC>(
     engine_client: EC,
     key_store: KeyStore<PrivateKey>,
     peers: Vec<(PublicKey, bls12381::PublicKey)>,
-    db_prefix: String,
+    flags: RunFlags,
     genesis: &Genesis,
     initial_state: ConsensusState,
     checkpoint_last_block: Option<Block>,
     checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
-) -> (
-    Handle<()>,
-    Handle<()>,
-    FinalizerMailbox<MultisigScheme, Block>,
-)
+) -> (Handle<()>, Handle<()>, Handle<()>)
 where
     S: Signer<PublicKey = PublicKey>,
     EC: EngineClient,
@@ -678,7 +649,7 @@ where
         oracle,
         key_store,
         peers,
-        db_prefix,
+        flags.db_prefix,
         genesis,
         initial_state,
         checkpoint_last_block,
@@ -701,12 +672,33 @@ where
     let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
     let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
+    #[cfg(feature = "permissioned")]
+    let paused = engine.paused.clone();
+
     let finalizer_mailbox = engine.finalizer_mailbox.clone();
     let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
     let p2p = network.start();
 
-    (engine, p2p, finalizer_mailbox)
+    // Start RPC server
+    let key_store_path = flags.key_store_path;
+    let rpc_port = flags.rpc_port;
+    let stop_signal = context.stopped();
+    let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+        if let Err(e) = start_rpc_server(
+            finalizer_mailbox,
+            key_store_path,
+            rpc_port,
+            stop_signal,
+            #[cfg(feature = "permissioned")]
+            paused,
+        )
+        .await
+        {
+            error!("RPC server failed: {}", e);
+        }
+    });
+    (engine, p2p, rpc_handle)
 }
 
 fn get_initial_state(

@@ -36,8 +36,14 @@ hyper = "1.0"
 bytes = { workspace = true }
 http-body-util = { workspace = true }
 
+[features]
+permissioned = []
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 commonware-math.workspace = true
 rand.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+hex = "0.4"

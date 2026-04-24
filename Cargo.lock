@@ -6106,6 +6106,8 @@ name = "summit-rpc"
 version = "0.0.3-alpha"
 dependencies = [
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "anyhow",
  "async-trait",
  "bytes",
@@ -6118,6 +6120,7 @@ dependencies = [
  "dirs 5.0.1",
  "ethereum_ssz",
  "futures",
+ "hex",
  "http",
  "http-body-util",
  "hyper",

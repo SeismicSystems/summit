@@ -1,4 +1,8 @@
+#[cfg(feature = "permissioned")]
+use crate::api::SummitPermissionedApiServer;
 use crate::api::{SummitApiServer, SummitProofApiServer};
+#[cfg(feature = "permissioned")]
+use crate::auth;
 use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
@@ -12,6 +16,10 @@ use commonware_cryptography::{Hasher as _, Sha256, Signer};
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
 use ssz::Encode as _;
+#[cfg(feature = "permissioned")]
+use std::sync::Arc;
+#[cfg(feature = "permissioned")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
@@ -24,16 +32,21 @@ use summit_types::{
 pub struct SummitRpcServer {
     key_store_path: String,
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    #[cfg(feature = "permissioned")]
+    paused: Arc<AtomicBool>,
 }
 
 impl SummitRpcServer {
     pub fn new(
         key_store_path: String,
         finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+        #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
     ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
+            #[cfg(feature = "permissioned")]
+            paused,
         }
     }
 }
@@ -359,6 +372,28 @@ impl SummitApiServer for SummitRpcServer {
             }),
             None => Err(RpcError::WithdrawalNotFound.into()),
         }
+    }
+}
+
+#[cfg(feature = "permissioned")]
+#[async_trait]
+impl SummitPermissionedApiServer for SummitRpcServer {
+    async fn pause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
+        auth::verify_action(auth::ACTION_PAUSE, timestamp_secs, &signature)?;
+        self.paused.store(true, Ordering::Relaxed);
+        tracing::info!("consensus paused via RPC");
+        Ok(true)
+    }
+
+    async fn unpause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
+        auth::verify_action(auth::ACTION_UNPAUSE, timestamp_secs, &signature)?;
+        self.paused.store(false, Ordering::Relaxed);
+        tracing::info!("consensus unpaused via RPC");
+        Ok(true)
+    }
+
+    async fn is_paused(&self) -> RpcResult<bool> {
+        Ok(self.paused.load(Ordering::Relaxed))
     }
 }
 
