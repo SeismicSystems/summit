@@ -6,8 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use summit_types::{PublicKey, Signature};
 
 // TODO: replace with the real admin pubkey before production use.
-pub const PAUSE_ADMIN_PUBKEY_HEX: &str =
-    "0xD9b09DCAe1B5D2fFd36200E12f2617414D5fcC30";
+pub const PAUSE_ADMIN_PUBKEY_HEX: &str = "0xD9b09DCAe1B5D2fFd36200E12f2617414D5fcC30";
 
 pub const TIMESTAMP_WINDOW_SECS: u64 = 30;
 pub const DOMAIN: &str = "summit-pause-v1";
