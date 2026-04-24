@@ -1,6 +1,8 @@
 #[cfg(feature = "permissioned")]
 use crate::api::SummitPermissionedApiServer;
 use crate::api::{SummitApiServer, SummitProofApiServer};
+#[cfg(feature = "permissioned")]
+use crate::auth;
 use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
@@ -376,13 +378,15 @@ impl SummitApiServer for SummitRpcServer {
 #[cfg(feature = "permissioned")]
 #[async_trait]
 impl SummitPermissionedApiServer for SummitRpcServer {
-    async fn pause(&self) -> RpcResult<bool> {
+    async fn pause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
+        auth::verify_action(auth::ACTION_PAUSE, timestamp_secs, &signature)?;
         self.paused.store(true, Ordering::Relaxed);
         tracing::info!("consensus paused via RPC");
         Ok(true)
     }
 
-    async fn unpause(&self) -> RpcResult<bool> {
+    async fn unpause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
+        auth::verify_action(auth::ACTION_UNPAUSE, timestamp_secs, &signature)?;
         self.paused.store(false, Ordering::Relaxed);
         tracing::info!("consensus unpaused via RPC");
         Ok(true)

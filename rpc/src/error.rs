@@ -13,6 +13,12 @@ pub enum RpcError {
     IoError(String),
     InvalidKey(String),
     Internal(String),
+    #[cfg(feature = "permissioned")]
+    InvalidAdminKey(String),
+    #[cfg(feature = "permissioned")]
+    TimestampOutOfWindow,
+    #[cfg(feature = "permissioned")]
+    InvalidSignature,
 }
 
 impl From<RpcError> for ErrorObjectOwned {
@@ -48,6 +54,18 @@ impl From<RpcError> for ErrorObjectOwned {
                 ErrorObjectOwned::owned(3002, "Invalid key descriptor", Some(msg))
             }
             RpcError::Internal(msg) => ErrorObjectOwned::owned(5000, "Internal error", Some(msg)),
+            #[cfg(feature = "permissioned")]
+            RpcError::InvalidAdminKey(msg) => {
+                ErrorObjectOwned::owned(4000, "Invalid admin public key", Some(msg))
+            }
+            #[cfg(feature = "permissioned")]
+            RpcError::TimestampOutOfWindow => {
+                ErrorObjectOwned::owned(4001, "Timestamp outside allowed window", None::<()>)
+            }
+            #[cfg(feature = "permissioned")]
+            RpcError::InvalidSignature => {
+                ErrorObjectOwned::owned(4002, "Invalid signature", None::<()>)
+            }
         }
     }
 }

@@ -1,4 +1,6 @@
 mod api;
+#[cfg(feature = "permissioned")]
+mod auth;
 mod builder;
 mod error;
 mod genesis;
