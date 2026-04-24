@@ -14,7 +14,7 @@ pub enum RpcError {
     InvalidKey(String),
     Internal(String),
     #[cfg(feature = "permissioned")]
-    InvalidAdminKey(String),
+    InvalidAdminAddress(String),
     #[cfg(feature = "permissioned")]
     TimestampOutOfWindow,
     #[cfg(feature = "permissioned")]
@@ -55,8 +55,8 @@ impl From<RpcError> for ErrorObjectOwned {
             }
             RpcError::Internal(msg) => ErrorObjectOwned::owned(5000, "Internal error", Some(msg)),
             #[cfg(feature = "permissioned")]
-            RpcError::InvalidAdminKey(msg) => {
-                ErrorObjectOwned::owned(4000, "Invalid admin public key", Some(msg))
+            RpcError::InvalidAdminAddress(msg) => {
+                ErrorObjectOwned::owned(4000, "Invalid admin address", Some(msg))
             }
             #[cfg(feature = "permissioned")]
             RpcError::TimestampOutOfWindow => {
