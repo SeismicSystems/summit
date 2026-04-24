@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // TODO: replace with the real admin address before production use.
-pub const PAUSE_ADMIN_ADDRESS_HEX: &str = "0x0000000000000000000000000000000000000000";
+pub const PAUSE_ADMIN_ADDRESS_HEX: &str = "0xD9b09DCAe1B5D2fFd36200E12f2617414D5fcC30";
 
 pub const TIMESTAMP_WINDOW_SECS: u64 = 30;
 pub const DOMAIN: &str = "summit-pause-v1";
