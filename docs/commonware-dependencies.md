@@ -9,10 +9,11 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Simplex consensus protocol implementation
 
 **Key Components:**
-- `simplex::SimplexConsensus` - Core consensus engine
-- `simplex::types::Activity` - Consensus activities/messages
-- `simplex::signing_scheme::Scheme` - Signature verification
+- `simplex` - Simplex consensus engine
+- `simplex::scheme::Scheme` - Signature verification scheme
+- `types::{Epoch, Epocher, FixedEpocher, Round, View, ViewDelta, Height}` - Consensus primitives
 - `Block` trait - Block interface definition
+- `Reporter` trait - Hook for consensus activity notifications
 
 **Critical Usage:**
 - **Consensus Protocol**: All consensus logic delegated to Commonware's Simplex implementation
@@ -41,10 +42,11 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Peer-to-peer communication between validators
 
 **Key Components:**
-- `authenticated` - Authenticated P2P connections
-- `Manager` - Peer connection management
+- `authenticated` - Authenticated P2P connections (production)
+- `simulated` - In-process network (deterministic tests)
+- `Manager`, `Provider`, `TrackedPeers`, `PeerSetUpdate` - Peer set management
 - `Sender`/`Receiver` - Message transmission
-- `utils::requester` - Request-response patterns
+- `Blocker`, `Ingress` - Connection filtering and admission
 
 **Critical Usage:**
 - **Validator Discovery**: Automatic peer discovery and connection
@@ -57,25 +59,29 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Persistent storage of consensus state and blocks
 
 **Key Components:**
-- **Storage traits**: Generic storage interface
-- **Database implementations**: Pluggable storage backends
-- **Atomic operations**: Transactional state updates
+- `qmdb::store::db::Db` - QMDB authenticated key-value store (consensus state, headers)
+- `archive` / `archive::immutable` - Block archive keyed by height
+- `journal::contiguous::variable` - Append-only write-ahead log
+- `translator::EightCap` - Key translator for the QMDB store
+- `metadata::Metadata` - Metadata store for pointer/tip data
 
 **Critical Usage:**
-- **State Persistence**: Consensus state and validator set storage
-- **Block Storage**: Immutable block data with efficient retrieval
-- **Atomic Updates**: Ensuring consistency during state transitions
-- **Historical Data**: Compressed archival of old blocks
+- **State Persistence**: Consensus state, validator set, and finalized headers in QMDB
+- **Block Storage**: Finalized blocks archived by height via `archive::immutable`
+- **Atomic Updates**: Journal-backed writes with WAL semantics
+- **Checkpoints**: Durable checkpoint records for fast sync
 
 ### 5. Runtime (`commonware-runtime`)
 
 **Used for**: Async runtime abstractions and utilities
 
 **Key Components:**
-- `Clock` - Time management
-- `Spawner` - Task spawning abstractions
-- `Metrics` - Performance monitoring
-- `buffer::PoolRef` - Memory pool management
+- `tokio::Runner` - Production async runtime (wraps Tokio)
+- `deterministic::Runner` - Seeded, deterministic runtime for tests
+- `Clock`, `Spawner`, `Handle` - Time, task spawning, and join handles
+- `Metrics` - Prometheus-compatible metrics registry
+- `Network`, `Storage` - Abstract network and disk interfaces
+- `buffer::paged::CacheRef`, `BufferPooler` - Paged buffer caching for storage
 
 **Critical Usage:**
 - **Task Management**: Async task spawning and coordination
@@ -88,10 +94,10 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Common data structures and utilities
 
 **Key Components:**
-- `NZU64`, `NZUsize` - Non-zero integer types
-- `Span` - Efficient byte spans
-- `sequence` - Sequence number management
-- Hex utilities - Hexadecimal encoding/decoding
+- `NZU64`, `NZUsize` - Non-zero integer types (and their constructor macros)
+- `from_hex_formatted`, `hex` - Hexadecimal encoding/decoding
+- `Hostname` - Validated hostname type for bootstrap configuration
+- `acknowledgement::{Acknowledgement, Exact}` - Activity acknowledgement tracking
 
 ### 7. Codec (`commonware-codec`)
 
