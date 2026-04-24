@@ -115,6 +115,44 @@ Tests a new validator joining by syncing from genesis with no checkpoint.
 - **Flow**: First withdraws one validator (modifying the peer set from genesis config), then generates new keys for a joining validator, sends a deposit, creates a `bootstrappers.toml` for peer discovery, and starts node4 with no checkpoint.
 - **Verifies**: The new node syncs the entire chain from genesis, catches up to the current epoch, and joins the active validator set.
 
+## Fuzz Testing
+
+Coverage-guided fuzz testing lives in the `fuzz/` crate and runs under nightly Rust via [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz). The fuzz crate is excluded from the main workspace (`[workspace] members = ["."]` in `fuzz/Cargo.toml`) so the nightly-only libFuzzer runtime doesn't pollute stable builds.
+
+### Target categories
+
+- **Parser targets** — every `Read` impl in `summit-types` (`ProtocolParam`, `ConsensusState`, `Checkpoint`, `Block`, `Header`, `FinalizedHeader`, `ExecutionRequest`, `ValidatorAccount`, `WithdrawalQueue`, `DynamicEpocher`). Arbitrary bytes must parse to `Ok` / `Err` without panicking, and successful decode roundtrips to byte-identical output.
+- **Non-codec targets** — `ssz_tree_key::parse_key` (RPC string input), `derive_child_public` (confirms `PublicKey::decode` filters non-curve points before reaching `CompressedEdwardsY::decompress().expect(...)`), `SszProof::verify` (adversarial gindex/branch must not overflow).
+- **Property-based targets** — `WithdrawalQueue` op-sequence invariants (`len` / iterator / per-epoch counts consistent; `next_index` monotonic), `ExtPrivateKey` sign-verify roundtrip, `SszStateTree` incremental-setter updates plus `apply_protocol_parameter_changes` must match a full `rebuild_ssz_tree()` root, and any proof generated from a captured `ConsensusState` must verify against that state's captured root across all proof kinds (scalars, validators, deposits, withdrawals, protocol params, added / removed validators).
+
+### Running
+
+```bash
+cargo install cargo-fuzz          # one-time
+cd fuzz
+cargo +nightly fuzz run <target>                          # runs until Ctrl+C
+cargo +nightly fuzz run <target> -- -max_total_time=120   # bounded by seconds
+```
+
+Full battery, 2 minutes per target, stop on first crash:
+
+```bash
+cd fuzz && set -e && for t in $(cargo fuzz list); do \
+  echo "=== $t ==="; \
+  cargo +nightly fuzz run "$t" -- -max_total_time=120; \
+done && echo "All targets passed."
+```
+
+### Reproducing a crash
+
+libFuzzer writes reproducers to `fuzz/artifacts/<target>/crash-<hash>`:
+
+```bash
+cargo +nightly fuzz run <target> fuzz/artifacts/<target>/crash-<hash>
+```
+
+Distill each crash into a unit-level regression test in the source crate (e.g. `test_read_truncated_input_returns_err`) so `cargo test` catches future reintroductions even without running the fuzzer. See `fuzz/README.md` for the full target list, invariants, and instructions for adding new targets.
+
 ## Benchmarks
 
 ### Consensus State Benchmark

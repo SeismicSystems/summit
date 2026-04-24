@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 summit-types = { path = "../types" }
 commonware-codec = "2026.4.0"
+commonware-cryptography = "2026.4.0"
 arbitrary = { version = "1", features = ["derive"] }
 bytes = "1.10.1"
 
@@ -109,6 +110,34 @@ bench = false
 [[bin]]
 name = "ssz_proof_verify"
 path = "fuzz_targets/ssz_proof_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "withdrawal_queue_ops"
+path = "fuzz_targets/withdrawal_queue_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ext_private_key_sign_verify"
+path = "fuzz_targets/ext_private_key_sign_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssz_tree_incremental_vs_rebuild"
+path = "fuzz_targets/ssz_tree_incremental_vs_rebuild.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssz_proof_roundtrip"
+path = "fuzz_targets/ssz_proof_roundtrip.rs"
 test = false
 doc = false
 bench = false
