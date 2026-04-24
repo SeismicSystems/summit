@@ -11,11 +11,16 @@ The changes were made to accommodate every consensus node having 2 keys to parti
 ## Becoming a Validator
 
 1. Deploy the Summit image on a TDX VM. This will start seismic-reth and Summit as well as the enclave.
-2. The deposit function requires a signature with the node's keys. Since they are only available from within the secure enclave, an RPC endpoint is exposed to receive the signed calldata that includes the signature from the node at default port 3030:
+2. The deposit function requires a signature with the node's keys. Since they are only available from within the secure enclave, the node exposes a JSON-RPC method on port 3030 by default to produce the signed deposit calldata:
+   ```json
+   {
+     "jsonrpc": "2.0",
+     "method": "getDepositSignature",
+     "params": [32000000000, "0x0000000000000000000000000000000000000000"],
+     "id": 1
+   }
    ```
-   /get_deposit_signature?amount=32000000000&address=0x0000000000000000000000000000000000000000
-   ```
-   The `amount` should be the staking amount and `address` should be your Ethereum address you want to be able to withdraw to.
+   The `amount` should be the staking amount and `address` should be the Ethereum address you want to be able to withdraw to.
 3. Send a signed transaction to the deposit contract with the calldata from the previous step, along with a value equal to the amount being staked (contract address: `0x00000000219ab540356cBB839Cbe05303d7705Fa`, same as Ethereum).
 4. Download the latest checkpoint and load it into the node.
 5. Keep your node running and it will start participating in the next epoch.

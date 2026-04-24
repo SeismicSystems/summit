@@ -47,12 +47,12 @@ cargo build --release
 
 ### 1. Generate Validator Keys
 ```bash
-cargo run -- --key-path path/to/store/key keys generate
+cargo run -- keys generate --key-store-path /path/to/keys
 ```
 
 ### 2. View Your Public Key
 ```bash
-cargo run -- --key-path path/to/store/key keys show
+cargo run -- keys show --key-store-path /path/to/keys
 ```
 
 ### 3. Configure Genesis
@@ -61,10 +61,10 @@ Create a genesis file that references your EVM genesis configuration. See [examp
 ### 4. Start Your Validator
 Ensure your EVM client is running, then:
 ```bash
-cargo run -- \
-  --key-path /path/to/priv-key \
+cargo run -- run \
+  --key-store-path /path/to/keys \
   --store-path /storage/directory \
-  --engine-jwt-path /path/to/evm/jwt.hex \
+  --engine-ipc-path /tmp/reth_engine_api.ipc \
   --genesis-path /path/to/genesis.toml
 ```
 

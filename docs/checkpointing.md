@@ -98,14 +98,15 @@ When a node starts, it attempts to load the most recent checkpoint:
 
 ### Database Schema
 
-Checkpoints and headers are stored in separate column families:
+Checkpoints and headers are stored in a single QMDB store using prefixed keys and explicit tracker entries for the latest stored epoch:
 
-| Column Family | Key | Value |
-|---------------|-----|-------|
-| `checkpoints` | epoch (u64) | Checkpoint bytes |
-| `finalized_headers` | epoch (u64) | FinalizedHeader bytes |
-| `most_recent_checkpoint` | - | epoch (u64) |
-| `most_recent_finalized_header` | - | epoch (u64) |
+| Key Space | Key | Value |
+|-----------|-----|-------|
+| `checkpoint` | epoch (u64) | `(Checkpoint, last_block)` |
+| `finalized_header` | epoch (u64) | `FinalizedHeader` bytes |
+| `latest_checkpoint_epoch` | fixed state key | epoch (u64) |
+| `latest_finalized_header_epoch` | fixed state key | epoch (u64) |
+| `consensus_state` | epoch (u64) | `ConsensusState` bytes |
 
 ## Checkpoint Verification
 
@@ -185,7 +186,7 @@ checkpoint_dir/
 
 ### Checkpoint Verification on Startup
 
-When the `finalized_headers/` directory is present, the node automatically verifies the checkpoint on startup by calling `verify_checkpoint_chain` with the genesis state, the loaded headers, and the checkpoint. This allows the node to trustlessly validate a checkpoint received from an untrusted source.
+When the `finalized_headers/` directory is present, the node loads the checkpoint artifacts from disk first, then verifies the checkpoint during startup after loading genesis by calling `verify_checkpoint_chain` with the genesis state, the loaded headers, and the checkpoint. This allows the node to trustlessly validate a checkpoint received from an untrusted source.
 
 If the `finalized_headers/` directory is absent, verification is skipped and the node trusts the checkpoint as-is.
 

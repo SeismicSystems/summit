@@ -9,10 +9,11 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Simplex consensus protocol implementation
 
 **Key Components:**
-- `simplex::SimplexConsensus` - Core consensus engine
-- `simplex::types::Activity` - Consensus activities/messages
-- `simplex::signing_scheme::Scheme` - Signature verification
+- `simplex` - Simplex consensus engine
+- `simplex::scheme::Scheme` - Signature verification scheme
+- `types::{Epoch, Epocher, FixedEpocher, Round, View, ViewDelta, Height}` - Consensus primitives
 - `Block` trait - Block interface definition
+- `Reporter` trait - Hook for consensus activity notifications
 
 **Critical Usage:**
 - **Consensus Protocol**: All consensus logic delegated to Commonware's Simplex implementation
@@ -41,10 +42,11 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Peer-to-peer communication between validators
 
 **Key Components:**
-- `authenticated` - Authenticated P2P connections
-- `Manager` - Peer connection management
+- `authenticated` - Authenticated P2P connections (production)
+- `simulated` - In-process network (deterministic tests)
+- `Manager`, `Provider`, `TrackedPeers`, `PeerSetUpdate` - Peer set management
 - `Sender`/`Receiver` - Message transmission
-- `utils::requester` - Request-response patterns
+- `Blocker`, `Ingress` - Connection filtering and admission
 
 **Critical Usage:**
 - **Validator Discovery**: Automatic peer discovery and connection
@@ -57,25 +59,29 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Persistent storage of consensus state and blocks
 
 **Key Components:**
-- **Storage traits**: Generic storage interface
-- **Database implementations**: Pluggable storage backends
-- **Atomic operations**: Transactional state updates
+- `qmdb::store::db::Db` - QMDB authenticated key-value store (consensus state, headers)
+- `archive` / `archive::immutable` - Block archive keyed by height
+- `journal::contiguous::variable` - Append-only write-ahead log
+- `translator::EightCap` - Key translator for the QMDB store
+- `metadata::Metadata` - Metadata store for pointer/tip data
 
 **Critical Usage:**
-- **State Persistence**: Consensus state and validator set storage
-- **Block Storage**: Immutable block data with efficient retrieval
-- **Atomic Updates**: Ensuring consistency during state transitions
-- **Historical Data**: Compressed archival of old blocks
+- **State Persistence**: Consensus state, validator set, and finalized headers in QMDB
+- **Block Storage**: Finalized blocks archived by height via `archive::immutable`
+- **Atomic Updates**: Journal-backed writes with WAL semantics
+- **Checkpoints**: Durable checkpoint records for fast sync
 
 ### 5. Runtime (`commonware-runtime`)
 
 **Used for**: Async runtime abstractions and utilities
 
 **Key Components:**
-- `Clock` - Time management
-- `Spawner` - Task spawning abstractions
-- `Metrics` - Performance monitoring
-- `buffer::PoolRef` - Memory pool management
+- `tokio::Runner` - Production async runtime (wraps Tokio)
+- `deterministic::Runner` - Seeded, deterministic runtime for tests
+- `Clock`, `Spawner`, `Handle` - Time, task spawning, and join handles
+- `Metrics` - Prometheus-compatible metrics registry
+- `Network`, `Storage` - Abstract network and disk interfaces
+- `buffer::paged::CacheRef`, `BufferPooler` - Paged buffer caching for storage
 
 **Critical Usage:**
 - **Task Management**: Async task spawning and coordination
@@ -88,10 +94,10 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Common data structures and utilities
 
 **Key Components:**
-- `NZU64`, `NZUsize` - Non-zero integer types
-- `Span` - Efficient byte spans
-- `sequence` - Sequence number management
-- Hex utilities - Hexadecimal encoding/decoding
+- `NZU64`, `NZUsize` - Non-zero integer types (and their constructor macros)
+- `from_hex_formatted`, `hex` - Hexadecimal encoding/decoding
+- `Hostname` - Validated hostname type for bootstrap configuration
+- `acknowledgement::{Acknowledgement, Exact}` - Activity acknowledgement tracking
 
 ### 7. Codec (`commonware-codec`)
 
@@ -120,6 +126,33 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 - `Resolver` - Generic resolution interface
 - `Consumer`/`Producer` - Data request/response
 - `p2p::Producer` - P2P data resolution
+
+### 10. Macros (`commonware-macros`)
+
+**Used for**: Async control-flow macros and instrumented test harness
+
+**Key Components:**
+- `select!` / `select_loop!` - Async branching and loops (used in `application/`, `syncer/`)
+- `test_traced!` - Instrumented test harness with deterministic tracing
+
+### 11. Math (`commonware-math`)
+
+**Used for**: Cryptographic randomness
+
+**Key Components:**
+- `algebra::Random` - Random key generation for BLS12-381 and Ed25519 schemes
+
+**Critical Usage:**
+- **Key Generation**: Deterministic randomness for consensus and node key creation in `node/src/keys.rs`
+- **Testing**: Seeded randomness for reproducible test fixtures
+
+### 12. Parallel (`commonware-parallel`)
+
+**Used for**: Sequential and parallel processing strategies
+
+**Key Components:**
+- `Strategy` - Abstraction over execution strategies
+- `Sequential` - Single-threaded execution strategy (used by the syncer and engine)
 
 ## Security Analysis
 
@@ -207,17 +240,21 @@ use commonware_macros::test_traced;
 
 ### Upgrade Path
 
-Summit can upgrade Commonware components independently by updating the git revision in `Cargo.toml`:
+Summit pins Commonware to a versioned release in the workspace `Cargo.toml`. All 12 `commonware-*` workspace dependencies are bumped in lockstep:
 
 ```toml
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-consensus = "2026.4.0"
+commonware-cryptography = "2026.4.0"
+# ...
 ```
+
+To upgrade, bump the version across every `commonware-*` entry in the root `Cargo.toml` and run `cargo update -p commonware-consensus` (etc.).
 
 ## Audit Recommendations
 
 When auditing Summit's Commonware usage:
 
-1. **Verify Git Revision**: Ensure using audited Commonware revision
+1. **Verify Version**: Ensure the pinned Commonware release corresponds to an audited version
 2. **Integration Points**: Review how Summit integrates Commonware APIs
 3. **Configuration**: Verify Commonware components configured securely
 4. **Error Handling**: Ensure proper error handling around Commonware calls

@@ -28,6 +28,8 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
         fork_choice_state: ForkchoiceState,
         timestamp: u64,
         withdrawals: Vec<Withdrawal>,
+        suggested_fee_recipient: Address,
+        parent_beacon_block_root: Option<FixedBytes<32>>,
     ) -> impl Future<Output = Option<PayloadId>> + Send;
 
     fn get_payload(
@@ -43,7 +45,7 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
     fn commit_hash(
         &mut self,
         fork_choice_state: ForkchoiceState,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = ForkchoiceUpdated> + Send;
 }
 ```
 
@@ -182,4 +184,4 @@ let provider = ProviderBuilder::default().connect_ipc(ipc).await?;
 
 **Logging**: Summit uses the `tracing` crate for logging
 
-**Health Checks**: Summit exposes an HTTP API bound to port 3030 by default. This API includes the method `GET /health` which will reply with `"OK"` if you are lucky. While this API is fairly minimal at the time of this writing, we would not be surprised this bloats up in the future
+**Health Checks**: Summit exposes a JSON-RPC API bound to port 3030 by default. The health check is the `health` RPC method, which currently returns `"Ok"`.

@@ -25,7 +25,8 @@ pub struct CriticalLogGuard {
 /// Returns a guard that MUST be held for the process lifetime to ensure
 /// buffered critical events are flushed on shutdown.
 pub fn init(level: Level, critical_log_dir: Option<&Path>) -> CriticalLogGuard {
-    let env_filter = tracing_subscriber::EnvFilter::new(level.to_string());
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level.to_string()));
 
     // Stdout fmt layer — same config as commonware telemetry::init
     let stdout_layer = fmt::layer()

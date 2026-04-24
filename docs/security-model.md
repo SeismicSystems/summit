@@ -51,8 +51,7 @@ We use SHA-256 in several places:
 
 All peer-to-peer communication is cryptographically authenticated with the following properties:
 - **Mutual Authentication**: Both peers verify each other's identity
-- **Perfect Forward Secrecy**: Session keys derived independently
-- **Replay Protection**: Nonces prevent message replay attacks
+- **Message Authentication**: Signed/authenticated communication between peers
 - **Identity Verification**: Peer public keys verified against validator set
 
 ## BFT Properties
@@ -70,10 +69,14 @@ Summit communicates with execution clients exclusively through the Engine API:
 ```rust
 // NOTE: no direct access to execution state
 pub trait EngineClient: Clone + Send + Sync + 'static {
-    fn start_building_block(...) -> impl Future<Output = Option<PayloadId>>;
+    fn start_building_block(
+        ...,
+        suggested_fee_recipient: Address,
+        parent_beacon_block_root: Option<FixedBytes<32>>,
+    ) -> impl Future<Output = Option<PayloadId>>;
     fn get_payload(...) -> impl Future<Output = ExecutionPayloadEnvelopeV4>;
     fn check_payload(...) -> impl Future<Output = PayloadStatus>;
-    fn commit_hash(...) -> impl Future<Output = ()>;
+    fn commit_hash(...) -> impl Future<Output = ForkchoiceUpdated>;
 }
 ```
 
@@ -97,7 +100,6 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
 
 **Threat**: Man-in-the-middle attacks
 **Mitigation**:
-- Perfect forward secrecy in P2P connections
 - End-to-end message authentication
 - Public key verification against validator set
 
