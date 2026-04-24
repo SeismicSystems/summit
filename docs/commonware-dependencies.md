@@ -121,6 +121,33 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 - `Consumer`/`Producer` - Data request/response
 - `p2p::Producer` - P2P data resolution
 
+### 10. Macros (`commonware-macros`)
+
+**Used for**: Async control-flow macros and instrumented test harness
+
+**Key Components:**
+- `select!` / `select_loop!` - Async branching and loops (used in `application/`, `syncer/`)
+- `test_traced!` - Instrumented test harness with deterministic tracing
+
+### 11. Math (`commonware-math`)
+
+**Used for**: Cryptographic randomness
+
+**Key Components:**
+- `algebra::Random` - Random key generation for BLS12-381 and Ed25519 schemes
+
+**Critical Usage:**
+- **Key Generation**: Deterministic randomness for consensus and node key creation in `node/src/keys.rs`
+- **Testing**: Seeded randomness for reproducible test fixtures
+
+### 12. Parallel (`commonware-parallel`)
+
+**Used for**: Sequential and parallel processing strategies
+
+**Key Components:**
+- `Strategy` - Abstraction over execution strategies
+- `Sequential` - Single-threaded execution strategy (used by the syncer and engine)
+
 ## Security Analysis
 
 ### Cryptographic Security
@@ -207,17 +234,21 @@ use commonware_macros::test_traced;
 
 ### Upgrade Path
 
-Summit can upgrade Commonware components independently by updating the git revision in `Cargo.toml`:
+Summit pins Commonware to a versioned release in the workspace `Cargo.toml`. All 12 crates are bumped in lockstep:
 
 ```toml
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo.git", rev = "f395c9e" }
+commonware-consensus = "2026.4.0"
+commonware-cryptography = "2026.4.0"
+# ...
 ```
+
+To upgrade, bump the version across every `commonware-*` entry in the root `Cargo.toml` and run `cargo update -p commonware-consensus` (etc.).
 
 ## Audit Recommendations
 
 When auditing Summit's Commonware usage:
 
-1. **Verify Git Revision**: Ensure using audited Commonware revision
+1. **Verify Version**: Ensure the pinned Commonware release corresponds to an audited version
 2. **Integration Points**: Review how Summit integrates Commonware APIs
 3. **Configuration**: Verify Commonware components configured securely
 4. **Error Handling**: Ensure proper error handling around Commonware calls

@@ -58,6 +58,8 @@ cargo run --features e2e --bin stake-and-join-with-outdated-checkpoint -- --log-
 cargo run --features e2e --bin withdraw-and-exit -- --log-dir /tmp/rethlogs
 cargo run --features e2e --bin protocol-params -- --log-dir /tmp/rethlogs
 cargo run --features e2e --bin sync-from-genesis -- --log-dir /tmp/rethlogs
+cargo run --features e2e --bin observer -- --log-dir /tmp/rethlogs
+cargo run --features e2e --bin verify-consensus-state-proof -- --log-dir /tmp/rethlogs
 ```
 
 ### Common Configuration
@@ -114,6 +116,26 @@ Tests a new validator joining by syncing from genesis with no checkpoint.
 - **Contracts**: Deposit contract (`0x00000000219ab540356cBB839Cbe05303d7705Fa`) and withdrawal contract (`0x00000961Ef480Eb55e80D19ad83579A64c007002`) — both must be pre-deployed in the Reth genesis file.
 - **Flow**: First withdraws one validator (modifying the peer set from genesis config), then generates new keys for a joining validator, sends a deposit, creates a `bootstrappers.toml` for peer discovery, and starts node4 with no checkpoint.
 - **Verifies**: The new node syncs the entire chain from genesis, catches up to the current epoch, and joins the active validator set.
+
+#### `observer`
+
+Tests observer-mode nodes — RPC-only nodes that follow the chain without participating in consensus.
+
+- **Nodes**: 4 genesis + 1 observer
+- **Flow**: Starts 4 validators, then starts an observer node using `--observer 0`. The observer derives its p2p identity from validator 1's master node key (slot 0), uses a fresh BLS consensus key that is not in the validator set, and is authorized as a secondary peer by every validator via the genesis `observers_per_validator` field. Runs its own Reth instance and executes finalized blocks via Engine API IPC. Waits for all nodes — including the observer — to reach `--stop-height` (default 100).
+- **Verifies**: The observer reaches the stop height, is not in the active validator set, and its pubkey does not appear in any finalization certificate's signer set (i.e., it never votes).
+
+#### `verify-consensus-state-proof`
+
+Tests end-to-end SSZ proof verification on-chain — the full pipeline from Summit's state-root capture through the EIP-4788 beacon roots contract into a deployed Solidity verifier.
+
+- **Nodes**: 4 genesis
+- **Contracts**: EIP-4788 beacon roots contract (`0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02`, built into Reth); deploys the embedded `SszProofVerifier.sol` bytecode at runtime.
+- **Flow**: Waits for the network to finalize several blocks so the SSZ proof tree is captured, then:
+  - **TEST A** — reads the `parent_beacon_block_root` via the beacon-roots contract and asserts it matches Summit's captured state root.
+  - **TEST B** — deploys `SszProofVerifier`, requests scalar proofs via `getStateProof(["epoch", "latest_height"])`, and verifies each proof on-chain against the beacon root.
+  - **TEST C** — requests a collection (validator) proof for genesis validator 0 and verifies it on-chain via the same verifier.
+- **Verifies**: Both scalar and collection SSZ proofs verify on-chain against the beacon root surfaced by EIP-4788, confirming the end-to-end trust chain from Summit consensus state → Reth EL block → Solidity verifier.
 
 ## Fuzz Testing
 
