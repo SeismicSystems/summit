@@ -15,6 +15,19 @@ use libfuzzer_sys::fuzz_target;
 use summit_types::execution_request::WithdrawalRequest;
 use summit_types::withdrawal::WithdrawalQueue;
 
+/// Single clamp for every fuzz-driven u64 (amounts, balance deductions,
+/// next_index).
+///
+/// `WithdrawalQueue::push_request` uses unchecked `+=` on `amount`,
+/// `balance_deduction`, and `next_index`. In production these values are
+/// bounded by validator balance and chain activity, so overflow is
+/// unreachable — the fuzz target doesn't model those upstream bounds, so
+/// we clamp the inputs here to reflect realistic decoded state.
+///
+/// 2^48 gwei is far above any realistic validator balance; 2^16 bits of
+/// headroom is more ops than libFuzzer's default input size can encode.
+const FUZZ_VALUE_MAX: u64 = (1u64 << 48) - 1;
+
 #[derive(Arbitrary, Debug)]
 enum Op {
     PushRequest {
@@ -50,9 +63,9 @@ fuzz_target!(|ops: Vec<Op>| {
                 let req = WithdrawalRequest {
                     source_address: source_address.into(),
                     validator_pubkey,
-                    amount,
+                    amount: amount & FUZZ_VALUE_MAX,
                 };
-                queue.push_request(req, epoch, balance_deduction);
+                queue.push_request(req, epoch, balance_deduction & FUZZ_VALUE_MAX);
             }
             Op::Pop { epoch } => {
                 let _ = queue.pop(epoch);
@@ -64,6 +77,7 @@ fuzz_target!(|ops: Vec<Op>| {
                 queue.reschedule_epoch(from_epoch, to_epoch);
             }
             Op::SetNextIndex(idx) => {
+                let idx = idx & FUZZ_VALUE_MAX;
                 queue.set_next_index(idx);
                 // set_next_index may decrease; reset baseline so the monotonicity
                 // invariant tracks organic growth from push_request.

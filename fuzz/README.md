@@ -31,11 +31,13 @@ cargo +nightly fuzz run <target> -- -runs=10000000
 Full battery, 2 minutes per target, stops on the first crash:
 
 ```bash
-cd fuzz && set -e && for t in $(cargo fuzz list); do \
+cd fuzz && for t in $(cargo fuzz list); do \
   echo "=== $t ==="; \
-  cargo +nightly fuzz run "$t" -- -max_total_time=120; \
+  cargo +nightly fuzz run "$t" -- -max_total_time=120 || exit 1; \
 done && echo "All targets passed."
 ```
+
+`|| exit 1` is required — inside a `for` loop body, `set -e` doesn't reliably propagate an inner failure, so a crash in one target would otherwise be followed by "All targets passed.".
 
 ## Reproducing a crash
 

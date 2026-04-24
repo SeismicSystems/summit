@@ -366,6 +366,14 @@ impl Read for WithdrawalQueue {
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
         let next_index = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Reject an already-exhausted counter so a subsequent push_request
+        // cannot wrap next_index.
+        if next_index == u64::MAX {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "next_index exhausted u64 space",
+            ));
+        }
 
         let withdrawals_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut withdrawals = BTreeMap::new();
@@ -794,6 +802,19 @@ mod tests {
 
         queue.push_request(make_request([1u8; 32], 100), 5, 100);
         assert_eq!(queue.next_index(), 43);
+    }
+
+    #[test]
+    fn test_read_rejects_exhausted_next_index() {
+        // A decoded state with next_index == u64::MAX would overflow on the
+        // first push_request. Reject it at the parse boundary.
+        let mut buf = BytesMut::new();
+        buf.put_u64(u64::MAX); // next_index
+        buf.put_u32(0); // withdrawals_len
+        buf.put_u32(0); // schedule_len
+        let err = WithdrawalQueue::read(&mut buf.as_ref())
+            .expect_err("read must reject next_index == u64::MAX");
+        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
     }
 
     #[test]
