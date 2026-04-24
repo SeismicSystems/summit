@@ -310,12 +310,15 @@ impl Read for Header {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let len: u32 = buf.get_u32();
-        if len > buf.remaining() as u32 {
+        let len: u32 = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
+        if len as usize > buf.remaining() {
             return Err(Error::Invalid("Header", "improper encoded length"));
         }
 
-        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk())
+        let mut payload = vec![0u8; len as usize];
+        buf.try_copy_to_slice(&mut payload)
+            .map_err(|_| Error::EndOfBuffer)?;
+        ssz::Decode::from_ssz_bytes(&payload)
             .map_err(|_| Error::Invalid("Header", "Unable to decode bytes for header"))
     }
 }
@@ -435,12 +438,15 @@ where
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let len: u32 = buf.get_u32();
-        if len > buf.remaining() as u32 {
+        let len: u32 = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
+        if len as usize > buf.remaining() {
             return Err(Error::Invalid("FinalizedHeader", "improper encoded length"));
         }
 
-        ssz::Decode::from_ssz_bytes(buf.copy_to_bytes(len as usize).chunk()).map_err(|_| {
+        let mut payload = vec![0u8; len as usize];
+        buf.try_copy_to_slice(&mut payload)
+            .map_err(|_| Error::EndOfBuffer)?;
+        ssz::Decode::from_ssz_bytes(&payload).map_err(|_| {
             Error::Invalid(
                 "FinalizedHeader",
                 "Unable to decode bytes for finalized header",
@@ -489,6 +495,38 @@ mod test {
 
         let key_bytes = test_keys[seed as usize % test_keys.len()];
         PublicKey::decode(&key_bytes[..]).expect("Valid test key from known vectors")
+    }
+
+    #[test]
+    fn test_header_read_truncated_input_returns_err() {
+        use commonware_codec::ReadExt;
+
+        for n in 0..4 {
+            let data = vec![0xFFu8; n];
+            assert!(matches!(
+                Header::read(&mut data.as_ref()),
+                Err(Error::EndOfBuffer)
+            ));
+            assert!(matches!(
+                FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::read(
+                    &mut data.as_ref()
+                ),
+                Err(Error::EndOfBuffer)
+            ));
+        }
+
+        let mut huge = Vec::new();
+        huge.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(matches!(
+            Header::read(&mut huge.as_ref()),
+            Err(Error::Invalid("Header", _))
+        ));
+        assert!(matches!(
+            FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::read(
+                &mut huge.as_ref()
+            ),
+            Err(Error::Invalid("FinalizedHeader", _))
+        ));
     }
 
     fn create_test_validators() -> (Vec<AddedValidator>, Vec<PublicKey>) {

@@ -837,35 +837,38 @@ impl Read for ConsensusState {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let epoch = buf.get_u64();
-        let view = buf.get_u64();
-        let latest_height = buf.get_u64();
+        let epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let view = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let latest_height = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
 
-        let deposit_queue_len = buf.get_u32() as usize;
-        let mut deposit_queue = VecDeque::with_capacity(deposit_queue_len);
+        let deposit_queue_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+        let mut deposit_queue = VecDeque::with_capacity(deposit_queue_len.min(buf.remaining()));
         for _ in 0..deposit_queue_len {
             deposit_queue.push_back(DepositRequest::read_cfg(buf, &())?);
         }
 
         let withdrawal_queue = WithdrawalQueue::read_cfg(buf, &())?;
 
-        let protocol_param_changes_len = buf.get_u32() as usize;
-        let mut protocol_param_changes = Vec::with_capacity(protocol_param_changes_len);
+        let protocol_param_changes_len =
+            buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+        let mut protocol_param_changes =
+            Vec::with_capacity(protocol_param_changes_len.min(buf.remaining()));
         for _ in 0..protocol_param_changes_len {
             protocol_param_changes.push(crate::protocol_params::ProtocolParam::read_cfg(buf, &())?);
         }
 
-        let validator_accounts_len = buf.get_u32() as usize;
+        let validator_accounts_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut validator_accounts = BTreeMap::new();
         for _ in 0..validator_accounts_len {
             let mut key = [0u8; 32];
-            buf.copy_to_slice(&mut key);
+            buf.try_copy_to_slice(&mut key)
+                .map_err(|_| Error::EndOfBuffer)?;
             let account = ValidatorAccount::read_cfg(buf, &())?;
             validator_accounts.insert(key, account);
         }
 
         // Read pending_checkpoint
-        let has_pending_checkpoint = buf.get_u8() != 0;
+        let has_pending_checkpoint = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? != 0;
         let pending_checkpoint = if has_pending_checkpoint {
             Some(Checkpoint::read_cfg(buf, &())?)
         } else {
@@ -873,12 +876,12 @@ impl Read for ConsensusState {
         };
 
         // Read added_validators
-        let added_validators_len = buf.get_u32() as usize;
+        let added_validators_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut added_validators = BTreeMap::new();
         for _ in 0..added_validators_len {
-            let key = buf.get_u64();
-            let validator_count = buf.get_u32() as usize;
-            let mut validators = Vec::with_capacity(validator_count);
+            let key = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+            let validator_count = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            let mut validators = Vec::with_capacity(validator_count.min(buf.remaining()));
             for _ in 0..validator_count {
                 let node_key = PublicKey::read_cfg(buf, &())?;
                 let consensus_key = bls12381::PublicKey::read_cfg(buf, &())?;
@@ -891,29 +894,39 @@ impl Read for ConsensusState {
         }
 
         // Read removed_validators
-        let removed_validators_len = buf.get_u32() as usize;
-        let mut removed_validators = Vec::with_capacity(removed_validators_len);
+        let removed_validators_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+        let mut removed_validators =
+            Vec::with_capacity(removed_validators_len.min(buf.remaining()));
         for _ in 0..removed_validators_len {
             removed_validators.push(PublicKey::read_cfg(buf, &())?);
         }
 
         // Read pending_execution_requests
-        let pending_execution_requests_len = buf.get_u32() as usize;
-        let mut pending_execution_requests = Vec::with_capacity(pending_execution_requests_len);
+        let pending_execution_requests_len =
+            buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+        let mut pending_execution_requests =
+            Vec::with_capacity(pending_execution_requests_len.min(buf.remaining()));
         for _ in 0..pending_execution_requests_len {
-            let len = buf.get_u32() as usize;
+            let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            if len > buf.remaining() {
+                return Err(Error::EndOfBuffer);
+            }
             let mut bytes = vec![0u8; len];
-            buf.copy_to_slice(&mut bytes);
+            buf.try_copy_to_slice(&mut bytes)
+                .map_err(|_| Error::EndOfBuffer)?;
             pending_execution_requests.push(alloy_primitives::Bytes::from(bytes));
         }
 
         // Read forkchoice
         let mut head_block_hash = [0u8; 32];
-        buf.copy_to_slice(&mut head_block_hash);
+        buf.try_copy_to_slice(&mut head_block_hash)
+            .map_err(|_| Error::EndOfBuffer)?;
         let mut safe_block_hash = [0u8; 32];
-        buf.copy_to_slice(&mut safe_block_hash);
+        buf.try_copy_to_slice(&mut safe_block_hash)
+            .map_err(|_| Error::EndOfBuffer)?;
         let mut finalized_block_hash = [0u8; 32];
-        buf.copy_to_slice(&mut finalized_block_hash);
+        buf.try_copy_to_slice(&mut finalized_block_hash)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         let forkchoice = ForkchoiceState {
             head_block_hash: head_block_hash.into(),
@@ -922,23 +935,26 @@ impl Read for ConsensusState {
         };
 
         let mut epoch_genesis_hash = [0u8; 32];
-        buf.copy_to_slice(&mut epoch_genesis_hash);
+        buf.try_copy_to_slice(&mut epoch_genesis_hash)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         let mut head_digest_bytes = [0u8; 32];
-        buf.copy_to_slice(&mut head_digest_bytes);
+        buf.try_copy_to_slice(&mut head_digest_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let head_digest = sha256::Digest(head_digest_bytes);
 
-        let validator_minimum_stake = buf.get_u64();
-        let validator_maximum_stake = buf.get_u64();
-        let allowed_timestamp_future_ms = buf.get_u64();
+        let validator_minimum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let validator_maximum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let allowed_timestamp_future_ms = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
 
         let mut treasury_address_bytes = [0u8; 20];
-        buf.copy_to_slice(&mut treasury_address_bytes);
+        buf.try_copy_to_slice(&mut treasury_address_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let treasury_address = Address::from(treasury_address_bytes);
 
-        let max_deposits_per_epoch = buf.get_u64();
-        let max_withdrawals_per_epoch = buf.get_u64();
-        let observers_per_validator = buf.get_u32();
+        let max_deposits_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let max_withdrawals_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let observers_per_validator = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
@@ -1085,9 +1101,29 @@ mod tests {
 
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
-    use commonware_codec::{DecodeExt, Encode};
+    use commonware_codec::{DecodeExt, Encode, ReadExt};
     use commonware_consensus::types::{Epoch, Epocher, Height};
     use commonware_cryptography::{Signer, bls12381, ed25519};
+
+    #[test]
+    fn test_read_truncated_input_returns_err() {
+        // Empty buffer — must not panic.
+        let empty: &[u8] = &[];
+        assert!(matches!(
+            ConsensusState::read(&mut empty.as_ref()),
+            Err(Error::EndOfBuffer)
+        ));
+
+        // Arbitrary short prefixes: each must return EndOfBuffer (not panic).
+        for n in 0..64 {
+            let data = vec![0xABu8; n];
+            let res = ConsensusState::read(&mut data.as_ref());
+            assert!(
+                res.is_err(),
+                "{n}-byte prefix should not successfully decode",
+            );
+        }
+    }
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
         let mut withdrawal_credentials = [0u8; 32];

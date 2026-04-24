@@ -1,0 +1,143 @@
+[package]
+name = "summit-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+summit-types = { path = "../types" }
+commonware-codec = "2026.4.0"
+commonware-cryptography = "2026.4.0"
+arbitrary = { version = "1", features = ["derive"] }
+bytes = "1.10.1"
+
+# Prevent this crate from being picked up by the parent workspace; cargo-fuzz
+# needs its own build settings and nightly toolchain.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "protocol_param_read"
+path = "fuzz_targets/protocol_param_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "consensus_state_read"
+path = "fuzz_targets/consensus_state_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "checkpoint_read"
+path = "fuzz_targets/checkpoint_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "block_read"
+path = "fuzz_targets/block_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "header_read"
+path = "fuzz_targets/header_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "finalized_header_read"
+path = "fuzz_targets/finalized_header_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "execution_request_read"
+path = "fuzz_targets/execution_request_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validator_account_read"
+path = "fuzz_targets/validator_account_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "withdrawal_queue_read"
+path = "fuzz_targets/withdrawal_queue_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dynamic_epocher_read"
+path = "fuzz_targets/dynamic_epocher_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssz_tree_key_parse_key"
+path = "fuzz_targets/ssz_tree_key_parse_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "derive_child_public"
+path = "fuzz_targets/derive_child_public.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssz_proof_verify"
+path = "fuzz_targets/ssz_proof_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "withdrawal_queue_ops"
+path = "fuzz_targets/withdrawal_queue_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ext_private_key_sign_verify"
+path = "fuzz_targets/ext_private_key_sign_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssz_tree_incremental_vs_rebuild"
+path = "fuzz_targets/ssz_tree_incremental_vs_rebuild.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssz_proof_roundtrip"
+path = "fuzz_targets/ssz_proof_roundtrip.rs"
+test = false
+doc = false
+bench = false

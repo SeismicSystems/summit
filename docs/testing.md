@@ -115,6 +115,16 @@ Tests a new validator joining by syncing from genesis with no checkpoint.
 - **Flow**: First withdraws one validator (modifying the peer set from genesis config), then generates new keys for a joining validator, sends a deposit, creates a `bootstrappers.toml` for peer discovery, and starts node4 with no checkpoint.
 - **Verifies**: The new node syncs the entire chain from genesis, catches up to the current epoch, and joins the active validator set.
 
+## Fuzz Testing
+
+Coverage-guided fuzz testing lives in the `fuzz/` crate and runs under nightly Rust via [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz). Three categories:
+
+- **Parser targets** — every `Read` impl in `summit-types`. Arbitrary bytes must parse to `Ok` / `Err` without panicking, and successful decodes roundtrip to byte-identical output.
+- **Non-codec targets** — `ssz_tree_key::parse_key`, `derive_child_public`, `SszProof::verify` with adversarial inputs.
+- **Property-based targets** — `WithdrawalQueue` op-sequence invariants, `ExtPrivateKey` sign-verify roundtrip, SSZ incremental-update-vs-rebuild root equality, and generate→verify proof roundtrip across all proof kinds.
+
+See [`fuzz/README.md`](../fuzz/README.md) for the full target list, running instructions, crash reproduction, and how to add new targets.
+
 ## Benchmarks
 
 ### Consensus State Benchmark

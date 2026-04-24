@@ -3,3 +3,9 @@
 testnet/
 .vscode/*
 .nvim.lua
+
+# cargo-fuzz build artifacts + generated corpus / crashes
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/

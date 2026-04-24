@@ -319,7 +319,7 @@ impl Read for ExecutionRequest {
             return Err(Error::Invalid("ExecutionRequest", "Buffer is empty"));
         }
 
-        let request_type = buf.get_u8();
+        let request_type = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)?;
         match request_type {
             0x00 => {
                 let deposit = DepositRequest::read_cfg(buf, &())?;
@@ -361,16 +361,22 @@ impl Read for WithdrawalRequest {
         }
 
         let mut source_address_bytes = [0u8; 20];
-        buf.copy_to_slice(&mut source_address_bytes);
+        buf.try_copy_to_slice(&mut source_address_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let source_address = Address::from(source_address_bytes);
 
         // account for the padding
+        if buf.remaining() < 16 {
+            return Err(Error::EndOfBuffer);
+        }
         buf.advance(16);
         let mut validator_pubkey = [0u8; 32];
-        buf.copy_to_slice(&mut validator_pubkey);
+        buf.try_copy_to_slice(&mut validator_pubkey)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         let mut amount_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut amount_bytes);
+        buf.try_copy_to_slice(&mut amount_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let amount = u64::from_le_bytes(amount_bytes);
 
         Ok(WithdrawalRequest {
@@ -406,30 +412,37 @@ impl Read for DepositRequest {
         }
 
         let mut node_pubkey_bytes = [0u8; 32];
-        buf.copy_to_slice(&mut node_pubkey_bytes);
+        buf.try_copy_to_slice(&mut node_pubkey_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let node_pubkey = PublicKey::decode(&node_pubkey_bytes[..])
             .map_err(|_| Error::Invalid("DepositRequest", "Invalid ed25519 public key"))?;
 
         let mut consensus_pubkey_bytes = [0u8; 48];
-        buf.copy_to_slice(&mut consensus_pubkey_bytes);
+        buf.try_copy_to_slice(&mut consensus_pubkey_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let consensus_pubkey = bls12381::PublicKey::decode(&consensus_pubkey_bytes[..])
             .map_err(|_| Error::Invalid("DepositRequest", "Invalid BLS public key"))?;
 
         let mut withdrawal_credentials = [0u8; 32];
-        buf.copy_to_slice(&mut withdrawal_credentials);
+        buf.try_copy_to_slice(&mut withdrawal_credentials)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         let mut amount_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut amount_bytes);
+        buf.try_copy_to_slice(&mut amount_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let amount = u64::from_le_bytes(amount_bytes);
 
         let mut node_signature = [0u8; 64];
-        buf.copy_to_slice(&mut node_signature);
+        buf.try_copy_to_slice(&mut node_signature)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         let mut consensus_signature = [0u8; 96];
-        buf.copy_to_slice(&mut consensus_signature);
+        buf.try_copy_to_slice(&mut consensus_signature)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         let mut index_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut index_bytes);
+        buf.try_copy_to_slice(&mut index_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let index = u64::from_le_bytes(index_bytes);
 
         Ok(DepositRequest {
@@ -463,8 +476,8 @@ impl Read for ProtocolParamRequest {
             ));
         }
 
-        let param_id = buf.get_u8();
-        let param_len = buf.get_u8() as usize;
+        let param_id = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)?;
+        let param_len = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? as usize;
 
         if buf.remaining() < param_len {
             return Err(Error::Invalid(
@@ -474,7 +487,8 @@ impl Read for ProtocolParamRequest {
         }
 
         let mut param = vec![0u8; param_len];
-        buf.copy_to_slice(&mut param);
+        buf.try_copy_to_slice(&mut param)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         Ok(ProtocolParamRequest { param_id, param })
     }

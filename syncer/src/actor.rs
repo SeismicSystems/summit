@@ -1130,6 +1130,9 @@ where
                     self.cache
                         .put_notarization(round, commitment, notarization)
                         .await;
+                    application
+                        .report(Update::NotarizedBlock(block.clone()))
+                        .await;
                     self.notify_subscribers(commitment, &block).await;
                 }
             }

@@ -109,30 +109,37 @@ impl Read for PendingWithdrawal {
         }
 
         let mut index_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut index_bytes);
+        buf.try_copy_to_slice(&mut index_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let index = u64::from_le_bytes(index_bytes);
 
         let mut validator_index_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut validator_index_bytes);
+        buf.try_copy_to_slice(&mut validator_index_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let validator_index = u64::from_le_bytes(validator_index_bytes);
 
         let mut address_bytes = [0u8; 20];
-        buf.copy_to_slice(&mut address_bytes);
+        buf.try_copy_to_slice(&mut address_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let address = Address::from(address_bytes);
 
         let mut amount_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut amount_bytes);
+        buf.try_copy_to_slice(&mut amount_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let amount = u64::from_le_bytes(amount_bytes);
 
         let mut pubkey = [0u8; 32];
-        buf.copy_to_slice(&mut pubkey);
+        buf.try_copy_to_slice(&mut pubkey)
+            .map_err(|_| Error::EndOfBuffer)?;
 
         let mut balance_deduction_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut balance_deduction_bytes);
+        buf.try_copy_to_slice(&mut balance_deduction_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let balance_deduction = u64::from_le_bytes(balance_deduction_bytes);
 
         let mut epoch_bytes = [0u8; 8];
-        buf.copy_to_slice(&mut epoch_bytes);
+        buf.try_copy_to_slice(&mut epoch_bytes)
+            .map_err(|_| Error::EndOfBuffer)?;
         let epoch = u64::from_le_bytes(epoch_bytes);
 
         Ok(PendingWithdrawal {
@@ -358,26 +365,36 @@ impl Read for WithdrawalQueue {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let next_index = buf.get_u64();
+        let next_index = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Reject an already-exhausted counter so a subsequent push_request
+        // cannot wrap next_index.
+        if next_index == u64::MAX {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "next_index exhausted u64 space",
+            ));
+        }
 
-        let withdrawals_len = buf.get_u32() as usize;
+        let withdrawals_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut withdrawals = BTreeMap::new();
         for _ in 0..withdrawals_len {
             let mut pubkey = [0u8; 32];
-            buf.copy_to_slice(&mut pubkey);
+            buf.try_copy_to_slice(&mut pubkey)
+                .map_err(|_| Error::EndOfBuffer)?;
             let withdrawal = PendingWithdrawal::read_cfg(buf, &())?;
             withdrawals.insert(pubkey, withdrawal);
         }
 
-        let schedule_len = buf.get_u32() as usize;
+        let schedule_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut schedule = BTreeMap::new();
         for _ in 0..schedule_len {
-            let epoch = buf.get_u64();
-            let pubkeys_len = buf.get_u32() as usize;
-            let mut pubkeys = VecDeque::with_capacity(pubkeys_len);
+            let epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+            let pubkeys_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            let mut pubkeys = VecDeque::with_capacity(pubkeys_len.min(buf.remaining()));
             for _ in 0..pubkeys_len {
                 let mut pubkey = [0u8; 32];
-                buf.copy_to_slice(&mut pubkey);
+                buf.try_copy_to_slice(&mut pubkey)
+                    .map_err(|_| Error::EndOfBuffer)?;
                 pubkeys.push_back(pubkey);
             }
             schedule.insert(epoch, pubkeys);
@@ -785,6 +802,19 @@ mod tests {
 
         queue.push_request(make_request([1u8; 32], 100), 5, 100);
         assert_eq!(queue.next_index(), 43);
+    }
+
+    #[test]
+    fn test_read_rejects_exhausted_next_index() {
+        // A decoded state with next_index == u64::MAX would overflow on the
+        // first push_request. Reject it at the parse boundary.
+        let mut buf = BytesMut::new();
+        buf.put_u64(u64::MAX); // next_index
+        buf.put_u32(0); // withdrawals_len
+        buf.put_u32(0); // schedule_len
+        let err = WithdrawalQueue::read(&mut buf.as_ref())
+            .expect_err("read must reject next_index == u64::MAX");
+        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
     }
 
     #[test]
