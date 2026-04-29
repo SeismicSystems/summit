@@ -622,9 +622,9 @@ fn handle_verify<ES: Epocher>(
 
     if block.eth_parent_hash() != parent.eth_block_hash() {
         warn!(
-            "block parent mismatch: expected {}, received: {}",
-            parent.digest(),
-            block.parent()
+            "block parent eth mismatch: expected {:?}, received: {:?}",
+            parent.eth_block_hash(),
+            block.eth_parent_hash()
         );
         return false;
     }
