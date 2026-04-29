@@ -620,10 +620,10 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
-    if block.eth_parent_hash() != parent.eth_block_hash() {
+    if block.eth_parent_hash() != aux_data.forkchoice.head_block_hash {
         warn!(
             "block parent eth mismatch: expected {:?}, received: {:?}",
-            parent.eth_block_hash(),
+            aux_data.forkchoice.head_block_hash,
             block.eth_parent_hash()
         );
         return false;
