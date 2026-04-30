@@ -26,6 +26,11 @@ pub enum Message {
         payload: Digest,
         response: oneshot::Sender<bool>,
     },
+    Certify {
+        round: Round,
+        payload: Digest,
+        response: oneshot::Sender<bool>,
+    },
 }
 
 #[derive(Clone)]
@@ -96,7 +101,18 @@ impl<P: PublicKey> Automaton for Mailbox<P> {
 }
 
 impl<P: PublicKey> CertifiableAutomaton for Mailbox<P> {
-    // Uses default certify() implementation which always returns true
+    async fn certify(&mut self, round: Round, payload: Self::Digest) -> oneshot::Receiver<bool> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .send(Message::Certify {
+                round,
+                payload,
+                response,
+            })
+            .await
+            .expect("Failed to send certify");
+        receiver
+    }
 }
 
 impl<P: PublicKey> Relay for Mailbox<P> {

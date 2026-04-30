@@ -6051,6 +6051,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rpc-types-engine",
+ "anyhow",
  "bytes",
  "commonware-codec",
  "commonware-consensus",

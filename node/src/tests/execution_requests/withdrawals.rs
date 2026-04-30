@@ -4,7 +4,7 @@ use alloy_primitives::Bytes;
 use alloy_primitives::hex;
 use commonware_codec::Write;
 
-#[test_traced("INFO")]
+#[test_traced("DEBUG")]
 fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
     // Adds two deposits so both validators are active, then submits two withdrawal requests
     // packed into a single type-0x01 EIP-7685 entry.
