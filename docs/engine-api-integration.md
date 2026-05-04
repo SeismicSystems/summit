@@ -138,7 +138,7 @@ sequenceDiagram
     else PayloadStatus.Invalid
         A-->>Sx: certify = false
     else PayloadStatus.Syncing
-        Note over A: Retry; view-timeout cancels if Reth never recovers
+        Note over A: Retry — view-timeout cancels if Reth never recovers
     end
 ```
 
