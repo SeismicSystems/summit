@@ -450,8 +450,8 @@ impl<
             )
             .await;
             if !executed {
-                // Network finalized a block whose payload our local Reth rejects. Either
-                // our Reth has diverged (bug, corruption, restart loss) or a byzantine
+                // Network finalized a block whose payload the local Reth instance rejects. Either
+                // Reth has diverged (bug, corruption, restart loss) or a byzantine
                 // quorum certified an invalid payload. In either case, this validator
                 // cannot continue safely.
                 error!(

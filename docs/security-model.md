@@ -86,6 +86,18 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
 - **Validation Isolation**: Execution client validates all state transitions
 - **Error Isolation**: Execution errors don't affect consensus state
 
+### Finalized Payload Validity
+
+Every finalized block is guaranteed to carry an execution payload accepted by at least 2f+1 validators' Reth instances:
+
+1. After notarization, Simplex requires a `certify` quorum (2f+1) before a block can be considered "certified".
+2. Each validator's `certify` hook calls `check_payload` against its local Reth and votes `certify = true` only if the result is `Valid`.
+3. `find_parent` only returns certified blocks, so future blocks cannot extend an uncertified ancestor. An invalid payload therefore cannot reach finalization under an honest 2f+1 majority.
+
+If a finalized block reaches a validator whose own Reth returns `Invalid` (local Reth corruption or a byzantine majority finalizing a payload this validator's Reth rejects), the validator shuts down rather than commit an inconsistent state.
+
+See [Engine API Integration](engine-api-integration.md) for the full call-site breakdown.
+
 ## Threat Model
 
 ### Covered Threats
@@ -123,7 +135,7 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
 **Mitigation**:
 - Engine API isolation limits attack surface
 - IPC from within enclave to restrict access
-- Payload verification before consensus
+- Payload validity gated by `certify` quorum (2f+1) before a block can be extended or finalized
 
 **Threat**: State corruption or manipulation
 **Mitigation**:

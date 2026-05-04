@@ -107,47 +107,81 @@ sequenceDiagram
     F->>Network: Broadcast block
 ```
 
-### Block Validation Flow
+### Block Validation and Certification Flow
+
+`check_payload` is invoked from two places: the Application's `certify` hook, and the Finalizer's block-execution path. Both serve the same goal — ensure the local Reth has validated the payload before any state mutation depends on it. Two call sites are needed because the Finalizer can process blocks for which the local `certify` never ran (described below).
+
+#### Certify (primary gate)
+
+After a block is notarized, Simplex calls `CertifiableAutomaton::certify` on each validator. Summit's implementation calls `check_payload` here. A `certify` quorum (2f+1) is required for a block to become "certified", and `find_parent` only returns certified blocks — so an invalid payload can never become the parent of a future block, and can never reach finalization under an honest 2f+1 majority.
 
 ```mermaid
 sequenceDiagram
-    participant N as Network
-    participant S as Syncer
+    participant Sx as Simplex
+    participant A as Application
+    participant F as Finalizer
     participant E as Engine Client
     participant R as Reth
 
-    N->>S: Receive block
-    S->>E: check_payload(block)
+    Note over Sx: Block notarized
+    Sx->>A: certify(round, payload)
+    A->>F: notify_at_height(parent_height, parent_digest)
+    Note over F: Wait until parent has been executed
+    F-->>A: parent executed
+    A->>E: check_payload(block)
     E->>R: engine_newPayloadV4(payload, ...)
     R-->>E: PayloadStatus
-    E-->>S: PayloadStatus
+    E-->>A: PayloadStatus
 
     alt PayloadStatus.Valid
-        Note over S: Participate in consensus
+        A-->>Sx: certify = true
     else PayloadStatus.Invalid
-        Note over S: Reject block
+        A-->>Sx: certify = false
     else PayloadStatus.Syncing
-        Note over S: Wait and retry
+        Note over A: Retry; view-timeout cancels if Reth never recovers
     end
 ```
+
+#### Finalizer (covers the case where local certify never ran)
+
+A block can reach the Finalizer for which this validator's `certify` did not run. Two situations:
+
+- **Lagging validator** — only 2f+1 *other* validators are required for the network to certify and finalize a block. A slower validator may receive a notarization or finalization for a block before its own `certify` completes (or starts).
+- **Syncing / catch-up** — when a node restarts or joins from a checkpoint, it fetches finalized blocks from peers and applies them directly through the Finalizer. The Simplex engine does not run for those historical epochs, so `certify` is never invoked for them.
+
+In both cases, the Finalizer must call `check_payload` itself before mutating consensus state or advancing Reth's head. Two paths:
+
+- **`handle_notarized_block`** — clones the parent state and executes the block to build a fork state. If `check_payload` returns INVALID, the fork state is discarded and `commit_hash` is not called. The block is left for `certify` to formally reject.
+- **`handle_finalized_block` (catch-up)** — no fork state exists for this block (the validator missed notarization or is syncing). The Finalizer executes against canonical state directly. If `check_payload` returns INVALID, the local Reth disagrees with a chain the rest of the network has finalized — the validator shuts down rather than commit an inconsistent state.
+
+When a fork state already exists at finalization (the common steady-state path), the Finalizer reuses it; `check_payload` was already called at notarization, so no duplicate work is needed.
 
 ### Finalization Flow
 
 ```mermaid
 sequenceDiagram
-    participant O as Orchestrator
+    participant Sx as Simplex
     participant F as Finalizer
     participant E as Engine Client
     participant R as Reth
 
-    Note over O: Block reaches finality
-    O->>F: Block finalized
+    Sx->>F: Block finalized
+
+    alt Fork state exists (already executed at notarization)
+        Note over F: Reuse pre-built fork state as canonical
+    else No fork state (catch-up / sync)
+        F->>E: check_payload(block)
+        E->>R: engine_newPayloadV4(payload, ...)
+        R-->>E: PayloadStatus
+        alt PayloadStatus.Invalid
+            Note over F: Local Reth disagrees with finalized chain — shutdown
+        end
+        Note over F: Execute block against canonical
+    end
+
     F->>E: commit_hash(new_forkchoice)
     E->>R: engine_forkchoiceUpdatedV3(forkchoice, None)
     R-->>E: ForkchoiceUpdatedResponse
-    E-->>F: ()
-
-    Note over R: Block committed to canonical chain
 ```
 
 ## Error Handling
