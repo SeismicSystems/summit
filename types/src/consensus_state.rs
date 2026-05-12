@@ -201,6 +201,45 @@ impl ConsensusState {
         self.validator_maximum_stake
     }
 
+    /// Returns the minimum stake that *will* apply after the queued protocol-parameter
+    /// changes are drained at the next epoch boundary. If no `MinimumStake` change is
+    /// queued, returns the currently-active value.
+    pub fn prospective_minimum_stake(&self) -> u64 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|p| match p {
+                ProtocolParam::MinimumStake(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(self.validator_minimum_stake)
+    }
+
+    /// Returns the maximum stake that *will* apply after the queued protocol-parameter
+    /// changes are drained at the next epoch boundary. If no `MaximumStake` change is
+    /// queued, returns the currently-active value.
+    pub fn prospective_maximum_stake(&self) -> u64 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|p| match p {
+                ProtocolParam::MaximumStake(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(self.validator_maximum_stake)
+    }
+
+    /// Whether a `MinimumStake` or `MaximumStake` change is queued for application at
+    /// the next epoch boundary.
+    pub fn has_pending_stake_bound_change(&self) -> bool {
+        self.protocol_param_changes.iter().any(|p| {
+            matches!(
+                p,
+                ProtocolParam::MinimumStake(_) | ProtocolParam::MaximumStake(_)
+            )
+        })
+    }
+
     pub fn set_minimum_stake(&mut self, stake: u64) {
         self.validator_minimum_stake = stake;
         self.ssz_tree.set_validator_minimum_stake(stake);

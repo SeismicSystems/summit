@@ -22,7 +22,7 @@ use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::Instant;
@@ -1853,6 +1853,46 @@ async fn process_execution_requests<
                         state.set_account(node_pubkey_bytes, account);
                     }
                 }
+            }
+        }
+
+        // Stage stake-bound force-removals for the upcoming epoch boundary.
+        //
+        // Protocol-param changes themselves don't take effect until the last block of
+        // the epoch (see `apply_protocol_parameter_changes`), but we need any validator
+        // that will fall below the new minimum stake to be visible in
+        // `removed_validators` *before* the proposer builds the last block's header.
+        // Otherwise the header's delta won't include them and a checkpoint verifier
+        // walking from genesis will reconstruct a different committee than live nodes.
+        //
+        // We only push to `removed_validators` here. Balance zeroing, withdrawal
+        // scheduling, and status flips stay in the last-block path so the new bounds
+        // are only "effective" in the new epoch.
+        if state.has_pending_stake_bound_change() {
+            let prospective_min = state.prospective_minimum_stake();
+            let force_removed: Vec<PublicKey> = state
+                .validator_accounts_iter()
+                .filter_map(|(key, account)| {
+                    if account.balance < prospective_min {
+                        PublicKey::decode(&key[..]).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let already_removed: HashSet<PublicKey> =
+                state.get_removed_validators().iter().cloned().collect();
+            for public_key in force_removed {
+                if already_removed.contains(&public_key) {
+                    continue;
+                }
+                info!(
+                    validator = hex::encode(public_key.as_ref()),
+                    prospective_min,
+                    current_epoch = state.get_epoch(),
+                    "staging force-removal at penultimate block for header delta"
+                );
+                state.push_removed_validator(public_key);
             }
         }
     }

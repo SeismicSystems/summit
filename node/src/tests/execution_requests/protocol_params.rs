@@ -1288,3 +1288,222 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
         context.auditor().state()
     })
 }
+
+/// Verifies that a validator force-removed by stake-bound enforcement is recorded in the
+/// finalized header's `removed_validators` list at the epoch boundary where the removal
+/// takes effect.
+///
+/// Setup (DEFAULT_BLOCKS_PER_EPOCH = 10):
+/// - 5 genesis validators, each at 32 ETH. min_stake = 32 ETH, max_stake = 40 ETH.
+/// - Block 3: validators 0..=3 each deposit 8 ETH → 40 ETH (= max_stake). Validator 4
+///   does not deposit (stays at 32 ETH).
+/// - Block 5: protocol-param request raises min_stake to 40 ETH.
+/// - At the epoch 0 boundary (block 9), the new min_stake takes effect and validator 4
+///   (still at 32 ETH) must be force-removed.
+///
+/// Assertion: the finalized header for epoch 0 contains validator 4 in
+/// `removed_validators`, so a node joining later (which reconstructs the next epoch's
+/// committee from header deltas in `verify_checkpoint_chain`) sees the same validator
+/// set as a live node.
+#[test_traced("INFO")]
+fn test_removed_validators_at_epoch_boundary_stake_bound() {
+    let n: u32 = 5;
+    let min_stake = 32_000_000_000; // 32 ETH
+    let max_stake = 40_000_000_000; // 40 ETH (set from genesis to avoid partial-withdrawal noise)
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Validator at index n-1 stays at 32 ETH — it will fall below the new 40 ETH min
+        // stake and must be force-removed at the epoch 0 boundary.
+        let kicked_idx = (n - 1) as usize;
+        let kicked_pubkey = validators[kicked_idx].0.clone();
+
+        // Validators 0..kicked_idx each deposit 8 ETH (32 + 8 = 40 ETH, exactly at max).
+        let mut deposit_requests = Vec::new();
+        let deposit_amount = 8_000_000_000u64;
+        for i in 0..kicked_idx as u64 {
+            let (deposit, _, _) = common::create_deposit_request(
+                i,
+                deposit_amount,
+                common::get_domain(),
+                Some(key_stores[i as usize].node_key.clone()),
+                None,
+            );
+            deposit_requests.push(ExecutionRequest::Deposit(deposit));
+        }
+        let requests_deposits = common::execution_requests_to_requests(deposit_requests);
+
+        let new_min_stake = 40_000_000_000u64; // 40 ETH
+        let min_param = common::create_protocol_param_request(0x00, new_min_stake);
+        let requests_param =
+            common::execution_requests_to_requests(vec![ExecutionRequest::ProtocolParam(
+                min_param,
+            )]);
+
+        let deposit_block_height = 3;
+        let protocol_param_block_height = 5;
+        // Last block of epoch 0 = 9. Stop at 10 so block 9 is finalized.
+        let last_block_epoch_0 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0);
+        let stop_height = last_block_epoch_0 + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(deposit_block_height, requests_deposits);
+        execution_requests_map.insert(protocol_param_block_height, requests_param);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        initial_state.set_maximum_stake(max_stake);
+
+        let mut public_keys = HashSet::new();
+        let mut finalizer_mailboxes = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // The kicked validator exits at the epoch boundary, so only n-1 validators
+        // will reach stop_height.
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 1 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Sanity-check that the stake-bound enforcement actually fired: the protocol
+        // parameter took effect and the kicked validator was moved out of the active
+        // set. Query a still-running validator (index 0) — the kicked validator's
+        // finalizer shuts down after exit.
+        let state_query = finalizer_mailboxes.get(&0).unwrap();
+        assert_eq!(state_query.get_minimum_stake().await, new_min_stake);
+        let kicked_account = state_query
+            .get_validator_account(kicked_pubkey.clone())
+            .await;
+        assert!(
+            kicked_account.is_none()
+                || kicked_account.as_ref().unwrap().status == ValidatorStatus::Inactive,
+            "kicked validator should be Inactive (or already removed) after epoch 0 boundary"
+        );
+
+        // The header for the last block of epoch 0 must include the force-removed
+        // validator in `removed_validators` so header-walking verifiers
+        // (verify_checkpoint_chain) reconstruct the same committee as live nodes.
+        let mut mailbox = finalizer_mailboxes.get(&0).unwrap().clone();
+        let finalized_header = mailbox
+            .get_finalized_header(0)
+            .await
+            .expect("failed to get finalized header for last block of epoch 0");
+
+        let removed_validators = &finalized_header.header.removed_validators;
+        assert!(
+            removed_validators.iter().any(|pk| *pk == kicked_pubkey),
+            "force-removed validator (stake-bound) should be in removed_validators of \
+             epoch 0's finalized header, but removed_validators = {removed_validators:?}"
+        );
+
+        context.auditor().state()
+    })
+}
