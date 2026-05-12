@@ -189,7 +189,6 @@ fn execution_payload_envelope_to_block(
         timestamp,
         execution_payload,
         execution_requests,
-        payload.envelope_inner.block_value,
         0, // epoch
         view,
         None,                    // checkpoint_hash

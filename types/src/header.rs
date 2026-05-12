@@ -1,7 +1,6 @@
 use std::ops::Deref as _;
 
 use crate::PublicKey;
-use alloy_primitives::U256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::simplex::types::Finalization;
@@ -31,7 +30,6 @@ pub struct Header {
     pub execution_request_hash: Digest,
     pub checkpoint_hash: Digest,
     pub prev_epoch_header_hash: Digest,
-    pub block_value: U256,
     pub added_validators: Vec<AddedValidator>,
     pub removed_validators: Vec<PublicKey>,
     pub parent_beacon_block_root: [u8; 32],
@@ -51,7 +49,6 @@ impl Header {
         execution_request_hash: Digest,
         checkpoint_hash: Digest,
         prev_epoch_header_hash: Digest,
-        block_value: U256,
         added_validators: Vec<AddedValidator>,
         removed_validators: Vec<PublicKey>,
         parent_beacon_block_root: [u8; 32],
@@ -64,7 +61,6 @@ impl Header {
         hasher.update(&execution_request_hash);
         hasher.update(&checkpoint_hash);
         hasher.update(&prev_epoch_header_hash);
-        hasher.update(&block_value.as_ssz_bytes());
         // Hash the added validators (both node key and consensus key)
         for av in &added_validators {
             let node_key_bytes: [u8; 32] = av
@@ -95,7 +91,6 @@ impl Header {
             execution_request_hash,
             checkpoint_hash,
             prev_epoch_header_hash,
-            block_value,
             added_validators,
             removed_validators,
             parent_beacon_block_root,
@@ -115,7 +110,6 @@ impl ssz::Encode for Header {
     fn ssz_append(&self, buf: &mut Vec<u8>) {
         let offset = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 6 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash, parent_beacon_block_root
             + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
-            + <U256 as ssz::Encode>::ssz_fixed_len() // block_value
             + <Vec<u8> as ssz::Encode>::ssz_fixed_len() * 2; // added_validators, removed_validators offsets
 
         let mut encoder = ssz::SszEncoder::container(buf, offset);
@@ -171,7 +165,6 @@ impl ssz::Encode for Header {
         encoder.append(&execution_request_hash);
         encoder.append(&checkpoint_hash);
         encoder.append(&prev_epoch_header_hash);
-        encoder.append(&self.block_value);
         encoder.append(&self.parent_beacon_block_root);
         encoder.append(&added_validators_bytes);
         encoder.append(&removed_validators_bytes);
@@ -180,8 +173,7 @@ impl ssz::Encode for Header {
 
     fn ssz_bytes_len(&self) -> usize {
         let fixed_size = <[u8; 32] as ssz::Encode>::ssz_fixed_len() * 6 // parent, payload_hash, execution_request_hash, checkpoint_hash, prev_epoch_header_hash, parent_beacon_block_root
-            + <u64 as ssz::Encode>::ssz_fixed_len() * 4 // height, timestamp, epoch, view
-            + <U256 as ssz::Encode>::ssz_fixed_len(); // block_value
+            + <u64 as ssz::Encode>::ssz_fixed_len() * 4; // height, timestamp, epoch, view
 
         // AddedValidator: 32 (node_key) + 48 (consensus_key) = 80 bytes each
         let added_validators_len = self.added_validators.len() * ADDED_VALIDATOR_SSZ_SIZE;
@@ -210,7 +202,6 @@ impl ssz::Decode for Header {
         builder.register_type::<[u8; 32]>()?; // execution_request_hash
         builder.register_type::<[u8; 32]>()?; // checkpoint_hash
         builder.register_type::<[u8; 32]>()?; // prev_epoch_header_hash
-        builder.register_type::<U256>()?; // block_value
         builder.register_type::<[u8; 32]>()?; // parent_beacon_block_root
         builder.register_type::<Vec<u8>>()?; // added_validators (raw bytes)
         builder.register_type::<Vec<u8>>()?; // removed_validators (raw bytes)
@@ -226,7 +217,6 @@ impl ssz::Decode for Header {
         let execution_request_hash: [u8; 32] = decoder.decode_next()?;
         let checkpoint_hash: [u8; 32] = decoder.decode_next()?;
         let prev_epoch_header_hash: [u8; 32] = decoder.decode_next()?;
-        let block_value: U256 = decoder.decode_next()?;
         let parent_beacon_block_root: [u8; 32] = decoder.decode_next()?;
         let added_validators_bytes: Vec<u8> = decoder.decode_next()?;
         let removed_validators_bytes: Vec<u8> = decoder.decode_next()?;
@@ -282,7 +272,6 @@ impl ssz::Decode for Header {
             execution_request_hash.into(),
             checkpoint_hash.into(),
             prev_epoch_header_hash.into(),
-            block_value,
             added_validators,
             removed_validators,
             parent_beacon_block_root,
@@ -458,7 +447,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use alloy_primitives::{U256, hex};
+    use alloy_primitives::hex;
     use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_consensus::simplex::scheme::bls12381_multisig;
     use commonware_consensus::types::{Epoch, View};
@@ -573,7 +562,6 @@ mod test {
             [2u8; 32].into(),
             [3u8; 32].into(),
             [4u8; 32].into(),
-            U256::ZERO,
             added_validators,
             removed_validators,
             [0u8; 32],
@@ -598,7 +586,6 @@ mod test {
             [2u8; 32].into(),
             [3u8; 32].into(),
             [4u8; 32].into(),
-            U256::ZERO,
             added_validators,
             removed_validators,
             [0u8; 32],
@@ -653,7 +640,6 @@ mod test {
             [2u8; 32].into(),
             [3u8; 32].into(),
             [4u8; 32].into(),
-            U256::ZERO,
             added_validators,
             removed_validators,
             [0u8; 32],
@@ -708,7 +694,6 @@ mod test {
             [2u8; 32].into(),
             [3u8; 32].into(),
             [4u8; 32].into(),
-            U256::ZERO,
             added_validators,
             removed_validators,
             [0u8; 32],

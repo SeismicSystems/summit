@@ -1,6 +1,6 @@
 use crate::{AddedValidator, Header, PublicKey};
 use alloy_consensus::{Block as AlloyBlock, TxEnvelope};
-use alloy_primitives::{Bytes as AlloyBytes, U256};
+use alloy_primitives::Bytes as AlloyBytes;
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
@@ -39,7 +39,6 @@ impl Block {
         timestamp: u64,
         payload: ExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
-        block_value: U256,
         epoch: u64,
         view: u64,
         checkpoint_hash: Option<Digest>,
@@ -78,7 +77,6 @@ impl Block {
             execution_request_hash,
             checkpoint_hash,
             prev_epoch_header_hash,
-            block_value,
             added_validators,
             removed_validators,
             parent_beacon_block_root,
@@ -140,7 +138,6 @@ impl Block {
             execution_request_hash: [0; 32].into(),
             checkpoint_hash: [0; 32].into(),
             prev_epoch_header_hash: [0; 32].into(),
-            block_value: U256::ZERO,
             added_validators: Vec::new(),
             removed_validators: Vec::new(),
             parent_beacon_block_root: [0; 32],
@@ -381,7 +378,6 @@ mod test {
             2727,
             payload,
             vec![Default::default()],
-            U256::ZERO,
             42,
             1,
             Some([0u8; 32].into()),
@@ -431,7 +427,6 @@ mod test {
             2727,
             payload,
             Vec::new(),
-            U256::ZERO,
             42,
             1,
             Some([0u8; 32].into()),

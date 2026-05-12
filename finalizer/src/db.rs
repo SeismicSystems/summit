@@ -526,19 +526,18 @@ mod tests {
 
             // Create a test header
             let header = summit_types::Header::compute_digest(
-                [1u8; 32].into(),                    // parent
-                100,                                 // height
-                1234567890,                          // timestamp
-                0,                                   // epoch
-                1,                                   // view
-                [2u8; 32].into(),                    // payload_hash
-                [3u8; 32].into(),                    // execution_request_hash
-                [4u8; 32].into(),                    // checkpoint_hash
-                [5u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(42u64), // block_value
-                Vec::new(),                          // added_validators
-                Vec::new(),                          // removed_validators
-                [0u8; 32],                           // parent_beacon_block_root
+                [1u8; 32].into(), // parent
+                100,              // height
+                1234567890,       // timestamp
+                0,                // epoch
+                1,                // view
+                [2u8; 32].into(), // payload_hash
+                [3u8; 32].into(), // execution_request_hash
+                [4u8; 32].into(), // checkpoint_hash
+                [5u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
+                [0u8; 32],        // parent_beacon_block_root
             );
 
             // Create finalization proof
@@ -576,19 +575,18 @@ mod tests {
 
             // Store another header at different height
             let header2 = summit_types::Header::compute_digest(
-                [5u8; 32].into(),                    // parent
-                200,                                 // height
-                1234567900,                          // timestamp
-                0,                                   // epoch
-                2,                                   // view
-                [6u8; 32].into(),                    // payload_hash
-                [7u8; 32].into(),                    // execution_request_hash
-                [8u8; 32].into(),                    // checkpoint_hash
-                [9u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(84u64), // block_value
-                Vec::new(),                          // added_validators
-                Vec::new(),                          // removed_validators
-                [0u8; 32],                           // parent_beacon_block_root
+                [5u8; 32].into(), // parent
+                200,              // height
+                1234567900,       // timestamp
+                0,                // epoch
+                2,                // view
+                [6u8; 32].into(), // payload_hash
+                [7u8; 32].into(), // execution_request_hash
+                [8u8; 32].into(), // checkpoint_hash
+                [9u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
+                [0u8; 32],        // parent_beacon_block_root
             );
             let proposal2 = Proposal {
                 round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
@@ -639,19 +637,18 @@ mod tests {
 
             // Store headers out of order
             let header1 = summit_types::Header::compute_digest(
-                [1u8; 32].into(),                    // parent
-                100,                                 // height
-                1234567890,                          // timestamp
-                0,                                   // epoch
-                1,                                   // view
-                [2u8; 32].into(),                    // payload_hash
-                [3u8; 32].into(),                    // execution_request_hash
-                [4u8; 32].into(),                    // checkpoint_hash
-                [5u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(42u64), // block_value
-                Vec::new(),                          // added_validators
-                Vec::new(),                          // removed_validators
-                [0u8; 32],                           // parent_beacon_block_root
+                [1u8; 32].into(), // parent
+                100,              // height
+                1234567890,       // timestamp
+                0,                // epoch
+                1,                // view
+                [2u8; 32].into(), // payload_hash
+                [3u8; 32].into(), // execution_request_hash
+                [4u8; 32].into(), // checkpoint_hash
+                [5u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
+                [0u8; 32],        // parent_beacon_block_root
             );
             let proposal1 = Proposal {
                 round: Round::new(Epoch::new(header1.epoch), View::new(header1.view)),
@@ -670,19 +667,18 @@ mod tests {
                 summit_types::FinalizedHeader::new(header1.clone(), finalized1, 3);
 
             let header3 = summit_types::Header::compute_digest(
-                [7u8; 32].into(),                     // parent
-                300,                                  // height
-                1234567920,                           // timestamp
-                0,                                    // epoch
-                3,                                    // view
-                [8u8; 32].into(),                     // payload_hash
-                [9u8; 32].into(),                     // execution_request_hash
-                [10u8; 32].into(),                    // checkpoint_hash
-                [11u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(126u64), // block_value
-                Vec::new(),                           // added_validators
-                Vec::new(),                           // removed_validators
-                [0u8; 32],                            // parent_beacon_block_root
+                [7u8; 32].into(),  // parent
+                300,               // height
+                1234567920,        // timestamp
+                0,                 // epoch
+                3,                 // view
+                [8u8; 32].into(),  // payload_hash
+                [9u8; 32].into(),  // execution_request_hash
+                [10u8; 32].into(), // checkpoint_hash
+                [11u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),        // added_validators
+                Vec::new(),        // removed_validators
+                [0u8; 32],         // parent_beacon_block_root
             );
             let proposal3 = Proposal {
                 round: Round::new(Epoch::new(header3.epoch), View::new(header3.view)),
@@ -701,19 +697,18 @@ mod tests {
                 summit_types::FinalizedHeader::new(header3.clone(), finalized3, 3);
 
             let header2 = summit_types::Header::compute_digest(
-                [5u8; 32].into(),                    // parent
-                200,                                 // height
-                1234567900,                          // timestamp
-                0,                                   // epoch
-                2,                                   // view
-                [6u8; 32].into(),                    // payload_hash
-                [7u8; 32].into(),                    // execution_request_hash
-                [8u8; 32].into(),                    // checkpoint_hash
-                [9u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(84u64), // block_value
-                Vec::new(),                          // added_validators
-                Vec::new(),                          // removed_validators
-                [0u8; 32],                           // parent_beacon_block_root
+                [5u8; 32].into(), // parent
+                200,              // height
+                1234567900,       // timestamp
+                0,                // epoch
+                2,                // view
+                [6u8; 32].into(), // payload_hash
+                [7u8; 32].into(), // execution_request_hash
+                [8u8; 32].into(), // checkpoint_hash
+                [9u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
+                [0u8; 32],        // parent_beacon_block_root
             );
             let proposal2 = Proposal {
                 round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
