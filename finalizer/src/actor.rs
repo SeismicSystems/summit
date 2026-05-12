@@ -1696,6 +1696,27 @@ async fn parse_execution_requests<
                         ExecutionRequest::ProtocolParam(protocol_param_request) => {
                             info!("Received protocol param request: {protocol_param_request:?}");
 
+                            // Buffer protocol param requests landing on the last block of
+                            // an epoch. Stake bound force removals are staged at the
+                            // penultimate block so they can appear in the last block's
+                            // removed_validators header delta. A request arriving on the
+                            // last block itself misses that window, so we defer it via
+                            // the pending execution request queue, mirroring how
+                            // withdrawal requests are handled. The request will replay
+                            // at the first block of the next epoch and apply naturally
+                            // at the next epoch boundary.
+                            if is_last_block_of_epoch(state.get_epocher(), new_height) {
+                                info!(
+                                    new_height,
+                                    current_epoch = state.get_epoch(),
+                                    "buffering protocol param request on last block of epoch: {protocol_param_request:?}"
+                                );
+                                let mut deferred_request = vec![0xFF];
+                                protocol_param_request.write(&mut deferred_request);
+                                state.push_pending_execution_request(deferred_request.into());
+                                continue;
+                            }
+
                             match ProtocolParam::try_from(protocol_param_request) {
                                 Ok(protocol_param) => {
                                     info!("Adding protocol param change: {protocol_param:?}");
