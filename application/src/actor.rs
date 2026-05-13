@@ -749,6 +749,22 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
     // Basic structural validation
+    if block.view() != round.view().get() {
+        warn!(
+            "block view mismatch: expected: {}, received: {}",
+            round.view().get(),
+            block.view()
+        );
+        return false;
+    }
+    if block.epoch() != round.epoch().get() {
+        warn!(
+            "block epoch mismatch: expected: {}, received: {}",
+            round.epoch().get(),
+            block.epoch()
+        );
+        return false;
+    }
     if block.parent() != parent.digest() {
         warn!(
             "block parent mismatch: expected: {}, received: {}",
