@@ -843,7 +843,7 @@ impl<
             // the finalization.
             let finalization = finalization
                 .expect("finalization is always included for the last block of an epoch");
-            debug_assert!(block.header.digest == finalization.proposal.payload);
+            debug_assert!(block.header.get_digest() == finalization.proposal.payload);
             // Get participant count from the certificate signers
             let participant_count = finalization.certificate.signers.len();
 
@@ -869,8 +869,8 @@ impl<
                 self.context.register(
                     format!(
                         "<header>{}</header><prev_header>{}</prev_header>_finalized_header_stored",
-                        hex::encode(finalized_header.header.digest),
-                        hex::encode(finalized_header.header.prev_epoch_header_hash)
+                        hex::encode(finalized_header.header.get_digest()),
+                        hex::encode(finalized_header.header.prev_epoch_header_hash())
                     ),
                     "chain height",
                     gauge,
@@ -1488,7 +1488,7 @@ impl<
             // the block that contains the last checkpoint
             let prev_header_hash =
                 if let Some(finalized_header) = self.db.get_most_recent_finalized_header().await {
-                    finalized_header.header.digest
+                    finalized_header.header.get_digest()
                 } else {
                     self.genesis_hash.into()
                 };

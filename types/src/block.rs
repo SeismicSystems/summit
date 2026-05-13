@@ -10,8 +10,9 @@ use commonware_consensus::types::{Height, View};
 use commonware_consensus::{Block as ConsensusBlock, Heightable};
 use commonware_cryptography::{Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
+use ssz_derive::{Decode, Encode};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 pub struct Block {
     pub header: Header,
     pub payload: ExecutionPayloadV3,
@@ -21,8 +22,8 @@ pub struct Block {
 impl Block {
     pub fn eth_block_hash(&self) -> [u8; 32] {
         // if genesis return your own digest
-        if self.header.height == 0 {
-            self.header.digest.as_ref().try_into().unwrap()
+        if self.header.height() == 0 {
+            self.header.get_digest().as_ref().try_into().unwrap()
         } else {
             self.payload.payload_inner.payload_inner.block_hash.into()
         }
@@ -67,7 +68,7 @@ impl Block {
             [0; 32].into()
         };
 
-        let header = Header::compute_digest(
+        let header = Header::new(
             parent,
             height,
             timestamp,
@@ -108,10 +109,10 @@ impl Block {
             [0; 32].into()
         };
 
-        if payload_hash != header.payload_hash {
+        if payload_hash != header.payload_hash() {
             return Err(anyhow!("Payload hash mismatch"));
         }
-        if execution_request_hash != header.execution_request_hash {
+        if execution_request_hash != header.execution_request_hash() {
             return Err(anyhow!("Execution request hash mismatch"));
         }
         Ok(Self {
@@ -128,21 +129,21 @@ impl Block {
         hasher.update(&payload_ssz);
         let payload_hash = hasher.finalize();
 
-        let header = Header {
-            parent: genesis_hash.into(),
-            height: 0,
-            timestamp: 0,
-            epoch: 0,
-            view: 1,
+        let header = Header::new_with_digest(
+            genesis_hash.into(),
+            0,
+            0,
+            0,
+            1,
             payload_hash,
-            execution_request_hash: [0; 32].into(),
-            checkpoint_hash: [0; 32].into(),
-            prev_epoch_header_hash: [0; 32].into(),
-            added_validators: Vec::new(),
-            removed_validators: Vec::new(),
-            parent_beacon_block_root: [0; 32],
-            digest: genesis_hash.into(),
-        };
+            [0; 32].into(),
+            [0; 32].into(),
+            [0; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0; 32],
+            genesis_hash.into(),
+        );
         Self {
             header,
             payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
@@ -151,91 +152,45 @@ impl Block {
     }
 
     pub fn parent(&self) -> Digest {
-        self.header.parent
+        self.header.parent()
     }
 
     pub fn height(&self) -> u64 {
-        self.header.height
+        self.header.height()
     }
 
     pub fn digest(&self) -> Digest {
-        self.header.digest
+        self.header.get_digest()
     }
 
     pub fn timestamp(&self) -> u64 {
-        self.header.timestamp
+        self.header.timestamp()
     }
 
     pub fn view(&self) -> u64 {
-        self.header.view
+        self.header.view()
     }
 
     pub fn epoch(&self) -> u64 {
-        self.header.epoch
+        self.header.epoch()
     }
 }
 
 impl Heightable for Block {
     fn height(&self) -> Height {
-        Height::new(self.header.height)
+        Height::new(self.header.height())
     }
 }
 
 impl ConsensusBlock for Block {
     fn parent(&self) -> Self::Digest {
-        self.header.parent
+        self.header.parent()
     }
 }
 
 impl Viewable for Block {
     fn view(&self) -> View {
-        View::new(self.header.view)
-    }
-}
-
-impl ssz::Encode for Block {
-    fn is_ssz_fixed_len() -> bool {
-        false
-    }
-
-    fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset = ssz::BYTES_PER_LENGTH_OFFSET * 3; // 3 variable-length fields
-
-        let mut encoder = ssz::SszEncoder::container(buf, offset);
-
-        encoder.append(&self.header);
-        encoder.append(&self.payload);
-        encoder.append(&self.execution_requests);
-        encoder.finalize();
-    }
-
-    fn ssz_bytes_len(&self) -> usize {
-        self.header.ssz_bytes_len()
-            + self.payload.ssz_bytes_len()
-            + self.execution_requests.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET * 3 // 3 variable-length fields need 3 offsets
-    }
-}
-
-impl ssz::Decode for Block {
-    fn is_ssz_fixed_len() -> bool {
-        false
-    }
-
-    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
-        let mut builder = ssz::SszDecoderBuilder::new(bytes);
-        builder.register_type::<Header>()?;
-        builder.register_type::<ExecutionPayloadV3>()?;
-        builder.register_type::<Vec<AlloyBytes>>()?;
-
-        let mut decoder = builder.build()?;
-
-        let header: Header = decoder.decode_next()?;
-        let payload = decoder.decode_next()?;
-        let execution_requests = decoder.decode_next()?;
-
-        Self::new_with_verify(header, payload, execution_requests)
-            .map_err(|e| ssz::DecodeError::BytesInvalid(e.to_string()))
+        View::new(self.header.view())
     }
 }
 
@@ -276,7 +231,7 @@ impl Digestible for Block {
     type Digest = Digest;
 
     fn digest(&self) -> Digest {
-        self.header.digest
+        self.header.get_digest()
     }
 }
 

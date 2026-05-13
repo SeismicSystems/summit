@@ -790,19 +790,20 @@ fn handle_verify<ES: Epocher>(
         );
         return false;
     }
-    if block.header.prev_epoch_header_hash != aux_data.header_hash {
+    if block.header.prev_epoch_header_hash() != aux_data.header_hash {
         warn!(
             "prev_epoch_header_hash mismatch: expected: {:?}, received: {:?}",
-            aux_data.header_hash, block.header.prev_epoch_header_hash
+            aux_data.header_hash,
+            block.header.prev_epoch_header_hash()
         );
         return false;
     }
 
     // Validate consensus trie state root
-    if block.header.parent_beacon_block_root != aux_data.state_root {
+    if block.header.parent_beacon_block_root() != aux_data.state_root {
         warn!(
             expected = ?aux_data.state_root,
-            actual = ?block.header.parent_beacon_block_root,
+            actual = ?block.header.parent_beacon_block_root(),
             "parent_beacon_block_root mismatch"
         );
         return false;
@@ -811,30 +812,32 @@ fn handle_verify<ES: Epocher>(
     // Validate checkpoint_hash (None means [0; 32], matching Block::compute_digest)
     let expected_checkpoint_hash: Digest =
         aux_data.checkpoint_hash.unwrap_or_else(|| [0; 32].into());
-    if block.header.checkpoint_hash != expected_checkpoint_hash {
+    if block.header.checkpoint_hash() != expected_checkpoint_hash {
         warn!(
             expected = ?expected_checkpoint_hash,
-            actual = ?block.header.checkpoint_hash,
+            actual = ?block.header.checkpoint_hash(),
             "checkpoint_hash mismatch"
         );
         return false;
     }
 
     // Validate added_validators
-    if block.header.added_validators != aux_data.added_validators {
+    let added_validators = block.header.added_validators();
+    if added_validators != aux_data.added_validators {
         warn!(
             expected_count = aux_data.added_validators.len(),
-            actual_count = block.header.added_validators.len(),
+            actual_count = added_validators.len(),
             "added_validators mismatch"
         );
         return false;
     }
 
     // Validate removed_validators
-    if block.header.removed_validators != aux_data.removed_validators {
+    let removed_validators = block.header.removed_validators();
+    if removed_validators != aux_data.removed_validators {
         warn!(
             expected_count = aux_data.removed_validators.len(),
-            actual_count = block.header.removed_validators.len(),
+            actual_count = removed_validators.len(),
             "removed_validators mismatch"
         );
         return false;

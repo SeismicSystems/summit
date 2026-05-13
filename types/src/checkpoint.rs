@@ -242,10 +242,10 @@ pub fn verify_checkpoint_chain(
         // Save the current participants — this is the signing set for this epoch
         signing_set = participants.clone();
         let expected_epoch = i as u64;
-        if finalized_header.header.epoch != expected_epoch {
+        if finalized_header.header.epoch() != expected_epoch {
             return Err(CheckpointVerificationError::NonContiguousEpochs {
                 expected: expected_epoch,
-                found: finalized_header.header.epoch,
+                found: finalized_header.header.epoch(),
             });
         }
 
@@ -283,15 +283,15 @@ pub fn verify_checkpoint_chain(
         }
 
         // Update validator set for the next epoch
-        for added in &finalized_header.header.added_validators {
+        for added in finalized_header.header.added_validators() {
             let minpk_public: &<MinPk as Variant>::Public = added.consensus_key.as_ref();
             let encoded = minpk_public.encode();
             let variant_pk = <MinPk as Variant>::Public::decode(&mut encoded.as_ref())
                 .expect("failed to decode BLS public key");
             participants.push((added.node_key.clone(), variant_pk));
         }
-        for removed in &finalized_header.header.removed_validators {
-            participants.retain(|(pk, _)| pk != removed);
+        for removed in finalized_header.header.removed_validators() {
+            participants.retain(|(pk, _)| *pk != removed);
         }
         participants.sort_by(|a, b| a.0.cmp(&b.0));
     }
@@ -301,7 +301,7 @@ pub fn verify_checkpoint_chain(
     let mut hasher = Sha256::new();
     hasher.update(&checkpoint.data);
     let computed_digest = hasher.finalize();
-    if last_header.header.checkpoint_hash != computed_digest {
+    if last_header.header.checkpoint_hash() != computed_digest {
         return Err(CheckpointVerificationError::CheckpointHashMismatch);
     }
 

@@ -492,11 +492,11 @@ fn test_checkpoint_verification_dynamic_committee() {
         // Verify epoch 1's header has both added and removed validators
         let epoch_1_header = &finalized_headers[1];
         assert!(
-            !epoch_1_header.header.added_validators.is_empty(),
+            !epoch_1_header.header.added_validators().is_empty(),
             "epoch 1 header should have added_validators"
         );
         assert!(
-            !epoch_1_header.header.removed_validators.is_empty(),
+            !epoch_1_header.header.removed_validators().is_empty(),
             "epoch 1 header should have removed_validators"
         );
 
