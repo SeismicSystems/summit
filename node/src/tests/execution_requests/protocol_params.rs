@@ -1499,9 +1499,247 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
 
         let removed_validators = &finalized_header.header.removed_validators;
         assert!(
-            removed_validators.iter().any(|pk| *pk == kicked_pubkey),
+            removed_validators.contains(&kicked_pubkey),
             "force-removed validator (stake-bound) should be in removed_validators of \
              epoch 0's finalized header, but removed_validators = {removed_validators:?}"
+        );
+
+        context.auditor().state()
+    })
+}
+
+/// Verifies that when stake-bound enforcement force-removes a Joining validator
+/// (one whose activation is still pending in `added_validators`), the pending
+/// activation is cancelled so the finalized header does not carry a stale
+/// `added_validators` entry. Without the cancellation, a header-walking verifier
+/// (verify_checkpoint_chain) would reconstruct the validator into the committee
+/// even though the live node excluded it.
+///
+/// Setup (DEFAULT_BLOCKS_PER_EPOCH = 10, VALIDATOR_NUM_WARM_UP_EPOCHS = 2):
+/// - 5 genesis validators, each at 32 ETH. min_stake = 32 ETH, max_stake = 40 ETH.
+/// - Block 3: validators 0..=4 each top up 8 ETH → 40 ETH (safely above the new min).
+/// - Block 5: a brand-new validator deposits 32 ETH. Processed at penultimate of
+///   epoch 0 (block 8): account created with status = Joining, joining_epoch = 0 + 2 = 2.
+///   `state.add_validator(2, ...)` is called.
+/// - Block 15: protocol-param request raises min_stake to 36 ETH.
+/// - Penultimate of epoch 1 (block 18): stake-bound staging detects the Joining
+///   validator (balance 32 < prospective_min 36). The correct behavior is to
+///   *cancel* the pending activation via `remove_added_validator(2, pk)` so the
+///   activation never lands in any header.
+/// - Last block of epoch 1 (block 19) is the header that would normally activate
+///   the validator (`next_epoch == joining_epoch == 2`).
+///
+/// Assertion: epoch 1's finalized header does NOT contain the joining validator
+/// in `added_validators`.
+#[test_traced("INFO")]
+fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
+    let n: u32 = 5;
+    let min_stake = 32_000_000_000; // 32 ETH
+    let max_stake = 40_000_000_000; // 40 ETH
+    let new_validator_amount = 32_000_000_000u64; // below new min after the raise
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Block 3: top-up deposits for genesis validators so each ends up at exactly
+        // 40 ETH (= max), safely above the new min.
+        let topup_amount = 8_000_000_000u64;
+        let mut topup_deposits = Vec::new();
+        for i in 0..n as u64 {
+            let (deposit, _, _) = common::create_deposit_request(
+                i,
+                topup_amount,
+                common::get_domain(),
+                Some(key_stores[i as usize].node_key.clone()),
+                None,
+            );
+            topup_deposits.push(ExecutionRequest::Deposit(deposit));
+        }
+        let topup_requests = common::execution_requests_to_requests(topup_deposits);
+
+        // Block 5: brand-new validator deposit. The index n is unused so far, so its
+        // seeded key won't collide with any genesis validator.
+        let new_validator_index = n as u64;
+        let (new_deposit, new_validator_private_key, _) = common::create_deposit_request(
+            new_validator_index,
+            new_validator_amount,
+            common::get_domain(),
+            None,
+            None,
+        );
+        let new_validator_pubkey = new_validator_private_key.public_key();
+        let new_deposit_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(new_deposit)]);
+
+        // Block 15 (mid-epoch 1): raise min_stake to 36 ETH.
+        let new_min_stake = 36_000_000_000u64;
+        let min_param = common::create_protocol_param_request(0x00, new_min_stake);
+        let param_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::ProtocolParam(
+                min_param,
+            )]);
+
+        let topup_block_height = 3;
+        let new_deposit_block_height = 5;
+        let protocol_param_block_height = 15;
+        // Last block of epoch 1 = 19. Stop at 20 so block 19 is finalized.
+        let last_block_epoch_1 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 1);
+        let stop_height = last_block_epoch_1 + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(topup_block_height, topup_requests);
+        execution_requests_map.insert(new_deposit_block_height, new_deposit_requests);
+        execution_requests_map.insert(protocol_param_block_height, param_requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        initial_state.set_maximum_stake(max_stake);
+
+        let mut public_keys = HashSet::new();
+        let mut finalizer_mailboxes = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // All 5 genesis validators stay above the new min (40 >= 36) and continue
+        // participating, so all of them should reach stop_height.
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Sanity-check: protocol param took effect and the new validator's account
+        // ended up Inactive with zero balance
+        let state_query = finalizer_mailboxes.get(&0).unwrap();
+        assert_eq!(state_query.get_minimum_stake().await, new_min_stake);
+        let new_account = state_query
+            .get_validator_account(new_validator_pubkey.clone())
+            .await
+            .expect("new validator account should still exist (withdrawal not yet processed)");
+        assert_eq!(new_account.status, ValidatorStatus::Inactive);
+        assert_eq!(new_account.balance, 0);
+
+        // Bug under test: epoch 1's finalized header must NOT list the joining
+        // validator in added_validators. The pending activation should have been
+        // cancelled at the penultimate block; otherwise a header-walking verifier
+        // would reconstruct the validator into the committee for epoch 2 while the
+        // live node correctly excludes them.
+        let mut mailbox = finalizer_mailboxes.get(&0).unwrap().clone();
+        let finalized_header = mailbox
+            .get_finalized_header(1)
+            .await
+            .expect("failed to get finalized header for last block of epoch 1");
+
+        let added = &finalized_header.header.added_validators;
+        assert!(
+            !added.iter().any(|av| av.node_key == new_validator_pubkey),
+            "force-removed Joining validator should NOT appear in added_validators of \
+             epoch 1's finalized header, but added_validators = {added:?}"
         );
 
         context.auditor().state()
