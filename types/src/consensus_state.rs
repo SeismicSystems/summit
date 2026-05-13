@@ -697,7 +697,7 @@ impl ConsensusState {
 
     pub fn apply_protocol_parameter_changes(&mut self) -> bool {
         let mut min_or_max_stake_changed = false;
-        while let Some(param) = self.protocol_param_changes.pop() {
+        for param in self.protocol_param_changes.drain(0..) {
             match param {
                 ProtocolParam::MinimumStake(min_stake) => {
                     self.validator_minimum_stake = min_stake;
