@@ -652,6 +652,24 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
+    // Bind the embedded EL payload's metadata to the Summit header.
+    let payload_block_number = block.payload.payload_inner.payload_inner.block_number;
+    if payload_block_number != block.height() {
+        warn!(
+            header_height = block.height(),
+            payload_block_number, "payload.block_number does not match header.height"
+        );
+        return false;
+    }
+    let payload_timestamp = block.payload.payload_inner.payload_inner.timestamp;
+    if payload_timestamp != block.timestamp() {
+        warn!(
+            header_timestamp = block.timestamp(),
+            payload_timestamp, "payload.timestamp does not match header.timestamp"
+        );
+        return false;
+    }
+
     // Validate consensus trie state root
     if block.header.parent_beacon_block_root != aux_data.state_root {
         warn!(
@@ -878,6 +896,121 @@ mod tests {
         assert!(
             handle_verify(&block, parent, &epocher(), &aux_data, u64::MAX / 4),
             "ordinary child inside the parent's epoch must be accepted"
+        );
+    }
+
+    /// Construct a block where the Summit header carries one set of
+    /// (height, timestamp) but the embedded EL payload reports a different
+    /// (block_number, timestamp). Honest proposal keeps these matched; a
+    /// Byzantine proposer is not constrained to do so.
+    #[allow(clippy::too_many_arguments)]
+    fn make_block_with_payload_metadata(
+        parent: Digest,
+        header_height: u64,
+        header_timestamp: u64,
+        payload_block_number: u64,
+        payload_timestamp: u64,
+        epoch: u64,
+        view: u64,
+    ) -> Block {
+        let parent_bytes: [u8; 32] = parent.0;
+        let payload = empty_payload(payload_block_number, parent_bytes, payload_timestamp);
+        Block::compute_digest(
+            parent,
+            header_height,
+            header_timestamp,
+            payload,
+            Vec::new(),
+            U256::ZERO,
+            epoch,
+            view,
+            None,
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        )
+    }
+
+    /// A block whose Summit header.height does not match the embedded EL
+    /// payload.block_number must be rejected. Otherwise consensus would
+    /// certify a header describing one height while the EL executes under a
+    /// different block number — breaking the one-to-one CL/EL meaning of a
+    /// Summit block.
+    #[test]
+    fn rejects_block_with_payload_block_number_mismatch() {
+        let parent_height = 3;
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+
+        let header_height = parent_height + 1;
+        let header_timestamp = header_height * 12;
+        // payload.block_number disagrees with header.height
+        let payload_block_number = header_height + 5;
+
+        let block = make_block_with_payload_metadata(
+            parent.digest(),
+            header_height,
+            header_timestamp,
+            payload_block_number,
+            header_timestamp,
+            0,
+            header_height,
+        );
+
+        let aux_data = make_aux_data(0);
+
+        assert!(
+            !handle_verify(&block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            "block with payload.block_number ({}) != header.height ({}) must be rejected",
+            payload_block_number,
+            header_height
+        );
+    }
+
+    /// A block whose Summit header.timestamp does not match the embedded EL
+    /// payload.timestamp must be rejected. Otherwise CL timestamp policy
+    /// (wall-clock bounds, monotonicity) can be bypassed: the header carries
+    /// a benign timestamp while the EL payload executes under a different
+    /// one that descendants and recovery flows trust.
+    #[test]
+    fn rejects_block_with_payload_timestamp_mismatch() {
+        let parent_height = 3;
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+
+        let header_height = parent_height + 1;
+        let header_timestamp = header_height * 12;
+        // payload.timestamp disagrees with header.timestamp
+        let payload_timestamp = header_timestamp + 1_000_000;
+
+        let block = make_block_with_payload_metadata(
+            parent.digest(),
+            header_height,
+            header_timestamp,
+            header_height,
+            payload_timestamp,
+            0,
+            header_height,
+        );
+
+        let aux_data = make_aux_data(0);
+
+        assert!(
+            !handle_verify(&block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            "block with payload.timestamp ({}) != header.timestamp ({}) must be rejected",
+            payload_timestamp,
+            header_timestamp
         );
     }
 }
