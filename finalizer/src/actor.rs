@@ -1339,6 +1339,14 @@ impl<
 
             for (key, balance, withdrawal_credentials) in validators_to_process {
                 if balance < self.canonical_state.get_minimum_stake() {
+                    // Nothing to withdraw and nothing in the committee to
+                    // remove. Setting has_pending_withdrawal here would never
+                    // get cleared because the zero-balance_deduction
+                    // completion path is a refund-style short-circuit.
+                    // Node: this is a defensive check and not strictly necessary.
+                    if balance == 0 {
+                        continue;
+                    }
                     // Remove the validator from the committee and withdraw the full balance
                     // Update account first: move balance to pending_withdrawal_amount
                     if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
@@ -2058,12 +2066,24 @@ async fn process_execution_requests<
         assert_eq!(pending_withdrawal.inner, *withdrawal);
 
         // If balance_deduction is 0, this is an immediate refund of a rejected deposit.
-        // No account modifications needed - the money was never part of the account.
+        // No balance changes are needed — the money was never part of the account.
         // Note: if a deposit request with an invalid amount (below minimum or above maximum stake) was submitted,
         // a withdrawal request will be initiated immediately, without creating a validator account.
         // These are the cases where we process a withdrawal request without having a validator account
         // stored in the consensus state.
         if pending_withdrawal.balance_deduction == 0 {
+            // If a validator account still exists and is carrying a
+            // has_pending_withdrawal flag from an earlier stake-bound
+            // force-removal that incorrectly enqueued a zero-amount
+            // withdrawal, clear the flag so the validator isn't permanently
+            // blocked from future deposit/withdrawal requests.
+            // Node: this is a defensive check and not strictly necessary.
+            if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned()
+                && account.has_pending_withdrawal
+            {
+                account.has_pending_withdrawal = false;
+                state.set_account(pending_withdrawal.pubkey, account);
+            }
             continue;
         }
 
