@@ -1161,6 +1161,19 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
+    // Summit does not currently support blob transactions. Reject any
+    // payload that consumed blob gas — if blob support is enabled later,
+    // the V4 payload envelope's blob bundle / kzg commitments must also be
+    // committed into the Block and threaded into EngineClient::check_payload
+    // so engine_newPayloadV4 receives non-empty versioned_hashes.
+    if block.payload.blob_gas_used > 0 {
+        warn!(
+            blob_gas_used = block.payload.blob_gas_used,
+            "rejecting block: payload contains blob-bearing transactions"
+        );
+        return false;
+    }
+
     true
 }
 
@@ -1918,5 +1931,65 @@ mod tests {
             proposal_timestamp_wait(now_millis, min_child_timestamp, allowed_timestamp_future_ms);
         assert_eq!(wait, Duration::from_millis(1));
         assert!(!proposal_wait_exceeds_leader_window(wait, leader_timeout));
+    }
+
+    /// Summit does not currently support blob transactions. A block whose EL
+    /// payload consumed blob gas must be rejected at verify time — otherwise the
+    /// empty `versioned_hashes` passed to engine_newPayloadV4 in
+    /// `EngineClient::check_payload` would diverge CL/EL on any blob-bearing
+    /// payload that consensus accepted. Built as a control (the same block with
+    /// no blob gas verifies) so only `blob_gas_used` gates the result.
+    #[test]
+    fn rejects_block_with_blob_gas_used() {
+        let parent_height = 3; // mid-epoch 0
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+        let mut block = make_block_with_eth_parent(
+            parent.digest(),
+            parent.eth_block_hash(),
+            parent_height + 1,
+            0,
+            parent_height + 1,
+            (parent_height + 1) * 12,
+        );
+        let aux_data = make_aux_data(0);
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
+
+        // Control: the ordinary child verifies with no blob gas.
+        assert!(
+            handle_verify(
+                round,
+                &block,
+                parent.clone(),
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4,
+                u32::MAX,
+            ),
+            "control: ordinary child must verify when no blob gas is consumed"
+        );
+
+        // Same block now reporting blob-gas consumption: must be rejected.
+        block.payload.blob_gas_used = 131_072; // one blob's worth of gas
+        assert!(
+            !handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4,
+                u32::MAX,
+            ),
+            "block whose payload consumed blob gas must be rejected"
+        );
     }
 }

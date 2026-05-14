@@ -350,8 +350,12 @@ impl MockEngineState {
 
         ExecutionPayloadV3 {
             payload_inner: payload_v2,
-            blob_gas_used: 100_000,
-            excess_blob_gas: 50_000,
+            // The synthetic payload has no transactions, so no blob gas is
+            // consumed. Summit rejects blob-bearing payloads at verify time
+            // (see `handle_verify`), so this must stay 0 for mock blocks to
+            // pass verification.
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
         }
     }
 }
