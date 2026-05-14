@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use summit_finalizer::FinalizerMailbox;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
@@ -273,7 +273,21 @@ impl<
                                         let check_start = std::time::Instant::now();
 
                                         let valid = loop {
-                                            let status = engine_client.check_payload(&block).await;
+                                            let status = match engine_client.check_payload(&block).await {
+                                                Ok(status) => status,
+                                                Err(e) => {
+                                                    error!(
+                                                        target: "critical",
+                                                        ?round,
+                                                        height = block.height(),
+                                                        "certify: engine client error on check_payload: {e}"
+                                                    );
+                                                    #[cfg(feature = "prom")]
+                                                    counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
+                                                        .increment(1);
+                                                    break false;
+                                                }
+                                            };
                                             if status.is_syncing() {
                                                 warn!(
                                                     ?round,
@@ -625,6 +639,7 @@ impl<
                     .await
             }
         }
+        .map_err(|e| anyhow!("engine client error on start_building_block: {e}"))?
         .ok_or(anyhow!("Unable to build payload"))?;
 
         #[cfg(feature = "prom")]
@@ -639,7 +654,11 @@ impl<
         // STEP 5: Get payload (Engine Client)
         #[cfg(feature = "prom")]
         let get_payload_start = std::time::Instant::now();
-        let payload_envelope = self.engine_client.get_payload(payload_id).await;
+        let payload_envelope = self
+            .engine_client
+            .get_payload(payload_id)
+            .await
+            .map_err(|e| anyhow!("engine client error on get_payload: {e}"))?;
         #[cfg(feature = "prom")]
         {
             let get_payload_duration = get_payload_start.elapsed().as_millis() as f64;
