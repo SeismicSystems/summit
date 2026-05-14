@@ -1992,3 +1992,281 @@ fn test_stake_bound_skips_pending_deposit_placeholder() {
         context.auditor().state()
     })
 }
+
+/// An Active validator at the current min_stake submits a top-up whose
+/// processing is deferred to the next epoch's penultimate block (because the
+/// deposit lands on the last block of the current epoch, after deposit
+/// processing has already run at the penultimate). Before the deposit is
+/// processed, a protocol-param change lowers max_stake so that the
+/// post-top-up balance would be out of range. The deposit must be refunded at
+/// processing time without the validator's stored balance ever exceeding the
+/// new bounds.
+///
+/// Setup (DEFAULT_BLOCKS_PER_EPOCH = 10, VALIDATOR_NUM_WARM_UP_EPOCHS = 2,
+/// VALIDATOR_WITHDRAWAL_NUM_EPOCHS = 2):
+///  - 5 genesis validators @ 32 ETH (min_stake = 32 ETH, max_stake = 40 ETH).
+///  - Block 5: protocol-param request lowering max_stake to 32 ETH. Queued
+///    and applied at block 9 (last block of epoch 0).
+///  - Block 9: validator 0 submits an 8 ETH top-up. `verify_deposit_request`
+///    accepts it against the current bounds (32 + 8 = 40 ∈ [32, 40]).
+///    `has_pending_deposit` is set on validator 0's existing Active account;
+///    the deposit goes into the queue but is not processed at this block
+///    (deposit processing only runs at the penultimate block).
+///
+/// Timeline:
+///  - Block 9 last-block processing: apply_protocol_parameter_changes lowers
+///    max_stake to 32, stake_changed = true. The scan sees validator 0's
+///    pre-top-up balance (32 ETH), which is within the new [32, 32] band,
+///    and leaves the account untouched — it must NOT speculatively trim the
+///    queued top-up, because the top-up has not been credited yet.
+///  - Block 18 (penultimate of epoch 1): top-up popped from the deposit
+///    queue. new_balance = 32 + 8 = 40 against new bounds [32, 32] → invalid.
+///    The 8 ETH is refunded via `push_withdrawal_request(.., balance_deduction
+///    = 0)`, account.has_pending_deposit is cleared, and account.balance
+///    stays at 32 (the top-up was never credited).
+///  - Block 39 (last of epoch 3): the refund withdrawal completes. Its
+///    `balance_deduction == 0` short-circuits the account update, but the
+///    refund payment still appears in the EL withdrawals.
+///
+/// Assertions (stop one block past epoch 3's last block):
+///  - Validator 0 account: status=Active, balance=32 ETH, has_pending_deposit
+///    and has_pending_withdrawal both false. The validator never holds
+///    40 ETH (the post-top-up value that would have exceeded the new max).
+///  - The 8 ETH refund is delivered to validator 0's withdrawal credentials
+///    at block 39.
+#[test_traced("INFO")]
+fn test_stake_bound_refunds_top_up_when_max_lowered_before_processing() {
+    let n: u32 = 5;
+    let min_stake = 32_000_000_000;
+    let max_stake = 40_000_000_000;
+    let new_max_stake = 32_000_000_000;
+    let top_up_amount = 8_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        // Give each genesis validator a unique withdrawal-credentials address
+        // so we can identify the refund recipient.
+        let addresses: Vec<Address> = (0..n).map(|i| Address::from([i as u8; 20])).collect();
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Protocol-param request to lower max_stake to 32 ETH. Submitted at
+        // block 5 so it's queued normally (not buffered by the last-block
+        // protocol-param deferral) and applies at block 9.
+        let param_request = common::create_protocol_param_request(0x01, new_max_stake);
+        let param_block_height = 5;
+        let param_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::ProtocolParam(
+                param_request,
+            )]);
+
+        // Top-up of 8 ETH for validator 0 (the sorted index, matching the
+        // key_store at the same index). Withdrawal credentials match its
+        // genesis address so the refund lands back at the same place.
+        let mut wc_bytes = [0u8; 32];
+        wc_bytes[0] = 0x01;
+        wc_bytes[12..].copy_from_slice(addresses[0].as_slice());
+        let (topup_deposit, _, _) = common::create_deposit_request(
+            0,
+            top_up_amount,
+            common::get_domain(),
+            Some(key_stores[0].node_key.clone()),
+            Some(wc_bytes),
+        );
+        let topup_block_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0);
+        let topup_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(topup_deposit)]);
+
+        // Stop one block past epoch 3's last block — the refund withdrawal
+        // completes at block 39 (epoch 3's last block).
+        let last_block_epoch_3 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 3);
+        let stop_height = last_block_epoch_3 + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(param_block_height, param_requests);
+        execution_requests_map.insert(topup_block_height, topup_requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let mut initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+        initial_state.set_maximum_stake(max_stake);
+
+        let validator0_pubkey = validators[0].0.clone();
+
+        let mut public_keys = HashSet::new();
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let state_query = consensus_state_queries.get(&0).unwrap();
+
+        // Protocol-param change landed.
+        assert_eq!(state_query.get_maximum_stake().await, new_max_stake);
+        assert_eq!(state_query.get_minimum_stake().await, min_stake);
+
+        // Validator 0 sits at its genesis balance — the 8 ETH top-up was
+        // refunded at deposit-processing time against the new bounds, not
+        // credited and then trimmed.
+        let account0 = state_query
+            .get_validator_account(validator0_pubkey.clone())
+            .await
+            .expect("validator 0 should still exist");
+        assert_eq!(account0.status, ValidatorStatus::Active);
+        assert_eq!(
+            account0.balance,
+            min_stake,
+            "validator 0 must remain at its pre-top-up balance; the top-up \
+             would have pushed it to {} gwei, exceeding the new max of {} gwei",
+            min_stake + top_up_amount,
+            new_max_stake
+        );
+        assert!(
+            !account0.has_pending_deposit,
+            "has_pending_deposit must be cleared after the top-up is refunded"
+        );
+        assert!(
+            !account0.has_pending_withdrawal,
+            "the zero-balance_deduction refund must not leave a stale \
+             has_pending_withdrawal flag on the account"
+        );
+
+        // Other genesis validators are unaffected — 32 ETH stays within the
+        // new [32, 32] band.
+        for (pk, _) in validators.iter().skip(1) {
+            let account = state_query
+                .get_validator_account(pk.clone())
+                .await
+                .expect("genesis validator account should exist");
+            assert_eq!(account.status, ValidatorStatus::Active);
+            assert_eq!(account.balance, min_stake);
+            assert!(!account.has_pending_withdrawal);
+        }
+
+        // The 8 ETH refund is delivered at the end of epoch 3 (block 39).
+        let withdrawals = engine_client_network.get_withdrawals();
+        let epoch3_withdrawals = withdrawals
+            .get(&last_block_epoch_3)
+            .expect("expected refund withdrawal at block 39");
+        let refund = epoch3_withdrawals
+            .iter()
+            .find(|w| w.amount == top_up_amount && w.address == addresses[0]);
+        assert!(
+            refund.is_some(),
+            "expected an 8 ETH refund to validator 0's withdrawal address at \
+             block 39; got withdrawals = {epoch3_withdrawals:?}"
+        );
+
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
+        context.auditor().state()
+    })
+}
