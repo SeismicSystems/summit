@@ -1326,8 +1326,9 @@ impl<
                 .canonical_state
                 .validator_accounts_iter()
                 .filter_map(|(key, acc)| {
-                    if acc.balance < self.canonical_state.get_minimum_stake()
-                        || acc.balance > self.canonical_state.get_maximum_stake()
+                    if !acc.has_pending_deposit
+                        && (acc.balance < self.canonical_state.get_minimum_stake()
+                            || acc.balance > self.canonical_state.get_maximum_stake())
                     {
                         Some((*key, acc.balance, acc.withdrawal_credentials))
                     } else {
@@ -1994,7 +1995,7 @@ async fn process_execution_requests<
             let candidates: Vec<([u8; 32], u64)> = state
                 .validator_accounts_iter()
                 .filter_map(|(key, account)| {
-                    if account.balance < prospective_min {
+                    if !account.has_pending_deposit && account.balance < prospective_min {
                         Some((*key, account.joining_epoch))
                     } else {
                         None
