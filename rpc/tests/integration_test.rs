@@ -6,7 +6,8 @@ use std::sync::Arc;
 #[cfg(feature = "permissioned")]
 use std::sync::atomic::AtomicBool;
 use summit_rpc::{
-    PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_with_handle,
+    PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_pair_with_handle,
+    start_rpc_server_with_handle,
 };
 use utils::{MockFinalizerState, create_test_finalizer_mailbox, create_test_keystore};
 
@@ -379,4 +380,78 @@ async fn test_get_maximum_stake() {
     assert_eq!(response.unwrap(), 64_000_000_000);
 
     handle.stop().unwrap();
+}
+
+/// `getDepositSignature` signs caller-supplied deposit data with the node's
+/// validator private keys. It must not be reachable on the public RPC
+/// listener — only on the localhost-bound admin listener — so a network
+/// caller can't preemptively register the node's validator identity with
+/// attacker-chosen withdrawal credentials.
+#[tokio::test]
+async fn test_get_deposit_signature_not_on_public_listener() {
+    use jsonrpsee::core::ClientError;
+    use jsonrpsee::types::error::ErrorCode;
+    use summit_rpc::SummitAdminApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let handles = start_rpc_server_pair_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    // The public listener must reject `getDepositSignature` with
+    // method-not-found — it isn't part of `SummitApi`/`SummitProofApi`.
+    let public_url = format!("http://{}", handles.public_addr);
+    let public_client = HttpClientBuilder::default().build(&public_url).unwrap();
+    let address = format!("0x{}", "a".repeat(40));
+    let public_resp = SummitAdminApiClient::get_deposit_signature(
+        &public_client,
+        32_000_000_000,
+        address.clone(),
+    )
+    .await;
+
+    match public_resp {
+        Err(ClientError::Call(err)) => {
+            assert_eq!(
+                err.code(),
+                ErrorCode::MethodNotFound.code(),
+                "expected MethodNotFound on the public RPC listener, got {:?}",
+                err
+            );
+        }
+        other => panic!(
+            "public RPC listener must not serve getDepositSignature; got {:?}",
+            other
+        ),
+    }
+
+    // The admin listener (loopback) must serve `getDepositSignature`.
+    let admin_url = format!("http://{}", handles.admin_addr);
+    let admin_client = HttpClientBuilder::default().build(&admin_url).unwrap();
+    let admin_resp =
+        SummitAdminApiClient::get_deposit_signature(&admin_client, 32_000_000_000, address)
+            .await
+            .expect("admin listener should serve getDepositSignature");
+    assert_eq!(admin_resp.node_signature.len(), 64);
+    assert_eq!(admin_resp.consensus_signature.len(), 96);
+
+    // Admin listener must be loopback-bound.
+    assert!(
+        handles.admin_addr.ip().is_loopback(),
+        "admin listener must be bound to loopback; bound to {}",
+        handles.admin_addr.ip()
+    );
+
+    handles.public_handle.stop().unwrap();
+    handles.admin_handle.stop().unwrap();
 }

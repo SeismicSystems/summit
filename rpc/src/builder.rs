@@ -41,6 +41,17 @@ impl RpcServerBuilder {
         }
     }
 
+    /// Bind to 127.0.0.1 only. Used for the admin RPC listener so the
+    /// validator-key signing methods (`SummitAdminApi`) can't be reached
+    /// from off-host even if the firewall is misconfigured.
+    pub fn new_localhost(port: u16) -> Self {
+        Self {
+            addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            config: ServerConfigBuilder::new(),
+            cors_domains: None,
+        }
+    }
+
     pub fn with_max_connections(mut self, max: u32) -> Self {
         self.config = self.config.max_connections(max);
         self

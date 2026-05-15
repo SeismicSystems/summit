@@ -41,13 +41,6 @@ pub trait SummitApi {
         public_key: String,
     ) -> RpcResult<ValidatorAccountResponse>;
 
-    #[method(name = "getDepositSignature")]
-    async fn get_deposit_signature(
-        &self,
-        amount: u64,
-        address: String,
-    ) -> RpcResult<DepositTransactionResponse>;
-
     #[method(name = "getMinimumStake")]
     async fn get_minimum_stake(&self) -> RpcResult<u64>;
 
@@ -90,6 +83,20 @@ pub trait SummitPermissionedApi {
 
     #[method(name = "isPaused")]
     async fn is_paused(&self) -> RpcResult<bool>;
+}
+
+/// Admin-only RPC surface. Must be served on a localhost-bound listener.
+///
+/// `getDepositSignature` uses the node's local validator private keys to sign
+/// caller-supplied deposit data.
+#[rpc(server, client)]
+pub trait SummitAdminApi {
+    #[method(name = "getDepositSignature")]
+    async fn get_deposit_signature(
+        &self,
+        amount: u64,
+        address: String,
+    ) -> RpcResult<DepositTransactionResponse>;
 }
 
 #[rpc(server, client)]

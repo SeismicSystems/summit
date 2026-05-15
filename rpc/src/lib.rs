@@ -12,8 +12,8 @@ pub use server::SummitRpcServer;
 pub use types::*;
 
 pub use api::{
-    SummitApiClient, SummitApiServer, SummitGenesisApiClient, SummitGenesisApiServer,
-    SummitProofApiClient, SummitProofApiServer,
+    SummitAdminApiClient, SummitAdminApiServer, SummitApiClient, SummitApiServer,
+    SummitGenesisApiClient, SummitGenesisApiServer, SummitProofApiClient, SummitProofApiServer,
 };
 #[cfg(feature = "permissioned")]
 pub use api::{SummitPermissionedApiClient, SummitPermissionedApiServer};
@@ -34,6 +34,7 @@ pub async fn start_rpc_server(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
     port: u16,
+    admin_port: u16,
     stop_signal: Signal,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
@@ -44,12 +45,12 @@ pub async fn start_rpc_server(
         paused,
     );
 
-    let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());
-    methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
+    let mut public_methods = SummitApiServer::into_rpc(rpc_impl.clone());
+    public_methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
     #[cfg(feature = "permissioned")]
-    methods.merge(SummitPermissionedApiServer::into_rpc(rpc_impl))?;
+    public_methods.merge(SummitPermissionedApiServer::into_rpc(rpc_impl.clone()))?;
 
-    let server = builder::RpcServerBuilder::new(port)
+    let public_server = builder::RpcServerBuilder::new(port)
         .with_max_connections(1000)
         .with_max_request_body_size(10 * 1024 * 1024)
         .with_max_response_body_size(10 * 1024 * 1024)
@@ -57,18 +58,43 @@ pub async fn start_rpc_server(
         .build()
         .await?;
 
-    let handle = server.start(methods);
+    let public_handle = public_server.start(public_methods);
 
     tracing::info!("RPC Server listening on http://0.0.0.0:{port}");
 
+    // Admin RPC: hosts `SummitAdminApi` (validator-key signing methods).
+    let admin_methods = SummitAdminApiServer::into_rpc(rpc_impl);
+
+    let admin_server = builder::RpcServerBuilder::new_localhost(admin_port)
+        .with_max_connections(1000)
+        .with_max_request_body_size(10 * 1024 * 1024)
+        .with_max_response_body_size(10 * 1024 * 1024)
+        .build()
+        .await?;
+
+    let admin_handle = admin_server.start(admin_methods);
+
+    tracing::info!("Admin RPC Server listening on http://127.0.0.1:{admin_port}");
+
     let sig = stop_signal.await?;
     tracing::info!("RPC server stopped: {sig}");
-    handle.stop()?;
+    public_handle.stop()?;
+    admin_handle.stop()?;
 
     Ok(())
 }
 
-/// Starts the RPC server and returns the handle and bound address (useful for testing)
+/// Bundle of public + admin RPC handles + bound addresses returned by
+/// `start_rpc_server_pair_with_handle` for tests that need both listeners.
+pub struct RpcHandles {
+    pub public_handle: ServerHandle,
+    pub public_addr: SocketAddr,
+    pub admin_handle: ServerHandle,
+    pub admin_addr: SocketAddr,
+}
+
+/// Starts only the public RPC listener and returns its handle/address. Used
+/// by tests that don't exercise the admin RPC surface.
 pub async fn start_rpc_server_with_handle(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
@@ -82,12 +108,12 @@ pub async fn start_rpc_server_with_handle(
         paused,
     );
 
-    let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());
-    methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
+    let mut public_methods = SummitApiServer::into_rpc(rpc_impl.clone());
+    public_methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
     #[cfg(feature = "permissioned")]
-    methods.merge(SummitPermissionedApiServer::into_rpc(rpc_impl))?;
+    public_methods.merge(SummitPermissionedApiServer::into_rpc(rpc_impl))?;
 
-    let server = builder::RpcServerBuilder::new(port)
+    let public_server = builder::RpcServerBuilder::new(port)
         .with_max_connections(1000)
         .with_max_request_body_size(10 * 1024 * 1024)
         .with_max_response_body_size(10 * 1024 * 1024)
@@ -95,12 +121,66 @@ pub async fn start_rpc_server_with_handle(
         .build()
         .await?;
 
-    let addr = server.local_addr()?;
-    let handle = server.start(methods);
+    let public_addr = public_server.local_addr()?;
+    let public_handle = public_server.start(public_methods);
 
-    tracing::info!("RPC Server listening on http://{}", addr);
+    tracing::info!("RPC Server listening on http://{}", public_addr);
 
-    Ok((handle, addr))
+    Ok((public_handle, public_addr))
+}
+
+/// Starts the public RPC listener and the admin RPC listener and returns
+/// handles + bound addresses for both. Used by tests that exercise the
+/// admin (localhost-only) RPC surface. Passing `0` for either port asks
+/// the OS to allocate a free port.
+pub async fn start_rpc_server_pair_with_handle(
+    finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    key_store_path: String,
+    port: u16,
+    admin_port: u16,
+    #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+) -> anyhow::Result<RpcHandles> {
+    let rpc_impl = SummitRpcServer::new(
+        key_store_path,
+        finalizer_mailbox,
+        #[cfg(feature = "permissioned")]
+        paused,
+    );
+
+    let mut public_methods = SummitApiServer::into_rpc(rpc_impl.clone());
+    public_methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
+    #[cfg(feature = "permissioned")]
+    public_methods.merge(SummitPermissionedApiServer::into_rpc(rpc_impl.clone()))?;
+
+    let public_server = builder::RpcServerBuilder::new(port)
+        .with_max_connections(1000)
+        .with_max_request_body_size(10 * 1024 * 1024)
+        .with_max_response_body_size(10 * 1024 * 1024)
+        .with_cors(Some("*".to_string()))
+        .build()
+        .await?;
+
+    let public_addr = public_server.local_addr()?;
+    let public_handle = public_server.start(public_methods);
+
+    let admin_methods = SummitAdminApiServer::into_rpc(rpc_impl);
+
+    let admin_server = builder::RpcServerBuilder::new_localhost(admin_port)
+        .with_max_connections(1000)
+        .with_max_request_body_size(10 * 1024 * 1024)
+        .with_max_response_body_size(10 * 1024 * 1024)
+        .build()
+        .await?;
+
+    let admin_addr = admin_server.local_addr()?;
+    let admin_handle = admin_server.start(admin_methods);
+
+    Ok(RpcHandles {
+        public_handle,
+        public_addr,
+        admin_handle,
+        admin_addr,
+    })
 }
 
 pub async fn start_rpc_server_for_genesis(
