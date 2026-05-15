@@ -338,7 +338,7 @@ fn test_checkpoint_verification_dynamic_committee() {
         // joining_epoch = 0 + VALIDATOR_NUM_WARM_UP_EPOCHS = 2
         // added_validators will appear in epoch 1's finalized header
         let (deposit, _, _) =
-            common::create_deposit_request(10, min_stake, common::get_domain(), None, None);
+            common::create_deposit_request(10, min_stake, common::get_domain(), None, None, None);
         let deposit_requests =
             common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(deposit)]);
 

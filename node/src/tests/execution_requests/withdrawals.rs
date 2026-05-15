@@ -58,12 +58,19 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let (deposit1, _, _) =
-            common::create_deposit_request(n as u64, min_stake, common::get_domain(), None, None);
+        let (deposit1, _, _) = common::create_deposit_request(
+            n as u64,
+            min_stake,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
         let (deposit2, _, _) = common::create_deposit_request(
             (n + 1) as u64,
             min_stake,
             common::get_domain(),
+            None,
             None,
             None,
         );
@@ -278,8 +285,14 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _, _) =
-            common::create_deposit_request(n as u64, min_stake, common::get_domain(), None, None);
+        let (test_deposit, _, _) = common::create_deposit_request(
+            n as u64,
+            min_stake,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal1 = common::create_withdrawal_request(
@@ -1046,8 +1059,14 @@ fn test_withdrawal_during_onboarding_aborts() {
             .expect("failed to convert genesis hash");
 
         // Create a deposit request for a new validator
-        let (test_deposit, _, _) =
-            common::create_deposit_request(n as u64, min_stake, common::get_domain(), None, None);
+        let (test_deposit, _, _) = common::create_deposit_request(
+            n as u64,
+            min_stake,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
 
         let new_validator_pubkey: [u8; 32] = test_deposit.node_pubkey.as_ref().try_into().unwrap();
 

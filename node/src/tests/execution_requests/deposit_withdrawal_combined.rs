@@ -71,6 +71,7 @@ fn test_deposit_and_withdrawal_request_single() {
             common::get_domain(),
             None,
             None,
+            None,
         );
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
@@ -291,6 +292,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 i as u64,
                 min_stake,
                 common::get_domain(),
+                None,
                 None,
                 None,
             );
@@ -556,6 +558,7 @@ fn test_deposit_blocked_by_pending_withdrawal() {
             deposit_amount,
             common::get_domain(),
             Some(key_stores[0].node_key.clone()),
+            Some(key_stores[0].consensus_key.clone()),
             Some(withdrawal_credentials),
         );
 
@@ -761,6 +764,7 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
             deposit_amount,
             common::get_domain(),
             None,
+            None,
             Some(attacker_withdrawal_credentials),
         );
         // Re-target the deposit to the existing validator after signing so signature verification
@@ -964,6 +968,7 @@ fn test_withdrawal_blocked_by_pending_deposit() {
             deposit_amount,
             common::get_domain(),
             Some(key_stores[0].node_key.clone()),
+            Some(key_stores[0].consensus_key.clone()),
             Some(withdrawal_credentials),
         );
 
@@ -1166,6 +1171,7 @@ fn test_deposit_and_withdrawal_same_block() {
             deposit_amount,
             common::get_domain(),
             Some(key_stores[0].node_key.clone()),
+            Some(key_stores[0].consensus_key.clone()),
             Some(withdrawal_credentials),
         );
 

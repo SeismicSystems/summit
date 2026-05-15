@@ -455,6 +455,7 @@ pub fn create_deposit_request(
     amount: u64,
     domain: Digest,
     private_key: Option<PrivateKey>,
+    consensus_key: Option<bls12381::PrivateKey>,
     withdrawal_credentials: Option<[u8; 32]>,
 ) -> (DepositRequest, PrivateKey, bls12381::PrivateKey) {
     let withdrawal_credentials = if let Some(withdrawal_credentials) = withdrawal_credentials {
@@ -479,8 +480,14 @@ pub fn create_deposit_request(
     };
     let node_pubkey = ed25519_private_key.public_key();
 
-    // Generate consensus (BLS) key
-    let bls_private_key = bls12381::PrivateKey::random(&mut rng);
+    // Generate consensus (BLS) key. Top-up deposits for an existing
+    // validator must carry that validator's stored BLS key, so callers can
+    // pass `Some(key_stores[i].consensus_key.clone())` explicitly.
+    let bls_private_key = if let Some(consensus_key) = consensus_key {
+        consensus_key
+    } else {
+        bls12381::PrivateKey::random(&mut rng)
+    };
     let consensus_pubkey = bls_private_key.public_key();
 
     let mut deposit = DepositRequest {
