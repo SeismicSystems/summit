@@ -282,40 +282,73 @@ impl<
             }))
             .await;
 
-        // Send initial forkchoice to the execution client so it knows the chain
-        // head and can start P2P sync. Then wait for sync to complete before
-        // replaying any blocks. Without this, catch-up blocks fail because the
-        // execution client doesn't have them yet.
+        // Send initial forkchoice to the execution client so it knows the
+        // chain head and can start P2P sync.
+        // We do not block the actor here waiting for SYNCING to resolve.
+        //
+        // If the EL is still SYNCING, we fall through and enter the main
+        // mailbox loop immediately. The first finalized or notarized block
+        // we receive goes through `execute_block`, whose own SYNCING-aware
+        // retry path absorbs the catch-up window. Meanwhile the actor
+        // remains responsive to RPC/aux-data queries against the
+        // checkpoint-loaded `canonical_state`, and to cancellation /
+        // runtime-stop signals.
         {
             let forkchoice = self.canonical_state.get_forkchoice();
             if !forkchoice.head_block_hash.is_zero() {
                 info!(
                     head = %forkchoice.head_block_hash,
-                    "sending initial forkchoice update to execution client, waiting for sync..."
+                    "sending initial forkchoice update to execution client"
                 );
-                loop {
-                    let status = match self.engine_client.commit_hash(*forkchoice).await {
-                        Ok(status) => status,
-                        Err(e) => {
-                            error!(target: "critical", "engine client error on initial forkchoice update: {e}");
-                            #[cfg(feature = "prom")]
-                            counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
-                                .increment(1);
-                            self.cancellation_token.cancel();
-                            return;
-                        }
-                    };
-                    if status.is_valid() {
-                        info!("execution client synced to checkpoint head, ready to replay blocks");
-                        break;
-                    } else if status.is_syncing() {
-                        warn!("execution client still syncing, waiting 5s...");
-                        self.context.sleep(Duration::from_secs(5)).await;
-                    } else {
-                        error!(target: "critical", "finalizer started with invalid forkchoice: {forkchoice:?}, height: {}, epoch: {}", self.canonical_state.get_latest_height(), self.canonical_state.get_epoch());
+                match self.engine_client.commit_hash(*forkchoice).await {
+                    Ok(status) if status.is_valid() => {
+                        info!(
+                            "execution client already synced to checkpoint head, \
+                             ready to replay blocks"
+                        );
+                    }
+                    Ok(status) if status.is_syncing() => {
+                        warn!(
+                            "execution client SYNCING toward checkpoint head; \
+                             entering main loop now, block-application retries \
+                             will cover the catch-up window"
+                        );
+                    }
+                    Ok(status) => {
+                        // INVALID (or any non-Valid/Syncing PayloadStatus) is
+                        // a critical mismatch. The checkpoint head is not a
+                        // valid block on the EL side. This validator cannot
+                        // safely continue.
+                        error!(
+                            target: "critical",
+                            ?forkchoice,
+                            ?status,
+                            height = self.canonical_state.get_latest_height(),
+                            epoch = self.canonical_state.get_epoch(),
+                            "finalizer started with invalid forkchoice"
+                        );
                         #[cfg(feature = "prom")]
-                        counter!("critical_errors_total", "reason" => "invalid_forkchoice", "severity" => "critical")
-                            .increment(1);
+                        counter!(
+                            "critical_errors_total",
+                            "reason" => "invalid_forkchoice",
+                            "severity" => "critical"
+                        )
+                        .increment(1);
+                        self.cancellation_token.cancel();
+                        return;
+                    }
+                    Err(e) => {
+                        error!(
+                            target: "critical",
+                            "engine client error on initial forkchoice update: {e}"
+                        );
+                        #[cfg(feature = "prom")]
+                        counter!(
+                            "critical_errors_total",
+                            "reason" => "engine_client_error",
+                            "severity" => "critical"
+                        )
+                        .increment(1);
                         self.cancellation_token.cancel();
                         return;
                     }
