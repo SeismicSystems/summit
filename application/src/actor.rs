@@ -502,6 +502,8 @@ impl<
                 self.engine_client
                     .start_building_block(
                         aux_data.forkchoice,
+                        // Using millis for the timestamp is done on purpose.
+                        // This is handled downstream in seismic-reth and seismic-revm.
                         current,
                         withdrawals,
                         aux_data.suggested_fee_recipient,
