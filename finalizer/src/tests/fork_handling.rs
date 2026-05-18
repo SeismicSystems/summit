@@ -57,7 +57,7 @@ fn create_test_block(parent_digest: Digest, height: u64, view: u64, unique_seed:
                 state_root: Default::default(),
                 transactions: Vec::new(),
             },
-            withdrawals: Vec::new().into(),
+            withdrawals: Vec::new(),
         },
         blob_gas_used: 0,
         excess_blob_gas: 0,
@@ -163,6 +163,8 @@ fn test_orphaned_block_processed_when_parent_arrives() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -244,6 +246,8 @@ fn test_multiple_forks_tracked() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -326,6 +330,8 @@ fn test_dead_fork_block_discarded() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -424,6 +430,8 @@ fn test_fork_states_pruned_after_finalization() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -541,6 +549,8 @@ fn test_orphaned_blocks_pruned_after_finalization() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -650,6 +660,8 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -755,6 +767,8 @@ fn test_competing_fork_pruned_on_finalization() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 

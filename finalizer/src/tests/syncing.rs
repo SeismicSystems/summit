@@ -193,6 +193,8 @@ fn test_initial_startup_sync_waits_for_valid() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -263,6 +265,8 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -333,6 +337,8 @@ fn test_execute_block_retries_on_syncing() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -418,6 +424,8 @@ fn test_notarized_block_retries_on_syncing() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -495,6 +503,8 @@ fn test_checkpoint_startup_full_flow() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -612,6 +622,8 @@ fn test_finalizer_mailbox_responsive_under_persistent_syncing() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -730,6 +742,8 @@ fn test_finalizer_mailbox_responsive_during_startup_syncing() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 
@@ -774,6 +788,121 @@ fn test_finalizer_mailbox_responsive_during_startup_syncing() {
                 );
             }
         }
+
+        context.auditor().state()
+    });
+}
+
+/// Regression test for an ordering bug in the finalized SYNCING buffer.
+///
+/// Two finalized blocks at heights H and H+1 arrive during an EL-SYNCING
+/// window. Both enter the pending buffer. While they are buffered, the EL
+/// finishes catching up. The drain timer must apply them in arrival order
+/// (H before H+1); applying H+1 first would mutate `canonical_state` past
+/// the height of H, and the subsequent apply of H would silently regress
+/// `latest_height` — corrupting Summit's view of the chain while Reth has
+/// already moved on.
+///
+/// Concrete failure mode this test catches (with the broken implementation
+/// that calls `pending_finalized.push_back` from inside the handler on
+/// Syncing, regardless of whether the caller is the mailbox or the drain
+/// timer):
+///
+///   1. mailbox brings A (height 1); EL returns SYNCING. Buffer = `[A]`.
+///   2. mailbox brings B (height 2); EL returns SYNCING. Buffer = `[A, B]`.
+///   3. drain pops A; EL returns SYNCING; handler push_back's A.
+///      **Buffer = `[B, A]` — ordering broken.**
+///   4. Between ticks the EL catches up.
+///   5. drain pops B first; `check_payload` returns VALID; `execute_block`
+///      sets `latest_height` to 2. Then drain pops A; VALID; `set_latest_height`
+///      to 1. Final `latest_height` = 1, B's deposit/withdrawal effects already
+///      committed to Reth. Summit's state diverges from the EL.
+///
+/// We queue exactly three SYNCING responses (A#1 via mailbox, B#1 via
+/// mailbox, A#2 via drain). The fourth `check_payload` call falls through
+/// to VALID. The expected final `latest_height` is 2 *with both blocks
+/// applied in order*. Any fix that preserves drain ordering will pass.
+#[test]
+fn test_finalizer_finalized_buffer_drains_in_order() {
+    let cfg = deterministic::Config::default().with_seed(13);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // Exactly enough SYNCING responses to force the ordering bug under
+        // the broken implementation: A#1 (mailbox), B#1 (mailbox), A#2
+        // (drain retry). Subsequent calls fall through to VALID.
+        engine_client.queue_check_payload_syncing(3);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_finalized_buffer_in_order".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            // Fast drain so the test doesn't have to sleep for the default 5s.
+            drain_interval: Duration::from_millis(50),
+            buffered_blocks_warn_threshold: 100,
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        // Let the finalizer reach its main mailbox loop.
+        context.sleep(Duration::from_millis(20)).await;
+
+        // Send finalized blocks in height order.
+        let genesis_block = Block::genesis(genesis_hash);
+        let block_a = create_test_block(genesis_block.digest(), 1, 1, 13001);
+        let block_b = create_test_block(block_a.digest(), 2, 2, 13002);
+
+        let (ack_a, _waiter_a) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block_a, None), ack_a))
+            .await;
+
+        // Small gap so A's mailbox path runs (and buffers) before B arrives.
+        context.sleep(Duration::from_millis(10)).await;
+
+        let (ack_b, _waiter_b) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block_b, None), ack_b))
+            .await;
+
+        // Give the drain timer multiple ticks to exhaust the queued SYNCING
+        // responses and apply both blocks. Three SYNCING responses at 50ms
+        // drain_interval is at most ~200ms of real work; 1s is comfortable.
+        context.sleep(Duration::from_secs(1)).await;
+
+        let height = mailbox.get_latest_height().await;
+        assert_eq!(
+            height, 2,
+            "finalized buffer must drain in arrival order. Got latest_height = {height}."
+        );
 
         context.auditor().state()
     });

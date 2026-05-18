@@ -75,7 +75,7 @@ fn create_test_block_with_requests(
                 state_root: Default::default(),
                 transactions: Vec::new(),
             },
-            withdrawals: Vec::new().into(),
+            withdrawals: Vec::new(),
         },
         blob_gas_used: 0,
         excess_blob_gas: 0,
@@ -220,6 +220,8 @@ fn test_validator_exit_triggers_cancellation() {
             protocol_version: 1,
             node_public_key: node_pubkey,
             cancellation_token,
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
             _variant_marker: PhantomData,
         };
 

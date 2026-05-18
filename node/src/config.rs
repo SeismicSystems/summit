@@ -18,6 +18,13 @@ pub const RESOLVER_CHANNEL: u64 = 2;
 pub const BROADCASTER_CHANNEL: u64 = 3;
 pub const BACKFILLER_CHANNEL: u64 = 4;
 pub const MAILBOX_SIZE: usize = 16384;
+/// How often the finalizer retries applying blocks that were deferred because
+/// the execution layer returned `SYNCING`. See [`summit_finalizer::FinalizerConfig`].
+pub const FINALIZER_DRAIN_INTERVAL: Duration = Duration::from_secs(5);
+/// Soft threshold on the finalizer's SYNCING buffer above which a warn log is
+/// emitted (edge-triggered, once per crossing). No cap is enforced.
+/// See [`summit_finalizer::FinalizerConfig`].
+pub const FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD: usize = 100;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const FETCH_CONCURRENT: usize = 8;

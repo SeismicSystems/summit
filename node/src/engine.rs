@@ -1,4 +1,6 @@
-use crate::config::EngineConfig;
+use crate::config::{
+    EngineConfig, FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD, FINALIZER_DRAIN_INTERVAL,
+};
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::scheme::Scheme;
@@ -158,6 +160,8 @@ where
                 protocol_version: PROTOCOL_VERSION,
                 node_public_key: cfg.key_store.node_key.public_key().clone(),
                 cancellation_token: cancellation_token.clone(),
+                drain_interval: FINALIZER_DRAIN_INTERVAL,
+                buffered_blocks_warn_threshold: FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD,
                 _variant_marker: PhantomData,
             },
         )

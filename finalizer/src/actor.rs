@@ -23,7 +23,7 @@ use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::{Duration, Instant};
@@ -105,6 +105,62 @@ struct ForkState {
     consensus_state: ConsensusState,
 }
 
+/// Result of attempting to apply a block to the execution layer.
+#[derive(Debug)]
+enum ExecuteOutcome {
+    /// The EL accepted the payload and `state` has been advanced.
+    Applied,
+    /// The EL rejected the payload as invalid. `state` is unchanged.
+    /// Caller decides the policy (discard a notarized fork, shut down on a finalized block).
+    InvalidPayload,
+    /// The EL returned SYNCING. `state` is unchanged. Caller must buffer the
+    /// block and retry later.
+    Syncing,
+}
+
+/// Result of a single attempt to handle a notarized or finalized block.
+///
+/// Critical errors that should shut the validator down are returned as
+/// `Err(anyhow)` and are not represented here.
+///
+/// The type parameter `E` carries the deferred entry back to the caller on
+/// `Buffered`. The finalized handler uses `E = PendingFinalized<V>` so the
+/// caller can place the entry at the correct end of the buffer (drain →
+/// push_front to preserve height order; mailbox → push_back). The notarized
+/// handler uses `E = ()` and pushes internally. The `orphaned_blocks`
+/// mechanism re-resolves out-of-order dependencies on its own.
+#[derive(Debug)]
+enum HandleOutcome<E = ()> {
+    /// The block was applied (or correctly discarded as an outdated / dead-fork
+    /// block). No further attempt is needed.
+    Applied,
+    /// The execution layer returned SYNCING. The caller must re-queue the
+    /// carried entry (finalized) or knows the handler already did (notarized).
+    Buffered(E),
+}
+
+/// A finalized block waiting for the execution layer to finish SYNCING.
+struct PendingFinalized<V: Variant> {
+    block: Block,
+    finalization: Option<
+        Finalization<bls12381_multisig::Scheme<PublicKey, V>, <Block as Digestible>::Digest>,
+    >,
+    ack: Exact,
+    /// When the entry was first enqueued. Observability only — not used for bounding.
+    first_attempt_at: Instant,
+}
+
+/// A notarized block waiting for the execution layer to finish SYNCING.
+///
+/// We deliberately do not capture the parent's consensus state here. The drain
+/// path re-invokes `handle_notarized_block`, which re-resolves the parent from
+/// the current canonical / fork state.
+struct PendingNotarized {
+    block: Block,
+    /// When the entry was first enqueued. Observability only.
+    first_attempt_at: Instant,
+}
+
 pub struct Finalizer<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
@@ -126,6 +182,26 @@ pub struct Finalizer<
 
     // Orphaned notarized blocks that arrived before their parent
     orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block>>>,
+
+    // Finalized blocks deferred because the EL returned SYNCING.
+    // FIFO, drained in arrival (= height) order by `drain_pending`.
+    pending_finalized: VecDeque<PendingFinalized<V>>,
+
+    // Notarized blocks deferred because the EL returned SYNCING.
+    // FIFO; each entry is retried independently because forks have independent
+    // parent states which are re-resolved by `handle_notarized_block` on drain.
+    pending_notarized: VecDeque<PendingNotarized>,
+
+    // Whether either buffer has crossed the warn threshold since the last
+    // time it was empty. Edge-triggered to avoid log spam on every tick.
+    pending_warn_active: bool,
+
+    // How often `drain_pending` runs while the EL is recovering from SYNCING.
+    drain_interval: Duration,
+
+    // Soft threshold for emitting a warn log when either pending buffer grows.
+    // No cap is enforced; observability only.
+    buffered_blocks_warn_threshold: usize,
 
     genesis_hash: [u8; 32],
     protocol_consts: ProtocolConsts,
@@ -229,6 +305,11 @@ impl<
                 canonical_state: state.clone(),
                 fork_states: BTreeMap::new(),
                 orphaned_blocks: BTreeMap::new(),
+                pending_finalized: VecDeque::new(),
+                pending_notarized: VecDeque::new(),
+                pending_warn_active: false,
+                drain_interval: cfg.drain_interval,
+                buffered_blocks_warn_threshold: cfg.buffered_blocks_warn_threshold,
                 genesis_hash: cfg.genesis_hash,
                 protocol_consts: cfg.protocol_consts,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
@@ -378,14 +459,43 @@ impl<
                                     // I don't think we need this
                                 }
                                 Update::FinalizedBlock((block, finalization), ack_tx) => {
-                                    if let Err(err) = self.handle_finalized_block(ack_tx, block, finalization, &mut orchestrator_mailbox, &mut last_committed_timestamp).await {
+                                    let entry = PendingFinalized {
+                                        block,
+                                        finalization,
+                                        ack: ack_tx,
+                                        first_attempt_at: Instant::now(),
+                                    };
+                                    // Preserve arrival order: if there are
+                                    // already buffered finalized blocks, the
+                                    // EL won't make progress on this one
+                                    // either. Enqueue without attempting,
+                                    // both to avoid a wasted check_payload
+                                    // and to keep the buffer in height order.
+                                    if !self.pending_finalized.is_empty() {
+                                        self.pending_finalized.push_back(entry);
+                                        self.update_pending_warn();
+                                    } else {
+                                        match self.handle_finalized_block(entry, &mut orchestrator_mailbox, &mut last_committed_timestamp).await {
+                                            Ok(HandleOutcome::Applied) => {}
+                                            Ok(HandleOutcome::Buffered(entry)) => {
+                                                // First-time arrival; buffer was empty so push_back is correct.
+                                                self.pending_finalized.push_back(entry);
+                                                self.update_pending_warn();
+                                            }
+                                            Err(err) => {
+                                                info!(?err, "finalizer triggering graceful shutdown");
+                                                self.cancellation_token.cancel();
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                Update::NotarizedBlock(block) => {
+                                    if let Err(err) = self.handle_notarized_block(block).await {
                                         info!(?err, "finalizer triggering graceful shutdown");
                                         self.cancellation_token.cancel();
                                         break;
                                     }
-                                }
-                                Update::NotarizedBlock(block) => {
-                                    self.handle_notarized_block(block).await;
                                 }
                             }
                         },
@@ -452,6 +562,14 @@ impl<
                         },
                     }
                 }
+                _ = self.context.sleep(self.drain_interval).fuse() => {
+                    // Retry blocks that were deferred because the EL was SYNCING.
+                    if let Err(err) = self.drain_pending(&mut orchestrator_mailbox, &mut last_committed_timestamp).await {
+                        info!(?err, "finalizer triggering graceful shutdown");
+                        self.cancellation_token.cancel();
+                        break;
+                    }
+                }
                 _ = cancellation_token.cancelled().fuse() => {
                     info!("finalizer received cancellation signal, exiting");
                     break;
@@ -467,14 +585,16 @@ impl<
     #[allow(clippy::type_complexity)]
     async fn handle_finalized_block(
         &mut self,
-        ack_tx: Exact,
-        block: Block,
-        finalization: Option<
-            Finalization<bls12381_multisig::Scheme<PublicKey, V>, <Block as Digestible>::Digest>,
-        >,
+        entry: PendingFinalized<V>,
         orchestrator_mailbox: &mut summit_orchestrator::Mailbox,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
-    ) -> Result<()> {
+    ) -> Result<HandleOutcome<PendingFinalized<V>>> {
+        let PendingFinalized {
+            block,
+            finalization,
+            ack: ack_tx,
+            first_attempt_at,
+        } = entry;
         let height = block.height();
         let block_digest = block.digest();
 
@@ -504,7 +624,7 @@ impl<
                 ?block_digest,
                 "executing finalized block directly (no prior fork state)"
             );
-            let executed = match execute_block(
+            let outcome = match execute_block(
                 &mut self.engine_client,
                 &self.context,
                 &block,
@@ -514,40 +634,59 @@ impl<
             )
             .await
             {
-                Ok(executed) => executed,
+                Ok(outcome) => outcome,
                 Err(e) => {
                     error!(target: "critical", height, "engine client error while executing finalized block: {e}");
                     #[cfg(feature = "prom")]
                     counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
                         .increment(1);
-                    self.cancellation_token.cancel();
                     return Err(anyhow!(
                         "engine client error while executing finalized block at height {height}: {e}"
                     ));
                 }
             };
-            if !executed {
-                // Network finalized a block whose payload the local Reth instance rejects. Either
-                // Reth has diverged (bug, corruption, restart loss) or a byzantine
-                // quorum certified an invalid payload. In either case, this validator
-                // cannot continue safely.
-                error!(
-                    target: "critical",
-                    height,
-                    ?block_digest,
-                    "finalized block payload rejected by execution client"
-                );
-                #[cfg(feature = "prom")]
-                counter!(
-                    "critical_errors_total",
-                    "reason" => "finalized_block_invalid",
-                    "severity" => "critical"
-                )
-                .increment(1);
-                return Err(anyhow!(
-                    "finalized block at height {height} with digest {block_digest:?} \
-                     was rejected by the execution client"
-                ));
+            match outcome {
+                ExecuteOutcome::Applied => {}
+                ExecuteOutcome::Syncing => {
+                    // The EL is still catching up. Return the entry to the
+                    // caller; the caller decides where in `pending_finalized`
+                    // it goes. Drain re-pushes to the front to preserve
+                    // arrival order, mailbox pushes to the back.
+                    debug!(
+                        height,
+                        ?block_digest,
+                        "deferring finalized block: execution layer is SYNCING"
+                    );
+                    return Ok(HandleOutcome::Buffered(PendingFinalized {
+                        block,
+                        finalization,
+                        ack: ack_tx,
+                        first_attempt_at,
+                    }));
+                }
+                ExecuteOutcome::InvalidPayload => {
+                    // Network finalized a block whose payload the local Reth instance rejects. Either
+                    // Reth has diverged (bug, corruption, restart loss) or a byzantine
+                    // quorum certified an invalid payload. In either case, this validator
+                    // cannot continue safely.
+                    error!(
+                        target: "critical",
+                        height,
+                        ?block_digest,
+                        "finalized block payload rejected by execution client"
+                    );
+                    #[cfg(feature = "prom")]
+                    counter!(
+                        "critical_errors_total",
+                        "reason" => "finalized_block_invalid",
+                        "severity" => "critical"
+                    )
+                    .increment(1);
+                    return Err(anyhow!(
+                        "finalized block at height {height} with digest {block_digest:?} \
+                         was rejected by the execution client"
+                    ));
+                }
             }
         }
 
@@ -589,7 +728,6 @@ impl<
             #[cfg(feature = "prom")]
             counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
                 .increment(1);
-            self.cancellation_token.cancel();
             return Err(anyhow!("engine client error on canonical commit_hash: {e}"));
         }
 
@@ -842,14 +980,21 @@ impl<
                 "re-adopting orphaned blocks after finalization"
             );
             for child in children {
-                self.handle_notarized_block(child).await;
+                // Propagate engine-client errors as critical shutdown; Buffered
+                // is fine to ignore — the child is in `pending_notarized` now
+                // and the drain timer will retry it.
+                self.handle_notarized_block(child).await?;
             }
         }
-        Ok(())
+        Ok(HandleOutcome::Applied)
     }
 
-    async fn handle_notarized_block(&mut self, block: Block) {
+    async fn handle_notarized_block(&mut self, block: Block) -> Result<HandleOutcome> {
         let mut to_process = vec![block];
+        // If any iteration defers a block because the EL is SYNCING, signal
+        // `Buffered` so callers (including the drain timer) know to stop
+        // burning further attempts against the same SYNCING EL.
+        let mut outcome: HandleOutcome = HandleOutcome::Applied;
 
         while let Some(block) = to_process.pop() {
             let height = block.height();
@@ -932,7 +1077,7 @@ impl<
             // discard the block: certify will reject it on every honest validator, no
             // certify quorum will form, and no descendant can build on it (find_parent
             // gates on certified). The fork is dead; skip fork-state creation.
-            let executed = match execute_block(
+            let exec_outcome = match execute_block(
                 &mut self.engine_client,
                 &self.context,
                 &block,
@@ -942,25 +1087,47 @@ impl<
             )
             .await
             {
-                Ok(executed) => executed,
+                Ok(o) => o,
                 Err(e) => {
                     error!(target: "critical", height, ?block_digest, "engine client error while executing notarized block: {e}");
                     #[cfg(feature = "prom")]
                     counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
                         .increment(1);
-                    self.cancellation_token.cancel();
-                    return;
+                    return Err(anyhow!(
+                        "engine client error while executing notarized block at height {height}: {e}"
+                    ));
                 }
             };
-            if !executed {
-                warn!(
-                    height,
-                    ?block_digest,
-                    "discarding notarized block with invalid payload"
-                );
-                #[cfg(feature = "prom")]
-                counter!("notarized_block_invalid_total").increment(1);
-                continue;
+            match exec_outcome {
+                ExecuteOutcome::Applied => {}
+                ExecuteOutcome::Syncing => {
+                    debug!(
+                        height,
+                        ?block_digest,
+                        "deferring notarized block: execution layer is SYNCING"
+                    );
+                    self.pending_notarized.push_back(PendingNotarized {
+                        block,
+                        first_attempt_at: Instant::now(),
+                    });
+                    self.update_pending_warn();
+                    outcome = HandleOutcome::Buffered(());
+                    // The next block in `to_process` will be processed.
+                    // Potential orphaned children of the current block won't
+                    // be added to `to_process`, since the current block has to be
+                    // executed before them.
+                    continue;
+                }
+                ExecuteOutcome::InvalidPayload => {
+                    warn!(
+                        height,
+                        ?block_digest,
+                        "discarding notarized block with invalid payload"
+                    );
+                    #[cfg(feature = "prom")]
+                    counter!("notarized_block_invalid_total").increment(1);
+                    continue;
+                }
             }
 
             // Store the new fork state
@@ -984,8 +1151,9 @@ impl<
                 #[cfg(feature = "prom")]
                 counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
                     .increment(1);
-                self.cancellation_token.cancel();
-                return;
+                return Err(anyhow!(
+                    "engine client error on fork commit_hash at height {height}: {e}"
+                ));
             }
 
             let total_fork_count: usize = self.fork_states.values().map(|f| f.len()).sum();
@@ -1016,6 +1184,97 @@ impl<
                 );
                 to_process.extend(children.clone());
             }
+        }
+
+        Ok(outcome)
+    }
+
+    /// Retry any finalized / notarized blocks that were deferred because the
+    /// execution layer returned SYNCING. Called from the `drain_interval`
+    /// timer arm of the main `select!`.
+    ///
+    /// Finalized blocks must drain in arrival (= height) order, so we stop at
+    /// the first re-buffered entry. Notarized blocks go through the same EL;
+    /// once one of them re-buffers, we know the EL is still SYNCING and stop.
+    async fn drain_pending(
+        &mut self,
+        orchestrator_mailbox: &mut summit_orchestrator::Mailbox,
+        last_committed_timestamp: &mut Option<Instant>,
+    ) -> Result<()> {
+        while let Some(entry) = self.pending_finalized.pop_front() {
+            match self
+                .handle_finalized_block(entry, orchestrator_mailbox, last_committed_timestamp)
+                .await?
+            {
+                HandleOutcome::Applied => continue,
+                HandleOutcome::Buffered(entry) => {
+                    // EL is still SYNCING. Put the entry back at the FRONT
+                    // so the buffer stays in arrival (= height) order. Don't
+                    // try further finalized entries (they require this one
+                    // applied first) and don't try notarized entries (same
+                    // EL, same answer).
+                    self.pending_finalized.push_front(entry);
+                    self.update_pending_warn();
+                    return Ok(());
+                }
+            }
+        }
+
+        while let Some(entry) = self.pending_notarized.pop_front() {
+            match self.handle_notarized_block(entry.block).await? {
+                HandleOutcome::Applied => continue,
+                HandleOutcome::Buffered(()) => {
+                    self.update_pending_warn();
+                    return Ok(());
+                }
+            }
+        }
+
+        // Drained both buffers cleanly. Allow the warn to fire again if a
+        // subsequent SYNCING window pushes the buffer back over the threshold.
+        self.update_pending_warn();
+        Ok(())
+    }
+
+    /// Emit gauges for the pending-buffer sizes and edge-trigger a warn log
+    /// when either crosses `buffered_blocks_warn_threshold` (once per crossing,
+    /// not every tick).
+    fn update_pending_warn(&mut self) {
+        let finalized_len = self.pending_finalized.len();
+        let notarized_len = self.pending_notarized.len();
+
+        #[cfg(feature = "prom")]
+        {
+            metrics::gauge!("pending_finalized_blocks").set(finalized_len as f64);
+            metrics::gauge!("pending_notarized_blocks").set(notarized_len as f64);
+        }
+
+        let over_threshold = finalized_len >= self.buffered_blocks_warn_threshold
+            || notarized_len >= self.buffered_blocks_warn_threshold;
+        if over_threshold && !self.pending_warn_active {
+            // Age of the oldest buffered entry — gives the operator a sense
+            // of "how long has the EL been stuck" alongside the count.
+            let now = Instant::now();
+            let oldest_finalized_age_secs = self
+                .pending_finalized
+                .front()
+                .map(|e| now.saturating_duration_since(e.first_attempt_at).as_secs());
+            let oldest_notarized_age_secs = self
+                .pending_notarized
+                .front()
+                .map(|e| now.saturating_duration_since(e.first_attempt_at).as_secs());
+            warn!(
+                pending_finalized = finalized_len,
+                pending_notarized = notarized_len,
+                ?oldest_finalized_age_secs,
+                ?oldest_notarized_age_secs,
+                threshold = self.buffered_blocks_warn_threshold,
+                "execution-layer SYNCING is backing up the finalizer buffer"
+            );
+            self.pending_warn_active = true;
+        } else if !over_threshold && self.pending_warn_active {
+            // Edge-reset so a subsequent crossing fires the warn again.
+            self.pending_warn_active = false;
         }
     }
 
@@ -1481,12 +1740,16 @@ impl<
 /// Core execution logic that applies a block's state transitions to any ConsensusState.
 ///
 /// This method:
-/// - Calls check_payload on the engine client to validate the block on the EVM.
-/// - On invalid payload, returns `false` without mutating `state`. The caller decides
-///   the policy (discard a notarized fork, shut down on a finalized block, etc.).
-/// - On valid payload: applies consensus-layer state transitions (deposits, withdrawals,
+/// - Calls `check_payload` on the engine client to validate the block on the EVM.
+/// - On `SYNCING`: returns `ExecuteOutcome::Syncing` *without mutating `state`*. The
+///   caller is responsible for buffering the block and retrying later — looping inline
+///   here would starve the finalizer's mailbox.
+/// - On `INVALID` (or any other non-`VALID` payload status that isn't `SYNCING`):
+///   returns `ExecuteOutcome::InvalidPayload` without mutating `state`. The caller
+///   decides the policy (discard a notarized fork, shut down on a finalized block).
+/// - On `VALID`: applies consensus-layer state transitions (deposits, withdrawals,
 ///   validators), updates the forkchoice head, creates checkpoints at epoch boundaries,
-///   and returns `true`.
+///   and returns `ExecuteOutcome::Applied`.
 ///
 /// This does NOT handle epoch transitions (activate validators, increment epoch).
 /// Epoch transitions only happen at finalization since the last block of an epoch
@@ -1501,27 +1764,14 @@ async fn execute_block<
     state: &mut ConsensusState,
     consts: &ProtocolConsts,
     protocol_version_digest: Digest,
-) -> Result<bool, summit_types::EngineClientError> {
+) -> Result<ExecuteOutcome, summit_types::EngineClientError> {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
 
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
-    let payload_status = loop {
-        let status = engine_client.check_payload(block).await?;
-
-        if status.is_syncing() {
-            error!(
-                height = block.height(),
-                "execution client returned SYNCING, sending forkchoice update to trigger sync and retrying..."
-            );
-
-            context.sleep(Duration::from_secs(5)).await;
-            continue;
-        }
-        break status;
-    };
+    let payload_status = engine_client.check_payload(block).await?;
 
     let new_height = block.height();
 
@@ -1531,10 +1781,20 @@ async fn execute_block<
         histogram!("payload_check_duration_millis").record(payload_check_duration);
     }
 
+    // The EL is still catching up. Don't mutate `state`; the caller buffers and
+    // we'll retry on the next drain tick.
+    if payload_status.is_syncing() {
+        debug!(
+            height = new_height,
+            "execution client returned SYNCING; deferring block for later retry"
+        );
+        return Ok(ExecuteOutcome::Syncing);
+    }
+
     // Validate block against execution layer state
     // Note: withdrawals are validated in the application layer before voting
     if !payload_status.is_valid() {
-        return Ok(false);
+        return Ok(ExecuteOutcome::InvalidPayload);
     }
 
     let eth_hash = block.eth_block_hash();
@@ -1626,7 +1886,7 @@ async fn execute_block<
     let el_block_number = block.payload.payload_inner.payload_inner.block_number;
     state.capture_state_root(el_block_number);
 
-    Ok(true)
+    Ok(ExecuteOutcome::Applied)
 }
 
 async fn parse_execution_requests<
