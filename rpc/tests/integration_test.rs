@@ -228,6 +228,34 @@ withdrawal_credentials = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
     handle.stop().unwrap();
 }
 
+/// The genesis provisioning RPC installs the chain's authoritative identity
+/// (namespace, execution genesis hash, validator committee, peer addresses,
+/// initial protocol params) before the node finishes startup. It must bind
+/// to loopback so a remote caller cannot install genesis on first boot.
+#[tokio::test]
+async fn test_genesis_rpc_binds_to_loopback() {
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let genesis_dir = tempfile::tempdir().unwrap();
+    let genesis_path = genesis_dir.path().join("genesis.toml");
+    let genesis_path_str = genesis_path.to_str().unwrap().to_string();
+
+    let path_sender = PathSender::new(genesis_path_str, None);
+
+    let (handle, addr) = start_rpc_server_for_genesis_with_handle(path_sender, key_store_path, 0)
+        .await
+        .unwrap();
+
+    assert!(
+        addr.ip().is_loopback(),
+        "genesis RPC must bind to loopback (got {})",
+        addr.ip()
+    );
+
+    handle.stop().unwrap();
+}
+
 #[tokio::test]
 async fn test_get_minimum_stake() {
     use summit_rpc::SummitApiClient;
@@ -345,7 +373,7 @@ async fn test_is_paused_open_access() {
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
 
-    assert_eq!(client.is_paused().await.unwrap(), false);
+    assert!(!client.is_paused().await.unwrap());
 
     handle.stop().unwrap();
 }

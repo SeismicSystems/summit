@@ -193,13 +193,18 @@ pub async fn start_rpc_server_for_genesis(
 
     let methods = rpc_impl.into_rpc();
 
-    let server = builder::RpcServerBuilder::new(port)
-        .with_cors(Some("*".to_string()))
+    // First-boot genesis provisioning installs the chain's authoritative
+    // identity (namespace, execution genesis hash, validator committee,
+    // peer addresses, initial protocol params). Bind to loopback so a
+    // remote caller cannot install genesis on this node before startup
+    // loads it.
+    let server = builder::RpcServerBuilder::new_localhost(port)
         .build()
         .await?;
+    let addr = server.local_addr()?;
     let handle = server.start(methods);
 
-    tracing::info!("Genesis RPC Server listening on http://0.0.0.0:{port}");
+    tracing::info!("Genesis RPC Server listening on http://{}", addr);
 
     cancel_token.cancelled().await;
     tracing::info!("Genesis RPC server stopped");
@@ -218,8 +223,9 @@ pub async fn start_rpc_server_for_genesis_with_handle(
 
     let methods = rpc_impl.into_rpc();
 
-    let server = builder::RpcServerBuilder::new(port)
-        .with_cors(Some("*".to_string()))
+    // See note on the production variant: localhost-only binding for the
+    // first-boot genesis writer.
+    let server = builder::RpcServerBuilder::new_localhost(port)
         .build()
         .await?;
     let addr = server.local_addr()?;
