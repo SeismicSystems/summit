@@ -157,11 +157,12 @@ impl Header {
     }
 
     pub fn get_digest(&self) -> Digest {
-        let bytes = self.encode();
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let digest = hasher.finalize();
-        *self.digest.get_or_init(|| digest)
+        *self.digest.get_or_init(|| {
+            let bytes = self.encode();
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            hasher.finalize()
+        })
     }
 }
 
