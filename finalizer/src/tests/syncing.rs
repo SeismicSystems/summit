@@ -57,7 +57,7 @@ fn create_test_block(parent_digest: Digest, height: u64, view: u64, unique_seed:
                 state_root: Default::default(),
                 transactions: Vec::new(),
             },
-            withdrawals: Vec::new().into(),
+            withdrawals: Vec::new(),
         },
         blob_gas_used: 0,
         excess_blob_gas: 0,
@@ -547,6 +547,233 @@ fn test_checkpoint_startup_full_flow() {
 
         let height = mailbox.get_latest_height().await;
         assert_eq!(height, 8, "third block should process immediately");
+
+        context.auditor().state()
+    });
+}
+
+/// If the execution layer keeps returning SYNCING for a finalized block, the
+/// finalizer's `execute_block` retries indefinitely in an unbounded inline
+/// loop. While that loop is running the finalizer task is parked inside
+/// `select! { mailbox.next() => handle_finalized_block(...) }`, so no other
+/// mailbox arm can fire — aux-data requests, consensus-state queries,
+/// orchestrator messages and even cancellation all wait for local EL
+/// recovery. This is a liveness/DoS risk for a lagging, restarting or
+/// catching-up validator whose EL stays in SYNCING.
+///
+/// Setup: a single-finalizer harness whose `MockEngineClient` has many
+/// SYNCING responses queued for `check_payload` (1000 > any reasonable
+/// retry budget). A finalized block is reported to the finalizer, which
+/// drives it into the SYNCING retry loop.
+///
+/// Assertion: after the block has had time to enter `execute_block`, an
+/// unrelated mailbox query (`get_latest_height`) must respond within a
+/// bounded virtual time. Today the mailbox is fully blocked while the EL
+/// is SYNCING, so the bounded sleep wins the race and the test fails —
+/// directly exposing the audit's "finalizer mailbox stalled during catch-up"
+/// claim. Any fix that bounds the retry (critical-shutdown on cap, or
+/// moves the wait to a background task) will make the query resolve.
+#[test]
+fn test_finalizer_mailbox_responsive_under_persistent_syncing() {
+    use futures::FutureExt;
+    use futures::pin_mut;
+
+    let cfg = deterministic::Config::default().with_seed(7);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0xAAu8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // Effectively infinite for the test window: at 5s per retry, 1000
+        // SYNCING responses cover 5000 virtual seconds — far more than the
+        // 1s race window we use below to detect a blocked mailbox.
+        engine_client.queue_check_payload_syncing(1000);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_persistent_syncing_mailbox".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        // Let the finalizer reach its main mailbox loop.
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Drive the finalizer into execute_block. With persistent SYNCING
+        // it enters the unbounded retry loop and the actor task stops
+        // servicing other mailbox messages.
+        let genesis_block = Block::genesis(genesis_hash);
+        let block1 = create_test_block(genesis_block.digest(), 1, 1, 7001);
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1, None), ack))
+            .await;
+
+        // Give the finalizer enough virtual time to dequeue the
+        // FinalizedBlock update and enter execute_block's SYNCING loop.
+        context.sleep(Duration::from_millis(200)).await;
+
+        // Now issue an unrelated mailbox query and race it against a
+        // bounded virtual-time deadline. If the finalizer is responsive,
+        // `get_latest_height` resolves quickly. If the mailbox is blocked
+        // by the SYNCING loop, the deadline wins.
+        let query_mailbox = mailbox.clone();
+        let query_fut = async move { query_mailbox.get_latest_height().await }.fuse();
+        let deadline_fut = context.sleep(Duration::from_secs(1)).fuse();
+        pin_mut!(query_fut, deadline_fut);
+
+        futures::select! {
+            _height = query_fut => {
+                // mailbox responded — finalizer remained responsive
+                // while the EL was stuck in SYNCING.
+            }
+            _ = deadline_fut => {
+                panic!(
+                    "finalizer mailbox stalled while EL was SYNCING: \
+                     get_latest_height did not resolve within 1 virtual \
+                     second of dispatch. The finalizer-side execute_block \
+                     SYNCING loop is monopolising the actor task; a \
+                     lagging/restarting/catch-up validator can lose \
+                     mailbox liveness indefinitely until the EL recovers."
+                );
+            }
+        }
+
+        context.auditor().state()
+    });
+}
+
+/// The finalizer's startup `commit_hash` loop (finalizer/src/actor.rs:271)
+/// runs *before* the main mailbox loop begins. If the EL keeps returning
+/// SYNCING during that initial forkchoice update, the actor never enters
+/// its `select!` — every mailbox arm is starved (queries, cancellation,
+/// finalized/notarized updates, runtime stop), and queries against the
+/// already-loaded checkpoint state are silently rejected even though the
+/// data is available.
+///
+/// Setup: a finalizer restarted from a checkpoint at height 5. The
+/// `MockEngineClient` has many SYNCING responses queued for `commit_hash`
+/// (1000 > the test's 1-second race window).
+///
+/// Assertion: shortly after starting the finalizer, an unrelated mailbox
+/// query (`get_latest_height`) must resolve within a bounded virtual time
+/// and return the checkpoint-loaded height. Today the startup loop blocks
+/// the actor before it ever reaches the mailbox `select!`, so the bounded
+/// sleep wins the race and the test fails. Any fix that drops the startup
+/// retry loop (one-shot `commit_hash` + fall-through on SYNCING) or moves
+/// the wait off the actor task will let the query resolve from the
+/// checkpoint-loaded `canonical_state`.
+#[test]
+fn test_finalizer_mailbox_responsive_during_startup_syncing() {
+    use futures::FutureExt;
+    use futures::pin_mut;
+
+    let cfg = deterministic::Config::default().with_seed(11);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let checkpoint_hash = [0xCDu8; 32];
+        // Checkpoint at height 5, epoch 0.
+        let initial_state =
+            create_checkpoint_initial_state(checkpoint_hash, 5, 0, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // Effectively infinite SYNCING for the test window: 1000 * 5s =
+        // 5000 virtual seconds, far longer than the 1s deadline below.
+        engine_client.queue_commit_hash_syncing(1000);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_startup_syncing_mailbox".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash: checkpoint_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        // Give the finalizer task time to be scheduled and enter the
+        // startup `commit_hash` path.
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Issue an unrelated mailbox query and race it against a bounded
+        // virtual-time deadline. If the actor entered its main mailbox
+        // loop, the query resolves quickly from the checkpoint-loaded
+        // `canonical_state` (height = 5). If the startup `commit_hash`
+        // loop is still blocking the actor, the deadline wins.
+        let query_mailbox = mailbox.clone();
+        let query_fut = async move { query_mailbox.get_latest_height().await }.fuse();
+        let deadline_fut = context.sleep(Duration::from_secs(1)).fuse();
+        pin_mut!(query_fut, deadline_fut);
+
+        futures::select! {
+            height = query_fut => {
+                assert_eq!(
+                    height, 5,
+                    "expected the checkpoint-loaded latest height to be visible \
+                     via the mailbox once the actor enters its main loop"
+                );
+            }
+            _ = deadline_fut => {
+                panic!(
+                    "finalizer mailbox stalled at startup while EL was SYNCING: \
+                     get_latest_height did not resolve within 1 virtual second of \
+                     dispatch. The startup commit_hash loop is blocking the actor \
+                     before its main `select!` begins; on a checkpoint-restart, a \
+                     validator whose EL needs to catch up cannot answer any RPC or \
+                     mailbox query until the EL recovers."
+                );
+            }
+        }
 
         context.auditor().state()
     });
