@@ -1104,9 +1104,9 @@ fn handle_verify<ES: Epocher>(
     }
 
     // Validate fee recipient against treasury when set. When treasury is zero
-    // the policy falls back to the proposer's withdrawal credentials, which
-    // the verifier cannot determine from its own local state alone, so that
-    // case is not enforced here.
+    // the policy falls back to the proposer's withdrawal credentials.
+    // In this case the proposer may choose any withdrawal credentials, so
+    // the check is only performed when the treasure address is non-zero.
     if !aux_data.treasury_address.is_zero() {
         let actual_fee_recipient = block.payload.payload_inner.payload_inner.fee_recipient;
         if actual_fee_recipient != aux_data.treasury_address {
