@@ -1103,6 +1103,22 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
+    // Validate fee recipient against treasury when set. When treasury is zero
+    // the policy falls back to the proposer's withdrawal credentials, which
+    // the verifier cannot determine from its own local state alone, so that
+    // case is not enforced here.
+    if !aux_data.treasury_address.is_zero() {
+        let actual_fee_recipient = block.payload.payload_inner.payload_inner.fee_recipient;
+        if actual_fee_recipient != aux_data.treasury_address {
+            warn!(
+                expected = ?aux_data.treasury_address,
+                actual = ?actual_fee_recipient,
+                "fee_recipient does not match treasury_address"
+            );
+            return false;
+        }
+    }
+
     // Validate checkpoint_hash (None means [0; 32], matching Block::compute_digest)
     let expected_checkpoint_hash: Digest =
         aux_data.checkpoint_hash.unwrap_or_else(|| [0; 32].into());
@@ -1230,7 +1246,7 @@ fn block_size_limit_violation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::U256;
+    use alloy_primitives::{Address, U256};
     use alloy_rpc_types_engine::{
         ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
     };
@@ -1348,6 +1364,7 @@ mod tests {
                 finalized_block_hash: [0u8; 32].into(),
             },
             suggested_fee_recipient: Default::default(),
+            treasury_address: Default::default(),
             state_root: [0u8; 32],
             allowed_timestamp_future_ms: u64::MAX / 2,
         }
@@ -1990,6 +2007,124 @@ mod tests {
                 u32::MAX,
             ),
             "block whose payload consumed blob gas must be rejected"
+        );
+    }
+
+    /// A Byzantine proposer can produce an otherwise valid execution payload
+    /// whose fee_recipient differs from the treasury address that Summit policy
+    /// mandates. The execution engine validates EL rules but not Summit's
+    /// aux-data invariants, so handle_verify must reject the payload to prevent
+    /// fee redirection.
+    #[test]
+    fn rejects_block_with_fee_recipient_mismatch_when_treasury_set() {
+        let parent_height = 3;
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+
+        let header_height = parent_height + 1;
+        let header_timestamp = header_height * 12;
+
+        // Otherwise-valid child, but with an attacker-chosen fee recipient.
+        let attacker_recipient = Address::from([0xAB; 20]);
+        let mut payload = empty_payload(header_height, parent.eth_block_hash(), header_timestamp);
+        payload.payload_inner.payload_inner.fee_recipient = attacker_recipient;
+        let block = Block::compute_digest(
+            parent.digest(),
+            header_height,
+            header_timestamp,
+            payload,
+            Vec::new(),
+            0,
+            header_height,
+            None,
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        );
+
+        // Honest aux data: treasury is set and disagrees with the payload.
+        let treasury = Address::from([0xCC; 20]);
+        let mut aux_data = make_aux_data(0);
+        aux_data.treasury_address = treasury;
+        aux_data.suggested_fee_recipient = treasury;
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
+        assert!(
+            !handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4,
+                u32::MAX,
+            ),
+            "block whose payload fee_recipient ({attacker_recipient:?}) does not match \
+             the treasury address ({treasury:?}) must be rejected"
+        );
+    }
+
+    /// Sanity companion: when treasury is set and the payload fee_recipient
+    /// matches it, the block must still verify — the check must not over-reject
+    /// honest blocks.
+    #[test]
+    fn accepts_block_with_matching_fee_recipient_when_treasury_set() {
+        let parent_height = 3;
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+
+        let header_height = parent_height + 1;
+        let header_timestamp = header_height * 12;
+
+        let treasury = Address::from([0xCC; 20]);
+        let mut payload = empty_payload(header_height, parent.eth_block_hash(), header_timestamp);
+        payload.payload_inner.payload_inner.fee_recipient = treasury;
+        let block = Block::compute_digest(
+            parent.digest(),
+            header_height,
+            header_timestamp,
+            payload,
+            Vec::new(),
+            0,
+            header_height,
+            None,
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        );
+
+        let mut aux_data = make_aux_data(0);
+        aux_data.treasury_address = treasury;
+        aux_data.suggested_fee_recipient = treasury;
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
+        assert!(
+            handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4,
+                u32::MAX,
+            ),
+            "block whose payload fee_recipient matches the treasury address must be accepted"
         );
     }
 }
