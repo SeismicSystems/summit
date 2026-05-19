@@ -32,7 +32,9 @@ use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateResponse};
-use summit_types::execution_request::{DepositRequest, ExecutionRequest, WithdrawalRequest};
+use summit_types::execution_request::{
+    DepositRequest, ExecutionRequest, ParsedExecutionRequest, WithdrawalRequest,
+};
 use summit_types::ext_private_key::derive_observer_keys;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::protocol_params::ProtocolParam;
@@ -56,6 +58,12 @@ const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 enum DepositRejectionReason {
     Refund,
     InvalidSignature,
+    /// Deposit chunk's Ed25519 / BLS key bytes did not decode. A single
+    /// malformed chunk in a grouped EIP-7685 deposit entry must not poison
+    /// the valid chunks alongside it. Routing this through the same refund
+    /// branch as `InvalidSignature` keeps the malformed chunk's depositor
+    /// whole.
+    MalformedKey,
 }
 
 fn deposit_refund_key(domain_tag: u8, withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
@@ -96,6 +104,72 @@ fn pubkeys_with_buffered_full_exit(state: &ConsensusState) -> BTreeSet<[u8; 32]>
         }
     }
     pubkeys
+}
+
+fn malformed_deposit_refund_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
+    deposit_refund_key(0xFD, withdrawal_address, deposit_index)
+}
+
+/// Queue an immediate refund withdrawal for a deposit that was rejected
+/// before any balance was credited. Shared between `verify_deposit_request`
+/// failures (`Refund` / `InvalidSignature`) and per-chunk parse failures
+/// (`MalformedKey`) so a malformed deposit chunk follows the same
+/// no-account, balance_deduction=0 refund path as a signature-invalid one.
+fn queue_deposit_refund(
+    state: &mut ConsensusState,
+    withdrawal_credentials_bytes: [u8; 32],
+    amount: u64,
+    deposit_index: u64,
+    reason: DepositRejectionReason,
+    consts: &ProtocolConsts,
+) {
+    let withdrawal_address = match parse_withdrawal_credentials(withdrawal_credentials_bytes) {
+        Ok(addr) => addr,
+        Err(e) => {
+            // The deposited funds are lost in this case. The deposit
+            // contract verifies that withdrawal credentials follow the
+            // expected format, so this should never happen.
+            error!(
+                target: "critical",
+                reason = "failed to parse withdrawal credentials (this is not a Summit error)",
+                withdrawal_credentials = ?withdrawal_credentials_bytes,
+                amount,
+                deposit_index,
+                rejection_reason = ?reason,
+            );
+            #[cfg(feature = "prom")]
+            counter!(
+                "critical_errors_total",
+                "reason" => "invalid_withdrawal_credentials",
+                "severity" => "critical",
+            )
+            .increment(1);
+            warn!("Failed to parse withdrawal credentials: {e}");
+            return;
+        }
+    };
+
+    let refund_pubkey = match reason {
+        DepositRejectionReason::Refund => refunded_deposit_key(withdrawal_address, deposit_index),
+        DepositRejectionReason::InvalidSignature => {
+            invalid_signature_refund_key(withdrawal_address, deposit_index)
+        }
+        DepositRejectionReason::MalformedKey => {
+            malformed_deposit_refund_key(withdrawal_address, deposit_index)
+        }
+    };
+
+    let withdrawal_request = WithdrawalRequest {
+        source_address: withdrawal_address,
+        validator_pubkey: refund_pubkey,
+        amount,
+    };
+    let withdrawal_epoch = state.get_epoch() + consts.validator_withdrawal_num_epochs;
+    state.push_withdrawal_request(
+        withdrawal_request,
+        withdrawal_epoch,
+        0, // deposit was never credited to balance
+    );
 }
 
 /// Tracks the consensus state for a notarized (but not yet finalized) block
@@ -1611,11 +1685,34 @@ async fn parse_execution_requests<
     all_requests.extend(block.execution_requests.iter().cloned());
 
     for request_bytes in &all_requests {
-        match ExecutionRequest::try_from_eth_entry(request_bytes.as_ref()) {
-            Ok(execution_requests) => {
-                for execution_request in execution_requests {
-                    match execution_request {
-                        ExecutionRequest::Deposit(deposit_request) => {
+        match ExecutionRequest::parse_eth_entry(request_bytes.as_ref()) {
+            Ok(parsed_requests) => {
+                for parsed in parsed_requests {
+                    match parsed {
+                        ParsedExecutionRequest::MalformedDeposit(chunk) => {
+                            // EIP-6110 grouping concatenates same-block deposit logs
+                            // into one entry; a single contract-accepted but
+                            // parser-invalid chunk must not poison the others.
+                            // Route it through the same refund branch as a
+                            // signature-invalid deposit.
+                            info!(
+                                reason = chunk.reason,
+                                amount = chunk.amount,
+                                index = chunk.index,
+                                "refunding malformed deposit chunk",
+                            );
+                            queue_deposit_refund(
+                                state,
+                                chunk.withdrawal_credentials,
+                                chunk.amount,
+                                chunk.index,
+                                DepositRejectionReason::MalformedKey,
+                                consts,
+                            );
+                        }
+                        ParsedExecutionRequest::Valid(ExecutionRequest::Deposit(
+                            deposit_request,
+                        )) => {
                             match verify_deposit_request(
                                 context,
                                 &deposit_request,
@@ -1673,51 +1770,20 @@ async fn parse_execution_requests<
                                     state.push_deposit(deposit_request.clone());
                                 }
                                 Err(reason) => {
-                                    let withdrawal_credentials = match parse_withdrawal_credentials(
+                                    queue_deposit_refund(
+                                        state,
                                         deposit_request.withdrawal_credentials,
-                                    ) {
-                                        Ok(withdrawal_credentials) => withdrawal_credentials,
-                                        Err(e) => {
-                                            // The deposited funds would be lost in this case.
-                                            // The deposit contract verifies that the withdrawal credentials
-                                            // follow the expected format, so this should never happen.
-                                            error!(target: "critical", reason = "failed to parse withdrawal credentials (this is not a Summit error)", ?deposit_request);
-                                            #[cfg(feature = "prom")]
-                                            counter!("critical_errors_total", "reason" => "invalid_withdrawal_credentials", "severity" => "critical").increment(1);
-                                            warn!("Failed to parse withdrawal credentials: {e}");
-                                            continue;
-                                        }
-                                    };
-
-                                    let refund_pubkey = match reason {
-                                        DepositRejectionReason::Refund => refunded_deposit_key(
-                                            withdrawal_credentials,
-                                            deposit_request.index,
-                                        ),
-                                        DepositRejectionReason::InvalidSignature => {
-                                            invalid_signature_refund_key(
-                                                withdrawal_credentials,
-                                                deposit_request.index,
-                                            )
-                                        }
-                                    };
-                                    let withdrawal_request = WithdrawalRequest {
-                                        source_address: withdrawal_credentials,
-                                        validator_pubkey: refund_pubkey,
-                                        amount: deposit_request.amount,
-                                    };
-                                    let withdrawal_epoch =
-                                        state.get_epoch() + consts.validator_withdrawal_num_epochs;
-
-                                    state.push_withdrawal_request(
-                                        withdrawal_request.clone(),
-                                        withdrawal_epoch,
-                                        0, // deposit was never credited to balance
+                                        deposit_request.amount,
+                                        deposit_request.index,
+                                        reason,
+                                        consts,
                                     );
                                 }
                             }
                         }
-                        ExecutionRequest::Withdrawal(mut withdrawal_request) => {
+                        ParsedExecutionRequest::Valid(ExecutionRequest::Withdrawal(
+                            mut withdrawal_request,
+                        )) => {
                             // Only add the withdrawal request if the validator exists and has sufficient balance
                             if let Some(mut account) = state
                                 .get_account(&withdrawal_request.validator_pubkey)
@@ -1829,7 +1895,9 @@ async fn parse_execution_requests<
                                 );
                             }
                         }
-                        ExecutionRequest::ProtocolParam(protocol_param_request) => {
+                        ParsedExecutionRequest::Valid(ExecutionRequest::ProtocolParam(
+                            protocol_param_request,
+                        )) => {
                             info!("Received protocol param request: {protocol_param_request:?}");
 
                             // Buffer protocol param requests landing on the last block of
