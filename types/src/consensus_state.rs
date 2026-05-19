@@ -432,6 +432,10 @@ impl ConsensusState {
         self.pending_execution_requests.push(request);
     }
 
+    pub fn pending_execution_requests(&self) -> &[alloy_primitives::Bytes] {
+        &self.pending_execution_requests
+    }
+
     // Account operations
     pub fn get_account(&self, pubkey: &[u8; 32]) -> Option<&ValidatorAccount> {
         self.validator_accounts.get(pubkey)

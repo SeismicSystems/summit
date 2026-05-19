@@ -23,7 +23,7 @@ use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::{Duration, Instant};
@@ -72,6 +72,30 @@ fn refunded_deposit_key(withdrawal_address: Address, deposit_index: u64) -> [u8;
 
 fn invalid_signature_refund_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
     deposit_refund_key(0xFF, withdrawal_address, deposit_index)
+}
+
+/// Scan `state.pending_execution_requests` for buffered withdrawal entries
+/// and return the set of validator pubkeys with a deferred full exit
+/// waiting to replay.
+///
+/// Deferral happens in `parse_execution_requests` when a validator-
+/// submitted withdrawal lands on the last block of an epoch. Summit does
+/// not support partial withdrawals — admission rewrites the amount to the
+/// validator's full balance before the deferral — so every withdrawal
+/// entry in this buffer is a full exit by construction.
+fn pubkeys_with_buffered_full_exit(state: &ConsensusState) -> BTreeSet<[u8; 32]> {
+    let mut pubkeys = BTreeSet::new();
+    for entry in state.pending_execution_requests() {
+        let Ok(parsed) = ExecutionRequest::try_from_eth_entry(entry.as_ref()) else {
+            continue;
+        };
+        for req in parsed {
+            if let ExecutionRequest::Withdrawal(w) = req {
+                pubkeys.insert(w.validator_pubkey);
+            }
+        }
+    }
+    pubkeys
 }
 
 /// Tracks the consensus state for a notarized (but not yet finalized) block
@@ -1322,11 +1346,22 @@ impl<
             // Withdrawals happen at the end of the current epoch (last block)
             let withdrawal_epoch = self.canonical_state.get_epoch() + 1;
 
+            // A validator-submitted full exit landing on this same last
+            // block has been deferred into pending_execution_requests by
+            // parse_execution_requests (so it appears in the next epoch's
+            // last-block `removed_validators` header). The deferred exit
+            // will replay on the next block's parse and zero the balance
+            // then; scheduling a stake-bound partial withdrawal here would
+            // set has_pending_withdrawal = true and cause the buffered
+            // exit's admission to be skipped as a duplicate.
+            let pending_exit_pubkeys = pubkeys_with_buffered_full_exit(&self.canonical_state);
+
             let validators_to_process: Vec<([u8; 32], u64, Address)> = self
                 .canonical_state
                 .validator_accounts_iter()
                 .filter_map(|(key, acc)| {
                     if !acc.has_pending_deposit
+                        && !pending_exit_pubkeys.contains(key)
                         && (acc.balance < self.canonical_state.get_minimum_stake()
                             || acc.balance > self.canonical_state.get_maximum_stake())
                     {
