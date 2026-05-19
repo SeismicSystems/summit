@@ -536,6 +536,7 @@ mod tests {
             proof_validator_keys: Vec::new(),
 
             proof_el_block_number: 0,
+            captured_bytes: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -667,6 +668,7 @@ mod tests {
             proof_validator_keys: Vec::new(),
 
             proof_el_block_number: 0,
+            captured_bytes: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -722,6 +724,7 @@ mod tests {
             proof_validator_keys: Vec::new(),
 
             proof_el_block_number: 0,
+            captured_bytes: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -860,6 +863,7 @@ mod tests {
             proof_validator_keys: Vec::new(),
 
             proof_el_block_number: 0,
+            captured_bytes: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -920,6 +924,7 @@ mod tests {
             proof_validator_keys: Vec::new(),
 
             proof_el_block_number: 0,
+            captured_bytes: None,
         };
 
         let checkpoint = Checkpoint::new(&state);
@@ -985,6 +990,7 @@ mod tests {
             proof_validator_keys: Vec::new(),
 
             proof_el_block_number: 0,
+            captured_bytes: None,
         };
 
         let checkpoint = Checkpoint::new(&original_state);
@@ -1046,6 +1052,7 @@ mod tests {
             proof_validator_keys: Vec::new(),
 
             proof_el_block_number: 0,
+            captured_bytes: None,
         };
 
         let mut checkpoint = Checkpoint::new(&original_state);
@@ -1152,6 +1159,7 @@ mod tests {
             proof_validator_keys: Vec::new(),
 
             proof_el_block_number: 0,
+            captured_bytes: None,
         };
 
         let checkpoint = Checkpoint::new(&original_state);
