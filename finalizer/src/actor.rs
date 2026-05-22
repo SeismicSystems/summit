@@ -26,7 +26,7 @@ use rand::Rng;
 use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 use std::num::NonZero;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use summit_orchestrator::Message;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
@@ -270,23 +270,30 @@ impl<
                     "sending initial forkchoice update to execution client, waiting for sync..."
                 );
                 loop {
-                    let status = self.engine_client.commit_hash(*forkchoice).await;
+                    let status = match self.engine_client.commit_hash(*forkchoice).await {
+                        Ok(status) => status,
+                        Err(e) => {
+                            error!(target: "critical", "engine client error on initial forkchoice update: {e}");
+                            #[cfg(feature = "prom")]
+                            counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
+                                .increment(1);
+                            self.cancellation_token.cancel();
+                            return;
+                        }
+                    };
                     if status.is_valid() {
                         info!("execution client synced to checkpoint head, ready to replay blocks");
                         break;
                     } else if status.is_syncing() {
                         warn!("execution client still syncing, waiting 5s...");
-                        self.context.sleep(std::time::Duration::from_secs(5)).await;
+                        self.context.sleep(Duration::from_secs(5)).await;
                     } else {
                         error!(target: "critical", "finalizer started with invalid forkchoice: {forkchoice:?}, height: {}, epoch: {}", self.canonical_state.get_latest_height(), self.canonical_state.get_epoch());
                         #[cfg(feature = "prom")]
                         counter!("critical_errors_total", "reason" => "invalid_forkchoice", "severity" => "critical")
                             .increment(1);
-                        panic!(
-                            "finalizer started with invalid forkchoice: {forkchoice:?}, height: {}, epoch: {}",
-                            self.canonical_state.get_latest_height(),
-                            self.canonical_state.get_epoch()
-                        );
+                        self.cancellation_token.cancel();
+                        return;
                     }
                 }
             }
@@ -440,7 +447,7 @@ impl<
                 ?block_digest,
                 "executing finalized block directly (no prior fork state)"
             );
-            let executed = execute_block(
+            let executed = match execute_block(
                 &mut self.engine_client,
                 &self.context,
                 &block,
@@ -448,7 +455,20 @@ impl<
                 &self.protocol_consts,
                 self.protocol_version_digest,
             )
-            .await;
+            .await
+            {
+                Ok(executed) => executed,
+                Err(e) => {
+                    error!(target: "critical", height, "engine client error while executing finalized block: {e}");
+                    #[cfg(feature = "prom")]
+                    counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
+                        .increment(1);
+                    self.cancellation_token.cancel();
+                    return Err(anyhow!(
+                        "engine client error while executing finalized block at height {height}: {e}"
+                    ));
+                }
+            };
             if !executed {
                 // Network finalized a block whose payload the local Reth instance rejects. Either
                 // Reth has diverged (bug, corruption, restart loss) or a byzantine
@@ -503,9 +523,18 @@ impl<
             );
         }
 
-        self.engine_client
+        if let Err(e) = self
+            .engine_client
             .commit_hash(*self.canonical_state.get_forkchoice())
-            .await;
+            .await
+        {
+            error!(target: "critical", "engine client error on canonical commit_hash after finalization: {e}");
+            #[cfg(feature = "prom")]
+            counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
+                .increment(1);
+            self.cancellation_token.cancel();
+            return Err(anyhow!("engine client error on canonical commit_hash: {e}"));
+        }
 
         #[cfg(feature = "prom")]
         {
@@ -846,7 +875,7 @@ impl<
             // discard the block: certify will reject it on every honest validator, no
             // certify quorum will form, and no descendant can build on it (find_parent
             // gates on certified). The fork is dead; skip fork-state creation.
-            let executed = execute_block(
+            let executed = match execute_block(
                 &mut self.engine_client,
                 &self.context,
                 &block,
@@ -854,7 +883,18 @@ impl<
                 &self.protocol_consts,
                 self.protocol_version_digest,
             )
-            .await;
+            .await
+            {
+                Ok(executed) => executed,
+                Err(e) => {
+                    error!(target: "critical", height, ?block_digest, "engine client error while executing notarized block: {e}");
+                    #[cfg(feature = "prom")]
+                    counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
+                        .increment(1);
+                    self.cancellation_token.cancel();
+                    return;
+                }
+            };
             if !executed {
                 warn!(
                     height,
@@ -882,7 +922,14 @@ impl<
                 safe_block_hash: self.canonical_state.get_forkchoice().finalized_block_hash,
                 finalized_block_hash: self.canonical_state.get_forkchoice().finalized_block_hash,
             };
-            self.engine_client.commit_hash(fork_forkchoice).await;
+            if let Err(e) = self.engine_client.commit_hash(fork_forkchoice).await {
+                error!(target: "critical", height, ?block_digest, "engine client error on fork commit_hash after notarization: {e}");
+                #[cfg(feature = "prom")]
+                counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
+                    .increment(1);
+                self.cancellation_token.cancel();
+                return;
+            }
 
             let total_fork_count: usize = self.fork_states.values().map(|f| f.len()).sum();
             info!(
@@ -1377,7 +1424,7 @@ async fn execute_block<
     state: &mut ConsensusState,
     consts: &ProtocolConsts,
     protocol_version_digest: Digest,
-) -> bool {
+) -> Result<bool, summit_types::EngineClientError> {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
 
@@ -1385,7 +1432,7 @@ async fn execute_block<
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
     let payload_status = loop {
-        let status = engine_client.check_payload(block).await;
+        let status = engine_client.check_payload(block).await?;
 
         if status.is_syncing() {
             error!(
@@ -1393,7 +1440,7 @@ async fn execute_block<
                 "execution client returned SYNCING, sending forkchoice update to trigger sync and retrying..."
             );
 
-            context.sleep(std::time::Duration::from_secs(5)).await;
+            context.sleep(Duration::from_secs(5)).await;
             continue;
         }
         break status;
@@ -1410,7 +1457,7 @@ async fn execute_block<
     // Validate block against execution layer state
     // Note: withdrawals are validated in the application layer before voting
     if !payload_status.is_valid() {
-        return false;
+        return Ok(false);
     }
 
     let eth_hash = block.eth_block_hash();
@@ -1502,7 +1549,7 @@ async fn execute_block<
     let el_block_number = block.payload.payload_inner.payload_inner.block_number;
     state.capture_state_root(el_block_number);
 
-    true
+    Ok(true)
 }
 
 async fn parse_execution_requests<
