@@ -1177,6 +1177,18 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
+    // Summit does not derive consensus randomness for the EL: honest
+    // proposers always set prev_randao to zero in PayloadAttributes.
+    let payload_prev_randao = block.payload.payload_inner.payload_inner.prev_randao;
+    if !payload_prev_randao.is_zero() {
+        warn!(
+            actual = ?payload_prev_randao,
+            "payload prev_randao must be zero"
+        );
+        return false;
+    }
+
+
     // Summit does not currently support blob transactions. Reject any
     // payload that consumed blob gas — if blob support is enabled later,
     // the V4 payload envelope's blob bundle / kzg commitments must also be
@@ -2125,6 +2137,112 @@ mod tests {
                 u32::MAX,
             ),
             "block whose payload fee_recipient matches the treasury address must be accepted"
+        );
+    }
+
+    /// A Byzantine proposer can produce an otherwise valid execution
+    /// payload whose prev_randao is attacker-chosen. The EL accepts any
+    /// 32-byte value there, so handle_verify must reject non-zero
+    /// prev_randao to prevent biased PREVRANDAO output on-chain.
+    #[test]
+    fn rejects_block_with_nonzero_prev_randao() {
+        let parent_height = 3;
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+
+        let header_height = parent_height + 1;
+        let header_timestamp = header_height * 12;
+
+        let mut payload =
+            empty_payload(header_height, parent.eth_block_hash(), header_timestamp);
+        payload.payload_inner.payload_inner.prev_randao = [0xAB; 32].into();
+
+        let block = Block::compute_digest(
+            parent.digest(),
+            header_height,
+            header_timestamp,
+            payload,
+            Vec::new(),
+            0,
+            header_height,
+            None,
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        );
+
+        let aux_data = make_aux_data(0);
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
+        assert!(
+            !handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4,
+                u32::MAX,
+            ),
+            "block whose payload prev_randao is non-zero must be rejected"
+        );
+    }
+
+    /// Sanity: a payload built honestly with prev_randao = 0 must verify.
+    #[test]
+    fn accepts_block_with_zero_prev_randao() {
+        let parent_height = 3;
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+
+        let header_height = parent_height + 1;
+        let header_timestamp = header_height * 12;
+
+        // empty_payload leaves prev_randao = Default::default() (all zeros).
+        let payload = empty_payload(header_height, parent.eth_block_hash(), header_timestamp);
+
+        let block = Block::compute_digest(
+            parent.digest(),
+            header_height,
+            header_timestamp,
+            payload,
+            Vec::new(),
+            0,
+            header_height,
+            None,
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        );
+
+        let aux_data = make_aux_data(0);
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
+        assert!(
+            handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4,
+                u32::MAX,
+            ),
+            "honest block with prev_randao = 0 must be accepted"
         );
     }
 }
