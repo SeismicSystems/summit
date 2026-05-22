@@ -136,12 +136,15 @@ impl EngineClient for MockEngineClient {
         _suggested_fee_recipient: Address,
         _parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] height: u64,
-    ) -> Option<PayloadId> {
-        Some(PayloadId::new([0u8; 8]))
+    ) -> Result<Option<PayloadId>, summit_types::EngineClientError> {
+        Ok(Some(PayloadId::new([0u8; 8])))
     }
 
-    async fn get_payload(&mut self, _payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
-        ExecutionPayloadEnvelopeV4 {
+    async fn get_payload(
+        &mut self,
+        _payload_id: PayloadId,
+    ) -> Result<ExecutionPayloadEnvelopeV4, summit_types::EngineClientError> {
+        Ok(ExecutionPayloadEnvelopeV4 {
             envelope_inner: ExecutionPayloadEnvelopeV3 {
                 execution_payload: ExecutionPayloadV3 {
                     payload_inner: ExecutionPayloadV2 {
@@ -171,30 +174,36 @@ impl EngineClient for MockEngineClient {
                 should_override_builder: false,
             },
             execution_requests: Default::default(),
-        }
+        })
     }
 
-    async fn check_payload(&mut self, _block: &Block) -> PayloadStatus {
+    async fn check_payload(
+        &mut self,
+        _block: &Block,
+    ) -> Result<PayloadStatus, summit_types::EngineClientError> {
         if let Some(override_status) = self.check_payload_overrides.lock().unwrap().pop_front() {
-            return override_status;
+            return Ok(override_status);
         }
-        PayloadStatus {
+        Ok(PayloadStatus {
             status: PayloadStatusEnum::Valid,
             latest_valid_hash: Some([0u8; 32].into()),
-        }
+        })
     }
 
-    async fn commit_hash(&mut self, _fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
+    async fn commit_hash(
+        &mut self,
+        _fork_choice_state: ForkchoiceState,
+    ) -> Result<ForkchoiceUpdated, summit_types::EngineClientError> {
         if let Some(override_response) = self.commit_hash_overrides.lock().unwrap().pop_front() {
-            return override_response;
+            return Ok(override_response);
         }
-        ForkchoiceUpdated {
+        Ok(ForkchoiceUpdated {
             payload_status: PayloadStatus {
                 status: PayloadStatusEnum::Valid,
                 latest_valid_hash: Some([0u8; 32].into()),
             },
             payload_id: None,
-        }
+        })
     }
 }
 
