@@ -31,6 +31,9 @@ use metrics::{counter, histogram};
 use summit_syncer::ingress::mailbox::Mailbox as SyncerMailbox;
 use summit_types::{Block, BlockAuxData, Digest, EngineClient};
 
+/// How long to wait before retrying check_payload when Reth returns SYNCING during certify.
+const CERTIFY_SYNCING_RETRY: Duration = Duration::from_millis(100);
+
 pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
@@ -215,6 +218,105 @@ impl<
                             } else {
                                 warn!("Asked to broadcast a block without one built");
                             }
+                        }
+
+                        Message::Certify {
+                            round,
+                            payload,
+                            mut response,
+                        } => {
+                            #[cfg(feature = "permissioned")]
+                            if self.paused.load(Ordering::Relaxed) {
+                                warn!("consensus paused, rejecting certify for round {round}");
+                                let _ = response.send(false);
+                                continue;
+                            }
+
+                            debug!("{rand_id} application: Handling message Certify for round {} (epoch {}, view {})",
+                                round, round.epoch(), round.view());
+
+                            let block_request = syncer.subscribe(Some(round), payload).await;
+
+                            self.context.with_label("certify").spawn({
+                                let mut finalizer_clone = finalizer.clone();
+                                let mut engine_client = self.engine_client.clone();
+                                let genesis_hash = self.genesis_hash;
+                                move |context| async move {
+                                    let work = async {
+                                        let Ok(block) = block_request.await else {
+                                            warn!(?round, "certify: failed to receive block from syncer");
+                                            return false;
+                                        };
+
+                                        // Wait for parent to be executed so its state is in Reth
+                                        // before check_payload runs on the child.
+                                        let parent_digest = block.parent();
+                                        if parent_digest != genesis_hash.into() {
+                                            let parent_height = block.height().saturating_sub(1);
+                                            let parent_executed = finalizer_clone
+                                                .notify_at_height(parent_height, parent_digest)
+                                                .await
+                                                .await
+                                                .unwrap_or(false);
+                                            if !parent_executed {
+                                                warn!(
+                                                    ?round,
+                                                    parent_height,
+                                                    ?parent_digest,
+                                                    "certify: parent block not executed by finalizer"
+                                                );
+                                                return false;
+                                            }
+                                        }
+
+                                        #[cfg(feature = "prom")]
+                                        let check_start = std::time::Instant::now();
+
+                                        let valid = loop {
+                                            let status = engine_client.check_payload(&block).await;
+                                            if status.is_syncing() {
+                                                warn!(
+                                                    ?round,
+                                                    height = block.height(),
+                                                    "certify: execution client returned SYNCING, retrying"
+                                                );
+                                                #[cfg(feature = "prom")]
+                                                counter!("certify_syncing_total").increment(1);
+                                                context.sleep(CERTIFY_SYNCING_RETRY).await;
+                                                continue;
+                                            }
+                                            break status.is_valid();
+                                        };
+
+                                        #[cfg(feature = "prom")]
+                                        {
+                                            let elapsed = check_start.elapsed().as_millis() as f64;
+                                            histogram!("certify_check_payload_duration_millis").record(elapsed);
+                                            if !valid {
+                                                counter!("certify_invalid_total").increment(1);
+                                            }
+                                        }
+
+                                        if !valid {
+                                            warn!(
+                                                ?round,
+                                                height = block.height(),
+                                                "certify: payload rejected by execution client"
+                                            );
+                                        }
+                                        valid
+                                    };
+
+                                    select! {
+                                        result = work => {
+                                            let _ = response.send(result);
+                                        },
+                                        _ = response.closed() => {
+                                            warn!("certify aborted for round {round}");
+                                        }
+                                    }
+                                }
+                            });
                         }
 
                         Message::Verify {
@@ -616,6 +718,14 @@ fn handle_verify<ES: Epocher>(
             "block parent mismatch: expected {}, received: {}",
             parent.digest(),
             block.parent()
+        );
+        return false;
+    }
+    if block.eth_parent_hash() != parent.eth_block_hash() {
+        warn!(
+            expected = ?parent.eth_block_hash(),
+            actual = ?block.eth_parent_hash(),
+            "eth_parent_hash mismatch"
         );
         return false;
     }

@@ -292,7 +292,7 @@ impl EngineClient for BadBlockEngineClient {
     }
 
     async fn check_payload(&mut self, block: &Block) -> PayloadStatus {
-        let parent_beacon_block_root = if block.height().is_multiple_of(self.bad_block_timing) {
+        let parent_beacon_block_root = if block.view().is_multiple_of(self.bad_block_timing) {
             [1; 32].into()
         } else {
             block.header.parent_beacon_block_root.into()
