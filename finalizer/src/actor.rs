@@ -3,6 +3,7 @@ use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
+use anyhow::{Result, anyhow};
 #[allow(unused)]
 use commonware_codec::{DecodeExt as _, ReadExt as _, Write as _};
 use commonware_consensus::Reporter;
@@ -313,7 +314,11 @@ impl<
                                     // I don't think we need this
                                 }
                                 Update::FinalizedBlock((block, finalization), ack_tx) => {
-                                    self.handle_finalized_block(ack_tx, block, finalization, &mut orchestrator_mailbox, &mut last_committed_timestamp).await;
+                                    if let Err(err) = self.handle_finalized_block(ack_tx, block, finalization, &mut orchestrator_mailbox, &mut last_committed_timestamp).await {
+                                        info!(?err, "finalizer triggering graceful shutdown");
+                                        self.cancellation_token.cancel();
+                                        break;
+                                    }
                                 }
                                 Update::NotarizedBlock(block) => {
                                     self.handle_notarized_block(block).await;
@@ -405,7 +410,7 @@ impl<
         >,
         orchestrator_mailbox: &mut summit_orchestrator::Mailbox,
         #[allow(unused_variables)] last_committed_timestamp: &mut Option<Instant>,
-    ) {
+    ) -> Result<()> {
         let height = block.height();
         let block_digest = block.digest();
 
@@ -435,7 +440,7 @@ impl<
                 ?block_digest,
                 "executing finalized block directly (no prior fork state)"
             );
-            execute_block(
+            let executed = execute_block(
                 &mut self.engine_client,
                 &self.context,
                 &block,
@@ -444,6 +449,29 @@ impl<
                 self.protocol_version_digest,
             )
             .await;
+            if !executed {
+                // Network finalized a block whose payload the local Reth instance rejects. Either
+                // Reth has diverged (bug, corruption, restart loss) or a byzantine
+                // quorum certified an invalid payload. In either case, this validator
+                // cannot continue safely.
+                error!(
+                    target: "critical",
+                    height,
+                    ?block_digest,
+                    "finalized block payload rejected by execution client"
+                );
+                #[cfg(feature = "prom")]
+                counter!(
+                    "critical_errors_total",
+                    "reason" => "finalized_block_invalid",
+                    "severity" => "critical"
+                )
+                .increment(1);
+                return Err(anyhow!(
+                    "finalized block at height {height} with digest {block_digest:?} \
+                     was rejected by the execution client"
+                ));
+            }
         }
 
         #[cfg(debug_assertions)]
@@ -731,6 +759,7 @@ impl<
                 self.handle_notarized_block(child).await;
             }
         }
+        Ok(())
     }
 
     async fn handle_notarized_block(&mut self, block: Block) {
@@ -746,6 +775,18 @@ impl<
                 debug!(
                     height,
                     "ignoring notarized block at or below canonical height"
+                );
+                continue;
+            }
+            if self
+                .fork_states
+                .get(&height)
+                .is_some_and(|f| f.contains_key(&block_digest))
+            {
+                debug!(
+                    height,
+                    ?block_digest,
+                    "skipping already-processed notarized block"
                 );
                 continue;
             }
@@ -801,8 +842,11 @@ impl<
                 continue;
             };
 
-            // Execute the block into the cloned parent state
-            execute_block(
+            // Execute the block into the cloned parent state. If the payload is invalid,
+            // discard the block: certify will reject it on every honest validator, no
+            // certify quorum will form, and no descendant can build on it (find_parent
+            // gates on certified). The fork is dead; skip fork-state creation.
+            let executed = execute_block(
                 &mut self.engine_client,
                 &self.context,
                 &block,
@@ -811,6 +855,16 @@ impl<
                 self.protocol_version_digest,
             )
             .await;
+            if !executed {
+                warn!(
+                    height,
+                    ?block_digest,
+                    "discarding notarized block with invalid payload"
+                );
+                #[cfg(feature = "prom")]
+                counter!("notarized_block_invalid_total").increment(1);
+                continue;
+            }
 
             // Store the new fork state
             self.fork_states.entry(height).or_default().insert(
@@ -1303,10 +1357,12 @@ impl<
 /// Core execution logic that applies a block's state transitions to any ConsensusState.
 ///
 /// This method:
-/// - Calls check_payload on the engine client (validates and optimistically executes the block on the EVM)
-/// - Applies consensus-layer state transitions (deposits, withdrawals, validators)
-/// - Updates the forkchoice head
-/// - Creates checkpoints at epoch boundaries
+/// - Calls check_payload on the engine client to validate the block on the EVM.
+/// - On invalid payload, returns `false` without mutating `state`. The caller decides
+///   the policy (discard a notarized fork, shut down on a finalized block, etc.).
+/// - On valid payload: applies consensus-layer state transitions (deposits, withdrawals,
+///   validators), updates the forkchoice head, creates checkpoints at epoch boundaries,
+///   and returns `true`.
 ///
 /// This does NOT handle epoch transitions (activate validators, increment epoch).
 /// Epoch transitions only happen at finalization since the last block of an epoch
@@ -1321,7 +1377,7 @@ async fn execute_block<
     state: &mut ConsensusState,
     consts: &ProtocolConsts,
     protocol_version_digest: Digest,
-) {
+) -> bool {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
 
@@ -1353,62 +1409,49 @@ async fn execute_block<
 
     // Validate block against execution layer state
     // Note: withdrawals are validated in the application layer before voting
-    if payload_status.is_valid() {
-        let eth_hash = block.eth_block_hash();
-        let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
-        info!(
-            new_height,
-            epoch = state.get_epoch(),
-            tx_count,
-            eth_hash = hex(&eth_hash),
-            "committing block to execution layer"
-        );
+    if !payload_status.is_valid() {
+        return false;
+    }
 
-        state.set_forkchoice_head(eth_hash.into());
+    let eth_hash = block.eth_block_hash();
+    let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
+    info!(
+        new_height,
+        epoch = state.get_epoch(),
+        tx_count,
+        eth_hash = hex(&eth_hash),
+        "committing block to execution layer"
+    );
 
-        // Parse execution requests
-        #[cfg(feature = "prom")]
-        let parse_requests_start = Instant::now();
-        parse_execution_requests(
-            context,
-            block,
-            new_height,
-            state,
-            protocol_version_digest,
-            consts,
-        )
-        .await;
+    state.set_forkchoice_head(eth_hash.into());
 
-        #[cfg(feature = "prom")]
-        {
-            let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
-            histogram!("parse_execution_requests_duration_millis").record(parse_requests_duration);
-        }
+    // Parse execution requests
+    #[cfg(feature = "prom")]
+    let parse_requests_start = Instant::now();
+    parse_execution_requests(
+        context,
+        block,
+        new_height,
+        state,
+        protocol_version_digest,
+        consts,
+    )
+    .await;
 
-        // Add validators that deposited to the validator set
-        #[cfg(feature = "prom")]
-        let process_requests_start = Instant::now();
-        process_execution_requests(context, block, new_height, state, consts).await;
-        #[cfg(feature = "prom")]
-        {
-            let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
-            histogram!("process_execution_requests_duration_millis")
-                .record(process_requests_duration);
-        }
-    } else {
-        let payload_valid = payload_status.is_valid();
-        let parent_matches = state.get_forkchoice().head_block_hash == block.eth_parent_hash();
-        let eth_block_hash = block.eth_block_hash();
-        warn!(
-            target: "critical",
-            new_height,
-            payload_valid,
-            parent_matches,
-            ?eth_block_hash,
-            "block validation failed, not executing but keeping in chain"
-        );
-        #[cfg(feature = "prom")]
-        counter!("critical_errors_total", "reason" => "block_validation_failed", "severity" => "critical").increment(1);
+    #[cfg(feature = "prom")]
+    {
+        let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
+        histogram!("parse_execution_requests_duration_millis").record(parse_requests_duration);
+    }
+
+    // Add validators that deposited to the validator set
+    #[cfg(feature = "prom")]
+    let process_requests_start = Instant::now();
+    process_execution_requests(context, block, new_height, state, consts).await;
+    #[cfg(feature = "prom")]
+    {
+        let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
+        histogram!("process_execution_requests_duration_millis").record(process_requests_duration);
     }
 
     state.set_latest_height(new_height);
@@ -1458,6 +1501,8 @@ async fn execute_block<
     // (epoch transitions, forkchoice updates) don't alter the captured value.
     let el_block_number = block.payload.payload_inner.payload_inner.block_number;
     state.capture_state_root(el_block_number);
+
+    true
 }
 
 async fn parse_execution_requests<
