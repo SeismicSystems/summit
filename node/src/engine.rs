@@ -162,6 +162,7 @@ where
                 cancellation_token: cancellation_token.clone(),
                 drain_interval: FINALIZER_DRAIN_INTERVAL,
                 buffered_blocks_warn_threshold: FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD,
+                pending_notarized_max: cfg.finalizer_pending_notarized_max,
                 _variant_marker: PhantomData,
             },
         )

@@ -1,7 +1,7 @@
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, FINALIZER_PENDING_NOTARIZED_MAX,
+        MESSAGE_BACKLOG, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -160,6 +160,10 @@ pub struct RunFlags {
     /// The value is a derivation index that produces a distinct identity from the base node key.
     #[arg(long)]
     pub observer: Option<u32>,
+
+    /// Hard cap on unique deferred notarized blocks while the execution layer is SYNCING.
+    #[arg(long, default_value_t = FINALIZER_PENDING_NOTARIZED_MAX)]
+    pub finalizer_pending_notarized_max: usize,
 }
 
 impl Command {
@@ -659,6 +663,7 @@ where
         initial_state,
         checkpoint_last_block,
         checkpoint_finalized_header,
+        flags.finalizer_pending_notarized_max,
     )
     .unwrap();
 

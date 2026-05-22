@@ -25,6 +25,9 @@ pub const FINALIZER_DRAIN_INTERVAL: Duration = Duration::from_secs(5);
 /// emitted (edge-triggered, once per crossing). No cap is enforced.
 /// See [`summit_finalizer::FinalizerConfig`].
 pub const FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD: usize = 100;
+/// Hard cap on unique deferred notarized blocks while the execution layer is
+/// SYNCING. Reaching this limit triggers graceful shutdown.
+pub const FINALIZER_PENDING_NOTARIZED_MAX: usize = 1000;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const FETCH_CONCURRENT: usize = 8;
@@ -41,6 +44,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub key_store: KeyStore<S>,
     pub participants: Vec<(PublicKey, bls12381::PublicKey)>,
     pub mailbox_size: usize,
+    pub finalizer_pending_notarized_max: usize,
     pub backfill_quota: Quota,
     pub deque_size: usize,
 
@@ -79,6 +83,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
         initial_state: ConsensusState,
         checkpoint_last_block: Option<Block>,
         checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
+        finalizer_pending_notarized_max: usize,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,
@@ -87,6 +92,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             participants,
             oracle,
             mailbox_size: MAILBOX_SIZE,
+            finalizer_pending_notarized_max,
             backfill_quota: Quota::per_second(NonZeroU32::new(BACKFILL_QUOTA).unwrap()),
             deque_size: DEQUE_SIZE,
             leader_timeout: Duration::from_millis(genesis.leader_timeout_ms),

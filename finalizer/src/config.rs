@@ -36,5 +36,8 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     /// finalized or pending notarized buffer crosses this threshold, the
     /// finalizer emits a warn log (edge-triggered, once per crossing).
     pub buffered_blocks_warn_threshold: usize,
+    /// Hard cap for unique deferred notarized blocks while the execution
+    /// layer is SYNCING. Reaching this limit triggers graceful shutdown.
+    pub pending_notarized_max: usize,
     pub _variant_marker: PhantomData<V>,
 }

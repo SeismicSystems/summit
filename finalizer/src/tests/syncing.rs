@@ -195,6 +195,7 @@ fn test_initial_startup_sync_waits_for_valid() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -267,6 +268,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -339,6 +341,7 @@ fn test_execute_block_retries_on_syncing() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -426,6 +429,7 @@ fn test_notarized_block_retries_on_syncing() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -505,6 +509,7 @@ fn test_checkpoint_startup_full_flow() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -624,6 +629,7 @@ fn test_finalizer_mailbox_responsive_under_persistent_syncing() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -744,6 +750,7 @@ fn test_finalizer_mailbox_responsive_during_startup_syncing() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -788,6 +795,74 @@ fn test_finalizer_mailbox_responsive_during_startup_syncing() {
                 );
             }
         }
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_finalizer_shuts_down_when_pending_notarized_cap_is_reached() {
+    let cfg = deterministic::Config::default().with_seed(17);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0xEFu8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let engine_client = MockEngineClient::new();
+        engine_client.queue_check_payload_syncing(10);
+
+        let cancellation_token = CancellationToken::new();
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_pending_notarized_cap".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: cancellation_token.clone(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 2,
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(20)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let block_a = create_test_block(genesis_block.digest(), 1, 1, 17001);
+        let block_b = create_test_block(genesis_block.digest(), 1, 1, 17002);
+        let block_c = create_test_block(genesis_block.digest(), 1, 1, 17003);
+
+        mailbox.report(Update::NotarizedBlock(block_a)).await;
+        mailbox.report(Update::NotarizedBlock(block_b)).await;
+        mailbox.report(Update::NotarizedBlock(block_c)).await;
+
+        context.sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            cancellation_token.is_cancelled(),
+            "finalizer should trigger graceful shutdown once pending_notarized reaches its hard cap"
+        );
 
         context.auditor().state()
     });
@@ -861,6 +936,7 @@ fn test_finalizer_finalized_buffer_drains_in_order() {
             // Fast drain so the test doesn't have to sleep for the default 5s.
             drain_interval: Duration::from_millis(50),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 

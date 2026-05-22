@@ -165,6 +165,7 @@ fn test_orphaned_block_processed_when_parent_arrives() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -248,6 +249,7 @@ fn test_multiple_forks_tracked() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -332,6 +334,7 @@ fn test_dead_fork_block_discarded() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -432,6 +435,7 @@ fn test_fork_states_pruned_after_finalization() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -551,6 +555,7 @@ fn test_orphaned_blocks_pruned_after_finalization() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -662,6 +667,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -769,6 +775,7 @@ fn test_competing_fork_pruned_on_finalization() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 

@@ -174,6 +174,7 @@ fn test_get_latest_epoch() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -285,6 +286,7 @@ fn test_get_epoch_genesis_hash() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -384,6 +386,7 @@ fn test_get_aux_data_from_canonical_chain() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -457,6 +460,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             cancellation_token: CancellationToken::new(),
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 

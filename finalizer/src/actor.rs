@@ -191,6 +191,8 @@ pub struct Finalizer<
     // FIFO; each entry is retried independently because forks have independent
     // parent states which are re-resolved by `handle_notarized_block` on drain.
     pending_notarized: VecDeque<PendingNotarized>,
+    // Membership set for deduping `pending_notarized` by block digest.
+    pending_notarized_keys: HashSet<Digest>,
 
     // Whether either buffer has crossed the warn threshold since the last
     // time it was empty. Edge-triggered to avoid log spam on every tick.
@@ -202,6 +204,8 @@ pub struct Finalizer<
     // Soft threshold for emitting a warn log when either pending buffer grows.
     // No cap is enforced; observability only.
     buffered_blocks_warn_threshold: usize,
+    // Hard cap for unique deferred notarized blocks while the EL is SYNCING.
+    pending_notarized_max: usize,
 
     genesis_hash: [u8; 32],
     protocol_consts: ProtocolConsts,
@@ -307,9 +311,11 @@ impl<
                 orphaned_blocks: BTreeMap::new(),
                 pending_finalized: VecDeque::new(),
                 pending_notarized: VecDeque::new(),
+                pending_notarized_keys: HashSet::new(),
                 pending_warn_active: false,
                 drain_interval: cfg.drain_interval,
                 buffered_blocks_warn_threshold: cfg.buffered_blocks_warn_threshold,
+                pending_notarized_max: cfg.pending_notarized_max,
                 genesis_hash: cfg.genesis_hash,
                 protocol_consts: cfg.protocol_consts,
                 protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
@@ -1106,11 +1112,37 @@ impl<
                         ?block_digest,
                         "deferring notarized block: execution layer is SYNCING"
                     );
-                    self.pending_notarized.push_back(PendingNotarized {
-                        block,
-                        first_attempt_at: Instant::now(),
-                    });
-                    self.update_pending_warn();
+                    if self.pending_notarized_keys.contains(&block_digest) {
+                        debug!(
+                            height,
+                            ?block_digest,
+                            "notarized block already pending while EL is SYNCING"
+                        );
+                    } else if self.pending_notarized.len() >= self.pending_notarized_max {
+                        error!(
+                            target: "critical",
+                            height,
+                            ?block_digest,
+                            pending_notarized = self.pending_notarized.len(),
+                            pending_notarized_max = self.pending_notarized_max,
+                            "pending notarized buffer reached hard cap while execution layer is SYNCING"
+                        );
+                        #[cfg(feature = "prom")]
+                        counter!("critical_errors_total", "reason" => "pending_notarized_cap", "severity" => "critical")
+                            .increment(1);
+                        return Err(anyhow!(
+                            "pending notarized buffer reached hard cap {} while executing block at height {}",
+                            self.pending_notarized_max,
+                            height
+                        ));
+                    } else {
+                        self.pending_notarized_keys.insert(block_digest);
+                        self.pending_notarized.push_back(PendingNotarized {
+                            block,
+                            first_attempt_at: Instant::now(),
+                        });
+                        self.update_pending_warn();
+                    }
                     outcome = HandleOutcome::Buffered(());
                     // The next block in `to_process` will be processed.
                     // Potential orphaned children of the current block won't
@@ -1221,6 +1253,8 @@ impl<
         }
 
         while let Some(entry) = self.pending_notarized.pop_front() {
+            let block_digest = entry.block.digest();
+            self.pending_notarized_keys.remove(&block_digest);
             match self.handle_notarized_block(entry.block).await? {
                 HandleOutcome::Applied => continue,
                 HandleOutcome::Buffered(()) => {

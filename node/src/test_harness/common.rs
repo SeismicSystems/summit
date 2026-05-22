@@ -642,6 +642,7 @@ where
         key_store,
         participants,
         mailbox_size: 1024,
+        finalizer_pending_notarized_max: 1000,
         deque_size: 10,
         backfill_quota: Quota::per_second(NonZeroU32::new(512).unwrap()),
         leader_timeout: Duration::from_secs(1),
