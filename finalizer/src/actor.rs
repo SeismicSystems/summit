@@ -1819,6 +1819,9 @@ async fn process_execution_requests<
 ) {
     if is_penultimate_block_of_epoch(state.get_epocher(), new_height) {
         for _ in 0..state.get_max_deposits_per_epoch() as usize {
+            // Break on empty queue so an oversized max_deposits_per_epoch
+            // cannot spin the consensus-critical penultimate block in a
+            // long-running no-op loop.
             if let Some(request) = state.pop_deposit() {
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
 
@@ -1945,6 +1948,8 @@ async fn process_execution_requests<
                         state.set_account(node_pubkey_bytes, account);
                     }
                 }
+            } else {
+                break;
             }
         }
     }
