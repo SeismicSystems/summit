@@ -10,6 +10,7 @@ use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_cryptography::{Hasher, Sha256, ed25519};
 use commonware_parallel::Sequential;
 use commonware_utils::TryCollect;
+use commonware_utils::from_hex_formatted;
 use commonware_utils::ordered::BiMap;
 use rand::rngs::OsRng;
 use ssz::{Decode, Encode as SszEncode};
@@ -145,6 +146,8 @@ pub enum CheckpointVerificationError {
     NonContiguousEpochs { expected: u64, found: u64 },
     SignatureVerificationFailed { epoch: u64 },
     CheckpointHashMismatch,
+    PrevEpochHeaderHashMismatch { epoch: u64 },
+    InvalidGenesisHash(String),
     ValidatorSetMismatch(String),
     ValidatorSetError(String),
 }
@@ -164,6 +167,15 @@ impl fmt::Display for CheckpointVerificationError {
                     f,
                     "checkpoint hash in final header does not match checkpoint digest"
                 )
+            }
+            Self::PrevEpochHeaderHashMismatch { epoch } => {
+                write!(
+                    f,
+                    "prev_epoch_header_hash mismatch for epoch {epoch}: does not chain to previous finalized header"
+                )
+            }
+            Self::InvalidGenesisHash(reason) => {
+                write!(f, "invalid genesis hash: {reason}")
             }
             Self::ValidatorSetMismatch(reason) => {
                 write!(f, "validator set mismatch: {reason}")
@@ -190,6 +202,17 @@ pub fn verify_checkpoint_chain(
     if finalized_headers.is_empty() {
         return Err(CheckpointVerificationError::NoHeaders);
     }
+
+    // Anchor for the epoch-header chain: the first finalized header's
+    // `prev_epoch_header_hash` must equal the eth genesis hash (see
+    // finalizer/src/actor.rs where `prev_header_hash` falls back to
+    // `self.genesis_hash` when no prior finalized header exists).
+    let genesis_hash: Digest = from_hex_formatted(&genesis.eth_genesis_hash)
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .map(Digest::from)
+        .ok_or_else(|| {
+            CheckpointVerificationError::InvalidGenesisHash(genesis.eth_genesis_hash.clone())
+        })?;
 
     // Build initial validator set from genesis
     let validators = genesis
@@ -223,6 +246,19 @@ pub fn verify_checkpoint_chain(
             return Err(CheckpointVerificationError::NonContiguousEpochs {
                 expected: expected_epoch,
                 found: finalized_header.header.epoch,
+            });
+        }
+
+        // Verify the epoch-header chain links to the previous finalized header
+        // (or to genesis for epoch 0).
+        let expected_prev = if i == 0 {
+            genesis_hash
+        } else {
+            finalized_headers[i - 1].header.digest
+        };
+        if finalized_header.header.prev_epoch_header_hash != expected_prev {
+            return Err(CheckpointVerificationError::PrevEpochHeaderHashMismatch {
+                epoch: expected_epoch,
             });
         }
 
