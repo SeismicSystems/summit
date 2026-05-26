@@ -1728,21 +1728,7 @@ async fn parse_execution_requests<
                                 let remaining_balance = account.balance;
                                 withdrawal_request.amount = remaining_balance;
 
-                                // If the validator is in the warm-up phase after depositing the stake
-                                // and before joining the committee, then the onboarding is aborted
-                                if account.joining_epoch > state.get_epoch() {
-                                    // Cancel validator's pending activation
-                                    if state
-                                        .remove_added_validator(account.joining_epoch, &public_key)
-                                    {
-                                        info!(
-                                            validator = ?public_key,
-                                            activation_epoch = account.joining_epoch,
-                                            current_epoch = state.get_epoch(),
-                                            "cancelled pending validator activation due to withdrawal request"
-                                        );
-                                    }
-                                } else if is_last_block_of_epoch(state.get_epocher(), new_height) {
+                                if is_last_block_of_epoch(state.get_epocher(), new_height) {
                                     // On the last block of an epoch, buffer the withdrawal request
                                     // to be processed at the penultimate block of the next epoch.
                                     // This ensures the validator is included in removed_validators
@@ -1757,6 +1743,20 @@ async fn parse_execution_requests<
                                     withdrawal_request.write(&mut deferred_request);
                                     state.push_pending_execution_request(deferred_request.into());
                                     continue;
+                                } else if account.joining_epoch > state.get_epoch() {
+                                    // If the validator is in the warm-up phase after depositing the stake
+                                    // and before joining the committee, then the onboarding is aborted
+                                    if state
+                                        .remove_added_validator(account.joining_epoch, &public_key)
+                                    {
+                                        info!(
+                                            validator = ?public_key,
+                                            activation_epoch = account.joining_epoch,
+                                            current_epoch = state.get_epoch(),
+                                            "cancelled pending validator activation due to withdrawal request"
+                                        );
+                                    }
+                                    account.status = ValidatorStatus::Inactive;
                                 } else {
                                     // Validator is already active - add to removed_validators
                                     state.push_removed_validator(public_key);
