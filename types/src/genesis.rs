@@ -1,5 +1,8 @@
 use crate::PublicKey;
-use crate::protocol_params::{MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_ALLOWED_TIMESTAMP_FUTURE_MS};
+use crate::protocol_params::{
+    MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR,
+    MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+};
 use alloy_primitives::Address;
 use anyhow::Context;
 use commonware_codec::DecodeExt;
@@ -135,11 +138,16 @@ impl Genesis {
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let file_string = std::fs::read_to_string(path)?;
         let genesis: Genesis = toml::from_str(&file_string)?;
-        if genesis.blocks_per_epoch == 0 {
+        genesis.validate()?;
+        Ok(genesis)
+    }
+
+    fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.blocks_per_epoch == 0 {
             return Err("blocks_per_epoch must be greater than 0".into());
         }
-        if genesis.allowed_timestamp_future_ms < MIN_ALLOWED_TIMESTAMP_FUTURE_MS
-            || genesis.allowed_timestamp_future_ms > MAX_ALLOWED_TIMESTAMP_FUTURE_MS
+        if self.allowed_timestamp_future_ms < MIN_ALLOWED_TIMESTAMP_FUTURE_MS
+            || self.allowed_timestamp_future_ms > MAX_ALLOWED_TIMESTAMP_FUTURE_MS
         {
             return Err(format!(
                 "allowed_timestamp_future_ms must be between {} and {}",
@@ -147,12 +155,37 @@ impl Genesis {
             )
             .into());
         }
-        // Validate treasury_address is a valid address
-        genesis
-            .treasury_address
+        self.treasury_address
             .parse::<Address>()
             .map_err(|e| format!("invalid treasury_address: {e}"))?;
-        Ok(genesis)
+        // Genesis must respect the same upper bounds the runtime
+        // protocol-parameter update path enforces; otherwise an unchecked
+        // genesis value (e.g. supplied over a first-boot RPC) can drive
+        // consensus state outside any limit Summit policy was designed for.
+        if self.max_deposits_per_epoch > MAX_MAX_DEPOSITS_PER_EPOCH {
+            return Err(format!(
+                "max_deposits_per_epoch {} exceeds maximum {}",
+                self.max_deposits_per_epoch, MAX_MAX_DEPOSITS_PER_EPOCH
+            )
+            .into());
+        }
+        if self.max_withdrawals_per_epoch < MAX_WITHDRAWALS_PER_EPOCH_MIN
+            || self.max_withdrawals_per_epoch > MAX_WITHDRAWALS_PER_EPOCH_MAX
+        {
+            return Err(format!(
+                "max_withdrawals_per_epoch must be between {} and {}",
+                MAX_WITHDRAWALS_PER_EPOCH_MIN, MAX_WITHDRAWALS_PER_EPOCH_MAX
+            )
+            .into());
+        }
+        if u64::from(self.observers_per_validator) > MAX_OBSERVERS_PER_VALIDATOR {
+            return Err(format!(
+                "observers_per_validator {} exceeds maximum {}",
+                self.observers_per_validator, MAX_OBSERVERS_PER_VALIDATOR
+            )
+            .into());
+        }
+        Ok(())
     }
 
     pub fn ip_of(&self, target_public_key: &PublicKey) -> Option<SocketAddr> {
@@ -239,5 +272,70 @@ mod tests {
             let found_addr = genesis.ip_of(&validator.node_public_key);
             assert_eq!(found_addr, Some(validator.ip_address));
         }
+    }
+
+    /// A genesis value equal to the runtime upper bound is the largest
+    /// value Summit policy ever accepts, so it must validate.
+    #[test]
+    fn accepts_max_deposits_per_epoch_at_upper_bound() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_deposits_per_epoch = MAX_MAX_DEPOSITS_PER_EPOCH;
+        assert!(genesis.validate().is_ok());
+    }
+
+    /// Anything above the runtime cap must be rejected at genesis load —
+    /// otherwise the first-boot genesis path can seed consensus state
+    /// outside the bound the runtime update path enforces.
+    #[test]
+    fn rejects_max_deposits_per_epoch_above_upper_bound() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_deposits_per_epoch = MAX_MAX_DEPOSITS_PER_EPOCH + 1;
+        assert!(genesis.validate().is_err());
+    }
+
+    /// u64::MAX is the worst case: with no genesis cap, the penultimate
+    /// deposit-processing loop would iterate u64::MAX times on an empty
+    /// queue and stall finalization.
+    #[test]
+    fn rejects_max_deposits_per_epoch_u64_max() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_deposits_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_max_withdrawals_per_epoch_at_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_withdrawals_per_epoch = MAX_WITHDRAWALS_PER_EPOCH_MIN;
+        assert!(genesis.validate().is_ok());
+        genesis.max_withdrawals_per_epoch = MAX_WITHDRAWALS_PER_EPOCH_MAX;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_max_withdrawals_per_epoch_outside_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_withdrawals_per_epoch = 0; // below MAX_WITHDRAWALS_PER_EPOCH_MIN (1)
+        assert!(genesis.validate().is_err());
+        genesis.max_withdrawals_per_epoch = MAX_WITHDRAWALS_PER_EPOCH_MAX + 1;
+        assert!(genesis.validate().is_err());
+        genesis.max_withdrawals_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_observers_per_validator_at_upper_bound() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.observers_per_validator = MAX_OBSERVERS_PER_VALIDATOR as u32;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_observers_per_validator_above_upper_bound() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.observers_per_validator = (MAX_OBSERVERS_PER_VALIDATOR as u32) + 1;
+        assert!(genesis.validate().is_err());
+        genesis.observers_per_validator = u32::MAX;
+        assert!(genesis.validate().is_err());
     }
 }
