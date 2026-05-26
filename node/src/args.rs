@@ -109,6 +109,11 @@ pub struct RunFlags {
     #[arg(long, default_value_t = 3030)]
     pub rpc_port: u16,
 
+    /// Port for the localhost-only admin RPC server (handles validator-key
+    /// signing methods like `getDepositSignature`).
+    #[arg(long, default_value_t = 3031)]
+    pub admin_rpc_port: u16,
+
     /// Number of tokio worker threads (defaults to number of logical CPUs)
     #[arg(long)]
     pub worker_threads: Option<usize>,
@@ -683,12 +688,14 @@ where
     // Start RPC server
     let key_store_path = flags.key_store_path;
     let rpc_port = flags.rpc_port;
+    let admin_rpc_port = flags.admin_rpc_port;
     let stop_signal = context.stopped();
     let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
         if let Err(e) = start_rpc_server(
             finalizer_mailbox,
             key_store_path,
             rpc_port,
+            admin_rpc_port,
             stop_signal,
             #[cfg(feature = "permissioned")]
             paused,
