@@ -67,7 +67,7 @@ fn test_added_validators_at_epoch_boundary() {
 
         // Create a deposit request for a new validator
         let (test_deposit, _, _) =
-            common::create_deposit_request(10, min_stake, common::get_domain(), None, None);
+            common::create_deposit_request(10, min_stake, common::get_domain(), None, None, None);
 
         let new_validator_node_key = test_deposit.node_pubkey.clone();
         let new_validator_consensus_key = test_deposit.consensus_pubkey.clone();

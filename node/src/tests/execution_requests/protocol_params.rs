@@ -586,6 +586,7 @@ fn test_protocol_param_stake_update_committee() {
                 deposit_amount,
                 common::get_domain(),
                 Some(key_stores[i as usize].node_key.clone()),
+                Some(key_stores[i as usize].consensus_key.clone()),
                 None,
             );
             deposit_requests.push(ExecutionRequest::Deposit(deposit));
@@ -598,6 +599,7 @@ fn test_protocol_param_stake_update_committee() {
             deposit_amount_validator8,
             common::get_domain(),
             Some(key_stores[8].node_key.clone()),
+            Some(key_stores[8].consensus_key.clone()),
             None,
         );
         deposit_requests.push(ExecutionRequest::Deposit(deposit8));

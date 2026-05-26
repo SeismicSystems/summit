@@ -2173,6 +2173,17 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
 
     // Check for pending deposit or withdrawal (only if account exists)
     if let Some(acc) = account {
+        // Top-up deposits must carry the same BLS consensus key already
+        // stored on the account. Otherwise the deposit shape and the
+        // validator's effective consensus key drift apart and the
+        // BLS-uniqueness invariant becomes harder to reason about (see also
+        // the cross-account duplicate-BLS scan below).
+        if acc.consensus_public_key != deposit_request.consensus_pubkey {
+            info!(
+                "Skipping deposit request: consensus_pubkey does not match the BLS key already stored on this validator account: {deposit_request:?}"
+            );
+            return Err(DepositRejectionReason::Refund);
+        }
         if acc.has_pending_deposit {
             info!(
                 "Skipping deposit request because the validator already has a pending deposit request: {deposit_request:?}"
@@ -2182,6 +2193,22 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
         if acc.has_pending_withdrawal {
             info!(
                 "Skipping deposit request because the validator already has a pending withdrawal request: {deposit_request:?}"
+            );
+            return Err(DepositRejectionReason::Refund);
+        }
+    }
+
+    // Cross-account BLS uniqueness: reject if the submitted consensus_pubkey
+    // is already attached to a *different* validator account. Without this
+    // check, an actor controlling an already-used BLS private key could
+    // register a second validator identity under a fresh node key, and once
+    // both were active the orchestrator's BiMap construction would panic on
+    // the duplicate BLS value.
+    for (key, acc) in state.validator_accounts_iter() {
+        if key != &validator_pubkey && acc.consensus_public_key == deposit_request.consensus_pubkey
+        {
+            info!(
+                "Skipping deposit request: consensus_pubkey is already attached to a different validator account: {deposit_request:?}"
             );
             return Err(DepositRejectionReason::Refund);
         }
