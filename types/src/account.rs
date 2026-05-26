@@ -30,6 +30,10 @@ impl ValidatorStatus {
             _ => Err("Invalid ValidatorStatus value"),
         }
     }
+
+    pub fn is_active_or_joining(&self) -> bool {
+        matches!(self, Self::Active) || matches!(self, Self::Joining)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
