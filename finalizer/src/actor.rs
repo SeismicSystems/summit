@@ -23,7 +23,7 @@ use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::{Duration, Instant};
@@ -1788,6 +1788,27 @@ async fn parse_execution_requests<
                         ExecutionRequest::ProtocolParam(protocol_param_request) => {
                             info!("Received protocol param request: {protocol_param_request:?}");
 
+                            // Buffer protocol param requests landing on the last block of
+                            // an epoch. Stake bound force removals are staged at the
+                            // penultimate block so they can appear in the last block's
+                            // removed_validators header delta. A request arriving on the
+                            // last block itself misses that window, so we defer it via
+                            // the pending execution request queue, mirroring how
+                            // withdrawal requests are handled. The request will replay
+                            // at the first block of the next epoch and apply naturally
+                            // at the next epoch boundary.
+                            if is_last_block_of_epoch(state.get_epocher(), new_height) {
+                                info!(
+                                    new_height,
+                                    current_epoch = state.get_epoch(),
+                                    "buffering protocol param request on last block of epoch: {protocol_param_request:?}"
+                                );
+                                let mut deferred_request = vec![0xFF];
+                                protocol_param_request.write(&mut deferred_request);
+                                state.push_pending_execution_request(deferred_request.into());
+                                continue;
+                            }
+
                             match ProtocolParam::try_from(protocol_param_request) {
                                 Ok(protocol_param) => {
                                     info!("Adding protocol param change: {protocol_param:?}");
@@ -1945,6 +1966,76 @@ async fn process_execution_requests<
                         state.set_account(node_pubkey_bytes, account);
                     }
                 }
+            }
+        }
+
+        // Stage stake-bound force-removals for the upcoming epoch boundary.
+        //
+        // Protocol-param changes themselves don't take effect until the last block of
+        // the epoch (see `apply_protocol_parameter_changes`), but any validator that
+        // will fall below the new minimum stake must show up in the last block's
+        // header delta. Otherwise a checkpoint verifier walking from genesis would
+        // reconstruct a different committee than live nodes.
+        //
+        // We split by activation status:
+        //   - Active validators: push to `removed_validators` so the delta lands in
+        //     the last block's header.
+        //   - Joining validators (joining_epoch > current_epoch): cancel the pending
+        //     activation via `remove_added_validator`. They were never in any
+        //     header's `added_validators` (next_epoch < joining_epoch up to now), so
+        //     no `removed_validators` delta is needed; cancelling the activation
+        //     keeps live state and verifier-reconstructed state in agreement.
+        //
+        // Balance zeroing, withdrawal scheduling, and status flips stay in the
+        // last-block path so the new bounds are only "effective" in the new epoch.
+        if state.has_pending_stake_bound_change() {
+            let prospective_min = state.prospective_minimum_stake();
+            let current_epoch = state.get_epoch();
+            let candidates: Vec<([u8; 32], u64)> = state
+                .validator_accounts_iter()
+                .filter_map(|(key, account)| {
+                    if account.balance < prospective_min {
+                        Some((*key, account.joining_epoch))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let already_removed: HashSet<PublicKey> =
+                state.get_removed_validators().iter().cloned().collect();
+            for (key, joining_epoch) in candidates {
+                let Ok(public_key) = PublicKey::decode(&key[..]) else {
+                    continue;
+                };
+
+                if joining_epoch > current_epoch {
+                    // This is a joining validator. Cancel the pending activation instead of
+                    // staging a removal. The validator has not yet been emitted in
+                    // any header's `added_validators`, so removing the pending
+                    // activation is sufficient to keep verifier reconstruction
+                    // aligned with the live committee.
+                    if state.remove_added_validator(joining_epoch, &public_key) {
+                        info!(
+                            validator = hex::encode(public_key.as_ref()),
+                            joining_epoch,
+                            current_epoch,
+                            prospective_min,
+                            "cancelling Joining validator's pending activation at penultimate block (below new min stake)"
+                        );
+                    }
+                    continue;
+                }
+
+                if already_removed.contains(&public_key) {
+                    continue;
+                }
+                info!(
+                    validator = hex::encode(public_key.as_ref()),
+                    prospective_min,
+                    current_epoch,
+                    "staging force-removal at penultimate block for header delta"
+                );
+                state.push_removed_validator(public_key);
             }
         }
     }
