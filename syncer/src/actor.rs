@@ -15,7 +15,7 @@ use commonware_consensus::simplex::types::{
     Finalization, Notarization, Subject, verify_certificates,
 };
 use commonware_consensus::types::{Epoch, Epocher, Height, Round, View, ViewDelta};
-use commonware_consensus::{Block, Epochable, Reporter};
+use commonware_consensus::{Block, Epochable, Reporter, Viewable};
 use commonware_cryptography::PublicKey;
 use commonware_cryptography::certificate::Scheme as CertificateScheme;
 use commonware_macros::select_loop;
@@ -197,7 +197,7 @@ struct BlockSubscription<B: Block> {
 pub struct Actor<E, B, P, FC, FB, ES, T, A = Exact>
 where
     E: BufferPooler + CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
-    B: Block<Digest = Digest>,
+    B: Block<Digest = Digest> + Epochable + Viewable,
     P: Provider<Scope = Epoch, Scheme: Scheme<B::Digest>>,
     FC: Certificates<BlockDigest = B::Digest, Commitment = B::Digest, Scheme = P::Scheme>,
     FB: Blocks<Block = B>,
@@ -260,7 +260,7 @@ where
 impl<E, B, P, FC, FB, ES, T, A> Actor<E, B, P, FC, FB, ES, T, A>
 where
     E: BufferPooler + CryptoRngCore + Spawner + Metrics + Clock + GClock + Storage,
-    B: Block<Digest = Digest>,
+    B: Block<Digest = Digest> + Epochable + Viewable,
     P: Provider<Scope = Epoch, Scheme: Scheme<B::Digest>>,
     FC: Certificates<BlockDigest = B::Digest, Commitment = B::Digest, Scheme = P::Scheme>,
     FB: Blocks<Block = B>,
@@ -948,10 +948,22 @@ where
                     return false;
                 };
 
+                let certified_round = finalization.round();
                 if block.height() != height
                     || finalization.proposal.payload != block.digest()
                     || finalization.epoch() != epoch
+                    || block.epoch() != certified_round.epoch()
+                    || block.view() != certified_round.view()
                 {
+                    warn!(
+                        ?certified_round,
+                        block_height = %block.height(),
+                        block_epoch = %block.epoch(),
+                        block_view = %block.view(),
+                        expected_height = %height,
+                        expected_epoch = %epoch,
+                        "rejecting finalized delivery with header/certificate round mismatch"
+                    );
                     response.send_lossy(false);
                     return false;
                 }
@@ -986,8 +998,18 @@ where
                     return false;
                 };
 
-                if notarization.round() != round || notarization.proposal.payload != block.digest()
+                let certified_round = notarization.round();
+                if certified_round != round
+                    || notarization.proposal.payload != block.digest()
+                    || block.epoch() != certified_round.epoch()
+                    || block.view() != certified_round.view()
                 {
+                    warn!(
+                        ?certified_round,
+                        block_epoch = %block.epoch(),
+                        block_view = %block.view(),
+                        "rejecting notarized delivery with header/certificate round mismatch"
+                    );
                     response.send_lossy(false);
                     return false;
                 }

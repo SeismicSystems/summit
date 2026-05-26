@@ -6,8 +6,8 @@ use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::Viewable;
-use commonware_consensus::types::{Height, View};
-use commonware_consensus::{Block as ConsensusBlock, Heightable};
+use commonware_consensus::types::{Epoch, Height, View};
+use commonware_consensus::{Block as ConsensusBlock, Epochable, Heightable};
 use commonware_cryptography::{Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
 use ssz_derive::{Decode, Encode};
@@ -179,6 +179,12 @@ impl Block {
 impl Heightable for Block {
     fn height(&self) -> Height {
         Height::new(self.header.height())
+    }
+}
+
+impl Epochable for Block {
+    fn epoch(&self) -> Epoch {
+        Epoch::new(self.header.epoch())
     }
 }
 
