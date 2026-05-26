@@ -35,6 +35,18 @@ fn create_test_block_with_epoch(
     unique_seed: u64,
     epoch: u64,
 ) -> Block {
+    create_test_block_with_requests(parent_digest, height, view, unique_seed, epoch, Vec::new())
+}
+
+/// Helper to create a test block with execution requests attached.
+fn create_test_block_with_requests(
+    parent_digest: Digest,
+    height: u64,
+    view: u64,
+    unique_seed: u64,
+    epoch: u64,
+    execution_requests: Vec<alloy_primitives::Bytes>,
+) -> Block {
     let mut block_hash = [0u8; 32];
     block_hash[0..8].copy_from_slice(&unique_seed.to_le_bytes());
     block_hash[8..16].copy_from_slice(&height.to_le_bytes());
@@ -74,7 +86,7 @@ fn create_test_block_with_epoch(
         height,
         height * 12,
         payload,
-        Vec::new(),
+        execution_requests,
         U256::ZERO,
         epoch,
         view,
@@ -84,6 +96,33 @@ fn create_test_block_with_epoch(
         Vec::new(),
         [0u8; 32],
     )
+}
+
+/// Encode a full-exit withdrawal request as a type-0x01 EIP-7685 entry.
+fn full_exit_withdrawal_entry(
+    validator_pubkey: [u8; 32],
+    withdrawal_address: Address,
+) -> alloy_primitives::Bytes {
+    use commonware_codec::Write as _;
+    use summit_types::execution_request::WithdrawalRequest;
+    let withdrawal = WithdrawalRequest {
+        source_address: withdrawal_address,
+        validator_pubkey,
+        // Summit ignores the request amount and pays out the full balance;
+        // we use 0 to make the intent ("full exit") explicit.
+        amount: 0,
+    };
+    let mut entry = vec![0x01u8];
+    withdrawal.write(&mut entry);
+    entry.into()
+}
+
+/// Encode a MaximumStake protocol-param change as a type-0xFF EIP-7685 entry.
+/// Layout: 0xFF | param_id(0x01 = MaximumStake) | length(8) | value (LE u64).
+fn maximum_stake_protocol_param_entry(new_max_stake: u64) -> alloy_primitives::Bytes {
+    let mut entry = vec![0xFFu8, 0x01u8, 8u8];
+    entry.extend_from_slice(&new_max_stake.to_le_bytes());
+    entry.into()
 }
 
 /// Create a minimal initial ConsensusState for testing
@@ -259,6 +298,158 @@ fn test_validator_exit_triggers_cancellation() {
         assert!(
             token_clone.is_cancelled(),
             "Token should be cancelled at first block of new epoch after validator exit"
+        );
+
+        context.auditor().state()
+    });
+}
+
+/// An active validator's full exit on the last block of an epoch must
+/// dominate a concurrent `MaximumStake` reduction at the same boundary:
+/// the buffered exit replays on the first block of the next epoch and the
+/// validator transitions to `SubmittedExitRequest` with balance zeroed,
+/// rather than being clipped to the new maximum by stake-bound enforcement.
+#[test]
+fn last_block_exit_dominates_concurrent_max_stake_reduction() {
+    let cfg = deterministic::Config::default().with_seed(57);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x57u8; 32];
+
+        let local_node_key = ed25519::PrivateKey::from_seed(1);
+        let local_node_pubkey = local_node_key.public_key();
+        let exiting_node_key = ed25519::PrivateKey::from_seed(0);
+        let exiting_node_pubkey = exiting_node_key.public_key();
+        let exiting_pubkey_bytes: [u8; 32] = exiting_node_pubkey.as_ref().try_into().unwrap();
+        let exiting_withdrawal_address = Address::from([0u8; 20]);
+        let initial_balance: u64 = 32_000_000_000;
+        let reduced_max_stake: u64 = initial_balance - 1_000_000_000;
+
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let cancellation_token = CancellationToken::new();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_last_block_exit_dominates_max_stake".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: local_node_pubkey,
+            cancellation_token,
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(50)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+
+        // Block 1: empty.
+        let b1 = create_test_block_with_epoch(parent_digest, 1, 2, 18001, 0);
+        parent_digest = b1.digest();
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((b1, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(30)).await;
+
+        // Block 2: queue MaximumStake reduction (activates at the epoch boundary).
+        let b2 = create_test_block_with_requests(
+            parent_digest,
+            2,
+            3,
+            18002,
+            0,
+            vec![maximum_stake_protocol_param_entry(reduced_max_stake)],
+        );
+        parent_digest = b2.digest();
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((b2, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(30)).await;
+
+        // Block 3: empty (penultimate of epoch 0).
+        let b3 = create_test_block_with_epoch(parent_digest, 3, 4, 18003, 0);
+        parent_digest = b3.digest();
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((b3, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(30)).await;
+
+        // Block 4 (LAST of epoch 0): full exit for the exiting validator.
+        let b4 = create_test_block_with_requests(
+            parent_digest,
+            4,
+            5,
+            18004,
+            0,
+            vec![full_exit_withdrawal_entry(
+                exiting_pubkey_bytes,
+                exiting_withdrawal_address,
+            )],
+        );
+        let b4_digest = b4.digest();
+        parent_digest = b4_digest;
+        let finalization4 = make_finalization(b4_digest, 4, 3, &schemes, quorum);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((b4, Some(finalization4)), ack))
+            .await;
+        context.sleep(Duration::from_millis(50)).await;
+
+        // Block 5 (first of epoch 1): the buffered exit replays.
+        let b5 = create_test_block_with_epoch(parent_digest, 5, 6, 18005, 1);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((b5, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(50)).await;
+
+        let account = mailbox
+            .get_validator_account(exiting_node_pubkey.clone())
+            .await
+            .expect("exiting validator account must still exist after the deferred exit replays");
+
+        assert_eq!(
+            account.status,
+            ValidatorStatus::SubmittedExitRequest,
+            "full exit must take effect on replay; validator should be in SubmittedExitRequest"
+        );
+        assert_eq!(
+            account.balance, 0,
+            "full exit must zero the balance, not leave it clipped to {reduced_max_stake} gwei"
+        );
+        assert!(
+            account.has_pending_withdrawal,
+            "the full-exit withdrawal must be scheduled"
         );
 
         context.auditor().state()
