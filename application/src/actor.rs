@@ -302,7 +302,7 @@ impl<
                                                 }
 
                                                 let now_millis = context.current().epoch_millis();
-                                                if handle_verify(&block, parent, &epocher, &aux_data, now_millis) {
+                                                if handle_verify(round, &block, parent, &epocher, &aux_data, now_millis) {
                                                     // persist valid block
                                                     syncer.verified(round, block).await;
 
@@ -596,12 +596,21 @@ impl<
 }
 
 fn handle_verify<ES: Epocher>(
+    round: Round,
     block: &Block,
     parent: Block,
     epocher: &ES,
     aux_data: &BlockAuxData,
     now_millis: u64,
 ) -> bool {
+    if round.epoch().get() != aux_data.epoch {
+        warn!(
+            "epoch mismatch: simplex epoch {}, finalizer epoch: {}",
+            round.epoch().get(),
+            aux_data.epoch
+        );
+        return false;
+    }
     // You can only re-propose the same block iff it's the last height in the epoch.
     let last_in_epoch = epocher
         .last(Epoch::new(aux_data.epoch))
@@ -812,8 +821,9 @@ mod tests {
         let block = parent.clone();
         let aux_data = make_aux_data(0);
 
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
         assert!(
-            handle_verify(&block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
             "re-proposal of the epoch-terminal block must be accepted"
         );
     }
@@ -846,8 +856,9 @@ mod tests {
 
         let aux_data = make_aux_data(0);
 
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
         assert!(
-            !handle_verify(&block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            !handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
             "non-reproposal child whose parent is the epoch-terminal block \
              must be rejected"
         );
@@ -875,8 +886,9 @@ mod tests {
 
         let aux_data = make_aux_data(0);
 
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
         assert!(
-            handle_verify(&block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
             "ordinary child inside the parent's epoch must be accepted"
         );
     }
