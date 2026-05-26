@@ -2276,7 +2276,7 @@ fn test_joining_validator_withdrawal_on_last_block_keeps_header_consistent() {
             .get_finalized_header(1)
             .await
             .expect("missing finalized header for epoch 1");
-        let added_epoch_1 = &header_epoch_1.header.added_validators;
+        let added_epoch_1 = header_epoch_1.header.added_validators();
         assert!(
             added_epoch_1
                 .iter()
@@ -2293,7 +2293,7 @@ fn test_joining_validator_withdrawal_on_last_block_keeps_header_consistent() {
             .get_finalized_header(2)
             .await
             .expect("missing finalized header for epoch 2");
-        let removed_epoch_2 = &header_epoch_2.header.removed_validators;
+        let removed_epoch_2 = header_epoch_2.header.removed_validators();
         assert!(
             removed_epoch_2.contains(&new_validator_pubkey),
             "epoch 2 header must include the joining validator in removed_validators \
