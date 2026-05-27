@@ -30,6 +30,7 @@ use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox, ProtocolConsts};
 use summit_syncer::{SyncCheckpoint, SyncStart};
+use summit_types::consensus_state_query::ConsensusStateQuery;
 use summit_types::dynamic_epocher::DynamicEpocher;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
@@ -102,6 +103,7 @@ pub struct Engine<
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
     finalizer: Finalizer<E, C, O, S, MinPk>,
     pub finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    pub finalizer_state_query: ConsensusStateQuery<MultisigScheme>,
     orchestrator: summit_orchestrator::Actor<
         E,
         O,
@@ -153,7 +155,7 @@ where
         let paused = Arc::new(AtomicBool::new(false));
 
         // create finalizer
-        let (finalizer, initial_state, finalizer_mailbox) = Finalizer::new(
+        let (finalizer, initial_state, finalizer_mailbox, finalizer_state_query) = Finalizer::new(
             context.with_label("finalizer"),
             FinalizerConfig {
                 mailbox_size: cfg.mailbox_size,
@@ -368,6 +370,7 @@ where
             syncer_mailbox,
             finalizer,
             finalizer_mailbox,
+            finalizer_state_query,
             orchestrator,
             orchestrator_mailbox,
             oracle: cfg.oracle,

@@ -21,18 +21,21 @@ use ssz::Encode as _;
 use std::sync::Arc;
 #[cfg(feature = "permissioned")]
 use std::sync::atomic::{AtomicBool, Ordering};
-use summit_finalizer::FinalizerMailbox;
-use summit_types::Block;
+use summit_types::consensus_state_query::ConsensusStateQuery;
 use summit_types::scheme::MultisigScheme;
+use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::{
     Digest, KeyPaths, PublicKey, deposit_signature_domain,
     execution_request::{DepositRequest, compute_deposit_data_root},
 };
 
+const MAX_STATE_PROOF_KEYS: usize = 128;
+const MAX_STATE_PROOF_COST: usize = 512;
+
 #[derive(Clone)]
 pub struct SummitRpcServer {
     key_store_path: String,
-    finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    state_query: ConsensusStateQuery<MultisigScheme>,
     deposit_signature_domain: Digest,
     /// The derived child public key (hex) used as the live P2P identity when
     /// the node runs with `--observer`; `None` on validator nodes. Observers
@@ -47,7 +50,7 @@ pub struct SummitRpcServer {
 impl SummitRpcServer {
     pub fn new(
         key_store_path: String,
-        finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+        state_query: ConsensusStateQuery<MultisigScheme>,
         genesis_hash: [u8; 32],
         namespace: &[u8],
         observer_node_key: Option<String>,
@@ -55,12 +58,29 @@ impl SummitRpcServer {
     ) -> Self {
         Self {
             key_store_path,
-            finalizer_mailbox,
+            state_query,
             deposit_signature_domain: deposit_signature_domain(genesis_hash, namespace),
             observer_node_key,
             #[cfg(feature = "permissioned")]
             paused,
         }
+    }
+}
+
+fn state_proof_key_cost(key: &SszStateKey) -> usize {
+    match key {
+        SszStateKey::Scalar(_) => 1,
+        SszStateKey::Validator(_)
+        | SszStateKey::Deposit(_)
+        | SszStateKey::Withdrawal(_)
+        | SszStateKey::ProtocolParam(_)
+        | SszStateKey::AddedValidator(_)
+        | SszStateKey::RemovedValidator(_) => 4,
+        SszStateKey::ValidatorField(_, _)
+        | SszStateKey::DepositField(_, _)
+        | SszStateKey::WithdrawalField(_, _)
+        | SszStateKey::ProtocolParamField(_, _)
+        | SszStateKey::AddedValidatorField(_, _) => 8,
     }
 }
 
@@ -95,18 +115,14 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_checkpoint(&self, epoch: u64) -> RpcResult<CheckpointRes> {
-        let maybe_checkpoint = self.finalizer_mailbox.clone().get_checkpoint(epoch).await;
+        let maybe_checkpoint = self.state_query.clone().get_checkpoint(epoch).await;
 
         let Some((checkpoint, last_block)) = maybe_checkpoint else {
             return Err(RpcError::CheckpointNotFound.into());
         };
 
         // try to get the finalized header for this epoch
-        let maybe_header = self
-            .finalizer_mailbox
-            .clone()
-            .get_finalized_header(epoch)
-            .await;
+        let maybe_header = self.state_query.clone().get_finalized_header(epoch).await;
 
         let Some(header) = maybe_header else {
             return Err(RpcError::CheckpointNotFound.into());
@@ -122,18 +138,14 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_latest_checkpoint(&self) -> RpcResult<CheckpointRes> {
-        let maybe_checkpoint = self.finalizer_mailbox.clone().get_latest_checkpoint().await;
+        let maybe_checkpoint = self.state_query.clone().get_latest_checkpoint().await;
 
         let (Some((checkpoint, last_block)), epoch) = maybe_checkpoint else {
             return Err(RpcError::CheckpointNotFound.into());
         };
 
         // try to get the finalized header for this epoch
-        let maybe_header = self
-            .finalizer_mailbox
-            .clone()
-            .get_finalized_header(epoch)
-            .await;
+        let maybe_header = self.state_query.clone().get_finalized_header(epoch).await;
 
         let Some(header) = maybe_header else {
             return Err(RpcError::CheckpointNotFound.into());
@@ -149,7 +161,7 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_latest_checkpoint_info(&self) -> RpcResult<CheckpointInfoRes> {
-        let maybe_checkpoint = self.finalizer_mailbox.clone().get_latest_checkpoint().await;
+        let maybe_checkpoint = self.state_query.clone().get_latest_checkpoint().await;
 
         let (Some((checkpoint, _)), epoch) = maybe_checkpoint else {
             return Err(RpcError::CheckpointNotFound.into());
@@ -162,11 +174,7 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_finalized_header(&self, epoch: u64) -> RpcResult<FinalizedHeaderRes> {
-        let maybe_header = self
-            .finalizer_mailbox
-            .clone()
-            .get_finalized_header(epoch)
-            .await;
+        let maybe_header = self.state_query.clone().get_finalized_header(epoch).await;
 
         let Some(header) = maybe_header else {
             return Err(RpcError::FinalizedHeaderNotFound.into());
@@ -196,12 +204,12 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_latest_height(&self) -> RpcResult<u64> {
-        let height = self.finalizer_mailbox.get_latest_height().await;
+        let height = self.state_query.get_latest_height().await;
         Ok(height)
     }
 
     async fn get_latest_epoch(&self) -> RpcResult<u64> {
-        let epoch = self.finalizer_mailbox.get_latest_epoch().await;
+        let epoch = self.state_query.get_latest_epoch().await;
         Ok(epoch)
     }
 
@@ -212,10 +220,7 @@ impl SummitApiServer for SummitRpcServer {
         let public_key = PublicKey::decode(&*key_bytes)
             .map_err(|_| RpcError::InvalidPublicKey("Unable to decode public key".to_string()))?;
 
-        let balance = self
-            .finalizer_mailbox
-            .get_validator_balance(public_key)
-            .await;
+        let balance = self.state_query.get_validator_balance(public_key).await;
 
         match balance {
             Some(balance) => Ok(balance),
@@ -233,10 +238,7 @@ impl SummitApiServer for SummitRpcServer {
         let public_key = PublicKey::decode(&*key_bytes)
             .map_err(|_| RpcError::InvalidPublicKey("Unable to decode public key".to_string()))?;
 
-        let account = self
-            .finalizer_mailbox
-            .get_validator_account(public_key)
-            .await;
+        let account = self.state_query.get_validator_account(public_key).await;
 
         match account {
             Some(a) => Ok(ValidatorAccountResponse {
@@ -254,32 +256,32 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_minimum_stake(&self) -> RpcResult<u64> {
-        let minimum_stake = self.finalizer_mailbox.get_minimum_stake().await;
+        let minimum_stake = self.state_query.get_minimum_stake().await;
         Ok(minimum_stake)
     }
 
     async fn get_maximum_stake(&self) -> RpcResult<u64> {
-        let maximum_stake = self.finalizer_mailbox.get_maximum_stake().await;
+        let maximum_stake = self.state_query.get_maximum_stake().await;
         Ok(maximum_stake)
     }
 
     async fn get_epoch_length(&self) -> RpcResult<u64> {
-        let epoch_length = self.finalizer_mailbox.get_epoch_length().await;
+        let epoch_length = self.state_query.get_epoch_length().await;
         Ok(epoch_length)
     }
 
     async fn get_allowed_timestamp_future(&self) -> RpcResult<u64> {
-        let ms = self.finalizer_mailbox.get_allowed_timestamp_future().await;
+        let ms = self.state_query.get_allowed_timestamp_future().await;
         Ok(ms)
     }
 
     async fn get_treasury_address(&self) -> RpcResult<String> {
-        let address = self.finalizer_mailbox.get_treasury_address().await;
+        let address = self.state_query.get_treasury_address().await;
         Ok(address.to_string())
     }
 
     async fn get_epoch_bounds(&self, epoch: u64) -> RpcResult<EpochBoundsResponse> {
-        let bounds = self.finalizer_mailbox.get_epoch_bounds(epoch).await;
+        let bounds = self.state_query.get_epoch_bounds(epoch).await;
         match bounds {
             Some((first_height, last_height)) => Ok(EpochBoundsResponse {
                 first_height,
@@ -290,7 +292,7 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_deposit(&self, index: usize) -> RpcResult<DepositResponse> {
-        let deposit = self.finalizer_mailbox.get_deposit(index).await;
+        let deposit = self.state_query.get_deposit(index).await;
         match deposit {
             Some(d) => Ok(DepositResponse {
                 node_pubkey: d
@@ -310,7 +312,7 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_deposit_count(&self) -> RpcResult<usize> {
-        let count = self.finalizer_mailbox.get_deposit_count().await;
+        let count = self.state_query.get_deposit_count().await;
         Ok(count)
     }
 
@@ -325,7 +327,7 @@ impl SummitApiServer for SummitRpcServer {
             .try_into()
             .map_err(|_| RpcError::InvalidPublicKey("pubkey must be 32 bytes".to_string()))?;
 
-        let withdrawal = self.finalizer_mailbox.get_withdrawal(pubkey).await;
+        let withdrawal = self.state_query.get_withdrawal(pubkey).await;
         match withdrawal {
             Some(w) => Ok(PendingWithdrawalResponse {
                 withdrawal_index: w.inner.index,
@@ -449,7 +451,7 @@ impl SummitPermissionedApiServer for SummitRpcServer {
 #[async_trait]
 impl SummitProofApiServer for SummitRpcServer {
     async fn get_state_root(&self) -> RpcResult<StateRootResponse> {
-        let (root, el_block_number) = self.finalizer_mailbox.get_state_root().await;
+        let (root, el_block_number) = self.state_query.get_state_root().await;
         Ok(StateRootResponse {
             root,
             el_block_number,
@@ -457,16 +459,34 @@ impl SummitProofApiServer for SummitRpcServer {
     }
 
     async fn get_state_proof(&self, keys: Vec<String>) -> RpcResult<StateProofResponse> {
+        if keys.len() > MAX_STATE_PROOF_KEYS {
+            return Err(RpcError::StateProofKeyLimit {
+                max: MAX_STATE_PROOF_KEYS,
+                actual: keys.len(),
+            }
+            .into());
+        }
+
         let parsed_keys = keys
             .iter()
             .map(|k| summit_types::ssz_tree_key::parse_key(k).map_err(RpcError::InvalidKey))
             .collect::<Result<Vec<_>, _>>()?;
 
+        let cost = parsed_keys.iter().map(state_proof_key_cost).sum::<usize>();
+        if cost > MAX_STATE_PROOF_COST {
+            return Err(RpcError::StateProofCostLimit {
+                max: MAX_STATE_PROOF_COST,
+                actual: cost,
+            }
+            .into());
+        }
+
         let requested_len = keys.len();
-        let (root, el_block_number, proofs) = self
-            .finalizer_mailbox
-            .generate_state_proof(parsed_keys)
-            .await;
+        let (root, el_block_number, proofs) =
+            self.state_query.generate_state_proof(parsed_keys).await;
+        // Preserve one-result-per-requested-key alignment (#260/#267): the
+        // off-loop generator returns a positional `Vec<Option<SszProof>>`, so a
+        // missing key must surface as an error slot, never be dropped.
         if proofs.len() != requested_len {
             return Err(RpcError::Internal(format!(
                 "state proof response length mismatch: requested {requested_len}, got {}",

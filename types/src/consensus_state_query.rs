@@ -176,6 +176,20 @@ impl<S: Scheme> ConsensusStateQuery<S> {
         balance
     }
 
+    pub async fn get_validator_account(&self, public_key: PublicKey) -> Option<ValidatorAccount> {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetValidatorAccount(public_key);
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::ValidatorAccount(account) = res else {
+            unreachable!("request and response variants must match");
+        };
+        account
+    }
+
     pub async fn get_finalized_header(&self, epoch: u64) -> Option<FinalizedHeader<S>> {
         let (tx, rx) = oneshot::channel();
         let req = ConsensusStateRequest::GetFinalizedHeader(epoch);
@@ -330,5 +344,87 @@ impl<S: Scheme> ConsensusStateQuery<S> {
             unreachable!("request and response variants must match");
         };
         bounds
+    }
+
+    pub async fn get_deposit(&self, index: usize) -> Option<DepositRequest> {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetDeposit(index);
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::Deposit(deposit) = res else {
+            unreachable!("request and response variants must match");
+        };
+        deposit
+    }
+
+    pub async fn get_deposit_count(&self) -> usize {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetDepositCount;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::DepositCount(count) = res else {
+            unreachable!("request and response variants must match");
+        };
+        count
+    }
+
+    pub async fn get_withdrawal(&self, pubkey: [u8; 32]) -> Option<PendingWithdrawal> {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetWithdrawal(pubkey);
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::Withdrawal(withdrawal) = res else {
+            unreachable!("request and response variants must match");
+        };
+        withdrawal
+    }
+
+    pub async fn get_state_root(&self) -> ([u8; 32], u64) {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetStateRoot;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::StateRoot {
+            root,
+            el_block_number,
+        } = res
+        else {
+            unreachable!("request and response variants must match");
+        };
+        (root, el_block_number)
+    }
+
+    pub async fn generate_state_proof(
+        &self,
+        keys: Vec<SszStateKey>,
+    ) -> ([u8; 32], u64, Vec<Option<SszProof>>) {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GenerateStateProof(keys);
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::StateProof {
+            root,
+            el_block_number,
+            proofs,
+        } = res
+        else {
+            unreachable!("request and response variants must match");
+        };
+        (root, el_block_number, proofs)
     }
 }

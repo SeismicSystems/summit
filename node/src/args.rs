@@ -882,7 +882,7 @@ where
     #[cfg(feature = "permissioned")]
     let paused = engine.paused.clone();
 
-    let finalizer_mailbox = engine.finalizer_mailbox.clone();
+    let finalizer_state_query = engine.finalizer_state_query.clone();
     let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
     let p2p = network.start();
@@ -898,7 +898,7 @@ where
     let stop_signal = context.stopped();
     let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
         if let Err(e) = start_rpc_server(
-            finalizer_mailbox,
+            finalizer_state_query,
             key_store_path,
             genesis_hash,
             namespace,

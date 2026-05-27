@@ -171,7 +171,7 @@ fn test_orphaned_block_processed_when_parent_arrives() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -374,7 +374,7 @@ fn test_losing_height_waiter_resolves_false_on_conflicting_finalization() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -463,7 +463,7 @@ fn test_competing_digest_waiter_stays_pending_until_finalization() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -553,7 +553,7 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -643,7 +643,7 @@ fn test_multiple_forks_tracked() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -729,7 +729,7 @@ fn test_dead_fork_block_discarded() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -831,7 +831,7 @@ fn test_fork_states_pruned_after_finalization() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -952,7 +952,7 @@ fn test_orphaned_blocks_pruned_after_finalization() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -1065,7 +1065,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -1174,7 +1174,7 @@ fn test_competing_fork_pruned_on_finalization() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,

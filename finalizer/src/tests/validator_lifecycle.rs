@@ -323,7 +323,7 @@ fn test_validator_exit_triggers_cancellation() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -1062,7 +1062,7 @@ fn last_block_exit_dominates_concurrent_max_stake_reduction() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,

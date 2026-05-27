@@ -25,8 +25,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 #[cfg(feature = "permissioned")]
 use std::sync::atomic::AtomicBool;
-use summit_finalizer::FinalizerMailbox;
-use summit_types::Block;
+use summit_types::consensus_state_query::ConsensusStateQuery;
 use summit_types::scheme::MultisigScheme;
 use tokio_util::sync::CancellationToken;
 
@@ -49,7 +48,7 @@ impl Default for RpcBodyLimits {
 
 #[allow(clippy::too_many_arguments)]
 pub async fn start_rpc_server(
-    finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    state_query: ConsensusStateQuery<MultisigScheme>,
     key_store_path: String,
     genesis_hash: [u8; 32],
     namespace: Vec<u8>,
@@ -62,7 +61,7 @@ pub async fn start_rpc_server(
 ) -> anyhow::Result<()> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
-        finalizer_mailbox,
+        state_query,
         genesis_hash,
         &namespace,
         observer_node_key,
@@ -121,7 +120,7 @@ pub struct RpcHandles {
 /// Starts only the public RPC listener and returns its handle/address. Used
 /// by tests that don't exercise the admin RPC surface.
 pub async fn start_rpc_server_with_handle(
-    finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    state_query: ConsensusStateQuery<MultisigScheme>,
     key_store_path: String,
     genesis_hash: [u8; 32],
     namespace: Vec<u8>,
@@ -130,7 +129,7 @@ pub async fn start_rpc_server_with_handle(
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
-        finalizer_mailbox,
+        state_query,
         genesis_hash,
         &namespace,
         // This helper is only used by tests of validator-mode behavior, so
@@ -167,7 +166,7 @@ pub async fn start_rpc_server_with_handle(
 /// the OS to allocate a free port.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_rpc_server_pair_with_handle(
-    finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    state_query: ConsensusStateQuery<MultisigScheme>,
     key_store_path: String,
     genesis_hash: [u8; 32],
     namespace: Vec<u8>,
@@ -178,7 +177,7 @@ pub async fn start_rpc_server_pair_with_handle(
 ) -> anyhow::Result<RpcHandles> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
-        finalizer_mailbox,
+        state_query,
         genesis_hash,
         &namespace,
         observer_node_key,
