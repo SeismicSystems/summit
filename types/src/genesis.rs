@@ -146,6 +146,13 @@ impl Genesis {
         if self.blocks_per_epoch == 0 {
             return Err("blocks_per_epoch must be greater than 0".into());
         }
+        if self.validator_minimum_stake > self.validator_maximum_stake {
+            return Err(format!(
+                "validator_minimum_stake {} exceeds validator_maximum_stake {}",
+                self.validator_minimum_stake, self.validator_maximum_stake
+            )
+            .into());
+        }
         if self.allowed_timestamp_future_ms < MIN_ALLOWED_TIMESTAMP_FUTURE_MS
             || self.allowed_timestamp_future_ms > MAX_ALLOWED_TIMESTAMP_FUTURE_MS
         {
@@ -300,6 +307,13 @@ mod tests {
     fn rejects_max_deposits_per_epoch_u64_max() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.max_deposits_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_inverted_validator_stake_interval() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.validator_minimum_stake = genesis.validator_maximum_stake + 1;
         assert!(genesis.validate().is_err());
     }
 
