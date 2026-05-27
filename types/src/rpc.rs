@@ -69,7 +69,14 @@ pub struct StateProofResponse {
     /// The EL block number at capture time. The root appears on-chain in EL block
     /// `el_block_number + 1` — query that block's timestamp via the beacon roots contract.
     pub el_block_number: u64,
-    pub proofs: Vec<crate::ssz_state_tree::SszProof>,
+    pub results: Vec<StateProofResult>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StateProofResult {
+    pub key: String,
+    pub proof: Option<crate::ssz_state_tree::SszProof>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

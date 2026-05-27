@@ -24,6 +24,7 @@ use std::time::Duration;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
+use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::{Block, Digest};
 use tokio_util::sync::CancellationToken;
 
@@ -132,6 +133,88 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
     );
     state.set_validator_accounts(validator_accounts);
     state
+}
+
+#[test]
+fn test_generate_state_proof_preserves_batch_cardinality_for_missing_keys() {
+    let cfg = deterministic::Config::default().with_seed(56);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x56u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_state_proof_cardinality".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let requested_keys = vec![
+            SszStateKey::Scalar(summit_types::ssz_state_tree::EPOCH),
+            SszStateKey::Deposit(0),
+            SszStateKey::Scalar(summit_types::ssz_state_tree::LATEST_HEIGHT),
+        ];
+        let (root, _el_block_number, proofs) =
+            mailbox.generate_state_proof(requested_keys.clone()).await;
+
+        assert_eq!(
+            proofs.len(),
+            requested_keys.len(),
+            "state proof batches must preserve one response slot per requested key"
+        );
+        assert!(
+            proofs[0]
+                .as_ref()
+                .expect("first response slot should contain the epoch proof")
+                .verify(&root),
+            "first response slot should contain the epoch proof"
+        );
+        assert!(
+            proofs[1].is_none(),
+            "second response slot should mark the missing deposit proof"
+        );
+        assert!(
+            proofs[2]
+                .as_ref()
+                .expect("third response slot should contain the latest_height proof")
+                .verify(&root),
+            "third response slot should contain the latest_height proof"
+        );
+
+        context.auditor().state()
+    });
 }
 
 #[test]

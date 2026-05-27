@@ -133,7 +133,7 @@ Tests end-to-end SSZ proof verification on-chain — the full pipeline from Summ
 - **Contracts**: EIP-4788 beacon roots contract (`0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02`, built into Reth); deploys the embedded `SszProofVerifier.sol` bytecode at runtime.
 - **Flow**: Waits for the network to finalize several blocks so the SSZ proof tree is captured, then:
   - **TEST A** — reads the `parent_beacon_block_root` via the beacon-roots contract and asserts it matches Summit's captured state root.
-  - **TEST B** — deploys `SszProofVerifier`, requests scalar proofs via `getStateProof(["epoch", "latest_height"])`, and verifies each proof on-chain against the beacon root.
+  - **TEST B** — deploys `SszProofVerifier`, requests scalar proof results via `getStateProof(["epoch", "latest_height"])`, and verifies each proof on-chain against the beacon root.
   - **TEST C** — requests a collection (validator) proof for genesis validator 0 and verifies it on-chain via the same verifier.
 - **Verifies**: Both scalar and collection SSZ proofs verify on-chain against the beacon root surfaced by EIP-4788, confirming the end-to-end trust chain from Summit consensus state → Reth EL block → Solidity verifier.
 
