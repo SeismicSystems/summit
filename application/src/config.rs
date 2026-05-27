@@ -19,6 +19,9 @@ pub struct ApplicationConfig<C: EngineClient, ES: Epocher> {
 
     pub genesis_hash: [u8; 32],
 
+    /// Maximum P2P message size from genesis.
+    pub max_message_size_bytes: u32,
+
     /// Epocher for determining epoch boundaries.
     pub epocher: ES,
 

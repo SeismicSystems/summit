@@ -65,6 +65,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     /// Digest of the immutable genesis configuration ([`Genesis::config_digest`]),
     /// used to derive the chain-bound live P2P + consensus domain.
     pub config_digest: [u8; 32],
+    pub max_message_size_bytes: u32,
 
     /// Initial state given to the finalizer. All other processes should get initial state from the finalizer not the config
     pub initial_state: ConsensusState,
@@ -117,6 +118,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             namespace: genesis.namespace.clone(),
             genesis_hash: genesis.genesis_hash(),
             config_digest: genesis.config_digest(),
+            max_message_size_bytes: genesis.max_message_size_bytes as u32,
             initial_state,
             checkpoint_last_block,
             checkpoint_finalized_header,

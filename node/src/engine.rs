@@ -212,6 +212,7 @@ where
                 mailbox_size: cfg.mailbox_size,
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
+                max_message_size_bytes: cfg.max_message_size_bytes,
                 epocher: epocher.clone(),
                 cancellation_token: cancellation_token.clone(),
                 leader_timeout: cfg.leader_timeout,

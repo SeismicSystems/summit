@@ -3,6 +3,7 @@ use crate::{
     ingress::{Mailbox, Message},
 };
 use anyhow::{Context, Result, anyhow};
+use commonware_codec::EncodeSize;
 use commonware_macros::select;
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::SystemTimeExt;
@@ -76,6 +77,7 @@ pub struct Actor<
     mailbox: mpsc::Receiver<Message<P>>,
     engine_client: C,
     genesis_hash: [u8; 32],
+    max_message_size_bytes: u32,
     epocher: ES,
     cancellation_token: CancellationToken,
     leader_timeout: Duration,
@@ -108,6 +110,7 @@ impl<
                 mailbox: rx,
                 engine_client: cfg.engine_client,
                 genesis_hash,
+                max_message_size_bytes: cfg.max_message_size_bytes,
                 epocher: cfg.epocher,
                 cancellation_token: cfg.cancellation_token,
                 leader_timeout: cfg.leader_timeout,
@@ -288,6 +291,7 @@ impl<
                                 let mut finalizer_clone = finalizer.clone();
                                 let mut engine_client = self.engine_client.clone();
                                 let genesis_hash = self.genesis_hash;
+                                let max_message_size_bytes = self.max_message_size_bytes;
                                 move |context| async move {
                                     // Subscribe inside the task: the enqueue goes into the
                                     // bounded syncer mailbox, so doing it on the application
@@ -298,6 +302,23 @@ impl<
                                             warn!(?round, "certify: failed to receive block from syncer");
                                             return false;
                                         };
+
+                                        if let Some((block_size_bytes, max_block_size_bytes)) =
+                                            block_size_limit_violation(
+                                                &block,
+                                                max_message_size_bytes,
+                                            )
+                                        {
+                                            warn!(
+                                                ?round,
+                                                height = block.height(),
+                                                block_size_bytes,
+                                                max_block_size_bytes,
+                                                max_message_size_bytes,
+                                                "certify: block violates P2P block size limit"
+                                            );
+                                            return false;
+                                        }
 
                                         // Wait for parent to be executed so its state is in Reth
                                         // before check_payload runs on the child.
@@ -420,6 +441,7 @@ impl<
                                 let mut syncer = syncer.clone();
                                 let mut finalizer_clone = finalizer.clone();
                                 let epocher = self.epocher.clone();
+                                let max_message_size_bytes = self.max_message_size_bytes;
                                 move |context| async move {
                                     // Subscribe to blocks (will wait for them if not available)
                                     let parent_request = if parent.1 == genesis_hash.into() {
@@ -493,7 +515,16 @@ impl<
                                                 }
 
                                                 let now_millis = context.current().epoch_millis();
-                                                if handle_verify(round, &block, parent, signed_parent_view, &epocher, &aux_data, now_millis) {
+                                                if handle_verify(
+                                                    round,
+                                                    &block,
+                                                    parent,
+                                                    signed_parent_view,
+                                                    &epocher,
+                                                    &aux_data,
+                                                    now_millis,
+                                                    max_message_size_bytes,
+                                                ) {
                                                     // Respond to consensus first. The vote is decided,
                                                     // so persisting and broadcasting the valid block via
                                                     // the syncer is auxiliary work that must not sit on
@@ -535,6 +566,20 @@ impl<
                 }
             }
         }
+    }
+
+    fn ensure_proposed_block_within_p2p_limit(&self, block: &Block, round: Round) -> Result<()> {
+        if let Some((block_size_bytes, max_block_size_bytes)) =
+            block_size_limit_violation(block, self.max_message_size_bytes)
+        {
+            return Err(anyhow!(
+                "proposed block violates P2P block size limit for round {round} at height {}: block size {block_size_bytes} bytes must be smaller than {max_block_size_bytes} bytes (max_message_size_bytes = {})",
+                block.height(),
+                self.max_message_size_bytes,
+            ));
+        }
+
+        Ok(())
     }
 
     async fn handle_proposal(
@@ -671,6 +716,7 @@ impl<
             .expect("epoch should exist");
         if parent_block.height() == last_in_epoch.get() {
             debug!(round = ?round, digest = ?parent_block.digest(), "re-proposed parent block at epoch boundary");
+            self.ensure_proposed_block_within_p2p_limit(&parent_block, round)?;
             return Ok(parent_block);
         }
 
@@ -833,6 +879,7 @@ impl<
             let proposal_duration = proposal_start.elapsed().as_millis() as f64;
             histogram!("handle_proposal_duration_millis").record(proposal_duration);
         }
+        self.ensure_proposed_block_within_p2p_limit(&block, round)?;
         Ok(block)
     }
 }
@@ -887,12 +934,25 @@ fn handle_verify<ES: Epocher>(
     epocher: &ES,
     aux_data: &BlockAuxData,
     now_millis: u64,
+    max_message_size_bytes: u32,
 ) -> bool {
     if round.epoch().get() != aux_data.epoch {
         warn!(
             "epoch mismatch: simplex epoch {}, finalizer epoch: {}",
             round.epoch().get(),
             aux_data.epoch
+        );
+        return false;
+    }
+    if let Some((block_size_bytes, max_block_size_bytes)) =
+        block_size_limit_violation(block, max_message_size_bytes)
+    {
+        warn!(
+            height = block.height(),
+            block_size_bytes,
+            max_block_size_bytes,
+            max_message_size_bytes,
+            "verify: block violates P2P block size limit"
         );
         return false;
     }
@@ -1103,6 +1163,24 @@ fn handle_verify<ES: Epocher>(
     true
 }
 
+fn max_block_size_bytes(max_message_size_bytes: u32) -> usize {
+    usize::try_from(max_message_size_bytes / 2)
+        .expect("u32 will always fit into usize on 32/64-bit targets")
+}
+
+fn block_size_limit_violation(
+    block: &Block,
+    max_message_size_bytes: u32,
+) -> Option<(usize, usize)> {
+    let block_size_bytes = block.encode_size();
+    let max_block_size_bytes = max_block_size_bytes(max_message_size_bytes);
+    if block_size_bytes < max_block_size_bytes {
+        return None;
+    }
+
+    Some((block_size_bytes, max_block_size_bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1259,7 +1337,8 @@ mod tests {
                 parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "re-proposal of the epoch-terminal block must be accepted"
         );
@@ -1304,7 +1383,8 @@ mod tests {
                 parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "non-reproposal child whose parent is the epoch-terminal block \
              must be rejected"
@@ -1344,7 +1424,8 @@ mod tests {
                 parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "ordinary child inside the parent's epoch must be accepted"
         );
@@ -1385,7 +1466,8 @@ mod tests {
                 mismatched_parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "child whose signed parent view disagrees with the parent block's \
              decoded view must be rejected"
@@ -1425,7 +1507,8 @@ mod tests {
                 parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "child whose signed parent view matches the parent block must be accepted"
         );
@@ -1464,7 +1547,8 @@ mod tests {
                 parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "child whose decoded view disagrees with the proposal round must be rejected"
         );
@@ -1499,7 +1583,8 @@ mod tests {
                 later_parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "same-digest boundary re-proposal must be accepted even when the \
              signed parent view differs from the block's decoded view"
@@ -1548,7 +1633,8 @@ mod tests {
                 0,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "a signed parent view of 0 on a genuine epoch opener must bypass the \
              parent-view binding"
@@ -1591,7 +1677,8 @@ mod tests {
                 0,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "a signed parent view of 0 on a mid-epoch block must be rejected"
         );
@@ -1676,7 +1763,8 @@ mod tests {
                 signed_parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "block with payload.block_number ({}) != header.height ({}) must be rejected",
             payload_block_number,
@@ -1728,7 +1816,8 @@ mod tests {
                 signed_parent_view,
                 &epocher(),
                 &aux_data,
-                u64::MAX / 4
+                u64::MAX / 4,
+                u32::MAX
             ),
             "block with payload.timestamp ({}) != header.timestamp ({}) must be rejected",
             payload_timestamp,
