@@ -561,6 +561,201 @@ fn test_joining_validator_peer_tier_follows_activation() {
     });
 }
 
+#[test]
+fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
+    let cfg = deterministic::Config::default().with_seed(58);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        use rand::SeedableRng;
+
+        let genesis_hash = [0x58u8; 32];
+        let db_prefix = "test_epoch_transition_deltas_cleared_before_ack".to_string();
+        let local_node_key = ed25519::PrivateKey::from_seed(1);
+        let removed_node_key = ed25519::PrivateKey::from_seed(0);
+        let removed_node_pubkey = removed_node_key.public_key();
+        let removed_pubkey_bytes: [u8; 32] = removed_node_pubkey.as_ref().try_into().unwrap();
+        let joining_node_key = ed25519::PrivateKey::from_seed(10);
+        let joining_node_pubkey = joining_node_key.public_key();
+        let joining_pubkey_bytes: [u8; 32] = joining_node_pubkey.as_ref().try_into().unwrap();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(58);
+        let joining_consensus_key = bls12381::PrivateKey::random(&mut rng);
+        let joining_consensus_pubkey = joining_consensus_key.public_key();
+
+        let mut initial_state =
+            create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+        initial_state.push_removed_validator(removed_node_pubkey.clone());
+        initial_state.set_account(
+            joining_pubkey_bytes,
+            ValidatorAccount {
+                consensus_public_key: joining_consensus_pubkey.clone(),
+                withdrawal_credentials: Address::from([10u8; 20]),
+                balance: 32_000_000_000,
+                status: ValidatorStatus::Joining,
+                has_pending_deposit: false,
+                has_pending_withdrawal: false,
+                joining_epoch: 1,
+                last_deposit_index: 0,
+            },
+        );
+        initial_state.add_validator(
+            1,
+            AddedValidator {
+                node_key: joining_node_pubkey.clone(),
+                consensus_key: joining_consensus_pubkey,
+            },
+        );
+
+        let page_cache = CacheRef::from_pooler(
+            &context,
+            std::num::NonZero::new(4096).unwrap(),
+            NZUsize!(100),
+        );
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let cancellation_token = CancellationToken::new();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: db_prefix.clone(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: page_cache.clone(),
+            genesis_hash,
+            initial_state: initial_state.clone(),
+            protocol_version: 1,
+            node_public_key: local_node_key.public_key(),
+            cancellation_token,
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(50)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 58000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, ack_waiter) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            ack_waiter.await.expect("non-boundary block must be acked");
+        }
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+        let boundary = create_test_block_with_epoch(parent_digest, 4, 5, 58004, 0);
+        let boundary_digest = boundary.digest();
+        let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
+        let (ack, ack_waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
+            .await;
+        ack_waiter.await.expect("epoch boundary block must be acked");
+
+        drop(mailbox);
+        handle.abort();
+        context.sleep(Duration::from_millis(50)).await;
+
+        let (restarted, reloaded_state, _mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer_restart"),
+                FinalizerConfig {
+                    mailbox_size: 100,
+                    db_prefix,
+                    engine_client: MockEngineClient::new(),
+                    oracle: MockNetworkOracle,
+                    protocol_consts: ProtocolConsts {
+                        validator_num_warm_up_epochs: 2,
+                        validator_withdrawal_num_epochs: 2,
+                    },
+                    page_cache,
+                    genesis_hash,
+                    initial_state,
+                    protocol_version: 1,
+                    node_public_key: local_node_key.public_key(),
+                    cancellation_token: CancellationToken::new(),
+                    drain_interval: Duration::from_millis(100),
+                    buffered_blocks_warn_threshold: 100,
+                    pending_notarized_max: 1000,
+                    namespace: Vec::new(),
+                    _variant_marker: PhantomData,
+                },
+            )
+            .await;
+        drop(restarted);
+
+        assert_eq!(
+            reloaded_state.get_epoch(),
+            1,
+            "restarted finalizer must load the persisted next-epoch state"
+        );
+        assert!(
+            reloaded_state.get_removed_validators().is_empty(),
+            "removed_validators must not persist after the epoch transition is acked"
+        );
+        assert!(
+            reloaded_state.get_added_validators(1).is_none(),
+            "added_validators for the activated epoch must not persist after the transition is acked"
+        );
+        assert_eq!(
+            reloaded_state
+                .get_account(&removed_pubkey_bytes)
+                .expect("removed validator account must exist")
+                .status,
+            ValidatorStatus::Inactive,
+            "removed validator status must be materialized before clearing transition deltas"
+        );
+        assert_eq!(
+            reloaded_state
+                .get_account(&joining_pubkey_bytes)
+                .expect("joining validator account must exist")
+                .status,
+            ValidatorStatus::Active,
+            "joining validator status must be materialized before clearing transition deltas"
+        );
+
+        let active_validators = reloaded_state.get_active_validators();
+        assert_eq!(
+            active_validators.len(),
+            4,
+            "active validator set should replace the removed validator with the joining validator"
+        );
+        assert!(
+            active_validators
+                .iter()
+                .any(|(node_key, _)| node_key == &joining_node_pubkey),
+            "joining validator must be present in the active validator set after restart"
+        );
+        assert!(
+            !active_validators
+                .iter()
+                .any(|(node_key, _)| node_key == &removed_node_pubkey),
+            "removed validator must not be present in the active validator set after restart"
+        );
+
+        context.auditor().state()
+    });
+}
+
 /// An active validator's full exit on the last block of an epoch must
 /// dominate a concurrent `MaximumStake` reduction at the same boundary:
 /// the buffered exit replays on the first block of the next epoch and the
