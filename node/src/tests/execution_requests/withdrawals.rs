@@ -2167,6 +2167,7 @@ fn test_joining_validator_withdrawal_on_last_block_keeps_header_consistent() {
             common::get_domain(),
             None,
             None,
+            None,
         );
         let new_validator_pubkey = new_validator_private_key.public_key();
         let new_validator_pubkey_bytes: [u8; 32] =
@@ -2399,6 +2400,7 @@ fn test_joining_validator_withdrawal_inline_cancel_clears_status() {
             n as u64,
             new_validator_amount,
             common::get_domain(),
+            None,
             None,
             None,
         );
