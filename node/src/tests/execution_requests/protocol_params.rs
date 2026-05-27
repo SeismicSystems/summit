@@ -1375,6 +1375,7 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
                 deposit_amount,
                 common::get_domain(),
                 Some(key_stores[i as usize].node_key.clone()),
+                Some(key_stores[i as usize].consensus_key.clone()),
                 None,
             );
             deposit_requests.push(ExecutionRequest::Deposit(deposit));
@@ -1598,6 +1599,7 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
                 topup_amount,
                 common::get_domain(),
                 Some(key_stores[i as usize].node_key.clone()),
+                Some(key_stores[i as usize].consensus_key.clone()),
                 None,
             );
             topup_deposits.push(ExecutionRequest::Deposit(deposit));
@@ -1611,6 +1613,7 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
             new_validator_index,
             new_validator_amount,
             common::get_domain(),
+            None,
             None,
             None,
         );
@@ -1847,6 +1850,7 @@ fn test_stake_bound_skips_pending_deposit_placeholder() {
             n as u64,
             new_validator_amount,
             common::get_domain(),
+            None,
             None,
             None,
         );
@@ -2117,6 +2121,7 @@ fn test_stake_bound_refunds_top_up_when_max_lowered_before_processing() {
             top_up_amount,
             common::get_domain(),
             Some(key_stores[0].node_key.clone()),
+            Some(key_stores[0].consensus_key.clone()),
             Some(wc_bytes),
         );
         let topup_block_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0);
