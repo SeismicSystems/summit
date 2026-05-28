@@ -167,7 +167,7 @@ fn queue_deposit_refund(
         amount,
     };
     let withdrawal_epoch = state.get_epoch() + consts.validator_withdrawal_num_epochs;
-    state.push_withdrawal_request(
+    state.push_refund_withdrawal_request(
         withdrawal_request,
         withdrawal_epoch,
         0, // deposit was never credited to balance
@@ -894,8 +894,8 @@ impl<
             // Build the committee for the next epoch.
             self.validator_exit = self.update_validator_committee(stake_changed);
 
-            // Reschedule any overflow withdrawals that exceeded max_withdrawals_per_epoch
-            // to the next epoch (placed at the front of the queue for priority).
+            // Reschedule any overflow withdrawals that exceeded the per-kind
+            // withdrawal budgets to the next epoch.
             let current_epoch = self.canonical_state.get_epoch();
             if self
                 .canonical_state
@@ -1505,13 +1505,17 @@ impl<
                     self.genesis_hash.into()
                 };
 
-            // Only submit withdrawals at the end of an epoch, capped by max_withdrawals_per_epoch
+            // Validator withdrawals and deposit-refund withdrawals use separate
+            // budgets. Refunds do not consume validator-exit capacity.
             let current_epoch = state.get_epoch();
             let max_withdrawals = state.get_max_withdrawals_per_epoch() as usize;
             let ready_withdrawals: Vec<_> = state
-                .get_withdrawals_for_epoch(current_epoch)
+                .get_withdrawals_for_epoch_with_limits(
+                    current_epoch,
+                    max_withdrawals,
+                    max_withdrawals,
+                )
                 .into_iter()
-                .take(max_withdrawals)
                 .cloned()
                 .collect();
             let next_epoch = state.get_epoch() + 1;
@@ -2436,7 +2440,7 @@ async fn process_execution_requests<
                         };
                         let withdrawal_epoch =
                             state.get_epoch() + consts.validator_withdrawal_num_epochs;
-                        state.push_withdrawal_request(
+                        state.push_refund_withdrawal_request(
                             withdrawal_request,
                             withdrawal_epoch,
                             0, // deposit was never credited
@@ -2512,15 +2516,17 @@ async fn process_execution_requests<
                             state.get_minimum_stake(),
                             state.get_maximum_stake()
                         );
+                        let refund_pubkey =
+                            refunded_deposit_key(account.withdrawal_credentials, request.index);
                         let withdrawal_request = WithdrawalRequest {
                             source_address: account.withdrawal_credentials,
-                            validator_pubkey: node_pubkey_bytes,
+                            validator_pubkey: refund_pubkey,
                             amount: request.amount,
                         };
                         let withdrawal_epoch =
                             state.get_epoch() + consts.validator_withdrawal_num_epochs;
 
-                        state.push_withdrawal_request(
+                        state.push_refund_withdrawal_request(
                             withdrawal_request,
                             withdrawal_epoch,
                             0, // top-up deposit was never credited to balance
@@ -2631,7 +2637,7 @@ async fn process_execution_requests<
     }
     for withdrawal in &block.payload.payload_inner.withdrawals {
         let current_epoch = state.get_epoch();
-        let pending_withdrawal = state.pop_withdrawal(current_epoch);
+        let pending_withdrawal = state.pop_withdrawal_by_index(current_epoch, withdrawal.index);
         // these checks should never fail. we have to make sure that these withdrawals are
         // verified when the block is verified. it is too late when the block is committed.
         let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");

@@ -9,7 +9,7 @@ use crate::execution_request::DepositRequest;
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
 use crate::ssz_tree::{merkleize, mix_in_length};
-use crate::withdrawal::PendingWithdrawal;
+use crate::withdrawal::{PendingWithdrawal, WithdrawalKind};
 use alloy_primitives::Address;
 use commonware_cryptography::bls12381;
 use ethereum_hashing::hash32_concat;
@@ -117,6 +117,14 @@ impl SszHashTreeRoot for ProtocolParam {
     }
 }
 
+impl SszHashTreeRoot for WithdrawalKind {
+    fn hash_tree_root(&self) -> [u8; 32] {
+        let mut chunk = [0u8; 32];
+        chunk[0] = self.as_u8();
+        chunk
+    }
+}
+
 // --- Containers ---
 
 impl SszHashTreeRoot for ValidatorAccount {
@@ -153,8 +161,8 @@ impl SszHashTreeRoot for DepositRequest {
 }
 
 impl SszHashTreeRoot for PendingWithdrawal {
-    /// 7-field container: index, validator_index, address, amount,
-    /// pubkey, balance_deduction, epoch.
+    /// 8-field container: index, validator_index, address, amount,
+    /// pubkey, balance_deduction, epoch, kind.
     fn hash_tree_root(&self) -> [u8; 32] {
         merkleize(&[
             self.inner.index.hash_tree_root(),
@@ -164,6 +172,7 @@ impl SszHashTreeRoot for PendingWithdrawal {
             self.pubkey.hash_tree_root(),
             self.balance_deduction.hash_tree_root(),
             self.epoch.hash_tree_root(),
+            self.kind.hash_tree_root(),
         ])
     }
 }
@@ -401,6 +410,7 @@ mod tests {
             pubkey: [4u8; 32],
             balance_deduction: 1000,
             epoch: 5,
+            kind: WithdrawalKind::Validator,
         };
         assert_eq!(withdrawal.hash_tree_root(), withdrawal.hash_tree_root());
         assert_ne!(withdrawal.hash_tree_root(), [0u8; 32]);

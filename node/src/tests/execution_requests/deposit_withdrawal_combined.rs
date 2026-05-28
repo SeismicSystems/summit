@@ -1138,6 +1138,191 @@ fn test_process_time_invalid_new_validator_refund_does_not_merge_with_reused_pub
 }
 
 #[test_traced("INFO")]
+fn test_invalid_deposit_refunds_do_not_delay_validator_exit_withdrawal() {
+    // Invalid deposits that are rejected before deposit queue admission should not
+    // consume the scarce withdrawal slot ahead of a legitimate validator exit.
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let invalid_deposit_amount = 1;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let (invalid_deposit0, _, _) = common::create_deposit_request(
+            50,
+            invalid_deposit_amount,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
+        let (invalid_deposit1, _, _) = common::create_deposit_request(
+            51,
+            invalid_deposit_amount,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
+
+        let exit_pubkey: [u8; 32] = validators[0].0.as_ref().try_into().unwrap();
+        let exit_withdrawal = common::create_withdrawal_request(Address::ZERO, exit_pubkey, min_stake);
+
+        let refund_requests = common::execution_requests_to_requests(vec![
+            ExecutionRequest::Deposit(invalid_deposit0),
+            ExecutionRequest::Deposit(invalid_deposit1),
+        ]);
+        let exit_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Withdrawal(
+                exit_withdrawal,
+            )]);
+
+        let invalid_deposit_block_height = 3;
+        let exit_block_height = 4;
+        let first_withdrawal_epoch =
+            (exit_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let first_withdrawal_height =
+            last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, first_withdrawal_epoch);
+        let stop_height = first_withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(invalid_deposit_block_height, refund_requests);
+        execution_requests_map.insert(exit_block_height, exit_requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        initial_state.set_max_withdrawals_per_epoch(1);
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 1 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        let epoch_withdrawals = withdrawals
+            .get(&first_withdrawal_height)
+            .expect("missing withdrawals at first eligible withdrawal epoch");
+        assert!(
+            epoch_withdrawals
+                .iter()
+                .any(|withdrawal| withdrawal.address == Address::ZERO
+                    && withdrawal.amount == min_stake),
+            "validator exit should not be delayed by invalid-deposit refunds; got withdrawals = {epoch_withdrawals:?}"
+        );
+
+        let exiting_client_id = format!("validator_{}", validators[0].0);
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &[&exiting_client_id])
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
 fn test_withdrawal_blocked_by_pending_deposit() {
     // Tests that a withdrawal request is ignored when the validator has a pending deposit.
     //
