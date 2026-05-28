@@ -16,7 +16,7 @@ use commonware_runtime::deterministic::{self, Runner};
 use commonware_runtime::{Clock, Metrics, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
-use futures::channel::mpsc as futures_mpsc;
+use futures::{FutureExt as _, channel::mpsc as futures_mpsc};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
@@ -205,6 +205,264 @@ fn test_orphaned_block_processed_when_parent_arrives() {
 
         assert!(result1, "Block 1 should be in fork_states");
         assert!(result2, "Block 2 should be processed after parent arrived");
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_losing_height_waiter_resolves_false_on_conflicting_finalization() {
+    // Test that a waiter registered for a future losing digest is completed
+    // when a different digest finalizes at that height.
+
+    let cfg = deterministic::Config::default().with_seed(49);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x49u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_losing_waiter".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let genesis_digest = genesis_block.digest();
+
+        let winning_block = create_test_block(genesis_digest, 1, 2, 8001);
+        let losing_block = create_test_block(genesis_digest, 1, 2, 8002);
+        let winning_digest = winning_block.digest();
+        let losing_digest = losing_block.digest();
+        assert_ne!(winning_digest, losing_digest);
+
+        let losing_notify = mailbox.notify_at_height(1, losing_digest).await;
+        let second_losing_notify = mailbox.notify_at_height(1, losing_digest).await;
+        let dropped_losing_notify = mailbox.notify_at_height(1, losing_digest).await;
+        drop(dropped_losing_notify);
+
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((winning_block.clone(), None), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(mailbox.get_latest_height().await, 1);
+        assert_eq!(
+            losing_notify.now_or_never(),
+            Some(Ok(false)),
+            "waiter for finalized-away digest should resolve false"
+        );
+        assert_eq!(
+            second_losing_notify.now_or_never(),
+            Some(Ok(false)),
+            "all waiters for a finalized-away digest should resolve false"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_competing_digest_waiter_stays_pending_until_finalization() {
+    // Test that executing one notarized fork does not complete a waiter for a
+    // competing digest until finalization chooses the canonical digest.
+
+    let cfg = deterministic::Config::default().with_seed(50);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x50u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_competing_waiter".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let genesis_digest = genesis_block.digest();
+
+        let block1a = create_test_block(genesis_digest, 1, 2, 8101);
+        let block1b = create_test_block(genesis_digest, 1, 2, 8102);
+        let block1b_digest = block1b.digest();
+
+        let pending_probe = mailbox.notify_at_height(1, block1b_digest).await;
+        let losing_notify = mailbox.notify_at_height(1, block1b_digest).await;
+
+        mailbox
+            .report(Update::NotarizedBlock(block1a.clone()))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            pending_probe.now_or_never(),
+            None,
+            "competing digest waiter should remain pending after a different fork is notarized"
+        );
+
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1a.clone(), None), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            losing_notify.now_or_never(),
+            Some(Ok(false)),
+            "competing digest waiter should resolve false after finalization"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
+    // Test that finalizing height H resolves stale waiters below H but leaves
+    // waiters above H pending.
+
+    let cfg = deterministic::Config::default().with_seed(51);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x51u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_waiter_sweep".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let genesis_digest = genesis_block.digest();
+
+        let block1 = create_test_block(genesis_digest, 1, 2, 8201);
+        let block1_digest = block1.digest();
+        let block2 = create_test_block(block1_digest, 2, 3, 8202);
+
+        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        mailbox.report(Update::NotarizedBlock(block2.clone())).await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        let stale_block = create_test_block(genesis_digest, 1, 2, 8203);
+        let future_block = create_test_block(block2.digest(), 3, 4, 8204);
+        let stale_notify = mailbox.notify_at_height(1, stale_block.digest()).await;
+        let future_notify = mailbox.notify_at_height(3, future_block.digest()).await;
+
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block2.clone(), None), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(mailbox.get_latest_height().await, 2);
+        assert_eq!(
+            stale_notify.now_or_never(),
+            Some(Ok(false)),
+            "waiter below finalized height should resolve false"
+        );
+        assert_eq!(
+            future_notify.now_or_never(),
+            None,
+            "waiter above finalized height should remain pending"
+        );
 
         context.auditor().state()
     });
