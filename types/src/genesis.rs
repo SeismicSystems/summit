@@ -1,7 +1,8 @@
 use crate::PublicKey;
 use crate::protocol_params::{
-    MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR,
-    MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_MAX_DEPOSITS_PER_EPOCH,
+    MAX_OBSERVERS_PER_VALIDATOR, MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN,
+    MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_MINIMUM_VALIDATOR_COUNT,
 };
 use alloy_primitives::Address;
 use anyhow::Context;
@@ -68,6 +69,9 @@ pub struct Genesis {
     /// execution request.
     #[serde(default = "default_observers_per_validator")]
     pub observers_per_validator: u32,
+    /// Minimum number of active validators that full exits must preserve.
+    #[serde(default = "default_minimum_validator_count")]
+    pub minimum_validator_count: u64,
 }
 
 fn default_treasury_address() -> String {
@@ -84,6 +88,10 @@ fn default_max_withdrawals_per_epoch() -> u64 {
 
 fn default_observers_per_validator() -> u32 {
     5
+}
+
+fn default_minimum_validator_count() -> u64 {
+    DEFAULT_MINIMUM_VALIDATOR_COUNT
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +200,13 @@ impl Genesis {
             )
             .into());
         }
+        if self.minimum_validator_count < MIN_MINIMUM_VALIDATOR_COUNT {
+            return Err(format!(
+                "minimum_validator_count {} is below minimum {}",
+                self.minimum_validator_count, MIN_MINIMUM_VALIDATOR_COUNT
+            )
+            .into());
+        }
         Ok(())
     }
 
@@ -264,6 +279,10 @@ mod tests {
         let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         assert_eq!(genesis.validator_count(), 4);
         assert_eq!(genesis.blocks_per_epoch, 10000);
+        assert_eq!(
+            genesis.minimum_validator_count,
+            DEFAULT_MINIMUM_VALIDATOR_COUNT
+        );
 
         let keys = genesis.get_validator_keys().unwrap();
         assert_eq!(keys.len(), 4);
@@ -350,6 +369,13 @@ mod tests {
         genesis.observers_per_validator = (MAX_OBSERVERS_PER_VALIDATOR as u32) + 1;
         assert!(genesis.validate().is_err());
         genesis.observers_per_validator = u32::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_minimum_validator_count() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.minimum_validator_count = 0;
         assert!(genesis.validate().is_err());
     }
 }

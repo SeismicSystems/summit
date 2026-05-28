@@ -950,6 +950,7 @@ impl<
             // Set the epoch genesis hash for the next epoch
             self.canonical_state
                 .set_epoch_genesis_hash(block.digest().0);
+            self.canonical_state.reset_pending_active_validator_exits();
 
             let active_count = self.canonical_state.get_active_validators().len();
             let joining_count = self
@@ -1632,6 +1633,10 @@ impl<
                 let value = self.canonical_state.get_observers_per_validator();
                 let _ = sender.send(ConsensusStateResponse::ObserversPerValidator(value));
             }
+            ConsensusStateRequest::GetMinimumValidatorCount => {
+                let value = self.canonical_state.get_minimum_validator_count();
+                let _ = sender.send(ConsensusStateResponse::MinimumValidatorCount(value));
+            }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self
                     .canonical_state
@@ -1720,6 +1725,12 @@ impl<
         // Add and remove validators for the next epoch
         let mut validator_exit = false;
         let next_epoch = self.canonical_state.get_epoch() + 1;
+        let staged_removed_validator_pubkeys: BTreeSet<[u8; 32]> = self
+            .canonical_state
+            .get_removed_validators()
+            .iter()
+            .map(|key| key.as_ref().try_into().expect("PublicKey is 32 bytes"))
+            .collect();
         if self.canonical_state.has_added_validators(next_epoch)
             || !self.canonical_state.get_removed_validators().is_empty()
         {
@@ -1804,6 +1815,20 @@ impl<
 
             for (key, balance, withdrawal_credentials) in validators_to_process {
                 if balance < self.canonical_state.get_minimum_stake() {
+                    if let Some(account) = self.canonical_state.get_account(&key)
+                        && account.status == ValidatorStatus::Active
+                        && !staged_removed_validator_pubkeys.contains(&key)
+                    {
+                        info!(
+                            validator = hex::encode(key),
+                            balance,
+                            min_stake = self.canonical_state.get_minimum_stake(),
+                            minimum_validator_count =
+                                self.canonical_state.get_minimum_validator_count(),
+                            "skipping stake-bound full withdrawal for active validator that was not staged for removal"
+                        );
+                        continue;
+                    }
                     // Nothing to withdraw and nothing in the committee to
                     // remove. Setting has_pending_withdrawal here would never
                     // get cleared because the zero-balance_deduction
@@ -2209,12 +2234,31 @@ async fn parse_execution_requests<
                                 // set to the entire balance
                                 let remaining_balance = account.balance;
                                 withdrawal_request.amount = remaining_balance;
+                                let is_active_exit = account.status == ValidatorStatus::Active;
+
+                                if is_active_exit && !state.can_accept_active_validator_exit() {
+                                    info!(
+                                        validator =
+                                            hex::encode(withdrawal_request.validator_pubkey),
+                                        current_epoch_active_validators =
+                                            state.current_epoch_active_validator_count(),
+                                        pending_active_validator_exits =
+                                            state.get_pending_active_validator_exits(),
+                                        minimum_validator_count =
+                                            state.get_minimum_validator_count(),
+                                        "skipping active validator exit because it would reduce the active validator set below the configured minimum"
+                                    );
+                                    continue;
+                                }
 
                                 if is_last_block_of_epoch(state.get_epocher(), new_height) {
                                     // On the last block of an epoch, buffer the withdrawal request
                                     // to be processed at the penultimate block of the next epoch.
                                     // This ensures the validator is included in removed_validators
                                     // which can be properly reflected in the header.
+                                    if is_active_exit {
+                                        state.increment_pending_active_validator_exits();
+                                    }
                                     info!(
                                         validator =
                                             hex::encode(withdrawal_request.validator_pubkey),
@@ -2244,6 +2288,9 @@ async fn parse_execution_requests<
                                 } else {
                                     // Validator is already active - add to removed_validators
                                     state.push_removed_validator(public_key);
+                                    if is_active_exit {
+                                        state.increment_pending_active_validator_exits();
+                                    }
                                     account.status = ValidatorStatus::SubmittedExitRequest;
                                 }
 
@@ -2484,11 +2531,11 @@ async fn process_execution_requests<
         if state.has_pending_stake_bound_change() {
             let prospective_min = state.prospective_minimum_stake();
             let current_epoch = state.get_epoch();
-            let candidates: Vec<([u8; 32], u64)> = state
+            let candidates: Vec<([u8; 32], u64, ValidatorStatus)> = state
                 .validator_accounts_iter()
                 .filter_map(|(key, account)| {
                     if !account.has_pending_deposit && account.balance < prospective_min {
-                        Some((*key, account.joining_epoch))
+                        Some((*key, account.joining_epoch, account.status.clone()))
                     } else {
                         None
                     }
@@ -2496,7 +2543,7 @@ async fn process_execution_requests<
                 .collect();
             let already_removed: HashSet<PublicKey> =
                 state.get_removed_validators().iter().cloned().collect();
-            for (key, joining_epoch) in candidates {
+            for (key, joining_epoch, status) in candidates {
                 let Ok(public_key) = PublicKey::decode(&key[..]) else {
                     continue;
                 };
@@ -2522,6 +2569,19 @@ async fn process_execution_requests<
                 if already_removed.contains(&public_key) {
                     continue;
                 }
+                if status == ValidatorStatus::Active && !state.can_accept_active_validator_exit() {
+                    info!(
+                        validator = hex::encode(public_key.as_ref()),
+                        prospective_min,
+                        current_epoch,
+                        current_epoch_active_validators =
+                            state.current_epoch_active_validator_count(),
+                        pending_active_validator_exits = state.get_pending_active_validator_exits(),
+                        minimum_validator_count = state.get_minimum_validator_count(),
+                        "skipping stake-bound force-removal because it would reduce the active validator set below the configured minimum"
+                    );
+                    continue;
+                }
                 info!(
                     validator = hex::encode(public_key.as_ref()),
                     prospective_min,
@@ -2529,6 +2589,9 @@ async fn process_execution_requests<
                     "staging force-removal at penultimate block for header delta"
                 );
                 state.push_removed_validator(public_key);
+                if status == ValidatorStatus::Active {
+                    state.increment_pending_active_validator_exits();
+                }
             }
         }
     }

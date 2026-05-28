@@ -1,6 +1,6 @@
 //! Two-level SSZ binary Merkle tree for ConsensusState.
 //!
-//! The top-level tree has 32 leaf slots (25 used, depth 5). Scalar fields and
+//! The top-level tree has 32 leaf slots (27 used, depth 5). Scalar fields and
 //! collection roots are assigned to fixed leaf indices — see the field-index
 //! and `*_ROOT` constants below for the authoritative layout. Each collection
 //! root (validator accounts, deposit/withdrawal queues, protocol-param changes,
@@ -58,9 +58,11 @@ pub const OBSERVERS_PER_VALIDATOR: usize = 21;
 pub const PENDING_EXECUTION_REQUESTS_ROOT: usize = 22;
 pub const PENDING_CHECKPOINT: usize = 23;
 pub const DYNAMIC_EPOCH_SCHEDULE: usize = 24;
+pub const MINIMUM_VALIDATOR_COUNT: usize = 25;
+pub const PENDING_ACTIVE_VALIDATOR_EXITS: usize = 26;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 25;
+pub const NUM_TOP_LEAVES: usize = 27;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -123,7 +125,7 @@ pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 2;
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
 pub struct SszStateTree {
-    /// Top-level tree: 32 leaves (depth 5), 25 used.
+    /// Top-level tree: 32 leaves (depth 5), 27 used.
     top: SszTree,
 
     /// Validator accounts subtree. Rebuilt from BTreeMap on every mutation.
@@ -265,6 +267,16 @@ impl SszStateTree {
     pub fn set_dynamic_epoch_schedule(&mut self, encoded_schedule: &[u8]) {
         self.top
             .set_leaf(DYNAMIC_EPOCH_SCHEDULE, hash_byte_list(encoded_schedule));
+    }
+
+    pub fn set_minimum_validator_count(&mut self, value: u64) {
+        self.top
+            .set_leaf(MINIMUM_VALIDATOR_COUNT, value.hash_tree_root());
+    }
+
+    pub fn set_pending_active_validator_exits(&mut self, value: u64) {
+        self.top
+            .set_leaf(PENDING_ACTIVE_VALIDATOR_EXITS, value.hash_tree_root());
     }
 
     pub fn set_treasury_address(&mut self, address: &Address) {
@@ -820,6 +832,7 @@ impl SszStateTree {
             ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
             ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
             ProtocolParam::ObserversPerValidator(v) => (7u64, v.hash_tree_root()),
+            ProtocolParam::MinimumValidatorCount(v) => (8u64, v.hash_tree_root()),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value_hash);
@@ -955,6 +968,8 @@ impl SszStateTree {
         pending_execution_requests: &[alloy_primitives::Bytes],
         pending_checkpoint_digest: Option<[u8; 32]>,
         dynamic_epoch_schedule: &[u8],
+        minimum_validator_count: u64,
+        pending_active_validator_exits: u64,
     ) {
         *self = Self::new();
 
@@ -975,6 +990,8 @@ impl SszStateTree {
         self.set_max_deposits_per_epoch(max_deposits_per_epoch);
         self.set_max_withdrawals_per_epoch(max_withdrawals_per_epoch);
         self.set_observers_per_validator(observers_per_validator);
+        self.set_minimum_validator_count(minimum_validator_count);
+        self.set_pending_active_validator_exits(pending_active_validator_exits);
 
         // Validators
         self.rebuild_validators(validator_accounts);
@@ -1856,6 +1873,8 @@ mod tests {
         inc.set_max_deposits_per_epoch(3);
         inc.set_max_withdrawals_per_epoch(16);
         inc.set_observers_per_validator(5);
+        inc.set_minimum_validator_count(3);
+        inc.set_pending_active_validator_exits(0);
         inc.rebuild_validators(&accounts);
         inc.rebuild_deposits(&VecDeque::new());
         inc.rebuild_withdrawals(&WithdrawalQueue::default());
@@ -1894,6 +1913,8 @@ mod tests {
             &[],
             None,
             &[],
+            3,
+            0,
         );
 
         assert_eq!(inc.root(), rb.root());
@@ -2005,6 +2026,8 @@ mod tests {
             &[],
             None,
             &[],
+            3,
+            0,
         );
 
         let root = tree.root();
