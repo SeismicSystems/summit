@@ -14,7 +14,7 @@ struct Segment {
 
 #[derive(Debug)]
 struct DynamicEpocherInner {
-    segments: Vec<Segment>,
+    segments: Arc<[Segment]>,
     current_epoch: Epoch,
 }
 
@@ -40,10 +40,36 @@ impl DynamicEpocher {
         };
         Self {
             inner: Arc::new(RwLock::new(DynamicEpocherInner {
-                segments: vec![segment],
+                segments: Arc::from(vec![segment]),
                 current_epoch: Epoch::new(0),
             })),
         }
+    }
+
+    /// Returns an isolated copy of the current epoch schedule.
+    pub fn snapshot(&self) -> Self {
+        let inner = self.inner.read().unwrap();
+        Self {
+            inner: Arc::new(RwLock::new(DynamicEpocherInner {
+                segments: Arc::clone(&inner.segments),
+                current_epoch: inner.current_epoch,
+            })),
+        }
+    }
+
+    /// Replaces this live handle's schedule with another epocher's current schedule.
+    pub fn replace_with(&self, other: &Self) {
+        if Arc::ptr_eq(&self.inner, &other.inner) {
+            return;
+        }
+
+        let (segments, current_epoch) = {
+            let other = other.inner.read().unwrap();
+            (Arc::clone(&other.segments), other.current_epoch)
+        };
+        let mut inner = self.inner.write().unwrap();
+        inner.segments = segments;
+        inner.current_epoch = current_epoch;
     }
 
     /// Returns the epoch length for the current epoch.
@@ -72,7 +98,7 @@ impl DynamicEpocher {
         if epoch.get() > inner.current_epoch.get() + 1 {
             return None;
         }
-        Self::bounds(&inner.segments, epoch)
+        Self::bounds(inner.segments.as_ref(), epoch)
     }
 
     /// Registers a new epoch length, taking effect at `current_epoch + 2`.
@@ -92,6 +118,7 @@ impl DynamicEpocher {
         let last_segment = inner
             .segments
             .last()
+            .cloned()
             .ok_or_else(|| anyhow!("no segments"))?;
         if target_epoch.get() < last_segment.start_epoch.get() {
             return Err(anyhow!(
@@ -101,20 +128,22 @@ impl DynamicEpocher {
             ));
         }
 
-        let (start_height, _) = Self::bounds(&inner.segments, target_epoch)
+        let (start_height, _) = Self::bounds(inner.segments.as_ref(), target_epoch)
             .ok_or_else(|| anyhow!("failed to compute bounds for epoch {}", target_epoch))?;
 
+        let mut segments = inner.segments.to_vec();
         // If the last segment starts at the same epoch, overwrite it.
         if last_segment.start_epoch == target_epoch {
-            let seg = inner.segments.last_mut().unwrap();
+            let seg = segments.last_mut().unwrap();
             seg.length = new_length.get();
         } else {
-            inner.segments.push(Segment {
+            segments.push(Segment {
                 start_epoch: target_epoch,
                 start_height,
                 length: new_length.get(),
             });
         }
+        inner.segments = Arc::from(segments);
         Ok(())
     }
 
@@ -160,7 +189,7 @@ impl Epocher for DynamicEpocher {
                     return None;
                 }
 
-                let (first, last) = Self::bounds(&inner.segments, epoch)?;
+                let (first, last) = Self::bounds(inner.segments.as_ref(), epoch)?;
                 return Some(EpochInfo::new(epoch, height, first, last));
             }
         }
@@ -172,7 +201,7 @@ impl Epocher for DynamicEpocher {
         if epoch.get() > inner.current_epoch.get() + 1 {
             return None;
         }
-        Self::bounds(&inner.segments, epoch).map(|(first, _)| first)
+        Self::bounds(inner.segments.as_ref(), epoch).map(|(first, _)| first)
     }
 
     fn last(&self, epoch: Epoch) -> Option<Height> {
@@ -180,7 +209,7 @@ impl Epocher for DynamicEpocher {
         if epoch.get() > inner.current_epoch.get() + 1 {
             return None;
         }
-        Self::bounds(&inner.segments, epoch).map(|(_, last)| last)
+        Self::bounds(inner.segments.as_ref(), epoch).map(|(_, last)| last)
     }
 }
 
@@ -198,7 +227,7 @@ impl Write for DynamicEpocher {
         let inner = self.inner.read().unwrap();
         buf.put_u64(inner.current_epoch.get());
         buf.put_u32(inner.segments.len() as u32);
-        for seg in &inner.segments {
+        for seg in inner.segments.iter() {
             buf.put_u64(seg.start_epoch.get());
             buf.put_u64(seg.start_height.get());
             buf.put_u64(seg.length);
@@ -231,7 +260,7 @@ impl Read for DynamicEpocher {
         }
         Ok(Self {
             inner: Arc::new(RwLock::new(DynamicEpocherInner {
-                segments,
+                segments: Arc::from(segments),
                 current_epoch,
             })),
         })
@@ -583,6 +612,61 @@ mod tests {
         assert_eq!(epocher.last(Epoch::new(3)), Some(Height::new(799)));
         assert_eq!(epocher.first(Epoch::new(4)), Some(Height::new(800)));
         assert_eq!(epocher.last(Epoch::new(4)), Some(Height::new(1099)));
+    }
+
+    #[test]
+    fn test_snapshot_isolates_query_window_and_schedule() {
+        let source = DynamicEpocher::new(NonZeroU64::new(10).unwrap());
+        source.advance_epoch(Epoch::new(0));
+
+        let snapshot = source.snapshot();
+
+        source.update_length(NonZeroU64::new(20).unwrap()).unwrap();
+        source.advance_epoch(Epoch::new(2));
+
+        assert_eq!(source.last(Epoch::new(2)), Some(Height::new(39)));
+        assert_eq!(snapshot.last(Epoch::new(2)), None);
+
+        snapshot.advance_epoch(Epoch::new(2));
+        assert_eq!(snapshot.first(Epoch::new(2)), Some(Height::new(20)));
+        assert_eq!(snapshot.last(Epoch::new(2)), Some(Height::new(29)));
+    }
+
+    #[test]
+    fn test_replace_with_updates_shared_live_handles() {
+        let live = DynamicEpocher::new(NonZeroU64::new(10).unwrap());
+        let live_observer = live.clone();
+        let fork = DynamicEpocher::new(NonZeroU64::new(10).unwrap());
+
+        fork.advance_epoch(Epoch::new(0));
+        fork.update_length(NonZeroU64::new(20).unwrap()).unwrap();
+        fork.advance_epoch(Epoch::new(2));
+
+        assert_eq!(live_observer.last(Epoch::new(2)), None);
+
+        live.replace_with(&fork);
+
+        assert_eq!(live.last(Epoch::new(2)), Some(Height::new(39)));
+        assert_eq!(live_observer.last(Epoch::new(2)), Some(Height::new(39)));
+    }
+
+    #[test]
+    fn test_replace_with_does_not_link_future_source_mutations() {
+        let live = DynamicEpocher::new(NonZeroU64::new(10).unwrap());
+        let fork = DynamicEpocher::new(NonZeroU64::new(10).unwrap());
+
+        fork.advance_epoch(Epoch::new(0));
+        fork.update_length(NonZeroU64::new(20).unwrap()).unwrap();
+        fork.advance_epoch(Epoch::new(2));
+
+        live.replace_with(&fork);
+
+        fork.update_length(NonZeroU64::new(30).unwrap()).unwrap();
+        fork.advance_epoch(Epoch::new(4));
+        live.advance_epoch(Epoch::new(4));
+
+        assert_eq!(fork.last(Epoch::new(4)), Some(Height::new(89)));
+        assert_eq!(live.last(Epoch::new(4)), Some(Height::new(79)));
     }
 
     #[test]

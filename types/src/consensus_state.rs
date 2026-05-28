@@ -17,7 +17,7 @@ use metrics::histogram;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU64;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ConsensusState {
     pub(crate) epoch: u64,
     pub(crate) view: u64,
@@ -69,6 +69,12 @@ pub struct ConsensusState {
     pub(crate) proof_el_block_number: u64,
 }
 
+impl Clone for ConsensusState {
+    fn clone(&self) -> Self {
+        self.clone_with_epocher(self.epocher.snapshot())
+    }
+}
+
 impl Default for ConsensusState {
     fn default() -> Self {
         let mut s = Self {
@@ -107,6 +113,52 @@ impl Default for ConsensusState {
 }
 
 impl ConsensusState {
+    /// Clones state data while installing the supplied epocher handle.
+    ///
+    /// Most consensus snapshots should use `Clone`, which isolates the epoch
+    /// schedule. This is only for paths that deliberately control how the
+    /// cloned state participates in live epoch schedule propagation.
+    pub fn clone_with_epocher(&self, epocher: DynamicEpocher) -> Self {
+        Self {
+            epoch: self.epoch,
+            view: self.view,
+            latest_height: self.latest_height,
+            head_digest: self.head_digest,
+            deposit_queue: self.deposit_queue.clone(),
+            withdrawal_queue: self.withdrawal_queue.clone(),
+            validator_accounts: self.validator_accounts.clone(),
+            protocol_param_changes: self.protocol_param_changes.clone(),
+            pending_checkpoint: self.pending_checkpoint.clone(),
+            added_validators: self.added_validators.clone(),
+            removed_validators: self.removed_validators.clone(),
+            pending_execution_requests: self.pending_execution_requests.clone(),
+            forkchoice: self.forkchoice,
+            epoch_genesis_hash: self.epoch_genesis_hash,
+            validator_minimum_stake: self.validator_minimum_stake,
+            validator_maximum_stake: self.validator_maximum_stake,
+            allowed_timestamp_future_ms: self.allowed_timestamp_future_ms,
+            treasury_address: self.treasury_address,
+            max_deposits_per_epoch: self.max_deposits_per_epoch,
+            max_withdrawals_per_epoch: self.max_withdrawals_per_epoch,
+            observers_per_validator: self.observers_per_validator,
+            epocher,
+            ssz_tree: self.ssz_tree.clone(),
+            proof_tree: self.proof_tree.clone(),
+            proof_validator_keys: self.proof_validator_keys.clone(),
+            state_root: self.state_root,
+            proof_el_block_number: self.proof_el_block_number,
+        }
+    }
+
+    /// Clones state data while retaining the same live epocher handle.
+    ///
+    /// Most consensus snapshots should use `Clone`, which isolates the epoch
+    /// schedule. This is only for actor wiring that intentionally shares the
+    /// canonical epocher across components.
+    pub fn clone_with_shared_epocher(&self) -> Self {
+        self.clone_with_epocher(self.epocher.clone())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         forkchoice: ForkchoiceState,
@@ -1244,6 +1296,43 @@ mod tests {
         assert_eq!(
             decoded_state.epoch_genesis_hash,
             original_state.epoch_genesis_hash
+        );
+    }
+
+    #[test]
+    fn test_clone_preserves_epoch_schedule_snapshot() {
+        let state = ConsensusState::new(
+            ForkchoiceState::default(),
+            0,
+            0,
+            NonZeroU64::new(10).unwrap(),
+            10_000,
+            Address::ZERO,
+            3,
+            16,
+            0,
+        );
+        state.get_epocher().advance_epoch(Epoch::new(0));
+
+        let cloned = state.clone();
+        let cloned_epoch_two_bounds_before = (
+            cloned.get_epocher().first(Epoch::new(2)),
+            cloned.get_epocher().last(Epoch::new(2)),
+        );
+
+        state
+            .get_epocher()
+            .update_length(NonZeroU64::new(20).unwrap())
+            .unwrap();
+        state.get_epocher().advance_epoch(Epoch::new(2));
+
+        assert_eq!(
+            (
+                cloned.get_epocher().first(Epoch::new(2)),
+                cloned.get_epocher().last(Epoch::new(2)),
+            ),
+            cloned_epoch_two_bounds_before,
+            "cloned consensus state must retain the epoch schedule captured at clone time",
         );
     }
 
