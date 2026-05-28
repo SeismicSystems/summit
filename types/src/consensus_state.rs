@@ -5,7 +5,7 @@ use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::{DEFAULT_MINIMUM_VALIDATOR_COUNT, ProtocolParam};
 use crate::ssz_state_tree::SszStateTree;
-use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
+use crate::withdrawal::{PendingWithdrawal, WithdrawalKind, WithdrawalQueue};
 use crate::{Digest, PublicKey};
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
@@ -744,13 +744,43 @@ impl ConsensusState {
         withdrawal_epoch: u64,
         balance_deduction: u64,
     ) {
+        self.push_withdrawal_request_with_kind(
+            request,
+            withdrawal_epoch,
+            balance_deduction,
+            WithdrawalKind::Validator,
+        );
+    }
+
+    pub fn push_refund_withdrawal_request(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_epoch: u64,
+        balance_deduction: u64,
+    ) {
+        self.push_withdrawal_request_with_kind(
+            request,
+            withdrawal_epoch,
+            balance_deduction,
+            WithdrawalKind::DepositRefund,
+        );
+    }
+
+    fn push_withdrawal_request_with_kind(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_epoch: u64,
+        balance_deduction: u64,
+        kind: WithdrawalKind,
+    ) {
         #[cfg(feature = "prom")]
         let start = std::time::Instant::now();
 
         let pubkey = request.validator_pubkey;
-        let is_merge = self.withdrawal_queue.get_withdrawal(&pubkey).is_some();
-        self.withdrawal_queue
-            .push_request(request, withdrawal_epoch, balance_deduction);
+        let is_merge = self
+            .withdrawal_queue
+            .push_request_with_kind(request, withdrawal_epoch, balance_deduction, kind)
+            .expect("withdrawal kind must match existing pending withdrawal");
         // push_request() may increment next_index internally — sync the scalar leaf
         self.ssz_tree
             .set_next_withdrawal_index(self.withdrawal_queue.next_index());
@@ -758,6 +788,16 @@ impl ConsensusState {
             // Fields updated in place — just refresh the existing item's leaves
             self.ssz_tree
                 .update_withdrawal(self.withdrawal_queue.get_withdrawal(&pubkey).unwrap());
+        } else if kind == WithdrawalKind::Validator
+            && self
+                .withdrawal_queue
+                .count_for_epoch_by_kind(withdrawal_epoch, WithdrawalKind::DepositRefund)
+                > 0
+        {
+            // Validator withdrawals are ordered before refund withdrawals in the
+            // combined queue view. If refunds are already scheduled for this
+            // epoch, inserting a validator withdrawal is not an append.
+            self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
         } else {
             // New item appended to the epoch
             self.ssz_tree
@@ -773,7 +813,7 @@ impl ConsensusState {
         let start = std::time::Instant::now();
 
         self.withdrawal_queue.push(request.clone());
-        self.ssz_tree.push_withdrawal(&request);
+        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
 
         #[cfg(feature = "prom")]
         histogram!("ssz_push_withdrawal_micros").record(start.elapsed().as_micros() as f64);
@@ -797,6 +837,26 @@ impl ConsensusState {
         Some(w)
     }
 
+    pub fn pop_withdrawal_by_index(
+        &mut self,
+        withdrawal_epoch: u64,
+        index: u64,
+    ) -> Option<PendingWithdrawal> {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        let w = self
+            .withdrawal_queue
+            .pop_by_index(withdrawal_epoch, index)?;
+        self.ssz_tree
+            .pop_withdrawal(withdrawal_epoch, &w.pubkey, &self.withdrawal_queue);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_pop_withdrawal_micros").record(start.elapsed().as_micros() as f64);
+
+        Some(w)
+    }
+
     pub fn get_withdrawal(&self, pubkey: &[u8; 32]) -> Option<&PendingWithdrawal> {
         self.withdrawal_queue.get_withdrawal(pubkey)
     }
@@ -804,6 +864,19 @@ impl ConsensusState {
     /// Get all pending withdrawals for a specific epoch
     pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Vec<&PendingWithdrawal> {
         self.withdrawal_queue.get_for_epoch(epoch)
+    }
+
+    pub fn get_withdrawals_for_epoch_with_limits(
+        &self,
+        epoch: u64,
+        max_validator_withdrawals: usize,
+        max_refund_withdrawals: usize,
+    ) -> Vec<&PendingWithdrawal> {
+        self.withdrawal_queue.get_for_epoch_with_limits(
+            epoch,
+            max_validator_withdrawals,
+            max_refund_withdrawals,
+        )
     }
 
     /// Get the number of pending withdrawals for a specific epoch
@@ -1448,7 +1521,7 @@ mod tests {
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
     use crate::ssz_state_tree;
-    use crate::withdrawal::PendingWithdrawal;
+    use crate::withdrawal::{PendingWithdrawal, WithdrawalKind};
 
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
@@ -1506,6 +1579,7 @@ mod tests {
             pubkey: [index as u8; 32],
             balance_deduction: amount,
             epoch,
+            kind: WithdrawalKind::Validator,
         }
     }
 

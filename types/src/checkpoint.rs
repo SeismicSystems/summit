@@ -483,7 +483,7 @@ mod tests {
     use crate::consensus_state::ConsensusState;
     use crate::dynamic_epocher::DynamicEpocher;
     use crate::ssz_state_tree::SszStateTree;
-    use crate::withdrawal::WithdrawalQueue;
+    use crate::withdrawal::{WithdrawalKind, WithdrawalQueue};
     use alloy_primitives::Address;
     use commonware_codec::DecodeExt;
     use commonware_cryptography::{Signer, bls12381, ed25519, sha256};
@@ -596,6 +596,7 @@ mod tests {
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
             epoch: 5,
+            kind: WithdrawalKind::Validator,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -791,6 +792,7 @@ mod tests {
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
             epoch: 5,
+            kind: WithdrawalKind::Validator,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -1102,6 +1104,7 @@ mod tests {
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
             epoch: 5,
+            kind: WithdrawalKind::Validator,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
