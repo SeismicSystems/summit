@@ -3,7 +3,7 @@ use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, FixedSize, Read, Write};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingWithdrawal {
@@ -377,27 +377,87 @@ impl Read for WithdrawalQueue {
 
         let withdrawals_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut withdrawals = BTreeMap::new();
+        let mut max_withdrawal_index = None;
         for _ in 0..withdrawals_len {
             let mut pubkey = [0u8; 32];
             buf.try_copy_to_slice(&mut pubkey)
                 .map_err(|_| Error::EndOfBuffer)?;
             let withdrawal = PendingWithdrawal::read_cfg(buf, &())?;
-            withdrawals.insert(pubkey, withdrawal);
+            if pubkey != withdrawal.pubkey {
+                return Err(Error::Invalid(
+                    "WithdrawalQueue",
+                    "withdrawal map key does not match pending pubkey",
+                ));
+            }
+            max_withdrawal_index = Some(
+                max_withdrawal_index
+                    .unwrap_or(withdrawal.inner.index)
+                    .max(withdrawal.inner.index),
+            );
+            if withdrawals.insert(pubkey, withdrawal).is_some() {
+                return Err(Error::Invalid(
+                    "WithdrawalQueue",
+                    "duplicate withdrawal pubkey",
+                ));
+            }
+        }
+        if max_withdrawal_index.is_some_and(|max_index| next_index <= max_index) {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "next_index must exceed pending withdrawal indexes",
+            ));
         }
 
         let schedule_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
         let mut schedule = BTreeMap::new();
+        let mut scheduled_pubkeys = BTreeSet::new();
         for _ in 0..schedule_len {
             let epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
             let pubkeys_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            if pubkeys_len == 0 {
+                return Err(Error::Invalid(
+                    "WithdrawalQueue",
+                    "scheduled epoch has no withdrawals",
+                ));
+            }
+            if schedule.contains_key(&epoch) {
+                return Err(Error::Invalid(
+                    "WithdrawalQueue",
+                    "duplicate scheduled epoch",
+                ));
+            }
             let mut pubkeys = VecDeque::with_capacity(pubkeys_len.min(buf.remaining()));
             for _ in 0..pubkeys_len {
                 let mut pubkey = [0u8; 32];
                 buf.try_copy_to_slice(&mut pubkey)
                     .map_err(|_| Error::EndOfBuffer)?;
+                let Some(withdrawal) = withdrawals.get(&pubkey) else {
+                    return Err(Error::Invalid(
+                        "WithdrawalQueue",
+                        "scheduled pubkey missing from withdrawal map",
+                    ));
+                };
+                if withdrawal.epoch != epoch {
+                    return Err(Error::Invalid(
+                        "WithdrawalQueue",
+                        "scheduled epoch does not match pending withdrawal epoch",
+                    ));
+                }
+                if !scheduled_pubkeys.insert(pubkey) {
+                    return Err(Error::Invalid(
+                        "WithdrawalQueue",
+                        "duplicate scheduled pubkey",
+                    ));
+                }
                 pubkeys.push_back(pubkey);
             }
             schedule.insert(epoch, pubkeys);
+        }
+        if scheduled_pubkeys.len() != withdrawals.len() {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "pending withdrawal missing from schedule",
+            ));
         }
 
         Ok(Self {
@@ -611,6 +671,48 @@ mod tests {
         }
     }
 
+    fn make_pending_withdrawal(
+        pubkey: [u8; 32],
+        epoch: u64,
+        index: u64,
+        amount: u64,
+    ) -> PendingWithdrawal {
+        PendingWithdrawal {
+            inner: Withdrawal {
+                index,
+                validator_index: 0,
+                address: Address::from([1u8; 20]),
+                amount,
+            },
+            pubkey,
+            balance_deduction: amount,
+            epoch,
+        }
+    }
+
+    fn encode_queue_parts(
+        next_index: u64,
+        withdrawals: Vec<([u8; 32], PendingWithdrawal)>,
+        schedule: Vec<(u64, Vec<[u8; 32]>)>,
+    ) -> BytesMut {
+        let mut buf = BytesMut::new();
+        buf.put_u64(next_index);
+        buf.put_u32(withdrawals.len() as u32);
+        for (pubkey, withdrawal) in withdrawals {
+            buf.put(&pubkey[..]);
+            withdrawal.write(&mut buf);
+        }
+        buf.put_u32(schedule.len() as u32);
+        for (epoch, pubkeys) in schedule {
+            buf.put_u64(epoch);
+            buf.put_u32(pubkeys.len() as u32);
+            for pubkey in pubkeys {
+                buf.put(&pubkey[..]);
+            }
+        }
+        buf
+    }
+
     #[test]
     fn test_queue_push_pop_basic() {
         let mut queue = WithdrawalQueue::default();
@@ -814,6 +916,56 @@ mod tests {
         buf.put_u32(0); // schedule_len
         let err = WithdrawalQueue::read(&mut buf.as_ref())
             .expect_err("read must reject next_index == u64::MAX");
+        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
+    }
+
+    #[test]
+    fn test_read_rejects_scheduled_pubkey_missing_from_withdrawal_map() {
+        let present_pubkey = [1u8; 32];
+        let missing_pubkey = [9u8; 32];
+        let pending = make_pending_withdrawal(present_pubkey, 5, 0, 100);
+        let buf = encode_queue_parts(
+            1,
+            vec![(present_pubkey, pending)],
+            vec![(5, vec![missing_pubkey, present_pubkey])],
+        );
+
+        let err = WithdrawalQueue::read(&mut buf.as_ref())
+            .expect_err("read must reject scheduled pubkeys missing from withdrawal map");
+        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
+    }
+
+    #[test]
+    fn test_read_rejects_map_key_that_differs_from_pending_pubkey() {
+        let map_pubkey = [1u8; 32];
+        let pending_pubkey = [2u8; 32];
+        let pending = make_pending_withdrawal(pending_pubkey, 5, 0, 100);
+        let buf = encode_queue_parts(1, vec![(map_pubkey, pending)], vec![(5, vec![map_pubkey])]);
+
+        let err = WithdrawalQueue::read(&mut buf.as_ref())
+            .expect_err("read must reject mismatched withdrawal map keys");
+        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
+    }
+
+    #[test]
+    fn test_read_rejects_schedule_epoch_mismatch() {
+        let pubkey = [1u8; 32];
+        let pending = make_pending_withdrawal(pubkey, 5, 0, 100);
+        let buf = encode_queue_parts(1, vec![(pubkey, pending)], vec![(6, vec![pubkey])]);
+
+        let err = WithdrawalQueue::read(&mut buf.as_ref())
+            .expect_err("read must reject schedule entries for the wrong epoch");
+        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
+    }
+
+    #[test]
+    fn test_read_rejects_stale_next_index() {
+        let pubkey = [1u8; 32];
+        let pending = make_pending_withdrawal(pubkey, 5, 7, 100);
+        let buf = encode_queue_parts(7, vec![(pubkey, pending)], vec![(5, vec![pubkey])]);
+
+        let err = WithdrawalQueue::read(&mut buf.as_ref())
+            .expect_err("read must reject next_index reuse");
         assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
     }
 
