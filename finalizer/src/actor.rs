@@ -1913,9 +1913,11 @@ async fn process_execution_requests<
                             state.get_minimum_stake(),
                             state.get_maximum_stake()
                         );
+                        let refund_pubkey =
+                            refunded_deposit_key(account.withdrawal_credentials, request.index);
                         let withdrawal_request = WithdrawalRequest {
                             source_address: account.withdrawal_credentials,
-                            validator_pubkey: node_pubkey_bytes,
+                            validator_pubkey: refund_pubkey,
                             amount: request.amount,
                         };
                         let withdrawal_epoch =

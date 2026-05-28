@@ -892,6 +892,252 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
 }
 
 #[test_traced("INFO")]
+fn test_process_time_invalid_new_validator_refund_does_not_merge_with_reused_pubkey_withdrawal() {
+    // A new-validator deposit can pass parse-time validation, then become invalid at
+    // deposit-processing time because stake bounds changed in between. That refund
+    // must not poison the queue for a later account that reuses the same node pubkey
+    // with different withdrawal credentials.
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let max_stake = 40_000_000_000;
+    let lowered_max_stake = 32_000_000_000;
+    let stale_deposit_amount = 40_000_000_000;
+    let valid_deposit_amount = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let stale_refund_address = Address::from([0xAA; 20]);
+        let current_withdrawal_address = Address::from([0xBB; 20]);
+
+        let mut stale_withdrawal_credentials = [0u8; 32];
+        stale_withdrawal_credentials[0] = 0x01;
+        stale_withdrawal_credentials[12..32].copy_from_slice(stale_refund_address.as_slice());
+
+        let mut current_withdrawal_credentials = [0u8; 32];
+        current_withdrawal_credentials[0] = 0x01;
+        current_withdrawal_credentials[12..32]
+            .copy_from_slice(current_withdrawal_address.as_slice());
+
+        let (stale_deposit, reused_node_key, _) = common::create_deposit_request(
+            99,
+            stale_deposit_amount,
+            common::get_domain(),
+            None,
+            None,
+            Some(stale_withdrawal_credentials),
+        );
+        let reused_pubkey: [u8; 32] = stale_deposit.node_pubkey.as_ref().try_into().unwrap();
+
+        let (valid_deposit, _, _) = common::create_deposit_request(
+            100,
+            valid_deposit_amount,
+            common::get_domain(),
+            Some(reused_node_key),
+            None,
+            Some(current_withdrawal_credentials),
+        );
+        assert_eq!(valid_deposit.node_pubkey, stale_deposit.node_pubkey);
+
+        let withdrawal_request = common::create_withdrawal_request(
+            current_withdrawal_address,
+            reused_pubkey,
+            valid_deposit_amount,
+        );
+
+        let param_request = common::create_protocol_param_request(0x01, lowered_max_stake);
+        let param_block_height = 5;
+        let stale_deposit_block_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0);
+        let valid_deposit_block_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 1);
+        let withdrawal_block_height = 30;
+
+        let stale_refund_epoch = 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let stale_refund_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, stale_refund_epoch);
+        let current_withdrawal_epoch = 3 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let current_withdrawal_height =
+            last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, current_withdrawal_epoch);
+        let stop_height = current_withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(
+            param_block_height,
+            common::execution_requests_to_requests(vec![ExecutionRequest::ProtocolParam(
+                param_request,
+            )]),
+        );
+        execution_requests_map.insert(
+            stale_deposit_block_height,
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(
+                stale_deposit.clone(),
+            )]),
+        );
+        execution_requests_map.insert(
+            valid_deposit_block_height,
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(
+                valid_deposit.clone(),
+            )]),
+        );
+        execution_requests_map.insert(
+            withdrawal_block_height,
+            common::execution_requests_to_requests(vec![ExecutionRequest::Withdrawal(
+                withdrawal_request,
+            )]),
+        );
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        initial_state.set_maximum_stake(max_stake);
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        assert_eq!(state_query.get_maximum_stake().await, lowered_max_stake);
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        let stale_epoch_withdrawals = withdrawals
+            .get(&stale_refund_height)
+            .expect("missing process-time stale refund withdrawal");
+        assert!(
+            stale_epoch_withdrawals.iter().any(|withdrawal| {
+                withdrawal.address == stale_refund_address
+                    && withdrawal.amount == stale_deposit_amount
+            }),
+            "process-time invalid deposit refund should remain separate; got withdrawals = {stale_epoch_withdrawals:?}"
+        );
+        assert!(
+            !stale_epoch_withdrawals.iter().any(|withdrawal| {
+                withdrawal.address == stale_refund_address
+                    && withdrawal.amount == stale_deposit_amount + valid_deposit_amount
+            }),
+            "later valid withdrawal must not merge into stale refund address; got withdrawals = {stale_epoch_withdrawals:?}"
+        );
+
+        let current_epoch_withdrawals = withdrawals
+            .get(&current_withdrawal_height)
+            .expect("missing later valid withdrawal");
+        assert!(
+            current_epoch_withdrawals.iter().any(|withdrawal| {
+                withdrawal.address == current_withdrawal_address
+                    && withdrawal.amount == valid_deposit_amount
+            }),
+            "later valid withdrawal should be paid to current credentials; got withdrawals = {current_epoch_withdrawals:?}"
+        );
+
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
 fn test_withdrawal_blocked_by_pending_deposit() {
     // Tests that a withdrawal request is ignored when the validator has a pending deposit.
     //
