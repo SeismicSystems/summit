@@ -7,6 +7,7 @@ pub mod consensus_state_query;
 pub mod dynamic_epocher;
 pub mod engine_client;
 pub mod execution_request;
+pub mod execution_request_origin;
 pub mod ext_private_key;
 pub mod genesis;
 pub mod header;

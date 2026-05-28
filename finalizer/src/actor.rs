@@ -35,6 +35,7 @@ use summit_types::consensus_state_query::{ConsensusStateRequest, ConsensusStateR
 use summit_types::execution_request::{
     DepositRequest, ExecutionRequest, ParsedExecutionRequest, WithdrawalRequest,
 };
+use summit_types::execution_request_origin::ExecutionRequestOrigin;
 use summit_types::ext_private_key::derive_observer_keys;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::protocol_params::ProtocolParam;
@@ -1777,9 +1778,8 @@ impl<
             // parse_execution_requests (so it appears in the next epoch's
             // last-block `removed_validators` header). The deferred exit
             // will replay on the next block's parse and zero the balance
-            // then; scheduling a stake-bound partial withdrawal here would
-            // set has_pending_withdrawal = true and cause the buffered
-            // exit's admission to be skipped as a duplicate.
+            // then; scheduling a stake-bound withdrawal here would duplicate
+            // the already-accepted deferred exit.
             let pending_exit_pubkeys = pubkeys_with_buffered_full_exit(&self.canonical_state);
 
             let validators_to_process: Vec<([u8; 32], u64, Address)> = self
@@ -2033,12 +2033,21 @@ async fn parse_execution_requests<
     protocol_version_digest: Digest,
     consts: &ProtocolConsts,
 ) {
-    // Combine any pending execution requests with the current block's requests
-    let mut all_requests = state.take_pending_execution_requests();
-    all_requests.extend(block.execution_requests.iter().cloned());
+    // Combine any pending execution requests with the current block's requests.
+    // Keep origin explicit so deferred replay can distinguish itself from a
+    // fresh request in the block currently being executed.
+    let pending_requests = state.take_pending_execution_requests();
+    let pending_requests = pending_requests
+        .iter()
+        .map(|request| (request.as_ref(), ExecutionRequestOrigin::Deferred));
+    let current_requests = block
+        .execution_requests
+        .iter()
+        .map(|request| (request.as_ref(), ExecutionRequestOrigin::CurrentBlock));
 
-    for request_bytes in &all_requests {
-        match ExecutionRequest::parse_eth_entry(request_bytes.as_ref()) {
+    for (request_bytes, origin) in pending_requests.chain(current_requests) {
+        let is_deferred = origin.is_deferred();
+        match ExecutionRequest::parse_eth_entry(request_bytes) {
             Ok(parsed_requests) => {
                 for parsed in parsed_requests {
                     match parsed {
@@ -2066,6 +2075,56 @@ async fn parse_execution_requests<
                         ParsedExecutionRequest::Valid(ExecutionRequest::Deposit(
                             deposit_request,
                         )) => {
+                            //<<<<<<< HEAD
+                            //    for request_bytes in &all_requests {
+                            //        match ExecutionRequest::parse_eth_entry(request_bytes.as_ref()) {
+                            //            Ok(parsed_requests) => {
+                            //                for parsed in parsed_requests {
+                            //                    match parsed {
+                            //                        ParsedExecutionRequest::MalformedDeposit(chunk) => {
+                            //                            // EIP-6110 grouping concatenates same-block deposit logs
+                            //                            // into one entry; a single contract-accepted but
+                            //                            // parser-invalid chunk must not poison the others.
+                            //                            // Route it through the same refund branch as a
+                            //                            // signature-invalid deposit.
+                            //                            info!(
+                            //                                reason = chunk.reason,
+                            //                                amount = chunk.amount,
+                            //                                index = chunk.index,
+                            //                                "refunding malformed deposit chunk",
+                            //                            );
+                            //                            queue_deposit_refund(
+                            //                                state,
+                            //                                chunk.withdrawal_credentials,
+                            //                                chunk.amount,
+                            //                                chunk.index,
+                            //                                DepositRejectionReason::MalformedKey,
+                            //                                consts,
+                            //                            );
+                            //                        }
+                            //                        ParsedExecutionRequest::Valid(ExecutionRequest::Deposit(
+                            //                            deposit_request,
+                            //                        )) => {
+                            //||||||| parent of 47173ec (fix: preserve deferred last-block withdrawals)
+                            //    for request_bytes in &all_requests {
+                            //        match ExecutionRequest::try_from_eth_entry(request_bytes.as_ref()) {
+                            //            Ok(execution_requests) => {
+                            //                for execution_request in execution_requests {
+                            //                    match execution_request {
+                            //                        ExecutionRequest::Deposit(deposit_request) => {
+                            //=======
+                            //    for (request_bytes, origin) in pending_requests.chain(current_requests) {
+                            //        match ExecutionRequest::try_from_eth_entry(request_bytes) {
+                            //            Ok(execution_requests) => {
+                            //                for execution_request in execution_requests {
+                            //                    let queued_request = QueuedExecutionRequest {
+                            //                        request: execution_request,
+                            //                        origin,
+                            //                    };
+                            //                    let is_deferred = queued_request.origin.is_deferred();
+                            //                    match queued_request.request {
+                            //                        ExecutionRequest::Deposit(deposit_request) => {
+                            //>>>>>>> 47173ec (fix: preserve deferred last-block withdrawals)
                             match verify_deposit_request(
                                 context,
                                 &deposit_request,
@@ -2152,10 +2211,16 @@ async fn parse_execution_requests<
 
                                 // If the validator already has a pending withdrawal request, we skip this withdrawal request
                                 if account.has_pending_withdrawal {
-                                    info!(
-                                        "Skipping withdrawal request because the validator already has a pending withdrawal request: {withdrawal_request:?}"
-                                    );
-                                    continue; // Skip this withdrawal request
+                                    if is_deferred {
+                                        info!(
+                                            "Replaying deferred withdrawal request for validator with pending withdrawal flag: {withdrawal_request:?}"
+                                        );
+                                    } else {
+                                        info!(
+                                            "Skipping withdrawal request because the validator already has a pending withdrawal request: {withdrawal_request:?}"
+                                        );
+                                        continue; // Skip this withdrawal request
+                                    }
                                 }
 
                                 // The balance minus any pending withdrawals have to be larger than the amount of the withdrawal request
@@ -2204,6 +2269,8 @@ async fn parse_execution_requests<
                                     );
                                     let mut deferred_request = vec![0x01];
                                     withdrawal_request.write(&mut deferred_request);
+                                    account.has_pending_withdrawal = true;
+                                    state.set_account(withdrawal_request.validator_pubkey, account);
                                     state.push_pending_execution_request(deferred_request.into());
                                     continue;
                                 } else if account.joining_epoch > state.get_epoch() {
