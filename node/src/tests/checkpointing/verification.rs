@@ -102,7 +102,7 @@ fn test_checkpoint_verification_fixed_committee() {
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
             minimum_validator_count: 3,
-            invalid_withdrawal_tax: 0,
+            invalid_deposit_tax: 0,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -441,7 +441,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
             minimum_validator_count: 3,
-            invalid_withdrawal_tax: 0,
+            invalid_deposit_tax: 0,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
