@@ -1,7 +1,7 @@
 use crate::PublicKey;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_MESSAGE_SIZE_BYTES_MAX, MAX_MESSAGE_SIZE_BYTES_MIN,
-    MIN_MINIMUM_VALIDATOR_COUNT, ProtocolParam,
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_INVALID_WITHDRAWAL_TAX, MAX_MESSAGE_SIZE_BYTES_MAX,
+    MAX_MESSAGE_SIZE_BYTES_MIN, MIN_MINIMUM_VALIDATOR_COUNT, ProtocolParam,
 };
 use alloy_primitives::Address;
 use anyhow::Context;
@@ -71,6 +71,9 @@ pub struct Genesis {
     /// Minimum number of active validators that full exits must preserve.
     #[serde(default = "default_minimum_validator_count")]
     pub minimum_validator_count: u64,
+    /// Percentage tax applied to invalid-deposit refunds. Must be between 0 and 100.
+    #[serde(default = "default_invalid_withdrawal_tax")]
+    pub invalid_withdrawal_tax: u64,
 }
 
 fn default_treasury_address() -> String {
@@ -91,6 +94,10 @@ fn default_observers_per_validator() -> u32 {
 
 fn default_minimum_validator_count() -> u64 {
     DEFAULT_MINIMUM_VALIDATOR_COUNT
+}
+
+fn default_invalid_withdrawal_tax() -> u64 {
+    0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +227,13 @@ impl Genesis {
             return Err(format!(
                 "minimum_validator_count {} is below minimum {}",
                 self.minimum_validator_count, MIN_MINIMUM_VALIDATOR_COUNT
+            )
+            .into());
+        }
+        if self.invalid_withdrawal_tax > MAX_INVALID_WITHDRAWAL_TAX {
+            return Err(format!(
+                "invalid_withdrawal_tax {} exceeds maximum {}",
+                self.invalid_withdrawal_tax, MAX_INVALID_WITHDRAWAL_TAX
             )
             .into());
         }
@@ -477,6 +491,24 @@ mod tests {
     fn rejects_zero_minimum_validator_count() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.minimum_validator_count = 0;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_invalid_withdrawal_tax_at_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.invalid_withdrawal_tax = 0;
+        assert!(genesis.validate().is_ok());
+        genesis.invalid_withdrawal_tax = MAX_INVALID_WITHDRAWAL_TAX;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_withdrawal_tax_above_upper_bound() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.invalid_withdrawal_tax = MAX_INVALID_WITHDRAWAL_TAX + 1;
+        assert!(genesis.validate().is_err());
+        genesis.invalid_withdrawal_tax = u64::MAX;
         assert!(genesis.validate().is_err());
     }
 }

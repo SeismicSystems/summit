@@ -43,8 +43,8 @@ use summit_types::scheme::EpochTransition;
 use summit_types::ssz_state_tree::SszProof;
 use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::utils::{
-    is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
-    parse_withdrawal_credentials,
+    invalid_deposit_refund_split, is_first_block_of_epoch, is_last_block_of_epoch,
+    is_penultimate_block_of_epoch, parse_withdrawal_credentials,
 };
 use summit_types::{
     AddedValidator, Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature,
@@ -82,6 +82,47 @@ fn refunded_deposit_key(withdrawal_address: Address, deposit_index: u64) -> [u8;
 
 fn invalid_signature_refund_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
     deposit_refund_key(0xFF, withdrawal_address, deposit_index)
+}
+
+fn invalid_deposit_tax_key(treasury_address: Address, deposit_index: u64) -> [u8; 32] {
+    deposit_refund_key(0xFD, treasury_address, deposit_index)
+}
+
+fn push_invalid_deposit_withdrawals(
+    state: &mut ConsensusState,
+    withdrawal_credentials: Address,
+    refund_pubkey: [u8; 32],
+    deposit_index: u64,
+    amount: u64,
+    withdrawal_epoch: u64,
+) {
+    let (refund_amount, tax_amount) =
+        invalid_deposit_refund_split(amount, state.get_invalid_withdrawal_tax());
+
+    if refund_amount > 0 {
+        state.push_refund_withdrawal_request(
+            WithdrawalRequest {
+                source_address: withdrawal_credentials,
+                validator_pubkey: refund_pubkey,
+                amount: refund_amount,
+            },
+            withdrawal_epoch,
+            0, // deposit was never credited to balance
+        );
+    }
+
+    if tax_amount > 0 {
+        let treasury_address = state.get_treasury_address();
+        state.push_refund_withdrawal_request(
+            WithdrawalRequest {
+                source_address: treasury_address,
+                validator_pubkey: invalid_deposit_tax_key(treasury_address, deposit_index),
+                amount: tax_amount,
+            },
+            withdrawal_epoch,
+            0, // invalid-deposit tax was never credited to a validator balance
+        );
+    }
 }
 
 /// Scan `state.pending_execution_requests` for buffered withdrawal entries
@@ -161,16 +202,14 @@ fn queue_deposit_refund(
         }
     };
 
-    let withdrawal_request = WithdrawalRequest {
-        source_address: withdrawal_address,
-        validator_pubkey: refund_pubkey,
-        amount,
-    };
     let withdrawal_epoch = state.get_epoch() + consts.validator_withdrawal_num_epochs;
-    state.push_refund_withdrawal_request(
-        withdrawal_request,
+    push_invalid_deposit_withdrawals(
+        state,
+        withdrawal_address,
+        refund_pubkey,
+        deposit_index,
+        amount,
         withdrawal_epoch,
-        0, // deposit was never credited to balance
     );
 }
 
@@ -1641,6 +1680,10 @@ impl<
                 let value = self.canonical_state.get_minimum_validator_count();
                 let _ = sender.send(ConsensusStateResponse::MinimumValidatorCount(value));
             }
+            ConsensusStateRequest::GetInvalidWithdrawalTax => {
+                let value = self.canonical_state.get_invalid_withdrawal_tax();
+                let _ = sender.send(ConsensusStateResponse::InvalidWithdrawalTax(value));
+            }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self
                     .canonical_state
@@ -2433,17 +2476,16 @@ async fn process_execution_requests<
                         );
                         let refund_pubkey =
                             refunded_deposit_key(account.withdrawal_credentials, request.index);
-                        let withdrawal_request = WithdrawalRequest {
-                            source_address: account.withdrawal_credentials,
-                            validator_pubkey: refund_pubkey,
-                            amount: request.amount,
-                        };
                         let withdrawal_epoch =
                             state.get_epoch() + consts.validator_withdrawal_num_epochs;
-                        state.push_refund_withdrawal_request(
-                            withdrawal_request,
+
+                        push_invalid_deposit_withdrawals(
+                            state,
+                            account.withdrawal_credentials,
+                            refund_pubkey,
+                            request.index,
+                            request.amount,
                             withdrawal_epoch,
-                            0, // deposit was never credited
                         );
                         // Remove the inactive account since validator won't be joining
                         state.remove_account(&node_pubkey_bytes);
@@ -2518,18 +2560,16 @@ async fn process_execution_requests<
                         );
                         let refund_pubkey =
                             refunded_deposit_key(account.withdrawal_credentials, request.index);
-                        let withdrawal_request = WithdrawalRequest {
-                            source_address: account.withdrawal_credentials,
-                            validator_pubkey: refund_pubkey,
-                            amount: request.amount,
-                        };
                         let withdrawal_epoch =
                             state.get_epoch() + consts.validator_withdrawal_num_epochs;
 
-                        state.push_refund_withdrawal_request(
-                            withdrawal_request,
+                        push_invalid_deposit_withdrawals(
+                            state,
+                            account.withdrawal_credentials,
+                            refund_pubkey,
+                            request.index,
+                            request.amount,
                             withdrawal_epoch,
-                            0, // top-up deposit was never credited to balance
                         );
                         // Persist the has_pending_deposit = false change
                         state.set_account(node_pubkey_bytes, account);
