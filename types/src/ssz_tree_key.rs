@@ -76,6 +76,12 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "observers_per_validator" => {
             Ok(SszStateKey::Scalar(ssz_state_tree::OBSERVERS_PER_VALIDATOR))
         }
+        "minimum_validator_count" => {
+            Ok(SszStateKey::Scalar(ssz_state_tree::MINIMUM_VALIDATOR_COUNT))
+        }
+        "pending_active_validator_exits" => Ok(SszStateKey::Scalar(
+            ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS,
+        )),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"
@@ -240,6 +246,14 @@ mod tests {
         assert_eq!(
             parse_key("forkchoice_finalized_block_hash").unwrap(),
             SszStateKey::Scalar(10)
+        );
+        assert_eq!(
+            parse_key("minimum_validator_count").unwrap(),
+            SszStateKey::Scalar(ssz_state_tree::MINIMUM_VALIDATOR_COUNT)
+        );
+        assert_eq!(
+            parse_key("pending_active_validator_exits").unwrap(),
+            SszStateKey::Scalar(ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS)
         );
     }
 

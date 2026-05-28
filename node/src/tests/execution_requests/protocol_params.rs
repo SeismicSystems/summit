@@ -789,6 +789,193 @@ fn test_protocol_param_stake_update_committee() {
 }
 
 #[test_traced("INFO")]
+fn test_minimum_validator_count_limits_stake_bound_force_removals() {
+    // The default minimum validator count is 3. If a stake-bound update makes
+    // all 4 active validators under-staked, only one force-removal may be staged.
+    let n = 4;
+    let min_stake = 32_000_000_000;
+    let max_stake = 64_000_000_000;
+    let new_min_stake = 40_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(45);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let addresses: Vec<Address> = (0..n).map(|i| Address::from([i as u8 + 1; 20])).collect();
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let min_param = common::create_protocol_param_request(0x00, new_min_stake);
+        let requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::ProtocolParam(
+                min_param,
+            )]);
+
+        let protocol_param_block_height = 5;
+        let withdrawal_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 1);
+        let stop_height = withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(protocol_param_block_height, requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let mut initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+        initial_state.set_maximum_stake(max_stake);
+
+        let mut consensus_state_queries = HashMap::new();
+        let mut validator_uids = vec![String::new(); n as usize];
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            validator_uids[idx] = uid.clone();
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 1 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(
+            withdrawals.len(),
+            1,
+            "only one stake-bound full withdrawal should be emitted"
+        );
+        let epoch_withdrawals = withdrawals
+            .get(&withdrawal_height)
+            .expect("missing stake-bound withdrawal at epoch 1 boundary");
+        assert_eq!(epoch_withdrawals.len(), 1);
+        assert_eq!(epoch_withdrawals[0].amount, min_stake);
+        assert_eq!(epoch_withdrawals[0].address, addresses[0]);
+
+        let state_query = consensus_state_queries
+            .get(&1)
+            .expect("second validator should still be running");
+        assert_eq!(state_query.get_minimum_stake().await, new_min_stake);
+        assert_eq!(state_query.get_maximum_stake().await, max_stake);
+
+        let removed_account = state_query
+            .get_validator_account(validators[0].0.clone())
+            .await;
+        assert!(
+            removed_account.is_none(),
+            "only the first under-staked active validator should be force-removed"
+        );
+
+        for validator in validators.iter().skip(1) {
+            let account = state_query
+                .get_validator_account(validator.0.clone())
+                .await
+                .expect("minimum validator floor should preserve the remaining validators");
+            assert_eq!(account.status, ValidatorStatus::Active);
+            assert_eq!(account.balance, min_stake);
+        }
+
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &[validator_uids[0].as_str()])
+                .is_ok()
+        );
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
 fn test_protocol_param_treasury_address() {
     // Tests that the treasury address protocol parameter controls suggested_fee_recipient:
     // - Epoch 0: treasury_address is zero → fee_recipient = proposer's withdrawal credentials

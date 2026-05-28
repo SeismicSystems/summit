@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 22 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 22–31 are unused (zero-filled).
+32 leaf slots (depth 5), 24 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 24–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -62,6 +62,8 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 19 | `max_deposits_per_epoch` | Scalar |
 | 20 | `max_withdrawals_per_epoch` | Scalar |
 | 21 | `observers_per_validator` | Scalar |
+| 22 | `minimum_validator_count` | Scalar |
+| 23 | `pending_active_validator_exits` | Scalar |
 
 ### Collection Subtrees
 
@@ -146,7 +148,7 @@ A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by 
 
 All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 
-- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum/maximum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, validator_index, balance_deduction.
+- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum/maximum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, minimum_validator_count, pending_active_validator_exits, validator_index, balance_deduction.
 - **`u32`**: Little-endian encoded, zero-padded to 32 bytes. Used by: observers_per_validator.
 - **`bool`**: `0x01` or `0x00`, zero-padded to 32 bytes. Used by: has_pending_deposit, has_pending_withdrawal.
 - **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3), zero-padded to 32 bytes.
@@ -179,6 +181,8 @@ Single top-level leaf write + rehash of the 5-level path to root.
 | `set_max_deposits_per_epoch()` | `ssz_tree.set_max_deposits_per_epoch()` |
 | `set_max_withdrawals_per_epoch()` | `ssz_tree.set_max_withdrawals_per_epoch()` |
 | `set_observers_per_validator()` | `ssz_tree.set_observers_per_validator()` |
+| `set_minimum_validator_count()` | `ssz_tree.set_minimum_validator_count()` |
+| `increment_pending_active_validator_exits()` / `reset_pending_active_validator_exits()` | `ssz_tree.set_pending_active_validator_exits()` |
 | `set_next_withdrawal_index()` | `ssz_tree.set_next_withdrawal_index()` |
 | `set_forkchoice_head()` | `ssz_tree.set_forkchoice_head_block_hash()` |
 | `set_forkchoice_safe_and_finalized()` | Two setter calls (safe + finalized) |
@@ -408,6 +412,8 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | `max_deposits_per_epoch` | Max validator deposits per epoch |
 | `max_withdrawals_per_epoch` | Max validator withdrawals per epoch |
 | `observers_per_validator` | Observer keys authorized per validator |
+| `minimum_validator_count` | Minimum active validator count exits must preserve |
+| `pending_active_validator_exits` | Accepted active validator exits pending epoch transition |
 | `next_withdrawal_index` | Next withdrawal index |
 | `forkchoice_head_block_hash` | Forkchoice head hash |
 | `forkchoice_safe_block_hash` | Forkchoice safe hash |

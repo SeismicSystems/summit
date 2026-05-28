@@ -3,7 +3,7 @@ use crate::checkpoint::Checkpoint;
 use crate::dynamic_epocher::DynamicEpocher;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
-use crate::protocol_params::ProtocolParam;
+use crate::protocol_params::{DEFAULT_MINIMUM_VALIDATOR_COUNT, ProtocolParam};
 use crate::ssz_state_tree::SszStateTree;
 use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use crate::{Digest, PublicKey};
@@ -42,6 +42,8 @@ pub struct ConsensusState {
     pub(crate) max_deposits_per_epoch: u64,
     pub(crate) max_withdrawals_per_epoch: u64,
     pub(crate) observers_per_validator: u32,
+    pub(crate) minimum_validator_count: u64,
+    pub(crate) pending_active_validator_exits: u64,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -93,6 +95,8 @@ impl Default for ConsensusState {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            minimum_validator_count: DEFAULT_MINIMUM_VALIDATOR_COUNT,
+            pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -118,6 +122,7 @@ impl ConsensusState {
         max_deposits_per_epoch: u64,
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
+        minimum_validator_count: u64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -141,6 +146,8 @@ impl ConsensusState {
             max_deposits_per_epoch,
             max_withdrawals_per_epoch,
             observers_per_validator,
+            minimum_validator_count,
+            pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -284,6 +291,30 @@ impl ConsensusState {
     pub fn set_observers_per_validator(&mut self, value: u32) {
         self.observers_per_validator = value;
         self.ssz_tree.set_observers_per_validator(value);
+    }
+
+    pub fn get_minimum_validator_count(&self) -> u64 {
+        self.minimum_validator_count
+    }
+
+    pub fn set_minimum_validator_count(&mut self, value: u64) {
+        self.minimum_validator_count = value;
+        self.ssz_tree.set_minimum_validator_count(value);
+    }
+
+    pub fn get_pending_active_validator_exits(&self) -> u64 {
+        self.pending_active_validator_exits
+    }
+
+    pub fn increment_pending_active_validator_exits(&mut self) {
+        self.pending_active_validator_exits = self.pending_active_validator_exits.saturating_add(1);
+        self.ssz_tree
+            .set_pending_active_validator_exits(self.pending_active_validator_exits);
+    }
+
+    pub fn reset_pending_active_validator_exits(&mut self) {
+        self.pending_active_validator_exits = 0;
+        self.ssz_tree.set_pending_active_validator_exits(0);
     }
 
     pub fn get_treasury_address(&self) -> Address {
@@ -709,6 +740,24 @@ impl ConsensusState {
         peers
     }
 
+    pub fn current_epoch_active_validator_count(&self) -> u64 {
+        self.validator_accounts
+            .values()
+            .filter(|acc| {
+                matches!(
+                    acc.status,
+                    ValidatorStatus::Active | ValidatorStatus::SubmittedExitRequest
+                )
+            })
+            .count() as u64
+    }
+
+    pub fn can_accept_active_validator_exit(&self) -> bool {
+        self.current_epoch_active_validator_count()
+            .saturating_sub(self.pending_active_validator_exits.saturating_add(1))
+            >= self.minimum_validator_count
+    }
+
     pub fn get_active_or_joining_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
         let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
             .validator_accounts
@@ -782,6 +831,10 @@ impl ConsensusState {
                     self.observers_per_validator = value;
                     self.ssz_tree.set_observers_per_validator(value);
                 }
+                ProtocolParam::MinimumValidatorCount(value) => {
+                    self.minimum_validator_count = value;
+                    self.ssz_tree.set_minimum_validator_count(value);
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
@@ -820,6 +873,8 @@ impl ConsensusState {
             self.max_deposits_per_epoch,
             self.max_withdrawals_per_epoch,
             self.observers_per_validator,
+            self.minimum_validator_count,
+            self.pending_active_validator_exits,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -872,6 +927,8 @@ impl EncodeSize for ConsensusState {
         + 8 // max_deposits_per_epoch
         + 8 // max_withdrawals_per_epoch
         + 4 // observers_per_validator
+        + 8 // minimum_validator_count
+        + 8 // pending_active_validator_exits
         + self.epocher.encode_size()
     }
 }
@@ -998,6 +1055,29 @@ impl Read for ConsensusState {
         let max_deposits_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         let max_withdrawals_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         let observers_per_validator = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
+        let minimum_validator_count = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        if minimum_validator_count == 0 {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "minimum validator count out of bounds",
+            ));
+        }
+        let pending_active_validator_exits = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let current_epoch_active_validator_count = validator_accounts
+            .values()
+            .filter(|account| {
+                matches!(
+                    account.status,
+                    ValidatorStatus::Active | ValidatorStatus::SubmittedExitRequest
+                )
+            })
+            .count() as u64;
+        if pending_active_validator_exits > current_epoch_active_validator_count {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "pending active validator exits exceeds active validator count",
+            ));
+        }
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
@@ -1023,6 +1103,8 @@ impl Read for ConsensusState {
             max_deposits_per_epoch,
             max_withdrawals_per_epoch,
             observers_per_validator,
+            minimum_validator_count,
+            pending_active_validator_exits,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
@@ -1119,6 +1201,12 @@ impl Write for ConsensusState {
 
         // Write observers_per_validator
         buf.put_u32(self.observers_per_validator);
+
+        // Write minimum_validator_count
+        buf.put_u64(self.minimum_validator_count);
+
+        // Write pending_active_validator_exits
+        buf.put_u64(self.pending_active_validator_exits);
 
         // Write epocher
         self.epocher.write(buf);
@@ -1245,6 +1333,42 @@ mod tests {
             decoded_state.epoch_genesis_hash,
             original_state.epoch_genesis_hash
         );
+        assert_eq!(
+            decoded_state.get_minimum_validator_count(),
+            DEFAULT_MINIMUM_VALIDATOR_COUNT
+        );
+        assert_eq!(decoded_state.get_pending_active_validator_exits(), 0);
+    }
+
+    #[test]
+    fn active_exit_counter_preserves_minimum_validator_count() {
+        let mut state = ConsensusState::default();
+        state.set_minimum_validator_count(3);
+
+        for i in 0..4 {
+            state.set_account(
+                [i as u8 + 1; 32],
+                create_test_validator_account(i as u64 + 1, 32_000_000_000),
+            );
+        }
+
+        assert!(state.can_accept_active_validator_exit());
+        state.increment_pending_active_validator_exits();
+        assert!(!state.can_accept_active_validator_exit());
+
+        let mut exiting_account = state.get_account(&[1u8; 32]).unwrap().clone();
+        exiting_account.status = ValidatorStatus::SubmittedExitRequest;
+        state.set_account([1u8; 32], exiting_account);
+        assert_eq!(state.current_epoch_active_validator_count(), 4);
+        assert!(!state.can_accept_active_validator_exit());
+
+        let refund = create_test_withdrawal(99, 1, 0);
+        state.push_withdrawal(refund);
+        assert_eq!(state.get_withdrawal_count_for_epoch(0), 1);
+        assert!(!state.can_accept_active_validator_exit());
+
+        state.reset_pending_active_validator_exits();
+        assert!(state.can_accept_active_validator_exit());
     }
 
     #[test]
@@ -1259,6 +1383,7 @@ mod tests {
             3,
             16,
             0,
+            DEFAULT_MINIMUM_VALIDATOR_COUNT,
         );
 
         original_state.set_epoch(7);
@@ -2020,6 +2145,7 @@ mod tests {
             3,
             16,
             0,
+            DEFAULT_MINIMUM_VALIDATOR_COUNT,
         );
 
         // Add 4 genesis validators (like the testnet)
