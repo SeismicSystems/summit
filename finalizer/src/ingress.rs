@@ -369,9 +369,9 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         value
     }
 
-    pub async fn get_invalid_withdrawal_tax(&self) -> u64 {
+    pub async fn get_invalid_deposit_tax(&self) -> u64 {
         let (response, rx) = oneshot::channel();
-        let request = ConsensusStateRequest::GetInvalidWithdrawalTax;
+        let request = ConsensusStateRequest::GetInvalidDepositTax;
         let _ = self
             .sender
             .clone()
@@ -381,7 +381,7 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         let res = rx
             .await
             .expect("consensus state query response sender dropped");
-        let ConsensusStateResponse::InvalidWithdrawalTax(value) = res else {
+        let ConsensusStateResponse::InvalidDepositTax(value) = res else {
             unreachable!("request and response variants must match");
         };
         value

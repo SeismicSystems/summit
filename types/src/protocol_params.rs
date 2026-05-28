@@ -23,8 +23,8 @@ pub const DEFAULT_MINIMUM_VALIDATOR_COUNT: u64 = 3;
 // is the hard limit imposed by the `as u32` conversion at the p2p config boundary.
 pub const MAX_MESSAGE_SIZE_BYTES_MIN: u64 = 1 << 20; // 1 MiB
 pub const MAX_MESSAGE_SIZE_BYTES_MAX: u64 = 1 << 30; // 1 GiB
-pub const MIN_INVALID_WITHDRAWAL_TAX: u64 = 0;
-pub const MAX_INVALID_WITHDRAWAL_TAX: u64 = 100;
+pub const MIN_INVALID_DEPOSIT_TAX: u64 = 0;
+pub const MAX_INVALID_DEPOSIT_TAX: u64 = 100;
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {
@@ -37,7 +37,7 @@ pub enum ProtocolParam {
     MaxWithdrawalsPerEpoch(u64),
     ObserversPerValidator(u64),
     MinimumValidatorCount(u64),
-    InvalidWithdrawalTax(u64),
+    InvalidDepositTax(u64),
 }
 
 /// A protocol-parameter value that fell outside its allowed bounds.
@@ -260,18 +260,18 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
             0x09 => {
                 if request.param.len() != 8 {
                     return Err(anyhow!(
-                        "Failed to parse invalid withdrawal tax protocol param, invalid length {}",
+                        "Failed to parse invalid deposit tax protocol param, invalid length {}",
                         request.param.len()
                     ));
                 }
                 let bytes: [u8; 8] = request.param.as_slice().try_into()?;
-                let invalid_withdrawal_tax = u64::from_le_bytes(bytes);
-                if invalid_withdrawal_tax > MAX_INVALID_WITHDRAWAL_TAX {
+                let invalid_deposit_tax = u64::from_le_bytes(bytes);
+                if invalid_deposit_tax > MAX_INVALID_DEPOSIT_TAX {
                     return Err(anyhow!(
-                        "Invalid withdrawal tax {invalid_withdrawal_tax} exceeds maximum {MAX_INVALID_WITHDRAWAL_TAX}"
+                        "Invalid deposit tax {invalid_deposit_tax} exceeds maximum {MAX_INVALID_DEPOSIT_TAX}"
                     ));
                 }
-                Ok(ProtocolParam::InvalidWithdrawalTax(invalid_withdrawal_tax))
+                Ok(ProtocolParam::InvalidDepositTax(invalid_deposit_tax))
             }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
@@ -291,7 +291,7 @@ impl EncodeSize for ProtocolParam {
             | ProtocolParam::MaxWithdrawalsPerEpoch(_)
             | ProtocolParam::ObserversPerValidator(_)
             | ProtocolParam::MinimumValidatorCount(_)
-            | ProtocolParam::InvalidWithdrawalTax(_) => 1 + 8, // 1 byte tag + 8 byte value
+            | ProtocolParam::InvalidDepositTax(_) => 1 + 8, // 1 byte tag + 8 byte value
             ProtocolParam::TreasuryAddress(_) => 1 + 20, // 1 byte tag + 20 byte address
         }
     }
@@ -336,7 +336,7 @@ impl Write for ProtocolParam {
                 buf.put_u8(0x08);
                 buf.put_u64(*value);
             }
-            ProtocolParam::InvalidWithdrawalTax(value) => {
+            ProtocolParam::InvalidDepositTax(value) => {
                 buf.put_u8(0x09);
                 buf.put_u64(*value);
             }
@@ -416,13 +416,13 @@ impl Read for ProtocolParam {
             }
             0x09 => {
                 let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-                if !(MIN_INVALID_WITHDRAWAL_TAX..=MAX_INVALID_WITHDRAWAL_TAX).contains(&value) {
+                if !(MIN_INVALID_DEPOSIT_TAX..=MAX_INVALID_DEPOSIT_TAX).contains(&value) {
                     return Err(Error::Invalid(
                         "ProtocolParam",
-                        "invalid withdrawal tax out of bounds",
+                        "invalid deposit tax out of bounds",
                     ));
                 }
-                Ok(ProtocolParam::InvalidWithdrawalTax(value))
+                Ok(ProtocolParam::InvalidDepositTax(value))
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }
@@ -879,8 +879,8 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_withdrawal_tax_encode_decode() {
-        let param = ProtocolParam::InvalidWithdrawalTax(25);
+    fn test_invalid_deposit_tax_encode_decode() {
+        let param = ProtocolParam::InvalidDepositTax(25);
 
         let mut buf = BytesMut::new();
         param.write(&mut buf);
@@ -891,40 +891,40 @@ mod tests {
 
         let decoded = ProtocolParam::read(&mut buf.as_ref()).unwrap();
         match decoded {
-            ProtocolParam::InvalidWithdrawalTax(v) => assert_eq!(v, 25),
-            _ => panic!("Expected InvalidWithdrawalTax variant"),
+            ProtocolParam::InvalidDepositTax(v) => assert_eq!(v, 25),
+            _ => panic!("Expected InvalidDepositTax variant"),
         }
     }
 
     #[test]
-    fn test_try_from_invalid_withdrawal_tax_bounds() {
-        for tax in [MIN_INVALID_WITHDRAWAL_TAX, 25, MAX_INVALID_WITHDRAWAL_TAX] {
+    fn test_try_from_invalid_deposit_tax_bounds() {
+        for tax in [MIN_INVALID_DEPOSIT_TAX, 25, MAX_INVALID_DEPOSIT_TAX] {
             let request = ProtocolParamRequest {
                 param_id: 0x09,
                 param: tax.to_le_bytes().to_vec(),
             };
             let param = ProtocolParam::try_from(request).unwrap();
             match param {
-                ProtocolParam::InvalidWithdrawalTax(v) => assert_eq!(v, tax),
-                _ => panic!("Expected InvalidWithdrawalTax variant"),
+                ProtocolParam::InvalidDepositTax(v) => assert_eq!(v, tax),
+                _ => panic!("Expected InvalidDepositTax variant"),
             }
         }
     }
 
     #[test]
-    fn test_try_from_invalid_withdrawal_tax_above_maximum() {
+    fn test_try_from_invalid_deposit_tax_above_maximum() {
         let request = ProtocolParamRequest {
             param_id: 0x09,
-            param: (MAX_INVALID_WITHDRAWAL_TAX + 1).to_le_bytes().to_vec(),
+            param: (MAX_INVALID_DEPOSIT_TAX + 1).to_le_bytes().to_vec(),
         };
         assert!(ProtocolParam::try_from(request).is_err());
     }
 
     #[test]
-    fn test_decode_invalid_withdrawal_tax_out_of_bounds() {
+    fn test_decode_invalid_deposit_tax_out_of_bounds() {
         let mut buf = BytesMut::new();
         buf.put_u8(0x09);
-        buf.put_u64(MAX_INVALID_WITHDRAWAL_TAX + 1);
+        buf.put_u64(MAX_INVALID_DEPOSIT_TAX + 1);
         assert!(ProtocolParam::read(&mut buf.as_ref()).is_err());
     }
 

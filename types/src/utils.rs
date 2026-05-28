@@ -67,8 +67,8 @@ pub fn parse_withdrawal_credentials(withdrawal_credentials: [u8; 32]) -> Result<
     Ok(Address::from_slice(&withdrawal_credentials[12..32]))
 }
 
-pub fn invalid_deposit_refund_split(amount: u64, invalid_withdrawal_tax: u64) -> (u64, u64) {
-    let tax = (u128::from(amount) * u128::from(invalid_withdrawal_tax)) / 100;
+pub fn invalid_deposit_refund_split(amount: u64, invalid_deposit_tax: u64) -> (u64, u64) {
+    let tax = (u128::from(amount) * u128::from(invalid_deposit_tax)) / 100;
     let tax = tax as u64;
     (amount.saturating_sub(tax), tax)
 }

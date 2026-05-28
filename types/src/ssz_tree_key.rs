@@ -82,7 +82,7 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "pending_active_validator_exits" => Ok(SszStateKey::Scalar(
             ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS,
         )),
-        "invalid_withdrawal_tax" => Ok(SszStateKey::Scalar(ssz_state_tree::INVALID_WITHDRAWAL_TAX)),
+        "invalid_deposit_tax" => Ok(SszStateKey::Scalar(ssz_state_tree::INVALID_DEPOSIT_TAX)),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"
@@ -273,8 +273,8 @@ mod tests {
             SszStateKey::Scalar(ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS)
         );
         assert_eq!(
-            parse_key("invalid_withdrawal_tax").unwrap(),
-            SszStateKey::Scalar(ssz_state_tree::INVALID_WITHDRAWAL_TAX)
+            parse_key("invalid_deposit_tax").unwrap(),
+            SszStateKey::Scalar(ssz_state_tree::INVALID_DEPOSIT_TAX)
         );
     }
 
