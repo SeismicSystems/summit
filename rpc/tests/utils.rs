@@ -153,8 +153,8 @@ pub fn create_test_finalizer_mailbox(
                     ConsensusStateRequest::GetMinimumValidatorCount => {
                         let _ = response.send(ConsensusStateResponse::MinimumValidatorCount(3));
                     }
-                    ConsensusStateRequest::GetInvalidWithdrawalTax => {
-                        let _ = response.send(ConsensusStateResponse::InvalidWithdrawalTax(0));
+                    ConsensusStateRequest::GetInvalidDepositTax => {
+                        let _ = response.send(ConsensusStateResponse::InvalidDepositTax(0));
                     }
                     ConsensusStateRequest::GetEpochBounds(epoch) => {
                         let first = epoch * 10;

@@ -97,7 +97,7 @@ fn push_invalid_deposit_withdrawals(
     withdrawal_epoch: u64,
 ) {
     let (refund_amount, tax_amount) =
-        invalid_deposit_refund_split(amount, state.get_invalid_withdrawal_tax());
+        invalid_deposit_refund_split(amount, state.get_invalid_deposit_tax());
 
     if refund_amount > 0 {
         state.push_refund_withdrawal_request(
@@ -1744,9 +1744,9 @@ impl<
                 let value = self.canonical_state.get_minimum_validator_count();
                 let _ = sender.send(ConsensusStateResponse::MinimumValidatorCount(value));
             }
-            ConsensusStateRequest::GetInvalidWithdrawalTax => {
-                let value = self.canonical_state.get_invalid_withdrawal_tax();
-                let _ = sender.send(ConsensusStateResponse::InvalidWithdrawalTax(value));
+            ConsensusStateRequest::GetInvalidDepositTax => {
+                let value = self.canonical_state.get_invalid_deposit_tax();
+                let _ = sender.send(ConsensusStateResponse::InvalidDepositTax(value));
             }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self

@@ -892,12 +892,12 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
 }
 
 #[test_traced("INFO")]
-fn test_invalid_deposit_refund_applies_invalid_withdrawal_tax() {
+fn test_invalid_deposit_refund_applies_invalid_deposit_tax() {
     let n = 5;
     let min_stake = 32_000_000_000;
     let max_stake = 100_000_000_000;
     let deposit_amount = 5_000_000_000;
-    let invalid_withdrawal_tax = 25;
+    let invalid_deposit_tax = 25;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -987,7 +987,7 @@ fn test_invalid_deposit_refund_applies_invalid_withdrawal_tax() {
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
         initial_state.set_maximum_stake(max_stake);
         initial_state.set_treasury_address(treasury_address);
-        initial_state.set_invalid_withdrawal_tax(invalid_withdrawal_tax);
+        initial_state.set_invalid_deposit_tax(invalid_deposit_tax);
 
         let mut consensus_state_queries = HashMap::new();
         for (idx, key_store) in key_stores.into_iter().enumerate() {
