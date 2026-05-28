@@ -26,8 +26,7 @@ use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
 use crate::ssz_hash::{SszHashTreeRoot, hash_byte_list, hash_fixed_bytes_64, hash_fixed_bytes_96};
 use crate::ssz_tree::{SszTree, mix_in_length};
-use crate::withdrawal::PendingWithdrawal;
-use crate::withdrawal::WithdrawalQueue;
+use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -106,9 +105,9 @@ pub const WITHDRAWAL_FIELD_AMOUNT: usize = 3;
 pub const WITHDRAWAL_FIELD_PUBKEY: usize = 4;
 pub const WITHDRAWAL_FIELD_BALANCE_DEDUCTION: usize = 5;
 pub const WITHDRAWAL_FIELD_EPOCH: usize = 6;
-// leaf 7 is unused (zero hash padding for 7-field container in 8-leaf subtree)
+pub const WITHDRAWAL_FIELD_KIND: usize = 7;
 
-/// Number of SSZ leaves per PendingWithdrawal (7 fields → 8 leaves, depth-3 subtree).
+/// Number of SSZ leaves per PendingWithdrawal (8 fields → 8 leaves, depth-3 subtree).
 pub const WITHDRAWAL_FIELDS_PER_ITEM: usize = 8;
 
 // --- Protocol parameter field indices (within each param's 2-leaf subtree) ---
@@ -689,7 +688,10 @@ impl SszStateTree {
             base + WITHDRAWAL_FIELD_EPOCH,
             withdrawal.epoch.hash_tree_root(),
         );
-        // leaf 7 remains zero (SSZ padding for 7-field container in 8-leaf subtree)
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_KIND,
+            withdrawal.kind.hash_tree_root(),
+        );
     }
 
     /// Incrementally update the tree after a withdrawal's fields changed (merge case).
@@ -1815,7 +1817,7 @@ mod tests {
     use super::*;
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
-    use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
+    use crate::withdrawal::{PendingWithdrawal, WithdrawalKind, WithdrawalQueue};
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_cryptography::Signer;
@@ -2308,6 +2310,7 @@ mod tests {
             pubkey: pk1,
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2319,6 +2322,7 @@ mod tests {
             pubkey: pk2,
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2330,6 +2334,7 @@ mod tests {
             pubkey: pk3,
             balance_deduction: 3_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         });
 
         let mut tree = SszStateTree::new();
@@ -2379,6 +2384,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         let mut tree = SszStateTree::new();
         tree.rebuild_withdrawals(&queue);
@@ -2578,6 +2584,7 @@ mod tests {
             pubkey: pk1,
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2589,6 +2596,7 @@ mod tests {
             pubkey: pk2,
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2600,6 +2608,7 @@ mod tests {
             pubkey: pk3,
             balance_deduction: 3_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         });
 
         let mut tree = SszStateTree::new();
@@ -2779,6 +2788,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let mut queue = WithdrawalQueue::default();
         queue.push(withdrawal.clone());
@@ -2809,6 +2819,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         let mut tree = SszStateTree::new();
         tree.rebuild_withdrawals(&queue);
@@ -2833,6 +2844,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w2 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2844,6 +2856,7 @@ mod tests {
             pubkey: [2u8; 32],
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w3 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2855,6 +2868,7 @@ mod tests {
             pubkey: [3u8; 32],
             balance_deduction: 3_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         };
 
         // Incremental: push one by one
@@ -2893,6 +2907,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w2 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2904,6 +2919,7 @@ mod tests {
             pubkey: [2u8; 32],
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w3 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2915,6 +2931,7 @@ mod tests {
             pubkey: [3u8; 32],
             balance_deduction: 3_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         };
 
         // Start with full rebuild of 3 items
@@ -2963,6 +2980,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
 
         let mut queue = WithdrawalQueue::default();
@@ -2981,6 +2999,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 5_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         inc.update_withdrawal(&updated);
 
@@ -3005,6 +3024,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w3 = PendingWithdrawal {
             inner: Withdrawal {
@@ -3016,6 +3036,7 @@ mod tests {
             pubkey: [3u8; 32],
             balance_deduction: 3_000_000_000,
             epoch: 3,
+            kind: WithdrawalKind::Validator,
         };
         let w2 = PendingWithdrawal {
             inner: Withdrawal {
@@ -3027,6 +3048,7 @@ mod tests {
             pubkey: [2u8; 32],
             balance_deduction: 2_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         };
 
         let mut inc = SszStateTree::new();
