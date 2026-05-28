@@ -1,6 +1,6 @@
 //! Two-level SSZ binary Merkle tree for ConsensusState.
 //!
-//! The top-level tree has 32 leaf slots (27 used, depth 5). Scalar fields and
+//! The top-level tree has 32 leaf slots (28 used, depth 5). Scalar fields and
 //! collection roots are assigned to fixed leaf indices — see the field-index
 //! and `*_ROOT` constants below for the authoritative layout. Each collection
 //! root (validator accounts, deposit/withdrawal queues, protocol-param changes,
@@ -60,9 +60,10 @@ pub const PENDING_CHECKPOINT: usize = 23;
 pub const DYNAMIC_EPOCH_SCHEDULE: usize = 24;
 pub const MINIMUM_VALIDATOR_COUNT: usize = 25;
 pub const PENDING_ACTIVE_VALIDATOR_EXITS: usize = 26;
+pub const INVALID_WITHDRAWAL_TAX: usize = 27;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 27;
+pub const NUM_TOP_LEAVES: usize = 28;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -285,6 +286,11 @@ impl SszStateTree {
     pub fn set_pending_active_validator_exits(&mut self, value: u64) {
         self.top
             .set_leaf(PENDING_ACTIVE_VALIDATOR_EXITS, value.hash_tree_root());
+    }
+
+    pub fn set_invalid_withdrawal_tax(&mut self, value: u64) {
+        self.top
+            .set_leaf(INVALID_WITHDRAWAL_TAX, value.hash_tree_root());
     }
 
     pub fn set_treasury_address(&mut self, address: &Address) {
@@ -869,6 +875,7 @@ impl SszStateTree {
             ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
             ProtocolParam::ObserversPerValidator(v) => (7u64, v.hash_tree_root()),
             ProtocolParam::MinimumValidatorCount(v) => (8u64, v.hash_tree_root()),
+            ProtocolParam::InvalidWithdrawalTax(v) => (9u64, v.hash_tree_root()),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value_hash);
@@ -1016,6 +1023,7 @@ impl SszStateTree {
         dynamic_epoch_schedule: &[u8],
         minimum_validator_count: u64,
         pending_active_validator_exits: u64,
+        invalid_withdrawal_tax: u64,
     ) {
         *self = Self::new();
 
@@ -1038,6 +1046,7 @@ impl SszStateTree {
         self.set_observers_per_validator(observers_per_validator);
         self.set_minimum_validator_count(minimum_validator_count);
         self.set_pending_active_validator_exits(pending_active_validator_exits);
+        self.set_invalid_withdrawal_tax(invalid_withdrawal_tax);
 
         // Validators
         self.rebuild_validators(validator_accounts);
@@ -2049,6 +2058,7 @@ mod tests {
         inc.set_observers_per_validator(5);
         inc.set_minimum_validator_count(3);
         inc.set_pending_active_validator_exits(0);
+        inc.set_invalid_withdrawal_tax(0);
         inc.rebuild_validators(&accounts);
         inc.rebuild_deposits(&VecDeque::new());
         inc.rebuild_withdrawals(&WithdrawalQueue::default());
@@ -2088,6 +2098,7 @@ mod tests {
             None,
             &[],
             3,
+            0,
             0,
         );
 
@@ -2201,6 +2212,7 @@ mod tests {
             None,
             &[],
             3,
+            0,
             0,
         );
 

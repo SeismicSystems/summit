@@ -369,6 +369,24 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         value
     }
 
+    pub async fn get_invalid_withdrawal_tax(&self) -> u64 {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetInvalidWithdrawalTax;
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::InvalidWithdrawalTax(value) = res else {
+            unreachable!("request and response variants must match");
+        };
+        value
+    }
+
     pub async fn get_epoch_bounds(&self, epoch: u64) -> Option<(u64, u64)> {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetEpochBounds(epoch);

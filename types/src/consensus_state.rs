@@ -4,7 +4,8 @@ use crate::dynamic_epocher::DynamicEpocher;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MIN_ALLOWED_TIMESTAMP_FUTURE_MS, ProtocolParam,
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_INVALID_WITHDRAWAL_TAX, MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+    ProtocolParam,
 };
 use crate::ssz_state_tree::SszStateTree;
 use crate::withdrawal::{PendingWithdrawal, WithdrawalKind, WithdrawalQueue};
@@ -58,6 +59,7 @@ pub struct ConsensusState {
     pub(crate) observers_per_validator: u32,
     pub(crate) minimum_validator_count: u64,
     pub(crate) pending_active_validator_exits: u64,
+    pub(crate) invalid_withdrawal_tax: u64,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -128,6 +130,7 @@ impl Default for ConsensusState {
             observers_per_validator: 0,
             minimum_validator_count: DEFAULT_MINIMUM_VALIDATOR_COUNT,
             pending_active_validator_exits: 0,
+            invalid_withdrawal_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -173,6 +176,7 @@ impl ConsensusState {
             observers_per_validator: self.observers_per_validator,
             minimum_validator_count: self.minimum_validator_count,
             pending_active_validator_exits: self.pending_active_validator_exits,
+            invalid_withdrawal_tax: self.invalid_withdrawal_tax,
             epocher,
             ssz_tree: self.ssz_tree.clone(),
             proof_tree: self.proof_tree.clone(),
@@ -204,6 +208,7 @@ impl ConsensusState {
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
         minimum_validator_count: u64,
+        invalid_withdrawal_tax: u64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -229,6 +234,7 @@ impl ConsensusState {
             observers_per_validator,
             minimum_validator_count,
             pending_active_validator_exits: 0,
+            invalid_withdrawal_tax,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -417,6 +423,15 @@ impl ConsensusState {
     pub fn reset_pending_active_validator_exits(&mut self) {
         self.pending_active_validator_exits = 0;
         self.ssz_tree.set_pending_active_validator_exits(0);
+    }
+
+    pub fn get_invalid_withdrawal_tax(&self) -> u64 {
+        self.invalid_withdrawal_tax
+    }
+
+    pub fn set_invalid_withdrawal_tax(&mut self, value: u64) {
+        self.invalid_withdrawal_tax = value;
+        self.ssz_tree.set_invalid_withdrawal_tax(value);
     }
 
     pub fn get_treasury_address(&self) -> Address {
@@ -1110,6 +1125,13 @@ impl ConsensusState {
                     self.minimum_validator_count = value;
                     self.ssz_tree.set_minimum_validator_count(value);
                 }
+                ProtocolParam::InvalidWithdrawalTax(value) => {
+                    if value > MAX_INVALID_WITHDRAWAL_TAX {
+                        continue;
+                    }
+                    self.invalid_withdrawal_tax = value;
+                    self.ssz_tree.set_invalid_withdrawal_tax(value);
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
@@ -1153,6 +1175,7 @@ impl ConsensusState {
             &self.epocher.encode(),
             self.minimum_validator_count,
             self.pending_active_validator_exits,
+            self.invalid_withdrawal_tax,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -1215,6 +1238,7 @@ impl EncodeSize for ConsensusState {
         + 4 // observers_per_validator
         + 8 // minimum_validator_count
         + 8 // pending_active_validator_exits
+        + 8 // invalid_withdrawal_tax
         + self.epocher.encode_size()
     }
 }
@@ -1412,6 +1436,13 @@ impl Read for ConsensusState {
                 "pending active validator exits exceeds active validator count",
             ));
         }
+        let invalid_withdrawal_tax = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        if invalid_withdrawal_tax > MAX_INVALID_WITHDRAWAL_TAX {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "invalid withdrawal tax out of bounds",
+            ));
+        }
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
@@ -1454,6 +1485,7 @@ impl Read for ConsensusState {
             observers_per_validator,
             minimum_validator_count,
             pending_active_validator_exits,
+            invalid_withdrawal_tax,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1574,6 +1606,9 @@ impl Write for ConsensusState {
 
         // Write pending_active_validator_exits
         buf.put_u64(self.pending_active_validator_exits);
+
+        // Write invalid_withdrawal_tax
+        buf.put_u64(self.invalid_withdrawal_tax);
 
         // Write epocher
         self.epocher.write(buf);
@@ -1699,6 +1734,10 @@ mod tests {
         assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
+            decoded_state.invalid_withdrawal_tax,
+            original_state.invalid_withdrawal_tax
+        );
+        assert_eq!(
             decoded_state.get_next_withdrawal_index(),
             original_state.get_next_withdrawal_index()
         );
@@ -1798,6 +1837,7 @@ mod tests {
             16,
             0,
             0,
+            0,
         );
         state.get_epocher().advance_epoch(Epoch::new(0));
 
@@ -1836,6 +1876,7 @@ mod tests {
             16,
             0,
             DEFAULT_MINIMUM_VALIDATOR_COUNT,
+            0,
         );
 
         original_state.set_epoch(7);
@@ -1849,6 +1890,7 @@ mod tests {
         original_state.set_latest_height(42);
         original_state.set_next_withdrawal_index(5);
         original_state.set_epoch_genesis_hash([42u8; 32]);
+        original_state.set_invalid_withdrawal_tax(25);
 
         let deposit1 = create_test_deposit_request(1, 32000000000);
         let deposit2 = create_test_deposit_request(2, 16000000000);
@@ -2651,6 +2693,18 @@ mod tests {
         assert!(changed);
         assert_eq!(state.get_minimum_stake(), 40_000_000_000);
         assert_eq!(state.get_maximum_stake(), 80_000_000_000);
+
+        let root_before_tax = state.ssz_tree().root();
+        state.push_protocol_param_change(ProtocolParam::InvalidWithdrawalTax(25));
+        assert_ne!(state.ssz_tree().root(), root_before_tax);
+        let changed = state.apply_protocol_parameter_changes().unwrap();
+        assert!(!changed);
+        assert_eq!(state.get_invalid_withdrawal_tax(), 25);
+
+        state.push_protocol_param_change(ProtocolParam::InvalidWithdrawalTax(101));
+        let changed = state.apply_protocol_parameter_changes().unwrap();
+        assert!(!changed);
+        assert_eq!(state.get_invalid_withdrawal_tax(), 25);
     }
 
     #[test]
@@ -2987,6 +3041,7 @@ mod tests {
             16,
             0,
             DEFAULT_MINIMUM_VALIDATOR_COUNT,
+            0,
         );
 
         // Add 4 genesis validators (like the testnet)
