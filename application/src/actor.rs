@@ -36,6 +36,24 @@ use summit_types::{Block, BlockAuxData, Digest, EngineClient};
 /// How long to wait before retrying check_payload when Reth returns SYNCING during certify.
 const CERTIFY_SYNCING_RETRY: Duration = Duration::from_millis(100);
 
+fn proposal_timestamp_wait(
+    now_millis: u64,
+    min_child_timestamp: u64,
+    allowed_timestamp_future_ms: u64,
+) -> Duration {
+    // Verifiers accept timestamps up to `now + allowed_timestamp_future_ms`.
+    // If the minimum monotonic child timestamp is beyond that bound, wait just
+    // long enough for it to enter the verifier's future window.
+    let max_allowed_timestamp = now_millis.saturating_add(allowed_timestamp_future_ms);
+    Duration::from_millis(min_child_timestamp.saturating_sub(max_allowed_timestamp))
+}
+
+fn select_proposal_timestamp(now_millis: u64, min_child_timestamp: u64) -> u64 {
+    // Once `min_child_timestamp` is inside the verifier future window, choose
+    // the later of local time and `parent.timestamp + 1` to preserve monotonicity.
+    now_millis.max(min_child_timestamp)
+}
+
 pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
@@ -648,10 +666,30 @@ impl<
         let pending_withdrawals = aux_data.withdrawals;
         let checkpoint_hash = aux_data.checkpoint_hash;
 
-        let mut current = self.context.current().epoch_millis();
-        if current <= parent_block.timestamp() {
-            current = parent_block.timestamp() + 1;
-        }
+        let min_child_timestamp = parent_block
+            .timestamp()
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("parent timestamp overflow"))?;
+        let current = loop {
+            // Do not ask the engine to build a payload until the timestamp we
+            // must use to be greater than the parent is also acceptable to peers.
+            let now_millis = self.context.current().epoch_millis();
+            let wait = proposal_timestamp_wait(
+                now_millis,
+                min_child_timestamp,
+                aux_data.allowed_timestamp_future_ms,
+            );
+            if wait.is_zero() {
+                break select_proposal_timestamp(now_millis, min_child_timestamp);
+            }
+            debug!(
+                ?round,
+                parent_height,
+                wait_ms = wait.as_millis(),
+                "waiting for proposal timestamp to enter verifier future window"
+            );
+            self.context.sleep(wait).await;
+        };
 
         // STEP 4: Start building block (Engine Client)
         debug!(
@@ -1662,6 +1700,38 @@ mod tests {
             "block with payload.timestamp ({}) != header.timestamp ({}) must be rejected",
             payload_timestamp,
             header_timestamp
+        );
+    }
+
+    #[test]
+    fn proposal_timestamp_waits_until_parent_child_timestamp_is_in_future_window() {
+        let now_millis = 1_000_000;
+        let allowed_timestamp_future_ms = 1_000;
+        let min_child_timestamp = now_millis + allowed_timestamp_future_ms + 1;
+
+        let wait =
+            proposal_timestamp_wait(now_millis, min_child_timestamp, allowed_timestamp_future_ms);
+        assert_eq!(wait, Duration::from_millis(1));
+
+        let after_wait = now_millis + wait.as_millis() as u64;
+        let selected = select_proposal_timestamp(after_wait, min_child_timestamp);
+
+        assert_eq!(selected, min_child_timestamp);
+        assert!(selected <= after_wait + allowed_timestamp_future_ms);
+    }
+
+    #[test]
+    fn proposal_timestamp_does_not_wait_when_local_time_is_valid() {
+        let now_millis = 1_000_000;
+        let min_child_timestamp = now_millis - 10;
+        let allowed_timestamp_future_ms = 1_000;
+
+        let wait =
+            proposal_timestamp_wait(now_millis, min_child_timestamp, allowed_timestamp_future_ms);
+        assert!(wait.is_zero());
+        assert_eq!(
+            select_proposal_timestamp(now_millis, min_child_timestamp),
+            now_millis
         );
     }
 }
