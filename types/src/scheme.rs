@@ -41,7 +41,7 @@ pub trait SchemeProvider<D: Digest>: Clone + Send + Sync + 'static {
 pub struct SummitSchemeProvider {
     #[allow(clippy::type_complexity)]
     schemes: Arc<Mutex<HashMap<Epoch, Arc<MultisigScheme>>>>,
-    bls_private_key: group::Private,
+    bls_private_key: Option<group::Private>,
     namespace: Vec<u8>,
 }
 
@@ -49,7 +49,15 @@ impl SummitSchemeProvider {
     pub fn new(bls_private_key: group::Private, namespace: Vec<u8>) -> Self {
         Self {
             schemes: Arc::new(Mutex::new(HashMap::new())),
-            bls_private_key,
+            bls_private_key: Some(bls_private_key),
+            namespace,
+        }
+    }
+
+    pub fn verifier_only(namespace: Vec<u8>) -> Self {
+        Self {
+            schemes: Arc::new(Mutex::new(HashMap::new())),
+            bls_private_key: None,
             namespace,
         }
     }
@@ -119,28 +127,36 @@ impl<D: Digest> EpochSchemeProvider<D> for SummitSchemeProvider {
             .try_collect()
             .expect("failed to build BiMap");
 
-        // Try to create a signer if our private key is in the participant set.
-        // If not, fall back to verifier mode (observer/non-validator).
-        match MultisigScheme::signer(
-            &self.namespace,
-            participants.clone(),
-            self.bls_private_key.clone(),
-        ) {
-            Some(scheme) => {
-                tracing::debug!(
-                    epoch = transition.epoch.get(),
-                    "created signing scheme for epoch (active validator)"
-                );
-                scheme
+        if let Some(bls_private_key) = &self.bls_private_key {
+            // Try to create a signer if our private key is in the participant set.
+            // If not, fall back to verifier mode (observer/non-validator).
+            match MultisigScheme::signer(
+                &self.namespace,
+                participants.clone(),
+                bls_private_key.clone(),
+            ) {
+                Some(scheme) => {
+                    tracing::debug!(
+                        epoch = transition.epoch.get(),
+                        "created signing scheme for epoch (active validator)"
+                    );
+                    return scheme;
+                }
+                None => {
+                    tracing::info!(
+                        epoch = transition.epoch.get(),
+                        "private key not in validator set, entering verifier mode"
+                    );
+                }
             }
-            None => {
-                tracing::info!(
-                    epoch = transition.epoch.get(),
-                    "private key not in validator set, entering verifier mode (observer only)"
-                );
-                MultisigScheme::verifier(&self.namespace, participants)
-            }
+        } else {
+            tracing::info!(
+                epoch = transition.epoch.get(),
+                "consensus signing disabled, entering verifier mode"
+            );
         }
+
+        MultisigScheme::verifier(&self.namespace, participants)
     }
 }
 
@@ -150,4 +166,69 @@ pub struct EpochTransition<BLS = crate::bls12381::PublicKey> {
     pub epoch: Epoch,
     /// The public keys of the validator set
     pub validator_keys: Vec<(crate::PublicKey, BLS)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Digest, bls12381};
+    use commonware_consensus::simplex::types::{Notarize, Proposal};
+    use commonware_consensus::types::{Round, View};
+    use commonware_cryptography::certificate::Scheme as _;
+
+    const NAMESPACE: &[u8] = b"test-scheme";
+
+    fn private_scalar(private_key: &bls12381::PrivateKey) -> group::Private {
+        let encoded = private_key.encode();
+        group::Private::decode(&mut encoded.as_ref()).expect("valid BLS private key")
+    }
+
+    fn sample_proposal(epoch: Epoch) -> Proposal<Digest> {
+        Proposal {
+            round: Round::new(epoch, View::new(1)),
+            parent: View::new(0),
+            payload: Digest::from([1u8; 32]),
+        }
+    }
+
+    #[test]
+    fn signing_provider_signs_when_key_matches_validator_set() {
+        let node_key = ed25519::PrivateKey::from_seed(1);
+        let consensus_key = bls12381::PrivateKey::from_seed(2);
+        let epoch = Epoch::new(3);
+        let transition = EpochTransition {
+            epoch,
+            validator_keys: vec![(node_key.public_key(), consensus_key.public_key())],
+        };
+        let provider =
+            SummitSchemeProvider::new(private_scalar(&consensus_key), NAMESPACE.to_vec());
+
+        let scheme = <SummitSchemeProvider as EpochSchemeProvider<Digest>>::scheme_for_epoch(
+            &provider,
+            &transition,
+        );
+
+        assert!(scheme.me().is_some());
+        assert!(Notarize::sign(&scheme, sample_proposal(epoch)).is_some());
+    }
+
+    #[test]
+    fn verifier_only_provider_never_signs_with_matching_validator_key() {
+        let node_key = ed25519::PrivateKey::from_seed(1);
+        let consensus_key = bls12381::PrivateKey::from_seed(2);
+        let epoch = Epoch::new(3);
+        let transition = EpochTransition {
+            epoch,
+            validator_keys: vec![(node_key.public_key(), consensus_key.public_key())],
+        };
+        let provider = SummitSchemeProvider::verifier_only(NAMESPACE.to_vec());
+
+        let scheme = <SummitSchemeProvider as EpochSchemeProvider<Digest>>::scheme_for_epoch(
+            &provider,
+            &transition,
+        );
+
+        assert!(scheme.me().is_none());
+        assert!(Notarize::sign(&scheme, sample_proposal(epoch)).is_none());
+    }
 }

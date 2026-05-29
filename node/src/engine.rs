@@ -130,11 +130,14 @@ where
             BUFFER_POOL_CAPACITY,
         );
 
-        let encoded = cfg.key_store.consensus_key.encode();
-        let private_scalar = group::Private::decode(&mut encoded.as_ref())
-            .expect("failed to extract scalar from private key");
-        let scheme_provider: SummitSchemeProvider =
-            SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
+        let scheme_provider = if cfg.force_verifier_only {
+            SummitSchemeProvider::verifier_only(cfg.namespace.as_bytes().to_vec())
+        } else {
+            let encoded = cfg.key_store.consensus_key.encode();
+            let private_scalar = group::Private::decode(&mut encoded.as_ref())
+                .expect("failed to extract scalar from private key");
+            SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec())
+        };
 
         let cancellation_token = CancellationToken::new();
         #[cfg(feature = "permissioned")]

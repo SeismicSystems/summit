@@ -69,6 +69,7 @@ fn test_observer_reaches_end_height() {
 
         // Derive the observer's p2p identity from validator[0]'s master key.
         let master_priv_key = validator_key_stores[0].node_key.clone();
+        let master_consensus_key = validator_key_stores[0].consensus_key.clone();
         let master_pub_key = master_priv_key.public_key();
         let observer_signer = ExtPrivateKey::derive_child_signer(&master_priv_key, observer_index);
         let observer_pubkey = observer_signer.public_key();
@@ -118,18 +119,15 @@ fn test_observer_reaches_end_height() {
             engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
-        // Build the observer engine: ExtPrivateKey signer + throwaway BLS key.
-        // Its node pubkey (derived) is NOT in the validator `participants` list,
-        // so Simplex won't treat it as a participant; it follows the chain only.
+        // Build the observer engine from a validator keystore. The observer must
+        // still run verifier-only consensus even though the BLS key can sign.
         let observer_uid = format!("observer_{observer_pubkey}");
         let observer_engine_client = engine_client_network.create_client(observer_uid.clone());
-        let mut observer_rng = StdRng::seed_from_u64(n_validators as u64 + 100);
-        let observer_consensus_key = bls12381::PrivateKey::random(&mut observer_rng);
         let observer_key_store = KeyStore {
             node_key: observer_signer,
-            consensus_key: observer_consensus_key,
+            consensus_key: master_consensus_key,
         };
-        let observer_config = get_default_engine_config(
+        let mut observer_config = get_default_engine_config(
             observer_engine_client,
             SimulatedOracle::new(oracle.clone()),
             observer_uid.clone(),
@@ -139,6 +137,7 @@ fn test_observer_reaches_end_height() {
             validators.clone(),
             initial_state.clone(),
         );
+        observer_config.force_verifier_only = true;
         let observer_engine = Engine::new(context.with_label(&observer_uid), observer_config).await;
         let (pending, recovered, resolver, orchestrator, broadcast) =
             registrations.remove(&observer_pubkey).unwrap();

@@ -58,6 +58,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub checkpoint_last_block: Option<Block>,
     pub checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
     pub blocks_per_epoch: u64,
+    pub force_verifier_only: bool,
 }
 
 impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C, S, O> {
@@ -101,6 +102,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             checkpoint_last_block,
             checkpoint_finalized_header,
             blocks_per_epoch: genesis.blocks_per_epoch,
+            force_verifier_only: false,
         })
     }
 }
