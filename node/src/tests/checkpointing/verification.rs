@@ -317,18 +317,29 @@ fn test_checkpoint_verification_fixed_committee() {
             "expected WeakSubjectivityEpochUnavailable, got: {err}"
         );
 
-        // Verify that a tampered signature causes verification to fail
+        // A finalized header whose certificate payload no longer matches its
+        // header fields must be rejected by the digest-binding check. (Fields are
+        // private, so rebuild the entry via `new_unchecked` to simulate a caller
+        // that smuggles in a mismatched header/certificate pair.)
         let mut tampered_sig_headers = finalized_headers.clone();
-        tampered_sig_headers[1].finalization.proposal.payload.0[0] ^= 0xFF;
+        let victim_header = tampered_sig_headers[1].header().clone();
+        let mut bad_finalization = tampered_sig_headers[1].finalization().clone();
+        let victim_pc = tampered_sig_headers[1].participant_count();
+        bad_finalization.proposal.payload.0[0] ^= 0xFF;
+        tampered_sig_headers[1] = summit_types::FinalizedHeader::new_unchecked(
+            victim_header,
+            bad_finalization,
+            victim_pc,
+        );
         let err =
             checkpoint::verify_checkpoint_chain(&genesis, &tampered_sig_headers, &raw_checkpoint)
-                .expect_err("verification should fail with tampered signature");
+                .expect_err("verification should fail with tampered payload");
         assert!(
             matches!(
                 err,
-                CheckpointVerificationError::SignatureVerificationFailed { epoch: 1 }
+                CheckpointVerificationError::PayloadDigestMismatch { epoch: 1 }
             ),
-            "expected SignatureVerificationFailed for epoch 1, got: {err}"
+            "expected PayloadDigestMismatch for epoch 1, got: {err}"
         );
 
         // Verify that removing a header causes verification to fail
@@ -603,11 +614,11 @@ fn test_checkpoint_verification_dynamic_committee() {
         // Verify epoch 1's header has both added and removed validators
         let epoch_1_header = &finalized_headers[1];
         assert!(
-            !epoch_1_header.header.added_validators().is_empty(),
+            !epoch_1_header.header().added_validators().is_empty(),
             "epoch 1 header should have added_validators"
         );
         assert!(
-            !epoch_1_header.header.removed_validators().is_empty(),
+            !epoch_1_header.header().removed_validators().is_empty(),
             "epoch 1 header should have removed_validators"
         );
 

@@ -201,7 +201,7 @@ fn test_checkpoint_created() {
             .await
             .expect("failed to get finalized header");
         assert_eq!(
-            finalized_header.header.checkpoint_hash().as_ref(),
+            finalized_header.header().checkpoint_hash().as_ref(),
             checkpoint.digest.as_ref(),
             "checkpoint_hash in header should match checkpoint digest"
         );

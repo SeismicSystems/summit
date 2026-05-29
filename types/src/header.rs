@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::OnceLock;
 
 use crate::PublicKey;
@@ -20,7 +21,7 @@ pub struct AddedValidator {
     pub consensus_key: bls12381::PublicKey,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(Clone, Debug, Encode, Decode)]
 pub struct Header {
     parent: SszDigest,
     height: u64,
@@ -160,15 +161,56 @@ impl Header {
         }
     }
 
+    /// Returns the (cached) digest of this header.
+    ///
+    /// The value is memoized in `self.digest`, and may have been *seeded* via
+    /// [`Header::new_with_digest`] (genesis seeds it with the genesis hash,
+    /// which is intentionally not the hash of the fields). This is correct for
+    /// block identity, but it means the cached value cannot be trusted to
+    /// reflect the current fields. Trust boundaries that authenticate a header
+    /// against a signed payload must use [`Header::computed_digest`] instead.
     pub fn get_digest(&self) -> Digest {
-        *self.digest.get_or_init(|| {
-            let bytes = self.encode();
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            hasher.finalize()
-        })
+        *self.digest.get_or_init(|| self.computed_digest())
+    }
+
+    /// Recomputes the digest directly from the header's current fields,
+    /// ignoring any cached or seeded value.
+    ///
+    /// Use this (not [`Header::get_digest`]) when authenticating a header
+    /// against a signed certificate payload: it answers whether these fields
+    /// actually hash to the signed digest, and cannot be defeated by a header
+    /// constructed with a mismatched seed via [`Header::new_with_digest`].
+    pub fn computed_digest(&self) -> Digest {
+        let bytes = self.encode();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        hasher.finalize()
     }
 }
+
+// `digest` is a memoized value fully determined by the other fields, and may be
+// warm or cold depending on whether `get_digest` has been called (a decoded
+// header starts cold). It must not affect equality, so compare every field
+// except the cache. This cannot be `#[derive]`d because the derive would
+// include the `OnceLock` cache state.
+impl PartialEq for Header {
+    fn eq(&self, other: &Self) -> bool {
+        self.parent == other.parent
+            && self.height == other.height
+            && self.timestamp == other.timestamp
+            && self.epoch == other.epoch
+            && self.view == other.view
+            && self.payload_hash == other.payload_hash
+            && self.execution_request_hash == other.execution_request_hash
+            && self.checkpoint_hash == other.checkpoint_hash
+            && self.prev_epoch_header_hash == other.prev_epoch_header_hash
+            && self.added_validators == other.added_validators
+            && self.removed_validators == other.removed_validators
+            && self.parent_beacon_block_root == other.parent_beacon_block_root
+    }
+}
+
+impl Eq for Header {}
 
 // Size of AddedValidator in SSZ: 32 bytes (node_key) + 48 bytes (BLS consensus_key) = 80 bytes
 const ADDED_VALIDATOR_SSZ_SIZE: usize = 32 + 48;
@@ -367,15 +409,67 @@ impl Read for Header {
     }
 }
 
+/// Error constructing a [`FinalizedHeader`] via [`FinalizedHeader::new`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum FinalizedHeaderError {
+    /// The finalization certificate's signed payload does not equal the digest
+    /// recomputed from the header's fields. The header is not bound to the
+    /// certificate.
+    PayloadDigestMismatch,
+}
+
+impl fmt::Display for FinalizedHeaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PayloadDigestMismatch => {
+                write!(f, "finalization payload does not match the header digest")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FinalizedHeaderError {}
+
+/// A header paired with the finalization certificate that finalized it.
+///
+/// The fields are private and the only validating constructor
+/// ([`FinalizedHeader::new`]) enforces that the certificate's signed payload
+/// equals the digest recomputed from the header's fields. This binds the
+/// (otherwise free-standing) header fields to the signed certificate, so
+/// consumers — e.g. [`crate::checkpoint::verify_checkpoint_chain`] — can trust
+/// header fields like `checkpoint_hash` without re-deriving the binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalizedHeader<S: Scheme> {
-    pub header: Header,
-    pub finalization: Finalization<S, Digest>,
-    pub participant_count: usize,
+    header: Header,
+    finalization: Finalization<S, Digest>,
+    participant_count: usize,
 }
 
 impl<S: Scheme> FinalizedHeader<S> {
+    /// Constructs a `FinalizedHeader`, enforcing that the certificate's signed
+    /// payload equals the digest recomputed from the header's fields.
+    ///
+    /// Returns [`FinalizedHeaderError::PayloadDigestMismatch`] if the header is
+    /// not bound to the certificate.
     pub fn new(
+        header: Header,
+        finalization: Finalization<S, Digest>,
+        participant_count: usize,
+    ) -> Result<Self, FinalizedHeaderError> {
+        if finalization.proposal.payload != header.computed_digest() {
+            return Err(FinalizedHeaderError::PayloadDigestMismatch);
+        }
+        Ok(Self::new_unchecked(header, finalization, participant_count))
+    }
+
+    /// Constructs a `FinalizedHeader` **without** checking the payload/header
+    /// binding.
+    ///
+    /// Only for callers that have already established the binding through
+    /// another path (e.g. the finalizer constructing a header for a block it
+    /// just certified). Prefer [`FinalizedHeader::new`] for any header derived
+    /// from untrusted input.
+    pub fn new_unchecked(
         header: Header,
         finalization: Finalization<S, Digest>,
         participant_count: usize,
@@ -385,6 +479,23 @@ impl<S: Scheme> FinalizedHeader<S> {
             finalization,
             participant_count,
         }
+    }
+
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
+    pub fn finalization(&self) -> &Finalization<S, Digest> {
+        &self.finalization
+    }
+
+    pub fn participant_count(&self) -> usize {
+        self.participant_count
+    }
+
+    /// Consumes the header, returning the owned finalization certificate.
+    pub fn into_finalization(self) -> Finalization<S, Digest> {
+        self.finalization
     }
 }
 
@@ -444,18 +555,9 @@ where
         let finalization = Finalization::<S, Digest>::read_cfg(&mut finalized_buf, &cfg)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
 
-        // Ensure the finalization is for the header
-        if finalization.proposal.payload != header.get_digest() {
-            return Err(ssz::DecodeError::BytesInvalid(
-                "Finalization payload does not match header digest".to_string(),
-            ));
-        }
-
-        Ok(Self {
-            header,
-            finalization,
-            participant_count: participant_count as usize,
-        })
+        // Ensure the finalization is bound to the header (recompute from fields).
+        Self::new(header, finalization, participant_count as usize)
+            .map_err(|e| ssz::DecodeError::BytesInvalid(e.to_string()))
     }
 }
 
@@ -725,8 +827,8 @@ mod test {
         );
 
         let proposal = Proposal {
-            round: Round::new(Epoch::new(0), View::new(header.view)),
-            parent: View::new(header.height),
+            round: Round::new(Epoch::new(0), View::new(header.view())),
+            parent: View::new(header.height()),
             payload: header.get_digest(),
         };
 
@@ -743,21 +845,22 @@ mod test {
             header.clone(),
             finalized,
             3,
-        );
+        )
+        .expect("payload matches header digest");
 
         let encoded = finalized_header.encode();
         let decoded =
             FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::decode(encoded)
                 .unwrap();
 
-        assert_eq!(finalized_header.finalization, decoded.finalization);
-        assert_eq!(finalized_header.header, decoded.header);
+        assert_eq!(finalized_header.finalization(), decoded.finalization());
+        assert_eq!(finalized_header.header(), decoded.header());
         assert_eq!(
-            finalized_header.participant_count,
-            decoded.participant_count
+            finalized_header.participant_count(),
+            decoded.participant_count()
         );
 
-        assert_eq!(finalized_header.header, header);
+        assert_eq!(finalized_header.header(), &header);
     }
 
     #[test]
@@ -781,8 +884,8 @@ mod test {
         // Create a finalization with wrong payload
         let dummy_digest = [99u8; 32];
         let wrong_proposal = Proposal {
-            round: Round::new(Epoch::new(0), View::new(header.view)),
-            parent: View::new(header.height),
+            round: Round::new(Epoch::new(0), View::new(header.view())),
+            parent: View::new(header.height()),
             payload: dummy_digest.into(), // Wrong digest
         };
 
@@ -795,12 +898,10 @@ mod test {
             },
         };
 
+        // Build an unbound pairing via `new_unchecked` (the safe `new` would
+        // reject it), then confirm decode re-derives and rejects the mismatch.
         let finalized_header: FinalizedHeader<bls12381_multisig::Scheme<PublicKey, MinPk>> =
-            FinalizedHeader {
-                header,
-                finalization: wrong_finalized,
-                participant_count: 5,
-            };
+            FinalizedHeader::new_unchecked(header, wrong_finalized, 5);
 
         let encoded = finalized_header.as_ssz_bytes();
         let result = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::from_ssz_bytes(
@@ -810,7 +911,7 @@ mod test {
         assert!(result.is_err());
         println!("{:?}", result);
         assert!(
-            matches!(result.unwrap_err(), ssz::DecodeError::BytesInvalid(msg) if msg.contains("Finalization payload does not match header digest"))
+            matches!(result.unwrap_err(), ssz::DecodeError::BytesInvalid(msg) if msg.contains("does not match the header digest"))
         );
     }
 
@@ -833,8 +934,8 @@ mod test {
         );
 
         let proposal = Proposal {
-            round: Round::new(Epoch::new(0), View::new(header.view)),
-            parent: View::new(header.height),
+            round: Round::new(Epoch::new(0), View::new(header.view())),
+            parent: View::new(header.height()),
             payload: header.get_digest(),
         };
 
@@ -849,7 +950,8 @@ mod test {
 
         let finalized_header = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::new(
             header, finalized, 4,
-        );
+        )
+        .expect("payload matches header digest");
 
         let ssz_len = finalized_header.ssz_bytes_len();
         let encode_len = finalized_header.encode_size();

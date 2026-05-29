@@ -174,6 +174,11 @@ pub enum CheckpointVerificationError {
     },
     ValidatorSetMismatch(String),
     ValidatorSetError(String),
+    /// A finalized header's fields do not hash to the digest signed by its
+    /// finalization certificate, so the header fields are not authenticated.
+    PayloadDigestMismatch {
+        epoch: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -240,6 +245,12 @@ impl fmt::Display for CheckpointVerificationError {
             }
             Self::ValidatorSetError(reason) => {
                 write!(f, "failed to construct validator set: {reason}")
+            }
+            Self::PayloadDigestMismatch { epoch } => {
+                write!(
+                    f,
+                    "epoch {epoch}: header fields do not match the finalization payload digest"
+                )
             }
         }
     }
@@ -316,10 +327,23 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
         // Save the current participants — this is the signing set for this epoch
         signing_set = participants.clone();
         let expected_epoch = i as u64;
-        if finalized_header.header.epoch() != expected_epoch {
+
+        // Authenticate the header's fields against the signed certificate
+        // payload BEFORE trusting any of them. The certificate signs a digest;
+        // recompute it from the header's own fields (ignoring any cached/seeded
+        // value) and require equality. Without this, a typed `FinalizedHeader`
+        // carrying a valid certificate but mutated header fields (e.g.
+        // `checkpoint_hash`) would be trusted below.
+        if finalized_header.header().computed_digest()
+            != finalized_header.finalization().proposal.payload
+        {
+            return Err(CheckpointVerificationError::PayloadDigestMismatch { epoch: i as u64 });
+        }
+
+        if finalized_header.header().epoch() != expected_epoch {
             return Err(CheckpointVerificationError::NonContiguousEpochs {
                 expected: expected_epoch,
-                found: finalized_header.header.epoch(),
+                found: finalized_header.header().epoch(),
             });
         }
 
@@ -348,7 +372,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
 
         // Verify the BLS aggregate signature
         if !finalized_header
-            .finalization
+            .finalization()
             .verify(&mut rng, &scheme, &Sequential)
         {
             return Err(CheckpointVerificationError::SignatureVerificationFailed {
@@ -357,14 +381,14 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
         }
 
         // Update validator set for the next epoch
-        for added in finalized_header.header.added_validators() {
+        for added in finalized_header.header().added_validators() {
             let minpk_public: &<MinPk as Variant>::Public = added.consensus_key.as_ref();
             let encoded = minpk_public.encode();
             let variant_pk = <MinPk as Variant>::Public::decode(&mut encoded.as_ref())
                 .expect("failed to decode BLS public key");
             participants.push((added.node_key.clone(), variant_pk));
         }
-        for removed in finalized_header.header.removed_validators() {
+        for removed in finalized_header.header().removed_validators() {
             participants.retain(|(pk, _)| *pk != removed);
         }
         participants.sort_by(|a, b| a.0.cmp(&b.0));
@@ -417,7 +441,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
     let mut hasher = Sha256::new();
     hasher.update(&checkpoint.data);
     let computed_digest = hasher.finalize();
-    if last_header.header.checkpoint_hash() != computed_digest {
+    if last_header.header().checkpoint_hash() != computed_digest {
         return Err(CheckpointVerificationError::CheckpointHashMismatch);
     }
 
@@ -482,6 +506,9 @@ mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use crate::dynamic_epocher::DynamicEpocher;
+    use crate::genesis::Genesis;
+    use crate::header::FinalizedHeader;
+    use crate::scheme::MultisigScheme;
     use crate::ssz_state_tree::SszStateTree;
     use crate::withdrawal::WithdrawalQueue;
     use alloy_primitives::Address;
@@ -1187,6 +1214,232 @@ mod tests {
                 .unwrap()
                 .balance,
             32_000_000_000
+        );
+    }
+
+    // Builds a single-epoch checkpoint chain: a genesis validator set, a matching
+    // checkpoint, a *different* ("attacker-controlled") checkpoint, and an honest
+    // finalized header whose certificate genuinely signs the honest header digest
+    // and whose `checkpoint_hash` commits to the honest checkpoint.
+    fn checkpoint_verification_fixture() -> (
+        Genesis,
+        Checkpoint,
+        Checkpoint,
+        FinalizedHeader<MultisigScheme>,
+    ) {
+        use crate::account::{ValidatorAccount, ValidatorStatus};
+        use crate::genesis::GenesisValidator;
+        use crate::header::Header;
+        use commonware_codec::Encode as _;
+        use commonware_consensus::simplex::types::{Finalization, Finalize, Proposal};
+        use commonware_consensus::types::{Epoch, Round, View};
+        use commonware_cryptography::bls12381::primitives::group;
+        use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+        use commonware_parallel::Sequential;
+        use commonware_utils::TryCollect;
+        use commonware_utils::hex;
+        use commonware_utils::ordered::BiMap;
+
+        let namespace = "checkpoint-typed-header-test".to_string();
+        let mut genesis_validators = Vec::new();
+        let mut validator_accounts = BTreeMap::new();
+        let mut participants = Vec::new();
+        let mut group_privates = Vec::new();
+
+        for i in 0..4u64 {
+            let node_key = ed25519::PrivateKey::from_seed(i);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::from_seed(100 + i);
+            let consensus_public_key = consensus_key.public_key();
+
+            let encoded_private = consensus_key.encode();
+            let group_private = group::Private::decode(&mut encoded_private.as_ref())
+                .expect("BLS private key should decode as group scalar");
+            group_privates.push(group_private);
+
+            let minpk_public: &<MinPk as Variant>::Public = consensus_public_key.as_ref();
+            let encoded_public = minpk_public.encode();
+            let variant_public = <MinPk as Variant>::Public::decode(&mut encoded_public.as_ref())
+                .expect("BLS public key should decode as MinPk public key");
+            participants.push((node_public_key.clone(), variant_public));
+
+            let withdrawal_credentials = Address::from([i as u8; 20]);
+            genesis_validators.push(GenesisValidator {
+                node_public_key: format!("0x{}", hex(node_public_key.as_ref())),
+                consensus_public_key: format!("0x{}", hex(consensus_public_key.as_ref())),
+                ip_address: format!("127.0.0.1:{}", 10_000 + i),
+                withdrawal_credentials: withdrawal_credentials.to_string(),
+            });
+
+            let account = ValidatorAccount {
+                consensus_public_key,
+                withdrawal_credentials,
+                balance: 32_000_000_000,
+                status: ValidatorStatus::Active,
+                has_pending_deposit: false,
+                has_pending_withdrawal: false,
+                joining_epoch: 0,
+                last_deposit_index: 0,
+            };
+            let key_bytes: [u8; 32] = node_public_key
+                .as_ref()
+                .try_into()
+                .expect("ed25519 public key should be 32 bytes");
+            validator_accounts.insert(key_bytes, account);
+        }
+
+        let genesis = Genesis {
+            validators: genesis_validators,
+            eth_genesis_hash: "0x00".to_string(),
+            leader_timeout_ms: 1_000,
+            notarization_timeout_ms: 1_000,
+            nullify_timeout_ms: 1_000,
+            activity_timeout_views: 10,
+            skip_timeout_views: 5,
+            max_message_size_bytes: 1_048_576,
+            namespace: namespace.clone(),
+            validator_minimum_stake: 32_000_000_000,
+            validator_maximum_stake: 64_000_000_000,
+            blocks_per_epoch: 10,
+            allowed_timestamp_future_ms: 10_000,
+            treasury_address: Address::ZERO.to_string(),
+            max_deposits_per_epoch: 3,
+            max_withdrawals_per_epoch: 16,
+            observers_per_validator: 0,
+        };
+
+        let mut state = ConsensusState::new(
+            Default::default(),
+            32_000_000_000,
+            64_000_000_000,
+            NonZeroU64::new(10).unwrap(),
+            10_000,
+            Address::ZERO,
+            3,
+            16,
+            0,
+        );
+        state.set_validator_accounts(validator_accounts);
+        let checkpoint = Checkpoint::new(&state);
+
+        // A distinct checkpoint the attacker would like the chain to authenticate.
+        let mut tampered_state = state.clone();
+        tampered_state.set_latest_height(1);
+        let tampered_checkpoint = Checkpoint::new(&tampered_state);
+        assert_ne!(checkpoint.digest, tampered_checkpoint.digest);
+
+        // Honest header commits to the honest checkpoint.
+        let header = Header::new(
+            [0u8; 32].into(),
+            0,
+            0,
+            0,
+            0,
+            [1u8; 32].into(),
+            [2u8; 32].into(),
+            checkpoint.digest,
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        );
+
+        participants.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        let signers: BiMap<ed25519::PublicKey, <MinPk as Variant>::Public> =
+            participants.into_iter().try_collect().unwrap();
+        let schemes: Vec<_> = group_privates
+            .into_iter()
+            .filter_map(|private| {
+                MultisigScheme::signer(namespace.as_bytes(), signers.clone(), private)
+            })
+            .collect();
+
+        // Certificate genuinely signs the honest header digest.
+        let proposal = Proposal {
+            round: Round::new(Epoch::new(0), View::new(header.view())),
+            parent: View::new(header.height()),
+            payload: header.get_digest(),
+        };
+        let finalizes: Vec<_> = schemes
+            .iter()
+            .take(3)
+            .map(|scheme| Finalize::sign(scheme, proposal.clone()).unwrap())
+            .collect();
+        let finalization = Finalization::from_finalizes(&schemes[0], &finalizes, &Sequential)
+            .expect("finalization should aggregate");
+
+        let finalized_header = FinalizedHeader::new(header, finalization, schemes.len())
+            .expect("honest header is bound to its certificate");
+
+        (genesis, checkpoint, tampered_checkpoint, finalized_header)
+    }
+
+    // Closes the typed-API trust-boundary gap: a finalized header carries header
+    // fields (e.g. `checkpoint_hash`) and a certificate that signs a digest. The
+    // fields must be bound to the signed digest, otherwise an attacker can pair a
+    // genuine certificate (signing the honest digest) with header fields that
+    // point at attacker-controlled checkpoint data.
+    #[test]
+    fn test_checkpoint_verifier_rejects_typed_header_field_mutation() {
+        use crate::header::{FinalizedHeader, FinalizedHeaderError, Header};
+
+        let (genesis, checkpoint, tampered_checkpoint, honest) = checkpoint_verification_fixture();
+
+        // Sanity: the honest finalized header verifies against the honest checkpoint.
+        super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
+            .expect("fixture checkpoint should verify before tampering");
+
+        // Build a header identical to the honest one EXCEPT `checkpoint_hash`,
+        // which is swapped to authenticate the attacker-controlled checkpoint.
+        // Reuse the ORIGINAL finalization: its certificate still signs the honest
+        // header digest, so the BLS signature remains valid — only the header
+        // field was mutated.
+        let h = honest.header().clone();
+        let tampered_header = Header::new(
+            h.parent(),
+            h.height(),
+            h.timestamp(),
+            h.epoch(),
+            h.view(),
+            h.payload_hash(),
+            h.execution_request_hash(),
+            tampered_checkpoint.digest, // <-- mutated away from the signed digest
+            h.prev_epoch_header_hash(),
+            h.added_validators().to_vec(),
+            h.removed_validators(),
+            h.parent_beacon_block_root(),
+        );
+
+        // (1) The safe constructor rejects the unbound pairing outright.
+        let err = FinalizedHeader::new(
+            tampered_header.clone(),
+            honest.finalization().clone(),
+            honest.participant_count(),
+        )
+        .expect_err("FinalizedHeader::new must reject a mismatched header/payload");
+        assert_eq!(err, FinalizedHeaderError::PayloadDigestMismatch);
+
+        // (2) Even if a caller bypasses the safe constructor (e.g. via
+        // `new_unchecked`, simulating a post-construction field mutation that the
+        // private fields otherwise prevent), the verifier itself re-derives the
+        // binding and rejects it.
+        let smuggled = FinalizedHeader::new_unchecked(
+            tampered_header,
+            honest.finalization().clone(),
+            honest.participant_count(),
+        );
+        let result = super::verify_checkpoint_chain(
+            &genesis,
+            std::slice::from_ref(&smuggled),
+            &tampered_checkpoint,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(super::CheckpointVerificationError::PayloadDigestMismatch { epoch: 0 })
+            ),
+            "verifier must reject a finalized header whose checkpoint_hash was \
+             mutated away from the signed certificate payload, got {result:?}"
         );
     }
 }
