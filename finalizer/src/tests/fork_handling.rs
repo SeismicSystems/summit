@@ -905,6 +905,123 @@ fn test_fork_states_pruned_after_finalization() {
 }
 
 #[test]
+fn test_losing_fork_descendant_rejected_after_conflicting_ancestor_finalizes() {
+    // A notarized descendant of a losing fork must not remain usable after a
+    // conflicting ancestor finalizes.
+    //
+    // Scenario:
+    // 1. Notarize A1 at height 1 and A2 at height 2.
+    // 2. Finalize conflicting B1 at height 1.
+    // 3. A2 should no longer satisfy NotifyAtHeight or serve aux data.
+
+    let cfg = deterministic::Config::default().with_seed(49);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x49u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_losing_descendant_pruned".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let genesis_digest = genesis_block.digest();
+
+        let block_a1 = create_test_block(genesis_digest, 1, 2, 8001);
+        let block_a1_digest = block_a1.digest();
+        let block_a2 = create_test_block(block_a1_digest, 2, 3, 8002);
+        let block_a2_digest = block_a2.digest();
+        let block_b1 = create_test_block(genesis_digest, 1, 4, 8003);
+        let block_b1_digest = block_b1.digest();
+
+        assert_ne!(block_a1_digest, block_b1_digest);
+
+        mailbox
+            .report(Update::NotarizedBlock(block_a1.clone()))
+            .await;
+        mailbox
+            .report(Update::NotarizedBlock(block_a2.clone()))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        let notify_a2 = mailbox.notify_at_height(2, block_a2_digest).await;
+        assert!(
+            notify_a2.await.unwrap(),
+            "A2 should be tracked before the conflicting ancestor finalizes"
+        );
+
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block_b1.clone(), None), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(mailbox.get_latest_height().await, 1);
+        let notify_b1 = mailbox.notify_at_height(1, block_b1_digest).await;
+        assert!(
+            notify_b1.await.unwrap(),
+            "B1 should be canonical after finalization"
+        );
+
+        let notify_a2_after = mailbox.notify_at_height(2, block_a2_digest).await;
+        assert!(
+            !notify_a2_after.await.unwrap(),
+            "A2 descends from losing A1 and must not remain live"
+        );
+
+        let aux_data = mailbox
+            .get_aux_data(3, block_a2_digest)
+            .await
+            .await
+            .unwrap();
+        assert!(
+            aux_data.is_none(),
+            "A2 must not serve aux data after conflicting B1 finalizes"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
 fn test_orphaned_blocks_pruned_after_finalization() {
     // Test that orphaned_blocks at or below the finalized height are pruned.
     //
