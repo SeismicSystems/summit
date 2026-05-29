@@ -10,9 +10,9 @@ use commonware_consensus::types::{Epoch, Height, View};
 use commonware_consensus::{Block as ConsensusBlock, Epochable, Heightable};
 use commonware_cryptography::{Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
-use ssz_derive::{Decode, Encode};
+use ssz_derive::Encode;
 
-#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Eq, Encode)]
 pub struct Block {
     pub header: Header,
     pub payload: ExecutionPayloadV3,
@@ -216,6 +216,35 @@ impl Write for Block {
     }
 }
 
+// NOTE: `Decode` is implemented manually (rather than via `ssz_derive`) so that
+// decoding re-derives the body commitments and verifies them against the header
+// via `new_with_verify`. Without this, SSZ decode could produce a block whose
+// `payload`/`execution_requests` do not match the `payload_hash`/
+// `execution_request_hash` committed in the (signed) header. The block digest is
+// computed solely from the header, so a mismatched body would otherwise share the
+// same digest and pass certificate verification.
+impl ssz::Decode for Block {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        let mut builder = ssz::SszDecoderBuilder::new(bytes);
+        builder.register_type::<Header>()?;
+        builder.register_type::<ExecutionPayloadV3>()?;
+        builder.register_type::<Vec<AlloyBytes>>()?;
+
+        let mut decoder = builder.build()?;
+
+        let header: Header = decoder.decode_next()?;
+        let payload = decoder.decode_next()?;
+        let execution_requests = decoder.decode_next()?;
+
+        Self::new_with_verify(header, payload, execution_requests)
+            .map_err(|e| ssz::DecodeError::BytesInvalid(e.to_string()))
+    }
+}
+
 impl Read for Block {
     type Cfg = ();
 
@@ -411,6 +440,64 @@ mod test {
         let bytes = block.encode();
 
         Block::decode(bytes).unwrap();
+    }
+
+    #[test]
+    fn test_decode_rejects_body_header_commitment_mismatch() {
+        let payload = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
+        let (added_validators, removed_validators) = create_test_validators();
+
+        // Same header inputs, but different execution_requests -> different
+        // execution_request_hash committed in the header.
+        let block_full = Block::compute_digest(
+            [1u8; 32].into(),
+            1,
+            1,
+            payload.clone(),
+            vec![AlloyBytes::from_static(&[1, 2, 3])],
+            0,
+            1,
+            None,
+            [0u8; 32].into(),
+            added_validators.clone(),
+            removed_validators.clone(),
+            [0u8; 32],
+        );
+        let block_empty = Block::compute_digest(
+            [1u8; 32].into(),
+            1,
+            1,
+            payload,
+            Vec::new(),
+            0,
+            1,
+            None,
+            [0u8; 32].into(),
+            added_validators,
+            removed_validators,
+            [0u8; 32],
+        );
+
+        // Sanity: each block decodes back to itself.
+        assert_eq!(
+            block_full,
+            Block::decode(block_full.encode()).expect("valid block decodes")
+        );
+
+        // Splice block_full's header (commits to a non-empty execution request)
+        // onto block_empty's body (no execution requests). The SSZ bytes are
+        // structurally valid but the header commitment no longer matches the body.
+        let mut spliced = Vec::new();
+        let mut encoder =
+            ssz::SszEncoder::container(&mut spliced, ssz::BYTES_PER_LENGTH_OFFSET * 3);
+        encoder.append(&block_full.header);
+        encoder.append(&block_empty.payload);
+        encoder.append(&block_empty.execution_requests);
+        encoder.finalize();
+
+        // Decode must reject the tampered block rather than silently accept a
+        // body that disagrees with the signed header commitments.
+        assert!(<Block as ssz::Decode>::from_ssz_bytes(&spliced).is_err());
     }
 
     #[test]
