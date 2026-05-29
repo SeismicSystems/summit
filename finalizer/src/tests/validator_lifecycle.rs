@@ -16,7 +16,7 @@ use commonware_runtime::deterministic::{self, Runner};
 use commonware_runtime::{Clock, Metrics, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
-use futures::channel::mpsc as futures_mpsc;
+use futures::{StreamExt as _, channel::mpsc as futures_mpsc};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
@@ -171,6 +171,91 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
     );
     state.set_validator_accounts(validator_accounts);
     state
+}
+
+#[test]
+fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epoch_committee() {
+    let cfg = deterministic::Config::default().with_seed(58);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x58u8; 32];
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let exiting_node_key = ed25519::PrivateKey::from_seed(1);
+        let exiting_node_pubkey = exiting_node_key.public_key();
+        let exiting_pubkey_bytes: [u8; 32] = exiting_node_pubkey.as_ref().try_into().unwrap();
+
+        let mut initial_state =
+            create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+        let mut exiting_account = initial_state
+            .get_account(&exiting_pubkey_bytes)
+            .expect("test state must contain the exiting validator")
+            .clone();
+        exiting_account.status = ValidatorStatus::SubmittedExitRequest;
+        exiting_account.balance = 0;
+        exiting_account.has_pending_withdrawal = true;
+        initial_state.set_account(exiting_pubkey_bytes, exiting_account);
+        initial_state.push_removed_validator(exiting_node_pubkey.clone());
+
+        let (orchestrator_tx, mut orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_checkpoint_restart_keeps_exiting_validator".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, _mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+
+        let enter = orchestrator_rx
+            .next()
+            .await
+            .expect("finalizer must publish the initial epoch transition");
+        let summit_orchestrator::Message::Enter(transition) = enter else {
+            panic!("expected the initial finalizer message to enter the current epoch");
+        };
+
+        let committee_keys: Vec<_> = transition
+            .validator_keys
+            .iter()
+            .map(|(node_key, _)| node_key.clone())
+            .collect();
+
+        assert!(
+            committee_keys.contains(&exiting_node_pubkey),
+            "SubmittedExitRequest validators remain current-epoch signers until the boundary"
+        );
+        assert_eq!(
+            committee_keys.len(),
+            4,
+            "checkpoint restart must preserve the full current-epoch committee"
+        );
+
+        context.auditor().state()
+    });
 }
 
 #[test]
