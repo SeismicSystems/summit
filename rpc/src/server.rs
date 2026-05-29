@@ -12,7 +12,7 @@ use crate::types::{
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
 use commonware_codec::{DecodeExt as _, Encode as _};
-use commonware_cryptography::{Hasher as _, Sha256, Signer};
+use commonware_cryptography::Signer;
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
 use ssz::Encode as _;
@@ -24,7 +24,7 @@ use summit_finalizer::FinalizerMailbox;
 use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
 use summit_types::{
-    KeyPaths, PROTOCOL_VERSION, PublicKey,
+    Digest, KeyPaths, PublicKey, deposit_signature_domain,
     execution_request::{DepositRequest, compute_deposit_data_root},
 };
 
@@ -32,6 +32,7 @@ use summit_types::{
 pub struct SummitRpcServer {
     key_store_path: String,
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    deposit_signature_domain: Digest,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
 }
@@ -40,11 +41,13 @@ impl SummitRpcServer {
     pub fn new(
         key_store_path: String,
         finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+        genesis_hash: [u8; 32],
         #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
     ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
+            deposit_signature_domain: deposit_signature_domain(genesis_hash),
             #[cfg(feature = "permissioned")]
             paused,
         }
@@ -337,8 +340,7 @@ impl SummitAdminApiServer for SummitRpcServer {
             index: 0,
         };
 
-        let protocol_version_digest = Sha256::hash(&PROTOCOL_VERSION.to_le_bytes());
-        let message = req.as_message(protocol_version_digest);
+        let message = req.as_message(self.deposit_signature_domain);
 
         let node_signature = node_priv_key.sign(&[], &message);
         let node_signature_bytes: [u8; 64] = node_signature

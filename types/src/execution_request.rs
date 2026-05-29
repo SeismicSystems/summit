@@ -651,7 +651,7 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use commonware_codec::{ReadExt, Write};
-    use commonware_cryptography::Signer;
+    use commonware_cryptography::{Signer, Verifier as _, ed25519};
 
     #[test]
     fn test_deposit_request_codec() {
@@ -674,6 +674,51 @@ mod tests {
         // Test Read
         let decoded = DepositRequest::read(&mut buf.as_ref()).unwrap();
         assert_eq!(decoded, deposit);
+    }
+
+    #[test]
+    fn test_deposit_signature_domain_binds_deposit_to_genesis_hash() {
+        let node_private_key = ed25519::PrivateKey::from_seed(1);
+        let consensus_private_key = bls12381::PrivateKey::from_seed(2);
+        let deposit = DepositRequest {
+            node_pubkey: node_private_key.public_key(),
+            consensus_pubkey: consensus_private_key.public_key(),
+            withdrawal_credentials: [3u8; 32],
+            amount: 32000000000u64,
+            node_signature: [0u8; 64],
+            consensus_signature: [0u8; 96],
+            index: 42u64,
+        };
+
+        let source_domain = crate::deposit_signature_domain([1u8; 32]);
+        let target_domain = crate::deposit_signature_domain([2u8; 32]);
+        assert_ne!(source_domain, target_domain);
+
+        let source_message = deposit.as_message(source_domain);
+        let target_message = deposit.as_message(target_domain);
+        let node_signature = node_private_key.sign(&[], &source_message);
+        let consensus_signature = consensus_private_key.sign(&[], &source_message);
+
+        assert!(
+            deposit
+                .node_pubkey
+                .verify(&[], &source_message, &node_signature)
+        );
+        assert!(
+            deposit
+                .consensus_pubkey
+                .verify(&[], &source_message, &consensus_signature)
+        );
+        assert!(
+            !deposit
+                .node_pubkey
+                .verify(&[], &target_message, &node_signature)
+        );
+        assert!(
+            !deposit
+                .consensus_pubkey
+                .verify(&[], &target_message, &consensus_signature)
+        );
     }
 
     #[test]

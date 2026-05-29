@@ -29,6 +29,7 @@ pub mod withdrawal;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 pub use block::*;
+use commonware_cryptography::{Hasher as _, Sha256};
 pub use engine_client::*;
 pub use genesis::*;
 pub use header::*;
@@ -41,6 +42,15 @@ pub type Digest = commonware_cryptography::sha256::Digest;
 pub type Activity = CActivity<Signature, Digest>;
 
 pub const PROTOCOL_VERSION: u32 = 1;
+const DEPOSIT_DOMAIN_TAG: &[u8] = b"summit-deposit-v1";
+
+pub fn deposit_signature_domain(genesis_hash: [u8; 32]) -> Digest {
+    let mut domain_data = Vec::with_capacity(DEPOSIT_DOMAIN_TAG.len() + 4 + 32);
+    domain_data.extend_from_slice(DEPOSIT_DOMAIN_TAG);
+    domain_data.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    domain_data.extend_from_slice(&genesis_hash);
+    Sha256::hash(&domain_data)
+}
 
 /// Auxiliary data needed for block construction
 #[derive(Debug, Clone)]

@@ -1,8 +1,7 @@
-use commonware_cryptography::{Hasher, Sha256, Signer, bls12381};
+use commonware_cryptography::{Signer, bls12381};
 use commonware_math::algebra::Random;
 use std::num::NonZeroU64;
 
-use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
@@ -34,7 +33,7 @@ use summit_types::execution_request::{
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::MultisigScheme;
-use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
+use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey, deposit_signature_domain};
 use tokio::sync::mpsc;
 
 pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 10;
@@ -362,7 +361,11 @@ pub async fn assert_state_root_consensus_skip(
 }
 
 pub fn get_domain() -> Digest {
-    Sha256::hash(&PROTOCOL_VERSION.to_le_bytes())
+    let genesis_hash = from_hex_formatted(GENESIS_HASH).expect("failed to decode genesis hash");
+    let genesis_hash: [u8; 32] = genesis_hash
+        .try_into()
+        .expect("failed to convert genesis hash");
+    deposit_signature_domain(genesis_hash)
 }
 
 pub fn get_initial_state(
@@ -481,7 +484,7 @@ pub fn extract_validator_id(metric: &str) -> Option<String> {
 /// # Arguments
 /// * `index` - The deposit index value used for generating deterministic keys and in the signature
 /// * `amount` - The deposit amount in gwei
-/// * `domain` - The domain value used in the signature (typically genesis hash)
+/// * `domain` - The domain value used in the signature
 /// * `private_key` - Optional ED25519 private key to use; if None, generates deterministic key from index
 /// * `withdrawal_credentials` - Optional withdrawal credentials; if None, generates Eth1 format credentials
 ///

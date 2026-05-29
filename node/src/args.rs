@@ -702,6 +702,7 @@ where
 
     let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
+    let genesis_hash = config.genesis_hash;
     let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
     #[cfg(feature = "permissioned")]
     let paused = engine.paused.clone();
@@ -724,6 +725,7 @@ where
         if let Err(e) = start_rpc_server(
             finalizer_mailbox,
             key_store_path,
+            genesis_hash,
             rpc_port,
             admin_rpc_port,
             rpc_body_limits,

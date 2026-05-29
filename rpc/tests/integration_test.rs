@@ -11,6 +11,8 @@ use summit_rpc::{
 };
 use utils::{MockFinalizerState, create_test_finalizer_mailbox, create_test_keystore};
 
+const TEST_GENESIS_HASH: [u8; 32] = [7u8; 32];
+
 #[tokio::test]
 async fn test_health_endpoint() {
     use summit_rpc::SummitApiClient;
@@ -22,6 +24,7 @@ async fn test_health_endpoint() {
     let (handle, addr) = start_rpc_server_with_handle(
         mailbox,
         key_store_path,
+        TEST_GENESIS_HASH,
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -54,6 +57,7 @@ async fn test_get_latest_height() {
     let (handle, addr) = start_rpc_server_with_handle(
         mailbox,
         key_store_path,
+        TEST_GENESIS_HASH,
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -86,6 +90,7 @@ async fn test_get_latest_epoch() {
     let (handle, addr) = start_rpc_server_with_handle(
         mailbox,
         key_store_path,
+        TEST_GENESIS_HASH,
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -114,6 +119,7 @@ async fn test_validator_balance_not_found() {
     let (handle, addr) = start_rpc_server_with_handle(
         mailbox,
         key_store_path,
+        TEST_GENESIS_HASH,
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -146,6 +152,7 @@ async fn test_get_public_keys() {
     let (handle, addr) = start_rpc_server_with_handle(
         mailbox,
         key_store_path,
+        TEST_GENESIS_HASH,
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -271,6 +278,7 @@ async fn test_get_minimum_stake() {
     let (handle, addr) = start_rpc_server_with_handle(
         mailbox,
         key_store_path,
+        TEST_GENESIS_HASH,
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -299,9 +307,15 @@ async fn test_pause_rejects_invalid_signature() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
     let paused = Arc::new(AtomicBool::new(false));
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, paused.clone())
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        0,
+        paused.clone(),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -336,9 +350,15 @@ async fn test_pause_rejects_stale_timestamp() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
     let paused = Arc::new(AtomicBool::new(false));
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, paused.clone())
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        0,
+        paused.clone(),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -365,10 +385,15 @@ async fn test_is_paused_open_access() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) =
-        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-            .await
-            .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        0,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -393,6 +418,7 @@ async fn test_get_maximum_stake() {
     let (handle, addr) = start_rpc_server_with_handle(
         mailbox,
         key_store_path,
+        TEST_GENESIS_HASH,
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -428,6 +454,7 @@ async fn test_get_deposit_signature_not_on_public_listener() {
     let handles = start_rpc_server_pair_with_handle(
         mailbox,
         key_store_path,
+        TEST_GENESIS_HASH,
         0,
         0,
         #[cfg(feature = "permissioned")]
