@@ -300,6 +300,17 @@ async fn run_node_inner(
 ) {
     let context = context.with_label("summit_cw");
 
+    // Initialize telemetry first, before genesis acquisition. First-boot
+    // provisioning can block in acquire_genesis waiting for the genesis RPC, so the
+    // subscriber must already be installed or those logs (and the RPC's own
+    // "listening" line) are silently dropped.
+    let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
+    let critical_log_dir = flags
+        .critical_log_dir
+        .as_ref()
+        .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
+    let _critical_log_guard = crate::telemetry::init(log_level, critical_log_dir.as_deref());
+
     let genesis = acquire_genesis(&context, &flags).await;
 
     let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
@@ -366,14 +377,6 @@ async fn run_node_inner(
         network_committee.push((our_public_key, our_ip));
         network_committee.sort();
     }
-
-    // Configure telemetry with optional critical file logger
-    let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
-    let critical_log_dir = flags
-        .critical_log_dir
-        .as_ref()
-        .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
-    let _critical_log_guard = crate::telemetry::init(log_level, critical_log_dir.as_deref());
 
     // Start prometheus endpoint (merges Summit + commonware runtime metrics)
     #[cfg(feature = "prom")]
