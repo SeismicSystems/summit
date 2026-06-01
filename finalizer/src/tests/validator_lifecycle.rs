@@ -353,6 +353,9 @@ fn last_block_exit_dominates_concurrent_max_stake_reduction() {
             protocol_version: 1,
             node_public_key: local_node_pubkey,
             cancellation_token,
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
