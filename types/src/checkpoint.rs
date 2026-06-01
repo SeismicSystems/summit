@@ -139,7 +139,15 @@ impl TryFrom<&Checkpoint> for ConsensusState {
             return Err(Error::Invalid("Checkpoint", "Digest verification failed"));
         }
 
-        ConsensusState::read(&mut checkpoint.data.as_ref())
+        let state = ConsensusState::read(&mut checkpoint.data.as_ref())?;
+        if state.get_pending_checkpoint().is_some() {
+            return Err(Error::Invalid(
+                "Checkpoint",
+                "Pending checkpoint not allowed",
+            ));
+        }
+
+        Ok(state)
     }
 }
 
@@ -1061,6 +1069,21 @@ mod tests {
         } else {
             panic!("Expected Invalid error with digest verification message");
         }
+    }
+
+    #[test]
+    fn test_try_from_checkpoint_rejects_pending_checkpoint() {
+        let pending_state = ConsensusState::default();
+        let pending_checkpoint = Checkpoint::new(&pending_state);
+
+        let mut outer_state = ConsensusState::default();
+        outer_state.set_pending_checkpoint(Some(pending_checkpoint));
+
+        // The outer checkpoint digest is valid for the serialized state, but
+        // finalized checkpoint artifacts must not carry staged checkpoint data.
+        let outer_checkpoint = Checkpoint::new(&outer_state);
+        let result = ConsensusState::try_from(&outer_checkpoint);
+        assert!(result.is_err());
     }
 
     #[test]
