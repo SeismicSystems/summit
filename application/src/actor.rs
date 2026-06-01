@@ -918,7 +918,6 @@ mod tests {
             timestamp,
             payload,
             Vec::new(),
-            U256::ZERO,
             epoch,
             view,
             None,
