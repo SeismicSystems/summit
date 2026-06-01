@@ -8,7 +8,7 @@ use crate::account::{ValidatorAccount, ValidatorStatus};
 use crate::execution_request::DepositRequest;
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
-use crate::ssz_tree::merkleize;
+use crate::ssz_tree::{merkleize, mix_in_length};
 use crate::withdrawal::PendingWithdrawal;
 use alloy_primitives::Address;
 use commonware_cryptography::bls12381;
@@ -195,6 +195,25 @@ pub(crate) fn hash_fixed_bytes_96(bytes: &[u8; 96]) -> [u8; 32] {
     chunks[1].copy_from_slice(&bytes[32..64]);
     chunks[2].copy_from_slice(&bytes[64..96]);
     merkleize(&chunks)
+}
+
+/// Hash an arbitrary-length byte string as an SSZ byte list: pack into 32-byte
+/// chunks (zero-padding the final chunk), merkleize, then mix in the byte length.
+/// Distinct contents or lengths produce distinct roots.
+pub(crate) fn hash_byte_list(bytes: &[u8]) -> [u8; 32] {
+    let chunks: Vec<[u8; 32]> = if bytes.is_empty() {
+        vec![[0u8; 32]]
+    } else {
+        bytes
+            .chunks(32)
+            .map(|c| {
+                let mut chunk = [0u8; 32];
+                chunk[..c.len()].copy_from_slice(c);
+                chunk
+            })
+            .collect()
+    };
+    mix_in_length(merkleize(&chunks), bytes.len())
 }
 
 #[cfg(test)]
@@ -433,5 +452,25 @@ mod tests {
         let h2 = hash_fixed_bytes_96(&bytes);
         assert_eq!(h1, h2);
         assert_ne!(h1, [0u8; 32]);
+    }
+
+    #[test]
+    fn hash_byte_list_deterministic_and_sensitive() {
+        let base = hash_byte_list(&[1, 2, 3]);
+        // Deterministic.
+        assert_eq!(base, hash_byte_list(&[1, 2, 3]));
+        // Content-sensitive.
+        assert_ne!(base, hash_byte_list(&[1, 2, 4]));
+        // Length-sensitive: a shorter prefix and a zero-padded extension both differ,
+        // because the byte length is mixed in (the padded chunk alone would collide).
+        assert_ne!(base, hash_byte_list(&[1, 2]));
+        assert_ne!(base, hash_byte_list(&[1, 2, 3, 0]));
+        // Empty is deterministic and distinct from any non-empty list.
+        assert_eq!(hash_byte_list(&[]), hash_byte_list(&[]));
+        assert_ne!(hash_byte_list(&[]), base);
+        // Multi-chunk content (>32 bytes) is handled and content-sensitive.
+        let big = vec![7u8; 100];
+        assert_eq!(hash_byte_list(&big), hash_byte_list(&big));
+        assert_ne!(hash_byte_list(&big), hash_byte_list(&[7u8; 99]));
     }
 }

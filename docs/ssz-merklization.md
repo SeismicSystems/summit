@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 22 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 22–31 are unused (zero-filled).
+32 leaf slots (depth 5), 23 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 23–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -62,6 +62,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 19 | `max_deposits_per_epoch` | Scalar |
 | 20 | `max_withdrawals_per_epoch` | Scalar |
 | 21 | `observers_per_validator` | Scalar |
+| 22 | `pending_execution_requests` | Collection root |
 
 ### Collection Subtrees
 
@@ -141,6 +142,13 @@ A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by 
 #### Removed Validators
 
 1 leaf per item (validator pubkey hash).
+
+#### Pending Execution Requests
+
+1 leaf per item. Each deferred request is an opaque byte blob hashed as an SSZ
+byte list: packed into 32-byte chunks (final chunk zero-padded), merkleized, then
+`mix_in_length(chunks_root, byte_len)`. The collection root is
+`mix_in_length(subtree.root(), request_count)`, like the other collections.
 
 ## Leaf Encoding
 
@@ -232,6 +240,8 @@ Protocol parameters, added validators, and removed validators always rebuild the
 | `push_removed_validator()` | `rebuild_removed_validators()` |
 | `set_removed_validators()` | `rebuild_removed_validators()` |
 | `clear_removed_validators()` | `rebuild_removed_validators()` |
+| `push_pending_execution_request()` | `rebuild_pending_execution_requests()` |
+| `take_pending_execution_requests()` | `rebuild_pending_execution_requests()` |
 
 ### Tier 6: Queue Pop — Full Rebuild
 
