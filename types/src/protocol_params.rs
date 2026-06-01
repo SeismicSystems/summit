@@ -16,6 +16,13 @@ pub const MIN_OBSERVERS_PER_VALIDATOR: u64 = 0;
 pub const MAX_OBSERVERS_PER_VALIDATOR: u64 = 256;
 pub const MIN_MINIMUM_VALIDATOR_COUNT: u64 = 1;
 pub const DEFAULT_MINIMUM_VALIDATOR_COUNT: u64 = 3;
+// Bounds on the genesis `max_message_size_bytes`. The floor must be large enough
+// to carry the largest legitimate P2P message (full blocks dominate; checkpoints
+// scale with validator count); below it, large-block sync stalls. The ceiling
+// bounds per-message allocation (anti-DoS) and stays well under `u32::MAX`, which
+// is the hard limit imposed by the `as u32` conversion at the p2p config boundary.
+pub const MAX_MESSAGE_SIZE_BYTES_MIN: u64 = 1 << 20; // 1 MiB
+pub const MAX_MESSAGE_SIZE_BYTES_MAX: u64 = 1 << 30; // 1 GiB
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {

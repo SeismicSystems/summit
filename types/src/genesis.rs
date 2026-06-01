@@ -1,9 +1,9 @@
 use crate::PublicKey;
 use crate::protocol_params::{
     DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_EPOCH_LENGTH,
-    MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR, MAX_WITHDRAWALS_PER_EPOCH_MAX,
-    MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_EPOCH_LENGTH,
-    MIN_MINIMUM_VALIDATOR_COUNT,
+    MAX_MAX_DEPOSITS_PER_EPOCH, MAX_MESSAGE_SIZE_BYTES_MAX, MAX_MESSAGE_SIZE_BYTES_MIN,
+    MAX_OBSERVERS_PER_VALIDATOR, MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN,
+    MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_EPOCH_LENGTH, MIN_MINIMUM_VALIDATOR_COUNT,
 };
 use alloy_primitives::Address;
 use anyhow::Context;
@@ -167,6 +167,19 @@ impl Genesis {
             return Err(format!(
                 "validator_minimum_stake {} exceeds validator_maximum_stake {}",
                 self.validator_minimum_stake, self.validator_maximum_stake
+            )
+            .into());
+        }
+        // The P2P message ceiling must hold the largest legitimate message (full
+        // blocks, checkpoints) yet stay bounded against per-message allocation DoS,
+        // and must not exceed u32::MAX (the p2p config converts it with `as u32`,
+        // which would otherwise silently truncate). A zero value would reject every
+        // message and brick networking.
+        if self.max_message_size_bytes < MAX_MESSAGE_SIZE_BYTES_MIN
+            || self.max_message_size_bytes > MAX_MESSAGE_SIZE_BYTES_MAX
+        {
+            return Err(format!(
+                "max_message_size_bytes must be between {MAX_MESSAGE_SIZE_BYTES_MIN} and {MAX_MESSAGE_SIZE_BYTES_MAX}"
             )
             .into());
         }
@@ -409,6 +422,28 @@ mod tests {
         genesis.blocks_per_epoch = MAX_EPOCH_LENGTH + 1;
         assert!(genesis.validate().is_err());
         genesis.blocks_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_max_message_size_bytes_at_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_message_size_bytes = MAX_MESSAGE_SIZE_BYTES_MIN;
+        assert!(genesis.validate().is_ok());
+        genesis.max_message_size_bytes = MAX_MESSAGE_SIZE_BYTES_MAX;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_max_message_size_bytes_outside_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_message_size_bytes = 0;
+        assert!(genesis.validate().is_err());
+        genesis.max_message_size_bytes = MAX_MESSAGE_SIZE_BYTES_MIN - 1;
+        assert!(genesis.validate().is_err());
+        genesis.max_message_size_bytes = MAX_MESSAGE_SIZE_BYTES_MAX + 1;
+        assert!(genesis.validate().is_err());
+        genesis.max_message_size_bytes = u64::MAX;
         assert!(genesis.validate().is_err());
     }
 
