@@ -369,6 +369,8 @@ impl ConsensusState {
 
     pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
         self.pending_checkpoint = checkpoint;
+        self.ssz_tree
+            .set_pending_checkpoint_digest(self.pending_checkpoint.as_ref().map(|cp| cp.digest.0));
     }
 
     pub fn get_added_validators(&self, epoch: u64) -> Option<&Vec<AddedValidator>> {
@@ -439,7 +441,9 @@ impl ConsensusState {
     }
 
     pub fn take_pending_checkpoint(&mut self) -> Option<Checkpoint> {
-        self.pending_checkpoint.take()
+        let taken = self.pending_checkpoint.take();
+        self.ssz_tree.set_pending_checkpoint_digest(None);
+        taken
     }
 
     pub fn push_protocol_param_change(&mut self, param: ProtocolParam) {
@@ -900,6 +904,7 @@ impl ConsensusState {
             self.max_withdrawals_per_epoch,
             self.observers_per_validator,
             &self.pending_execution_requests,
+            self.pending_checkpoint.as_ref().map(|cp| cp.digest.0),
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -1614,6 +1619,35 @@ mod tests {
             state.get_state_root(),
             before,
             "draining pending requests must restore the prior state root"
+        );
+    }
+
+    #[test]
+    fn pending_checkpoint_binds_into_captured_state_root() {
+        let mut state = ConsensusState::default();
+        state.rebuild_ssz_tree();
+        state.capture_state_root(0);
+        let before = state.get_state_root();
+
+        // Setting the pending checkpoint via the production mutator binds its digest
+        // into the captured state root.
+        let checkpoint = Checkpoint::new(&state);
+        state.set_pending_checkpoint(Some(checkpoint));
+        state.capture_state_root(0);
+        let after = state.get_state_root();
+        assert_ne!(
+            before, after,
+            "setting a pending checkpoint must change the captured state root"
+        );
+
+        // Taking it restores the prior (no-checkpoint) root.
+        let taken = state.take_pending_checkpoint();
+        assert!(taken.is_some());
+        state.capture_state_root(0);
+        assert_eq!(
+            state.get_state_root(),
+            before,
+            "taking the pending checkpoint must restore the prior state root"
         );
     }
 

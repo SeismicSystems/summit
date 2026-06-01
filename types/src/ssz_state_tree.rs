@@ -1,6 +1,6 @@
 //! Two-level SSZ binary Merkle tree for ConsensusState.
 //!
-//! The top-level tree has 32 leaf slots (23 used, depth 5). Scalar fields and
+//! The top-level tree has 32 leaf slots (24 used, depth 5). Scalar fields and
 //! collection roots are assigned to fixed leaf indices — see the field-index
 //! and `*_ROOT` constants below for the authoritative layout. Each collection
 //! root (validator accounts, deposit/withdrawal queues, protocol-param changes,
@@ -56,9 +56,10 @@ pub const MAX_DEPOSITS_PER_EPOCH: usize = 19;
 pub const MAX_WITHDRAWALS_PER_EPOCH: usize = 20;
 pub const OBSERVERS_PER_VALIDATOR: usize = 21;
 pub const PENDING_EXECUTION_REQUESTS_ROOT: usize = 22;
+pub const PENDING_CHECKPOINT: usize = 23;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 23;
+pub const NUM_TOP_LEAVES: usize = 24;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -121,7 +122,7 @@ pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 2;
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
 pub struct SszStateTree {
-    /// Top-level tree: 32 leaves (depth 5), 23 used.
+    /// Top-level tree: 32 leaves (depth 5), 24 used.
     top: SszTree,
 
     /// Validator accounts subtree. Rebuilt from BTreeMap on every mutation.
@@ -241,6 +242,16 @@ impl SszStateTree {
     pub fn set_observers_per_validator(&mut self, value: u32) {
         self.top
             .set_leaf(OBSERVERS_PER_VALIDATOR, value.hash_tree_root());
+    }
+
+    /// Set the pending-checkpoint leaf to the checkpoint digest (the value that
+    /// becomes the boundary `checkpoint_hash`), or the zero hash when absent. A
+    /// single scalar leaf — no subtree or proof support, since the pending
+    /// checkpoint only needs to be bound into the root, not proven on-chain. The
+    /// digest already commits the checkpoint data via SHA-256.
+    pub fn set_pending_checkpoint_digest(&mut self, digest: Option<[u8; 32]>) {
+        self.top
+            .set_leaf(PENDING_CHECKPOINT, digest.unwrap_or([0u8; 32]));
     }
 
     pub fn set_treasury_address(&mut self, address: &Address) {
@@ -929,6 +940,7 @@ impl SszStateTree {
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
         pending_execution_requests: &[alloy_primitives::Bytes],
+        pending_checkpoint_digest: Option<[u8; 32]>,
     ) {
         *self = Self::new();
 
@@ -960,6 +972,7 @@ impl SszStateTree {
         self.rebuild_added_validators(added_validators);
         self.rebuild_removed_validators(removed_validators);
         self.rebuild_pending_execution_requests(pending_execution_requests);
+        self.set_pending_checkpoint_digest(pending_checkpoint_digest);
     }
 
     // --- Proof generation ---
@@ -1835,6 +1848,7 @@ mod tests {
         inc.rebuild_added_validators(&BTreeMap::new());
         inc.rebuild_removed_validators(&[]);
         inc.rebuild_pending_execution_requests(&[]);
+        inc.set_pending_checkpoint_digest(None);
 
         // Build via rebuild
         let mut rb = SszStateTree::new();
@@ -1862,6 +1876,7 @@ mod tests {
             16,
             5,
             &[],
+            None,
         );
 
         assert_eq!(inc.root(), rb.root());
@@ -1895,6 +1910,33 @@ mod tests {
     }
 
     #[test]
+    fn pending_checkpoint_affects_root() {
+        let mut tree = SszStateTree::new();
+        tree.set_pending_checkpoint_digest(None);
+        let none_root = tree.root();
+
+        // Setting a pending checkpoint binds its digest into the root.
+        tree.set_pending_checkpoint_digest(Some([0xAB; 32]));
+        let some_root = tree.root();
+        assert_ne!(
+            none_root, some_root,
+            "a pending checkpoint must be bound into the state root"
+        );
+
+        // A different digest produces a different root.
+        tree.set_pending_checkpoint_digest(Some([0xCD; 32]));
+        assert_ne!(
+            some_root,
+            tree.root(),
+            "a different pending-checkpoint digest must produce a different root"
+        );
+
+        // Clearing returns to the no-checkpoint root.
+        tree.set_pending_checkpoint_digest(None);
+        assert_eq!(none_root, tree.root());
+    }
+
+    #[test]
     fn rebuild_proof_still_valid() {
         let (pk1, acc1) = make_validator(1);
         let mut accounts = BTreeMap::new();
@@ -1925,6 +1967,7 @@ mod tests {
             16,
             0,
             &[],
+            None,
         );
 
         let root = tree.root();
