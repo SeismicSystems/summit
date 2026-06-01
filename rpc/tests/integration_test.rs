@@ -197,6 +197,10 @@ activity_timeout_views = 256
 skip_timeout_views = 32
 max_message_size_bytes = 104857600
 namespace = "_SUMMIT"
+validator_minimum_stake = 32000000000
+validator_maximum_stake = 32000000000
+blocks_per_epoch = 10000
+allowed_timestamp_future_ms = 10000
 
 [[validators]]
 node_public_key = "1be3cb06d7cc347602421fb73838534e4b54934e28959de98906d120d0799ef2"
@@ -226,6 +230,55 @@ withdrawal_credentials = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
     );
 
     handle.stop().unwrap();
+}
+
+/// send_genesis must validate before installing: malformed or empty content is
+/// rejected, the target path is left untouched (no partial/garbage file that
+/// startup would treat as provisioned), and no temp file is left behind.
+#[tokio::test]
+async fn test_send_genesis_rejects_invalid_content() {
+    use summit_rpc::SummitGenesisApiClient;
+
+    for bad_content in [
+        "",
+        "this is not valid toml",
+        "eth_genesis_hash = \"0xdead\"\n",
+    ] {
+        let temp_dir = create_test_keystore().unwrap();
+        let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+        let genesis_dir = tempfile::tempdir().unwrap();
+        let genesis_path = genesis_dir.path().join("genesis.toml");
+        let genesis_path_str = genesis_path.to_str().unwrap().to_string();
+
+        let path_sender = PathSender::new(genesis_path_str, None);
+        let (handle, addr) =
+            start_rpc_server_for_genesis_with_handle(path_sender, key_store_path, 0)
+                .await
+                .unwrap();
+
+        let url = format!("http://{}", addr);
+        let client = HttpClientBuilder::default().build(&url).unwrap();
+
+        let response = client.send_genesis(bad_content.to_string()).await;
+        assert!(
+            response.is_err(),
+            "sendGenesis should reject invalid content: {bad_content:?}"
+        );
+
+        // The target path must not exist — nothing partial/garbage installed.
+        assert!(
+            !genesis_path.exists(),
+            "target genesis path must not be created on invalid content: {bad_content:?}"
+        );
+        // No staging temp file left behind.
+        assert!(
+            !genesis_dir.path().join("genesis.toml.tmp").exists(),
+            "temp genesis file must be cleaned up on invalid content: {bad_content:?}"
+        );
+
+        handle.stop().unwrap();
+    }
 }
 
 /// The genesis provisioning RPC installs the chain's authoritative identity

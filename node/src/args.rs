@@ -186,26 +186,6 @@ impl Command {
         }
     }
 
-    fn has_file(path: &str) -> bool {
-        let path_buf = get_expanded_path(path).expect("Invalid filepath");
-        path_buf.exists()
-            || !std::fs::read_to_string(&path_buf)
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-    }
-
-    fn check_sender(path: String, tx: oneshot::Sender<()>) -> PathSender {
-        let sender = match Self::has_file(&path) {
-            true => {
-                let _ = tx.send(());
-                None
-            }
-            false => Some(tx),
-        };
-        PathSender::new(path, sender)
-    }
-
     pub fn run_node(&self, flags: &RunFlags) {
         // Initialize tokio-console subscriber if feature is enabled
         #[cfg(feature = "tokio-console")]
@@ -246,29 +226,52 @@ impl Command {
     }
 }
 
-async fn run_node_inner(
-    context: tokio::Context,
-    flags: RunFlags,
-    key_store: KeyStore<PrivateKey>,
-    loaded: LoadedCheckpoint<MultisigScheme>,
-) {
-    let context = context.with_label("summit_cw");
-    let (genesis_tx, genesis_rx) = oneshot::channel();
+/// Resolve the node's genesis, provisioning it over the first-boot RPC if needed.
+///
+/// Behavior is decided by the state of the configured genesis path:
+/// - **Absent:** start the genesis provisioning RPC and wait for a valid genesis to
+///   be installed (`send_genesis` validates and atomically renames into place).
+/// - **Present and valid:** return it immediately; the provisioning RPC is never
+///   exposed once a usable genesis exists.
+/// - **Present but invalid** (empty, partial, or malformed): exit with a clear
+///   error. We do not fall back to provisioning when a file already occupies the
+///   path, and we do not silently crash-loop on every restart — the operator must
+///   remove or replace the file to recover.
+async fn acquire_genesis(context: &tokio::Context, flags: &RunFlags) -> Genesis {
+    let genesis_path = flags.genesis_path.clone();
 
+    let present = get_expanded_path(&genesis_path)
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    if present {
+        match Genesis::load_from_file(&genesis_path) {
+            Ok(genesis) => return genesis,
+            Err(e) => {
+                error!(
+                    "existing genesis file '{genesis_path}' is invalid: {e}; remove or replace it to recover"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // First boot: no usable genesis yet. Wait for the provisioning RPC to install
+    // one. Because `send_genesis` validates and atomically renames, once the signal
+    // fires the file at the path is guaranteed to parse and validate.
+    let (genesis_tx, genesis_rx) = oneshot::channel();
     let cancel_token = CancellationToken::new();
     let cloned_token = cancel_token.clone();
-
-    let genesis_path = flags.genesis_path.clone();
     let genesis_key_store_path = flags.key_store_path.clone();
     let genesis_rpc_port = flags.rpc_port;
     let rpc_body_limits = RpcBodyLimits {
         max_request_body_size: flags.rpc_max_request_body_size,
         max_response_body_size: flags.rpc_max_response_body_size,
     };
+    let rpc_genesis_path = genesis_path.clone();
     let _rpc_handle = context
         .with_label("rpc_genesis")
         .spawn(move |_context| async move {
-            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+            let genesis_sender = PathSender::new(rpc_genesis_path, Some(genesis_tx));
             if let Err(e) = start_rpc_server_for_genesis(
                 genesis_sender,
                 genesis_key_store_path,
@@ -282,12 +285,22 @@ async fn run_node_inner(
             }
         });
 
-    // Wait for genesis if needed
+    // Wait for genesis, then shut down the provisioning RPC.
     let _ = genesis_rx.await;
-    // Shut down the genesis rpc server after receiving the genesis file
     cancel_token.cancel();
 
-    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+    Genesis::load_from_file(&genesis_path).expect("genesis file should be valid after provisioning")
+}
+
+async fn run_node_inner(
+    context: tokio::Context,
+    flags: RunFlags,
+    key_store: KeyStore<PrivateKey>,
+    loaded: LoadedCheckpoint<MultisigScheme>,
+) {
+    let context = context.with_label("summit_cw");
+
+    let genesis = acquire_genesis(&context, &flags).await;
 
     let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
     committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
@@ -481,40 +494,7 @@ async fn run_node_local_inner(
 ) {
     let context = context.with_label("summit_cw");
 
-    let (genesis_tx, genesis_rx) = oneshot::channel();
-
-    let cancel_token = CancellationToken::new();
-    let cloned_token = cancel_token.clone();
-    let genesis_rpc_port = flags.rpc_port;
-    let genesis_path = flags.genesis_path.clone();
-    let genesis_key_store_path = flags.key_store_path.clone();
-    let rpc_body_limits = RpcBodyLimits {
-        max_request_body_size: flags.rpc_max_request_body_size,
-        max_response_body_size: flags.rpc_max_response_body_size,
-    };
-    let _rpc_handle = context
-        .with_label("rpc_genesis")
-        .spawn(move |_context| async move {
-            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-            if let Err(e) = start_rpc_server_for_genesis(
-                genesis_sender,
-                genesis_key_store_path,
-                genesis_rpc_port,
-                rpc_body_limits,
-                cloned_token,
-            )
-            .await
-            {
-                error!("RPC server failed: {}", e);
-            }
-        });
-
-    // Wait for genesis if needed
-    let _ = genesis_rx.await;
-    // Shut down the genesis rpc server after receiving the genesis file
-    cancel_token.cancel();
-
-    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+    let genesis = acquire_genesis(&context, &flags).await;
 
     let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
     committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
