@@ -677,7 +677,6 @@ impl<
             current,
             payload_envelope.envelope_inner.execution_payload,
             payload_envelope.execution_requests.to_vec(),
-            payload_envelope.envelope_inner.block_value,
             round.epoch().get(),
             round.view().get(),
             checkpoint_hash,
@@ -752,7 +751,7 @@ fn handle_verify<ES: Epocher>(
     // Basic structural validation
     if block.parent() != parent.digest() {
         warn!(
-            "block parent mismatch: expected {}, received: {}",
+            "block parent mismatch: expected: {}, received: {}",
             parent.digest(),
             block.parent()
         );
@@ -768,7 +767,7 @@ fn handle_verify<ES: Epocher>(
     }
     if block.height() != parent.height() + 1 {
         warn!(
-            "block height mismatch: expected {}, received: {}",
+            "block height mismatch: expected: {}, received: {}",
             parent.height() + 1,
             block.height()
         );
@@ -788,6 +787,13 @@ fn handle_verify<ES: Epocher>(
             now_millis,
             allowed_timestamp_future_ms = aux_data.allowed_timestamp_future_ms,
             "block timestamp too far in the future"
+        );
+        return false;
+    }
+    if block.header.prev_epoch_header_hash != aux_data.header_hash {
+        warn!(
+            "prev_epoch_header_hash mismatch: expected: {:?}, received: {:?}",
+            aux_data.header_hash, block.header.prev_epoch_header_hash
         );
         return false;
     }
@@ -912,7 +918,6 @@ mod tests {
             timestamp,
             payload,
             Vec::new(),
-            U256::ZERO,
             epoch,
             view,
             None,

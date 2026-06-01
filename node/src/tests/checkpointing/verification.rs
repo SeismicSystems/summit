@@ -240,6 +240,40 @@ fn test_checkpoint_verification_fixed_committee() {
             "expected NonContiguousEpochs for epoch 1, got: {err}"
         );
 
+        // Verify that breaking the epoch-header chain link causes verification
+        // to fail. Tampering `prev_epoch_header_hash` does not invalidate the
+        // signature (which is over `header.digest`), so this exercises the
+        // chain check independently.
+        let mut chain_tampered_headers = finalized_headers.clone();
+        chain_tampered_headers[1].header.prev_epoch_header_hash.0[0] ^= 0xFF;
+        let err =
+            checkpoint::verify_checkpoint_chain(&genesis, &chain_tampered_headers, &raw_checkpoint)
+                .expect_err("verification should fail with broken chain link");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::PrevEpochHeaderHashMismatch { epoch: 1 }
+            ),
+            "expected PrevEpochHeaderHashMismatch for epoch 1, got: {err}"
+        );
+
+        // Same check for the genesis anchor (epoch 0).
+        let mut genesis_anchor_tampered = finalized_headers.clone();
+        genesis_anchor_tampered[0].header.prev_epoch_header_hash.0[0] ^= 0xFF;
+        let err = checkpoint::verify_checkpoint_chain(
+            &genesis,
+            &genesis_anchor_tampered,
+            &raw_checkpoint,
+        )
+        .expect_err("verification should fail when genesis anchor is broken");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::PrevEpochHeaderHashMismatch { epoch: 0 }
+            ),
+            "expected PrevEpochHeaderHashMismatch for epoch 0, got: {err}"
+        );
+
         common::assert_state_root_consensus(&consensus_state_queries).await;
 
         context.auditor().state()

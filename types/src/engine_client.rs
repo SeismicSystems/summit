@@ -523,8 +523,7 @@ pub mod benchmarking {
                 timestamp,
                 self.payload,
                 execution_requests,
-                U256::ZERO, // block_value
-                0,          // epoch
+                0, // epoch
                 view,
                 None,                    // checkpoint_hash
                 Digest::from([0u8; 32]), // prev_epoch_header_hash

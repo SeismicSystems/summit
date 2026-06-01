@@ -75,7 +75,6 @@ fn create_test_block_with_epoch(
         height * 12,
         payload,
         Vec::new(),
-        U256::ZERO,
         epoch,
         view,
         None,

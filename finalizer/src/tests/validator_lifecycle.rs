@@ -87,7 +87,6 @@ fn create_test_block_with_requests(
         height * 12,
         payload,
         execution_requests,
-        U256::ZERO,
         epoch,
         view,
         None,

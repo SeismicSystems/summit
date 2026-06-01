@@ -69,7 +69,6 @@ fn create_test_block(parent_digest: Digest, height: u64, view: u64, unique_seed:
         height * 12,
         payload,
         Vec::new(),
-        U256::ZERO,
         height / 10,
         view,
         None,
