@@ -418,7 +418,7 @@ impl<
                                                 }
 
                                                 let now_millis = context.current().epoch_millis();
-                                                if handle_verify(&block, parent, &epocher, &aux_data, now_millis) {
+                                                if handle_verify(round, &block, parent, &epocher, &aux_data, now_millis) {
                                                     // persist valid block
                                                     syncer.verified(round, block).await;
 
@@ -719,20 +719,36 @@ impl<
 }
 
 fn handle_verify<ES: Epocher>(
+    round: Round,
     block: &Block,
     parent: Block,
     epocher: &ES,
     aux_data: &BlockAuxData,
     now_millis: u64,
 ) -> bool {
-    // You can only re-propose the same block if it's the last height in the epoch.
-    if parent.digest() == block.digest() {
-        let last_in_epoch = epocher
-            .last(Epoch::new(aux_data.epoch))
-            .expect("epoch should exist");
-        return block.height() == last_in_epoch.get();
+    if round.epoch().get() != aux_data.epoch {
+        warn!(
+            "epoch mismatch: simplex epoch {}, finalizer epoch: {}",
+            round.epoch().get(),
+            aux_data.epoch
+        );
+        return false;
     }
-
+    // You can only re-propose the same block iff it's the last height in the epoch.
+    let last_in_epoch = epocher
+        .last(Epoch::new(aux_data.epoch))
+        .expect("epoch should exist")
+        .get();
+    if parent.digest() == block.digest() {
+        return block.height() == last_in_epoch;
+    }
+    if block.height() > last_in_epoch {
+        warn!(
+            block_height = block.height(),
+            last_in_epoch, "rejecting non-reproposal child past epoch boundary"
+        );
+        return false;
+    }
     // Basic structural validation
     if block.parent() != parent.digest() {
         warn!(
@@ -831,4 +847,180 @@ fn handle_verify<ES: Epocher>(
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::U256;
+    use alloy_rpc_types_engine::{
+        ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
+    };
+    use commonware_consensus::types::FixedEpocher;
+    use std::num::NonZeroU64;
+
+    const EPOCH_LENGTH: u64 = 10;
+
+    fn empty_payload(height: u64, parent_hash: [u8; 32], timestamp: u64) -> ExecutionPayloadV3 {
+        let mut block_hash = [0u8; 32];
+        block_hash[0..8].copy_from_slice(&height.to_le_bytes());
+        ExecutionPayloadV3 {
+            payload_inner: ExecutionPayloadV2 {
+                payload_inner: ExecutionPayloadV1 {
+                    base_fee_per_gas: U256::from(1_000_000_000u64),
+                    block_number: height,
+                    block_hash: block_hash.into(),
+                    logs_bloom: Default::default(),
+                    extra_data: Default::default(),
+                    gas_limit: 30_000_000,
+                    gas_used: 0,
+                    timestamp,
+                    fee_recipient: Default::default(),
+                    parent_hash: if height == 0 {
+                        [0u8; 32].into()
+                    } else {
+                        parent_hash.into()
+                    },
+                    prev_randao: Default::default(),
+                    receipts_root: Default::default(),
+                    state_root: Default::default(),
+                    transactions: Vec::new(),
+                },
+                withdrawals: Vec::new(),
+            },
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+        }
+    }
+
+    fn make_block(parent: Digest, height: u64, epoch: u64, view: u64, timestamp: u64) -> Block {
+        let parent_bytes: [u8; 32] = parent.0;
+        let payload = empty_payload(height, parent_bytes, timestamp);
+        Block::compute_digest(
+            parent,
+            height,
+            timestamp,
+            payload,
+            Vec::new(),
+            U256::ZERO,
+            epoch,
+            view,
+            None,
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        )
+    }
+
+    fn make_aux_data(epoch: u64) -> BlockAuxData {
+        BlockAuxData {
+            epoch,
+            withdrawals: Vec::new(),
+            checkpoint_hash: None,
+            header_hash: [0u8; 32].into(),
+            added_validators: Vec::new(),
+            removed_validators: Vec::new(),
+            forkchoice: ForkchoiceState {
+                head_block_hash: [0u8; 32].into(),
+                safe_block_hash: [0u8; 32].into(),
+                finalized_block_hash: [0u8; 32].into(),
+            },
+            suggested_fee_recipient: Default::default(),
+            state_root: [0u8; 32],
+            allowed_timestamp_future_ms: u64::MAX / 2,
+        }
+    }
+
+    fn epocher() -> FixedEpocher {
+        FixedEpocher::new(NonZeroU64::new(EPOCH_LENGTH).unwrap())
+    }
+
+    /// A re-proposal of the epoch-terminal parent (identical digest, same
+    /// height) must be accepted: that is the only allowed shape past the
+    /// epoch boundary.
+    #[test]
+    fn accepts_same_digest_reproposal_at_epoch_terminal_parent() {
+        let last_height = EPOCH_LENGTH - 1; // block 9 with epoch_length 10
+        let parent = make_block(
+            [0u8; 32].into(),
+            last_height,
+            0,
+            last_height,
+            last_height * 12,
+        );
+        let block = parent.clone();
+        let aux_data = make_aux_data(0);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        assert!(
+            handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            "re-proposal of the epoch-terminal block must be accepted"
+        );
+    }
+
+    /// A Byzantine proposer can craft a non-reproposal child whose parent is
+    /// the epoch-terminal block. handle_verify must reject it — honest
+    /// proposers re-propose the terminal block instead of building a normal
+    /// child past the boundary, and the verifier must enforce the same rule.
+    #[test]
+    fn rejects_non_reproposal_child_after_epoch_terminal_parent() {
+        let last_height = EPOCH_LENGTH - 1; // block 9
+        let parent = make_block(
+            [0u8; 32].into(),
+            last_height,
+            0,
+            last_height,
+            last_height * 12,
+        );
+        // A Byzantine "ordinary" child at parent.height + 1 (block 10) with
+        // a fresh digest. parent continuity and height+1 continuity hold, so
+        // the structural checks pass; the only thing that can reject this is
+        // an epoch-boundary check.
+        let block = make_block(
+            parent.digest(),
+            last_height + 1,
+            0,
+            last_height + 1,
+            (last_height + 1) * 12,
+        );
+
+        let aux_data = make_aux_data(0);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        assert!(
+            !handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            "non-reproposal child whose parent is the epoch-terminal block \
+             must be rejected"
+        );
+    }
+
+    /// Sanity: an ordinary child inside the epoch is still accepted (so the
+    /// added check doesn't over-reject).
+    #[test]
+    fn accepts_ordinary_child_inside_epoch() {
+        let parent_height = 3; // mid-epoch 0
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+        let block = make_block(
+            parent.digest(),
+            parent_height + 1,
+            0,
+            parent_height + 1,
+            (parent_height + 1) * 12,
+        );
+
+        let aux_data = make_aux_data(0);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        assert!(
+            handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            "ordinary child inside the parent's epoch must be accepted"
+        );
+    }
 }

@@ -6026,6 +6026,8 @@ dependencies = [
 name = "summit-application"
 version = "0.0.3-alpha"
 dependencies = [
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
  "anyhow",
  "commonware-consensus",
  "commonware-cryptography",

@@ -39,6 +39,8 @@ To submit a withdrawal request, a validator must send a transaction to the pre-d
 
 Note that the validator pubkey is the ED25519 key (left-padded with zeros), not the BLS key.
 
+The big-endian amount above applies only to the calldata you submit to the contract. Per EIP-7002, the predeploy re-encodes the amount to **little-endian** in the `request_data` it emits (`source_address(20) ++ validator_pubkey(48) ++ amount(8)`, 76 bytes), and that little-endian form is what Summit's consensus layer parses. The numeric value is preserved end-to-end; only the encoding differs between the two layers.
+
 When depositing funds into the staking contract (see above), an Ethereum address was specified (`withdrawal_credentials`). A valid withdrawal transaction must be signed by the private key associated with this Ethereum address.
 
 For detailed invariants and internal state management, see [deposits-and-withdrawals.md](deposits-and-withdrawals.md).
