@@ -595,7 +595,8 @@ impl ConsensusState {
                 .keys()
                 .position(|k| k == &pubkey)
                 .expect("key was just inserted");
-            self.ssz_tree.update_validator_at_slot(slot, &account);
+            self.ssz_tree
+                .update_validator_at_slot(slot, &pubkey, &account);
         } else {
             // Insert into BTreeMap first to determine positional slot
             self.validator_accounts.insert(pubkey, account.clone());
@@ -604,7 +605,8 @@ impl ConsensusState {
                 .keys()
                 .position(|k| k == &pubkey)
                 .expect("key was just inserted");
-            self.ssz_tree.insert_validator_at_slot(slot, &account);
+            self.ssz_tree
+                .insert_validator_at_slot(slot, &pubkey, &account);
         }
 
         #[cfg(feature = "prom")]
@@ -1999,6 +2001,63 @@ mod tests {
             before,
             state.get_state_root(),
             "an epoch-schedule change must change the captured state root"
+        );
+    }
+
+    /// Changing only a validator-account map key (the node
+    /// pubkey) must change the SSZ state root. The tree commits account values
+    /// positionally without the key, so two states with the same account value
+    /// under different keys must not share a root.
+    #[test]
+    fn validator_account_key_binds_into_state_root() {
+        let account = ValidatorAccount {
+            consensus_public_key: bls12381::PrivateKey::from_seed(1).public_key(),
+            withdrawal_credentials: Address::from([7u8; 20]),
+            balance: 32_000_000_000,
+            status: ValidatorStatus::Active,
+            has_pending_deposit: false,
+            has_pending_withdrawal: false,
+            joining_epoch: 0,
+            last_deposit_index: 0,
+        };
+
+        let root_for_key = |key: [u8; 32]| {
+            let mut state = ConsensusState::default();
+            state.validator_accounts.insert(key, account.clone());
+            state.rebuild_ssz_tree();
+            state.capture_state_root(0);
+            state.get_state_root()
+        };
+
+        assert_ne!(
+            root_for_key([1u8; 32]),
+            root_for_key([2u8; 32]),
+            "changing only the validator-account map key must change the state root"
+        );
+    }
+
+    /// Changing only the scheduled-activation epoch key must
+    /// change the SSZ state root. added_validators is flattened to its values, so
+    /// the same activation under a different epoch must not share a root.
+    #[test]
+    fn added_validator_epoch_key_binds_into_state_root() {
+        let av = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(1).public_key(),
+        };
+
+        let root_for_epoch = |epoch: u64| {
+            let mut state = ConsensusState::default();
+            state.add_validator(epoch, av.clone());
+            state.rebuild_ssz_tree();
+            state.capture_state_root(0);
+            state.get_state_root()
+        };
+
+        assert_ne!(
+            root_for_epoch(5),
+            root_for_epoch(6),
+            "changing only the added-validator epoch key must change the state root"
         );
     }
 
