@@ -894,8 +894,18 @@ mod tests {
     }
 
     fn make_block(parent: Digest, height: u64, epoch: u64, view: u64, timestamp: u64) -> Block {
-        let parent_bytes: [u8; 32] = parent.0;
-        let payload = empty_payload(height, parent_bytes, timestamp);
+        make_block_with_eth_parent(parent, parent.0, height, epoch, view, timestamp)
+    }
+
+    fn make_block_with_eth_parent(
+        parent: Digest,
+        eth_parent_hash: [u8; 32],
+        height: u64,
+        epoch: u64,
+        view: u64,
+        timestamp: u64,
+    ) -> Block {
+        let payload = empty_payload(height, eth_parent_hash, timestamp);
         Block::compute_digest(
             parent,
             height,
@@ -977,8 +987,9 @@ mod tests {
         // a fresh digest. parent continuity and height+1 continuity hold, so
         // the structural checks pass; the only thing that can reject this is
         // an epoch-boundary check.
-        let block = make_block(
+        let block = make_block_with_eth_parent(
             parent.digest(),
+            parent.eth_block_hash(),
             last_height + 1,
             0,
             last_height + 1,
@@ -1007,8 +1018,9 @@ mod tests {
             parent_height,
             parent_height * 12,
         );
-        let block = make_block(
+        let block = make_block_with_eth_parent(
             parent.digest(),
+            parent.eth_block_hash(),
             parent_height + 1,
             0,
             parent_height + 1,
