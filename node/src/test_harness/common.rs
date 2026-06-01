@@ -39,6 +39,11 @@ use tokio::sync::mpsc;
 
 pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 10;
 
+/// State-root convergence polling (see `assert_state_root_consensus_synced`).
+/// Virtual time, so the cap costs only scheduler steps, not wall-clock.
+const STATE_ROOT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const STATE_ROOT_MAX_POLLS: usize = 600; // ~5 min of virtual time
+
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
 pub async fn link_validators<E: Clock>(
@@ -283,6 +288,41 @@ pub fn run_until_height(
 
         context.auditor().state()
     })
+}
+
+/// Wait until every active (non-skipped) validator has captured state at the same
+/// `el_block_number`, then assert their state roots agree.
+///
+/// Validators finalize asynchronously and can be a block apart when sampled, so
+/// comparing their "current" state roots directly is a height race (it compares
+/// state at different heights and spuriously fails). This drives the deterministic
+/// runtime forward with virtual sleeps until heights converge, then compares.
+/// Bounded, so a genuine non-convergence (e.g. a stuck validator) still surfaces
+/// via the follow-up assertion, which reports the per-validator block numbers.
+pub async fn assert_state_root_consensus_synced<E: Clock>(
+    context: &E,
+    queries: &HashMap<usize, FinalizerMailbox<MultisigScheme, Block>>,
+    skip: &[usize],
+) {
+    // Normal convergence takes a block or two (a straggler finalizing one more
+    // block); the cap is a generous safety bound after which we fall through to
+    // the assertion so a genuinely non-converging cluster fails (with block
+    // numbers) rather than hanging forever.
+    for _ in 0..STATE_ROOT_MAX_POLLS {
+        let mut blocks = std::collections::HashSet::new();
+        for (&idx, mailbox) in queries.iter() {
+            if skip.contains(&idx) {
+                continue;
+            }
+            let (_root, el_block_number) = mailbox.get_state_root().await;
+            blocks.insert(el_block_number);
+        }
+        if blocks.len() <= 1 {
+            break;
+        }
+        context.sleep(STATE_ROOT_POLL_INTERVAL).await;
+    }
+    assert_state_root_consensus_skip(queries, skip).await;
 }
 
 /// Assert that all validators share the same state trie root.
