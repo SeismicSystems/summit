@@ -300,23 +300,28 @@ pub async fn assert_state_root_consensus_skip(
     queries: &HashMap<usize, FinalizerMailbox<MultisigScheme, Block>>,
     skip: &[usize],
 ) {
-    let mut roots: Vec<(usize, [u8; 32])> = Vec::new();
+    let mut roots: Vec<(usize, u64, [u8; 32])> = Vec::new();
     for (&idx, mailbox) in queries.iter() {
         if skip.contains(&idx) {
             continue;
         }
-        let (root, _el_block_number) = mailbox.get_state_root().await;
-        roots.push((idx, root));
+        let (root, el_block_number) = mailbox.get_state_root().await;
+        roots.push((idx, el_block_number, root));
     }
     assert!(
         roots.len() >= 2,
         "need at least 2 active validators to compare state roots"
     );
-    let (first_idx, first_root) = roots[0];
-    for &(idx, root) in &roots[1..] {
+    // Sort by validator index so the reference and the reported diff are stable
+    // across runs (the source map iterates in nondeterministic HashMap order).
+    roots.sort_by_key(|&(idx, _, _)| idx);
+    let (first_idx, first_block, first_root) = roots[0];
+    for &(idx, block, root) in &roots[1..] {
         assert_eq!(
             root, first_root,
-            "state root mismatch: validator {idx} differs from validator {first_idx}"
+            "state root mismatch: validator {idx} (el_block {block}) differs from \
+             validator {first_idx} (el_block {first_block}) — \
+             if the block numbers differ, validators were sampled at different heights",
         );
     }
 }
