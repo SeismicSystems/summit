@@ -173,6 +173,31 @@ impl Genesis {
         self.treasury_address
             .parse::<Address>()
             .map_err(|e| format!("invalid treasury_address: {e}"))?;
+        if self.leader_timeout_ms == 0 {
+            return Err("leader_timeout_ms must be greater than 0".into());
+        }
+        if self.notarization_timeout_ms == 0 {
+            return Err("notarization_timeout_ms must be greater than 0".into());
+        }
+        if self.nullify_timeout_ms == 0 {
+            return Err("nullify_timeout_ms must be greater than 0".into());
+        }
+        if self.activity_timeout_views == 0 {
+            return Err("activity_timeout_views must be greater than 0".into());
+        }
+        if self.skip_timeout_views == 0 {
+            return Err("skip_timeout_views must be greater than 0".into());
+        }
+        if self.leader_timeout_ms > self.notarization_timeout_ms {
+            return Err(
+                "leader_timeout_ms must be less than or equal to notarization_timeout_ms".into(),
+            );
+        }
+        if self.skip_timeout_views > self.activity_timeout_views {
+            return Err(
+                "skip_timeout_views must be less than or equal to activity_timeout_views".into(),
+            );
+        }
         // Genesis must respect the same upper bounds the runtime
         // protocol-parameter update path enforces; otherwise an unchecked
         // genesis value (e.g. supplied over a first-boot RPC) can drive
@@ -353,6 +378,43 @@ mod tests {
         genesis.max_withdrawals_per_epoch = MAX_WITHDRAWALS_PER_EPOCH_MAX + 1;
         assert!(genesis.validate().is_err());
         genesis.max_withdrawals_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_simplex_timeouts() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.leader_timeout_ms = 0;
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.notarization_timeout_ms = 0;
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.nullify_timeout_ms = 0;
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.activity_timeout_views = 0;
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.skip_timeout_views = 0;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_misordered_leader_and_notarization_timeouts() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.leader_timeout_ms = genesis.notarization_timeout_ms + 1;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_skip_timeout_above_activity_timeout() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.skip_timeout_views = genesis.activity_timeout_views + 1;
         assert!(genesis.validate().is_err());
     }
 
