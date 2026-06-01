@@ -1,6 +1,6 @@
 //! Two-level SSZ binary Merkle tree for ConsensusState.
 //!
-//! The top-level tree has 32 leaf slots (24 used, depth 5). Scalar fields and
+//! The top-level tree has 32 leaf slots (25 used, depth 5). Scalar fields and
 //! collection roots are assigned to fixed leaf indices — see the field-index
 //! and `*_ROOT` constants below for the authoritative layout. Each collection
 //! root (validator accounts, deposit/withdrawal queues, protocol-param changes,
@@ -57,9 +57,10 @@ pub const MAX_WITHDRAWALS_PER_EPOCH: usize = 20;
 pub const OBSERVERS_PER_VALIDATOR: usize = 21;
 pub const PENDING_EXECUTION_REQUESTS_ROOT: usize = 22;
 pub const PENDING_CHECKPOINT: usize = 23;
+pub const DYNAMIC_EPOCH_SCHEDULE: usize = 24;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 24;
+pub const NUM_TOP_LEAVES: usize = 25;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -122,7 +123,7 @@ pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 2;
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
 pub struct SszStateTree {
-    /// Top-level tree: 32 leaves (depth 5), 24 used.
+    /// Top-level tree: 32 leaves (depth 5), 25 used.
     top: SszTree,
 
     /// Validator accounts subtree. Rebuilt from BTreeMap on every mutation.
@@ -252,6 +253,18 @@ impl SszStateTree {
     pub fn set_pending_checkpoint_digest(&mut self, digest: Option<[u8; 32]>) {
         self.top
             .set_leaf(PENDING_CHECKPOINT, digest.unwrap_or([0u8; 32]));
+    }
+
+    /// Set the dynamic-epoch-schedule leaf to the SSZ byte-list root of the
+    /// encoded `DynamicEpocher`. A single scalar leaf — no subtree or proof
+    /// support, since the schedule only needs to be bound into the root, not
+    /// proven on-chain. Because the epocher uses interior mutability and can be
+    /// changed (epoch advance, length update) without going through a
+    /// `ConsensusState` setter, this is refreshed at `capture_state_root` (and in
+    /// `rebuild`) rather than maintained incrementally.
+    pub fn set_dynamic_epoch_schedule(&mut self, encoded_schedule: &[u8]) {
+        self.top
+            .set_leaf(DYNAMIC_EPOCH_SCHEDULE, hash_byte_list(encoded_schedule));
     }
 
     pub fn set_treasury_address(&mut self, address: &Address) {
@@ -941,6 +954,7 @@ impl SszStateTree {
         observers_per_validator: u32,
         pending_execution_requests: &[alloy_primitives::Bytes],
         pending_checkpoint_digest: Option<[u8; 32]>,
+        dynamic_epoch_schedule: &[u8],
     ) {
         *self = Self::new();
 
@@ -973,6 +987,7 @@ impl SszStateTree {
         self.rebuild_removed_validators(removed_validators);
         self.rebuild_pending_execution_requests(pending_execution_requests);
         self.set_pending_checkpoint_digest(pending_checkpoint_digest);
+        self.set_dynamic_epoch_schedule(dynamic_epoch_schedule);
     }
 
     // --- Proof generation ---
@@ -1849,6 +1864,7 @@ mod tests {
         inc.rebuild_removed_validators(&[]);
         inc.rebuild_pending_execution_requests(&[]);
         inc.set_pending_checkpoint_digest(None);
+        inc.set_dynamic_epoch_schedule(&[]);
 
         // Build via rebuild
         let mut rb = SszStateTree::new();
@@ -1877,6 +1893,7 @@ mod tests {
             5,
             &[],
             None,
+            &[],
         );
 
         assert_eq!(inc.root(), rb.root());
@@ -1937,6 +1954,25 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_epoch_schedule_affects_root() {
+        let mut tree = SszStateTree::new();
+        tree.set_dynamic_epoch_schedule(&[1, 2, 3]);
+        let root_a = tree.root();
+
+        // A different encoded schedule must produce a different root.
+        tree.set_dynamic_epoch_schedule(&[1, 2, 4]);
+        assert_ne!(
+            root_a,
+            tree.root(),
+            "a different epoch schedule must produce a different root"
+        );
+
+        // The same encoded schedule reproduces the same root.
+        tree.set_dynamic_epoch_schedule(&[1, 2, 3]);
+        assert_eq!(root_a, tree.root());
+    }
+
+    #[test]
     fn rebuild_proof_still_valid() {
         let (pk1, acc1) = make_validator(1);
         let mut accounts = BTreeMap::new();
@@ -1968,6 +2004,7 @@ mod tests {
             0,
             &[],
             None,
+            &[],
         );
 
         let root = tree.root();

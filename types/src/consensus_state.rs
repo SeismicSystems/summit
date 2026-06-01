@@ -10,7 +10,7 @@ use crate::{Digest, PublicKey};
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
+use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{bls12381, sha256};
 #[cfg(feature = "prom")]
 use metrics::histogram;
@@ -588,6 +588,13 @@ impl ConsensusState {
         #[cfg(feature = "prom")]
         let start = std::time::Instant::now();
 
+        // Refresh the dynamic-epoch-schedule leaf here: the epocher uses interior
+        // mutability and can change (epoch advance, length update) without going
+        // through a ConsensusState setter, so this commit point is the reliable
+        // place to bind its current value into the root.
+        self.ssz_tree
+            .set_dynamic_epoch_schedule(&self.epocher.encode());
+
         self.state_root = self.ssz_tree.root();
         self.proof_tree = self.ssz_tree.clone();
         self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
@@ -905,6 +912,7 @@ impl ConsensusState {
             self.observers_per_validator,
             &self.pending_execution_requests,
             self.pending_checkpoint.as_ref().map(|cp| cp.digest.0),
+            &self.epocher.encode(),
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -1648,6 +1656,31 @@ mod tests {
             state.get_state_root(),
             before,
             "taking the pending checkpoint must restore the prior state root"
+        );
+    }
+
+    #[test]
+    fn dynamic_epoch_schedule_binds_into_captured_state_root() {
+        use std::num::NonZeroU64;
+
+        let mut state = ConsensusState::default();
+        state.rebuild_ssz_tree();
+        state.capture_state_root(0);
+        let before = state.get_state_root();
+
+        // Mutate the epoch schedule through interior mutability — no `&mut
+        // ConsensusState` setter is involved — and confirm the captured root still
+        // changes, via the refresh in `capture_state_root`.
+        state
+            .get_epocher()
+            .update_length(NonZeroU64::new(20).unwrap())
+            .expect("update_length should succeed");
+        state.capture_state_root(0);
+
+        assert_ne!(
+            before,
+            state.get_state_root(),
+            "an epoch-schedule change must change the captured state root"
         );
     }
 
