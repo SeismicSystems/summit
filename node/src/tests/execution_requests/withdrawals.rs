@@ -448,7 +448,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
