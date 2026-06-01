@@ -1,8 +1,9 @@
 use crate::PublicKey;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_MAX_DEPOSITS_PER_EPOCH,
-    MAX_OBSERVERS_PER_VALIDATOR, MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN,
-    MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_MINIMUM_VALIDATOR_COUNT,
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_EPOCH_LENGTH,
+    MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR, MAX_WITHDRAWALS_PER_EPOCH_MAX,
+    MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_EPOCH_LENGTH,
+    MIN_MINIMUM_VALIDATOR_COUNT,
 };
 use alloy_primitives::Address;
 use anyhow::Context;
@@ -151,8 +152,16 @@ impl Genesis {
     }
 
     fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if self.blocks_per_epoch == 0 {
-            return Err("blocks_per_epoch must be greater than 0".into());
+        // Genesis epoch length must satisfy the same bounds as a runtime
+        // EpochLength protocol-parameter update (see ProtocolParam). An oversized
+        // launch value defers every epoch-boundary mechanic — checkpoints, final-block
+        // withdrawals, committee transitions, queued param changes — until that
+        // boundary, turning epoch functionality into a liveness failure.
+        if self.blocks_per_epoch < MIN_EPOCH_LENGTH || self.blocks_per_epoch > MAX_EPOCH_LENGTH {
+            return Err(format!(
+                "blocks_per_epoch must be between {MIN_EPOCH_LENGTH} and {MAX_EPOCH_LENGTH}"
+            )
+            .into());
         }
         if self.validator_minimum_stake > self.validator_maximum_stake {
             return Err(format!(
@@ -378,6 +387,28 @@ mod tests {
         genesis.max_withdrawals_per_epoch = MAX_WITHDRAWALS_PER_EPOCH_MAX + 1;
         assert!(genesis.validate().is_err());
         genesis.max_withdrawals_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_blocks_per_epoch_at_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.blocks_per_epoch = MIN_EPOCH_LENGTH;
+        assert!(genesis.validate().is_ok());
+        genesis.blocks_per_epoch = MAX_EPOCH_LENGTH;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_blocks_per_epoch_outside_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.blocks_per_epoch = 0;
+        assert!(genesis.validate().is_err());
+        genesis.blocks_per_epoch = MIN_EPOCH_LENGTH - 1;
+        assert!(genesis.validate().is_err());
+        genesis.blocks_per_epoch = MAX_EPOCH_LENGTH + 1;
+        assert!(genesis.validate().is_err());
+        genesis.blocks_per_epoch = u64::MAX;
         assert!(genesis.validate().is_err());
     }
 
