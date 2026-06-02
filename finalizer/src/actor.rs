@@ -824,7 +824,7 @@ impl<
         }
 
         let new_height = block.height();
-        self.height_notify_up_to(new_height, block_digest);
+        self.height_notify_finalized_up_to(new_height, block_digest);
         ack_tx.acknowledge();
         info!(
             new_height,
@@ -1275,7 +1275,7 @@ impl<
                 heights_tracked = self.fork_states.len(),
                 "fork state summary"
             );
-            self.height_notify_up_to(height, block_digest);
+            self.height_notify_executed(height, block_digest);
 
             // Add orphaned children to the processing queue
             if let Some(children) = self
@@ -1386,11 +1386,27 @@ impl<
         }
     }
 
-    fn height_notify_up_to(&mut self, height: u64, block_digest: Digest) {
-        // Notify only waiters for this specific (height, digest) pair
+    fn height_notify_executed(&mut self, height: u64, block_digest: Digest) {
         if let Some(senders) = self.pending_height_notifys.remove(&(height, block_digest)) {
             for sender in senders {
                 let _ = sender.send(true); // Ignore if receiver dropped
+            }
+        }
+    }
+
+    fn height_notify_finalized_up_to(&mut self, height: u64, block_digest: Digest) {
+        let pending = std::mem::take(&mut self.pending_height_notifys);
+
+        for ((waiter_height, waiter_digest), senders) in pending {
+            if waiter_height > height {
+                self.pending_height_notifys
+                    .insert((waiter_height, waiter_digest), senders);
+                continue;
+            }
+
+            let block_executed = waiter_height == height && waiter_digest == block_digest;
+            for sender in senders {
+                let _ = sender.send(block_executed); // Ignore if receiver dropped
             }
         }
     }
