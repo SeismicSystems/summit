@@ -401,6 +401,8 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         prom_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
         admin_rpc_port: (3031 + (node * 10)) as u16,
+        rpc_max_request_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_max_response_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
         worker_threads: Some(2),
         log_level: "debug".into(),
         db_prefix: format!("{node}"),

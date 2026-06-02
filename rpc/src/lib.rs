@@ -30,11 +30,29 @@ use summit_types::Block;
 use summit_types::scheme::MultisigScheme;
 use tokio_util::sync::CancellationToken;
 
+pub const DEFAULT_RPC_BODY_LIMIT_BYTES: u32 = 50 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub struct RpcBodyLimits {
+    pub max_request_body_size: u32,
+    pub max_response_body_size: u32,
+}
+
+impl Default for RpcBodyLimits {
+    fn default() -> Self {
+        Self {
+            max_request_body_size: DEFAULT_RPC_BODY_LIMIT_BYTES,
+            max_response_body_size: DEFAULT_RPC_BODY_LIMIT_BYTES,
+        }
+    }
+}
+
 pub async fn start_rpc_server(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
     port: u16,
     admin_port: u16,
+    body_limits: RpcBodyLimits,
     stop_signal: Signal,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
@@ -52,8 +70,8 @@ pub async fn start_rpc_server(
 
     let public_server = builder::RpcServerBuilder::new(port)
         .with_max_connections(1000)
-        .with_max_request_body_size(10 * 1024 * 1024)
-        .with_max_response_body_size(10 * 1024 * 1024)
+        .with_max_request_body_size(body_limits.max_request_body_size)
+        .with_max_response_body_size(body_limits.max_response_body_size)
         .with_cors(Some("*".to_string()))
         .build()
         .await?;
@@ -67,8 +85,8 @@ pub async fn start_rpc_server(
 
     let admin_server = builder::RpcServerBuilder::new_localhost(admin_port)
         .with_max_connections(1000)
-        .with_max_request_body_size(10 * 1024 * 1024)
-        .with_max_response_body_size(10 * 1024 * 1024)
+        .with_max_request_body_size(body_limits.max_request_body_size)
+        .with_max_response_body_size(body_limits.max_response_body_size)
         .build()
         .await?;
 
@@ -115,8 +133,8 @@ pub async fn start_rpc_server_with_handle(
 
     let public_server = builder::RpcServerBuilder::new(port)
         .with_max_connections(1000)
-        .with_max_request_body_size(10 * 1024 * 1024)
-        .with_max_response_body_size(10 * 1024 * 1024)
+        .with_max_request_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
+        .with_max_response_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
         .with_cors(Some("*".to_string()))
         .build()
         .await?;
@@ -154,8 +172,8 @@ pub async fn start_rpc_server_pair_with_handle(
 
     let public_server = builder::RpcServerBuilder::new(port)
         .with_max_connections(1000)
-        .with_max_request_body_size(10 * 1024 * 1024)
-        .with_max_response_body_size(10 * 1024 * 1024)
+        .with_max_request_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
+        .with_max_response_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
         .with_cors(Some("*".to_string()))
         .build()
         .await?;
@@ -167,8 +185,8 @@ pub async fn start_rpc_server_pair_with_handle(
 
     let admin_server = builder::RpcServerBuilder::new_localhost(admin_port)
         .with_max_connections(1000)
-        .with_max_request_body_size(10 * 1024 * 1024)
-        .with_max_response_body_size(10 * 1024 * 1024)
+        .with_max_request_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
+        .with_max_response_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
         .build()
         .await?;
 
@@ -187,6 +205,7 @@ pub async fn start_rpc_server_for_genesis(
     genesis: PathSender,
     key_store_path: String,
     port: u16,
+    body_limits: RpcBodyLimits,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
     let rpc_impl = SummitGenesisRpcServer::new(key_store_path, genesis);
@@ -199,6 +218,8 @@ pub async fn start_rpc_server_for_genesis(
     // remote caller cannot install genesis on this node before startup
     // loads it.
     let server = builder::RpcServerBuilder::new_localhost(port)
+        .with_max_request_body_size(body_limits.max_request_body_size)
+        .with_max_response_body_size(body_limits.max_response_body_size)
         .build()
         .await?;
     let addr = server.local_addr()?;
@@ -226,6 +247,8 @@ pub async fn start_rpc_server_for_genesis_with_handle(
     // See note on the production variant: localhost-only binding for the
     // first-boot genesis writer.
     let server = builder::RpcServerBuilder::new_localhost(port)
+        .with_max_request_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
+        .with_max_response_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
         .build()
         .await?;
     let addr = server.local_addr()?;

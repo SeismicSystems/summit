@@ -11,7 +11,10 @@ use commonware_codec::Read;
 use commonware_cryptography::{Signer, certificate::Scheme};
 use commonware_p2p::{Ingress, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
-use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
+use summit_rpc::{
+    DEFAULT_RPC_BODY_LIMIT_BYTES, PathSender, RpcBodyLimits, start_rpc_server,
+    start_rpc_server_for_genesis,
+};
 use tokio_util::sync::CancellationToken;
 
 use alloy_primitives::{Address, B256};
@@ -113,6 +116,14 @@ pub struct RunFlags {
     /// signing methods like `getDepositSignature`).
     #[arg(long, default_value_t = 3031)]
     pub admin_rpc_port: u16,
+
+    /// Maximum JSON-RPC request body size, in bytes.
+    #[arg(long, default_value_t = DEFAULT_RPC_BODY_LIMIT_BYTES)]
+    pub rpc_max_request_body_size: u32,
+
+    /// Maximum JSON-RPC response body size, in bytes.
+    #[arg(long, default_value_t = DEFAULT_RPC_BODY_LIMIT_BYTES)]
+    pub rpc_max_response_body_size: u32,
 
     /// Number of tokio worker threads (defaults to number of logical CPUs)
     #[arg(long)]
@@ -250,6 +261,10 @@ async fn run_node_inner(
     let genesis_path = flags.genesis_path.clone();
     let genesis_key_store_path = flags.key_store_path.clone();
     let genesis_rpc_port = flags.rpc_port;
+    let rpc_body_limits = RpcBodyLimits {
+        max_request_body_size: flags.rpc_max_request_body_size,
+        max_response_body_size: flags.rpc_max_response_body_size,
+    };
     let _rpc_handle = context
         .with_label("rpc_genesis")
         .spawn(move |_context| async move {
@@ -258,6 +273,7 @@ async fn run_node_inner(
                 genesis_sender,
                 genesis_key_store_path,
                 genesis_rpc_port,
+                rpc_body_limits,
                 cloned_token,
             )
             .await
@@ -472,6 +488,10 @@ async fn run_node_local_inner(
     let genesis_rpc_port = flags.rpc_port;
     let genesis_path = flags.genesis_path.clone();
     let genesis_key_store_path = flags.key_store_path.clone();
+    let rpc_body_limits = RpcBodyLimits {
+        max_request_body_size: flags.rpc_max_request_body_size,
+        max_response_body_size: flags.rpc_max_response_body_size,
+    };
     let _rpc_handle = context
         .with_label("rpc_genesis")
         .spawn(move |_context| async move {
@@ -480,6 +500,7 @@ async fn run_node_local_inner(
                 genesis_sender,
                 genesis_key_store_path,
                 genesis_rpc_port,
+                rpc_body_limits,
                 cloned_token,
             )
             .await
@@ -694,6 +715,10 @@ where
     let key_store_path = flags.key_store_path;
     let rpc_port = flags.rpc_port;
     let admin_rpc_port = flags.admin_rpc_port;
+    let rpc_body_limits = RpcBodyLimits {
+        max_request_body_size: flags.rpc_max_request_body_size,
+        max_response_body_size: flags.rpc_max_response_body_size,
+    };
     let stop_signal = context.stopped();
     let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
         if let Err(e) = start_rpc_server(
@@ -701,6 +726,7 @@ where
             key_store_path,
             rpc_port,
             admin_rpc_port,
+            rpc_body_limits,
             stop_signal,
             #[cfg(feature = "permissioned")]
             paused,
