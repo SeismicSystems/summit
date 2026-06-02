@@ -18,12 +18,37 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
+use summit_types::Header;
 use summit_types::PrivateKey;
 use summit_types::checkpoint::{self, CheckpointVerificationError};
 use summit_types::consensus_state::ConsensusState;
 use summit_types::execution_request::ExecutionRequest;
 use summit_types::genesis::{Genesis, GenesisValidator};
 use summit_types::keystore::KeyStore;
+
+/// Returns a clone of `header` with the first byte of `prev_epoch_header_hash`
+/// flipped. The header fields are private, so the value is rebuilt via the
+/// public constructor. The epoch-header chain-link check runs before signature
+/// verification in `verify_checkpoint_chain`, so this isolates
+/// `PrevEpochHeaderHashMismatch` from any signature failure.
+fn tamper_prev_epoch_header_hash(header: &Header) -> Header {
+    let mut prev = header.prev_epoch_header_hash();
+    prev.0[0] ^= 0xFF;
+    Header::new(
+        header.parent(),
+        header.height(),
+        header.timestamp(),
+        header.epoch(),
+        header.view(),
+        header.payload_hash(),
+        header.execution_request_hash(),
+        header.checkpoint_hash(),
+        prev,
+        header.added_validators().to_vec(),
+        header.removed_validators(),
+        header.parent_beacon_block_root(),
+    )
+}
 
 #[test_traced("INFO")]
 fn test_checkpoint_verification_fixed_committee() {
@@ -245,7 +270,8 @@ fn test_checkpoint_verification_fixed_committee() {
         // signature (which is over `header.digest`), so this exercises the
         // chain check independently.
         let mut chain_tampered_headers = finalized_headers.clone();
-        chain_tampered_headers[1].header.prev_epoch_header_hash.0[0] ^= 0xFF;
+        chain_tampered_headers[1].header =
+            tamper_prev_epoch_header_hash(&chain_tampered_headers[1].header);
         let err =
             checkpoint::verify_checkpoint_chain(&genesis, &chain_tampered_headers, &raw_checkpoint)
                 .expect_err("verification should fail with broken chain link");
@@ -259,7 +285,8 @@ fn test_checkpoint_verification_fixed_committee() {
 
         // Same check for the genesis anchor (epoch 0).
         let mut genesis_anchor_tampered = finalized_headers.clone();
-        genesis_anchor_tampered[0].header.prev_epoch_header_hash.0[0] ^= 0xFF;
+        genesis_anchor_tampered[0].header =
+            tamper_prev_epoch_header_hash(&genesis_anchor_tampered[0].header);
         let err = checkpoint::verify_checkpoint_chain(
             &genesis,
             &genesis_anchor_tampered,

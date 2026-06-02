@@ -254,9 +254,9 @@ pub fn verify_checkpoint_chain(
         let expected_prev = if i == 0 {
             genesis_hash
         } else {
-            finalized_headers[i - 1].header.digest
+            finalized_headers[i - 1].header.get_digest()
         };
-        if finalized_header.header.prev_epoch_header_hash != expected_prev {
+        if finalized_header.header.prev_epoch_header_hash() != expected_prev {
             return Err(CheckpointVerificationError::PrevEpochHeaderHashMismatch {
                 epoch: expected_epoch,
             });

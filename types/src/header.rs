@@ -123,8 +123,12 @@ impl Header {
         }
     }
 
+    /// Builds a header with an externally-supplied digest instead of deriving it
+    /// from the canonical encoding. This is intentionally `pub(crate)` and exists
+    /// only for `Block::genesis`, which uses the eth genesis hash as the block
+    /// identity rather than `SHA256(ssz(header))`.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_digest(
+    pub(crate) fn new_with_digest(
         parent: Digest,
         height: u64,
         timestamp: u64,
