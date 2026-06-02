@@ -279,7 +279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 index: 0, // not included in the signature
             };
 
-            let deposit_domain = deposit_signature_domain(genesis_hash);
+            let deposit_domain = deposit_signature_domain(genesis_hash, b"_SUMMIT");
             let message = deposit_request.as_message(deposit_domain);
 
             // Sign with node (ed25519) key

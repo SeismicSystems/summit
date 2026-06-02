@@ -396,7 +396,10 @@ impl<
                 pending_notarized_max: cfg.pending_notarized_max,
                 genesis_hash: cfg.genesis_hash,
                 protocol_consts: cfg.protocol_consts,
-                deposit_signature_domain: deposit_signature_domain(cfg.genesis_hash),
+                deposit_signature_domain: deposit_signature_domain(
+                    cfg.genesis_hash,
+                    &cfg.namespace,
+                ),
                 node_public_key: cfg.node_public_key,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,

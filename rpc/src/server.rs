@@ -42,12 +42,13 @@ impl SummitRpcServer {
         key_store_path: String,
         finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
         genesis_hash: [u8; 32],
+        namespace: &[u8],
         #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
     ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
-            deposit_signature_domain: deposit_signature_domain(genesis_hash),
+            deposit_signature_domain: deposit_signature_domain(genesis_hash, namespace),
             #[cfg(feature = "permissioned")]
             paused,
         }

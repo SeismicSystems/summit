@@ -690,8 +690,9 @@ mod tests {
             index: 42u64,
         };
 
-        let source_domain = crate::deposit_signature_domain([1u8; 32]);
-        let target_domain = crate::deposit_signature_domain([2u8; 32]);
+        let namespace = b"summit-network";
+        let source_domain = crate::deposit_signature_domain([1u8; 32], namespace);
+        let target_domain = crate::deposit_signature_domain([2u8; 32], namespace);
         assert_ne!(source_domain, target_domain);
 
         let source_message = deposit.as_message(source_domain);
@@ -709,6 +710,59 @@ mod tests {
                 .consensus_pubkey
                 .verify(&[], &source_message, &consensus_signature)
         );
+        assert!(
+            !deposit
+                .node_pubkey
+                .verify(&[], &target_message, &node_signature)
+        );
+        assert!(
+            !deposit
+                .consensus_pubkey
+                .verify(&[], &target_message, &consensus_signature)
+        );
+    }
+
+    #[test]
+    fn test_deposit_signature_domain_binds_deposit_to_namespace() {
+        // Two Summit deployments can share an EL genesis hash yet be distinct
+        // networks (different namespace). A deposit signature authorized for one
+        // namespace must not verify under another, even with an identical genesis
+        // hash and identical deposit fields.
+        let node_private_key = ed25519::PrivateKey::from_seed(1);
+        let consensus_private_key = bls12381::PrivateKey::from_seed(2);
+        let deposit = DepositRequest {
+            node_pubkey: node_private_key.public_key(),
+            consensus_pubkey: consensus_private_key.public_key(),
+            withdrawal_credentials: [3u8; 32],
+            amount: 32000000000u64,
+            node_signature: [0u8; 64],
+            consensus_signature: [0u8; 96],
+            index: 42u64,
+        };
+
+        // Same genesis hash, different namespace.
+        let genesis_hash = [7u8; 32];
+        let source_domain = crate::deposit_signature_domain(genesis_hash, b"summit-network-a");
+        let target_domain = crate::deposit_signature_domain(genesis_hash, b"summit-network-b");
+        assert_ne!(source_domain, target_domain);
+
+        let source_message = deposit.as_message(source_domain);
+        let target_message = deposit.as_message(target_domain);
+        let node_signature = node_private_key.sign(&[], &source_message);
+        let consensus_signature = consensus_private_key.sign(&[], &source_message);
+
+        // Valid under the originating namespace...
+        assert!(
+            deposit
+                .node_pubkey
+                .verify(&[], &source_message, &node_signature)
+        );
+        assert!(
+            deposit
+                .consensus_pubkey
+                .verify(&[], &source_message, &consensus_signature)
+        );
+        // ...but rejected under a different namespace despite the same genesis hash.
         assert!(
             !deposit
                 .node_pubkey

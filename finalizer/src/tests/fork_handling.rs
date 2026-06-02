@@ -166,6 +166,7 @@ fn test_orphaned_block_processed_when_parent_arrives() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -251,6 +252,7 @@ fn test_losing_height_waiter_resolves_false_on_conflicting_finalization() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -339,6 +341,7 @@ fn test_competing_digest_waiter_stays_pending_until_finalization() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -428,6 +431,7 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -517,6 +521,7 @@ fn test_multiple_forks_tracked() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -602,6 +607,7 @@ fn test_dead_fork_block_discarded() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -703,6 +709,7 @@ fn test_fork_states_pruned_after_finalization() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -823,6 +830,7 @@ fn test_orphaned_blocks_pruned_after_finalization() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -935,6 +943,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1043,6 +1052,7 @@ fn test_competing_fork_pruned_on_finalization() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 

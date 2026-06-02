@@ -25,6 +25,7 @@ async fn test_health_endpoint() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -58,6 +59,7 @@ async fn test_get_latest_height() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -91,6 +93,7 @@ async fn test_get_latest_epoch() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -120,6 +123,7 @@ async fn test_validator_balance_not_found() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -153,6 +157,7 @@ async fn test_get_public_keys() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -279,6 +284,7 @@ async fn test_get_minimum_stake() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -311,6 +317,7 @@ async fn test_pause_rejects_invalid_signature() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         paused.clone(),
     )
@@ -354,6 +361,7 @@ async fn test_pause_rejects_stale_timestamp() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         paused.clone(),
     )
@@ -389,6 +397,7 @@ async fn test_is_paused_open_access() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         Arc::new(AtomicBool::new(false)),
     )
@@ -419,6 +428,7 @@ async fn test_get_maximum_stake() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
@@ -455,6 +465,7 @@ async fn test_get_deposit_signature_not_on_public_listener() {
         mailbox,
         key_store_path,
         TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
         0,
         0,
         #[cfg(feature = "permissioned")]

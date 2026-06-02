@@ -44,11 +44,17 @@ pub type Activity = CActivity<Signature, Digest>;
 pub const PROTOCOL_VERSION: u32 = 1;
 const DEPOSIT_DOMAIN_TAG: &[u8] = b"summit-deposit-v1";
 
-pub fn deposit_signature_domain(genesis_hash: [u8; 32]) -> Digest {
-    let mut domain_data = Vec::with_capacity(DEPOSIT_DOMAIN_TAG.len() + 4 + 32);
+/// Domain for deposit-authorization signatures, bound to the full Summit
+/// deployment boundary: the EL genesis hash AND the Summit `namespace`.
+pub fn deposit_signature_domain(genesis_hash: [u8; 32], namespace: &[u8]) -> Digest {
+    let mut domain_data =
+        Vec::with_capacity(DEPOSIT_DOMAIN_TAG.len() + 4 + 32 + 4 + namespace.len());
     domain_data.extend_from_slice(DEPOSIT_DOMAIN_TAG);
     domain_data.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
     domain_data.extend_from_slice(&genesis_hash);
+    // Length-prefix the variable-length namespace so the domain is unambiguous.
+    domain_data.extend_from_slice(&(namespace.len() as u32).to_le_bytes());
+    domain_data.extend_from_slice(namespace);
     Sha256::hash(&domain_data)
 }
 

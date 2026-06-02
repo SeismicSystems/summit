@@ -365,7 +365,7 @@ pub fn get_domain() -> Digest {
     let genesis_hash: [u8; 32] = genesis_hash
         .try_into()
         .expect("failed to convert genesis hash");
-    deposit_signature_domain(genesis_hash)
+    deposit_signature_domain(genesis_hash, b"_SUMMIT")
 }
 
 pub fn get_initial_state(

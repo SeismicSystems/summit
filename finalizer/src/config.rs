@@ -22,6 +22,10 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     pub protocol_consts: ProtocolConsts,
     pub page_cache: CacheRef,
     pub genesis_hash: [u8; 32],
+    /// The Summit deployment namespace, mixed into the deposit-signature domain
+    /// alongside the genesis hash so deposit authorizations are bound to this
+    /// specific deployment (not just the EL genesis).
+    pub namespace: Vec<u8>,
     /// Optional initial state to initialize the finalizer with
     pub initial_state: ConsensusState,
     /// Protocol version for the consensus protocol
