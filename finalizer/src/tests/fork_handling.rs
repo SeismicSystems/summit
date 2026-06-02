@@ -248,6 +248,9 @@ fn test_losing_height_waiter_resolves_false_on_conflicting_finalization() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -333,6 +336,9 @@ fn test_competing_digest_waiter_stays_pending_until_finalization() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
@@ -419,6 +425,9 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
