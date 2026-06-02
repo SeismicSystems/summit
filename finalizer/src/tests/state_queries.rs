@@ -167,6 +167,9 @@ fn test_generate_state_proof_preserves_batch_cardinality_for_missing_keys() {
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
             _variant_marker: PhantomData,
         };
 
