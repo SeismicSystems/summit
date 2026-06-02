@@ -2074,6 +2074,13 @@ async fn parse_execution_requests<
         .iter()
         .map(|request| (request.as_ref(), ExecutionRequestOrigin::CurrentBlock));
 
+    // Validators that already had an exit deferred during this parse pass. A single
+    // block can carry multiple withdrawal requests for the same validator (and a
+    // replayed deferral can coincide with a fresh resubmission); deferring each one
+    // would re-queue the exit and, for active validators, double-count the active-exit
+    // budget, and therefore starving other validators' legitimate exits in the same block.
+    let mut deferred_exit_pubkeys: HashSet<[u8; 32]> = HashSet::new();
+
     for (request_bytes, origin) in pending_requests.chain(current_requests) {
         let is_deferred = origin.is_deferred();
         match ExecutionRequest::parse_eth_entry(request_bytes) {
@@ -2256,6 +2263,24 @@ async fn parse_execution_requests<
                                     // to be processed at the penultimate block of the next epoch.
                                     // This ensures the validator is included in removed_validators
                                     // which can be properly reflected in the header.
+                                    //
+                                    // Deduplicate by validator: the deferred path does not write
+                                    // `has_pending_withdrawal` back (the replay next epoch relies on
+                                    // it staying false to be admitted), so the guard above cannot
+                                    // catch same-block duplicates. Without this, repeated requests
+                                    // for one validator would each be re-queued and each active exit
+                                    // would consume the active-exit budget, skipping other
+                                    // validators' legitimate exits in the same block.
+                                    if !deferred_exit_pubkeys
+                                        .insert(withdrawal_request.validator_pubkey)
+                                    {
+                                        info!(
+                                            validator =
+                                                hex::encode(withdrawal_request.validator_pubkey),
+                                            "skipping duplicate withdrawal request for validator already deferred this block"
+                                        );
+                                        continue;
+                                    }
                                     if is_active_exit {
                                         state.increment_pending_active_validator_exits();
                                     }
