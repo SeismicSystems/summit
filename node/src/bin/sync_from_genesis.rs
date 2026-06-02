@@ -684,5 +684,6 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         bootstrappers: None,
         critical_log_dir: None,
         observer: None,
+        finalizer_pending_notarized_max: 1000,
     }
 }
