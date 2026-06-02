@@ -1635,6 +1635,7 @@ async fn parse_execution_requests<
     let mut all_requests = state.take_pending_execution_requests();
     all_requests.extend(block.execution_requests.iter().cloned());
 
+    ///
     // Validators that already had an exit deferred during this parse pass. A single
     // block can carry multiple withdrawal requests for the same validator (and a
     // replayed deferral can coincide with a fresh resubmission); deferring each one
