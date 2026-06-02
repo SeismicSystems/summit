@@ -17,6 +17,17 @@ use metrics::histogram;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU64;
 
+const INVALID_STAKE_INTERVAL: &str =
+    "validator_minimum_stake must be less than or equal to validator_maximum_stake";
+
+fn validate_stake_interval(minimum_stake: u64, maximum_stake: u64) -> Result<(), Error> {
+    if minimum_stake <= maximum_stake {
+        Ok(())
+    } else {
+        Err(Error::Invalid("ConsensusState", INVALID_STAKE_INTERVAL))
+    }
+}
+
 #[derive(Debug)]
 pub struct ConsensusState {
     pub(crate) epoch: u64,
@@ -790,7 +801,18 @@ impl ConsensusState {
             .collect()
     }
 
-    pub fn apply_protocol_parameter_changes(&mut self) -> bool {
+    pub fn apply_protocol_parameter_changes(&mut self) -> Result<bool, Error> {
+        let prospective_minimum_stake = self.prospective_minimum_stake();
+        let prospective_maximum_stake = self.prospective_maximum_stake();
+        if let Err(err) =
+            validate_stake_interval(prospective_minimum_stake, prospective_maximum_stake)
+        {
+            self.protocol_param_changes.clear();
+            self.ssz_tree
+                .rebuild_protocol_params(&self.protocol_param_changes);
+            return Err(err);
+        }
+
         let mut min_or_max_stake_changed = false;
         for param in self.protocol_param_changes.drain(0..) {
             match param {
@@ -839,7 +861,7 @@ impl ConsensusState {
         // Protocol param changes have been consumed — update the (now empty) collection root
         self.ssz_tree
             .rebuild_protocol_params(&self.protocol_param_changes);
-        min_or_max_stake_changed
+        Ok(min_or_max_stake_changed)
     }
 
     /// Rebuild the entire SSZ state tree from scratch.
@@ -1040,6 +1062,7 @@ impl Read for ConsensusState {
 
         let validator_minimum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         let validator_maximum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        validate_stake_interval(validator_minimum_stake, validator_maximum_stake)?;
         let allowed_timestamp_future_ms = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
 
         let mut treasury_address_bytes = [0u8; 20];
@@ -1898,10 +1921,50 @@ mod tests {
         assert_ne!(state.ssz_tree().root(), r1);
 
         // apply_protocol_parameter_changes consumes them
-        let changed = state.apply_protocol_parameter_changes();
+        let changed = state.apply_protocol_parameter_changes().unwrap();
         assert!(changed);
         assert_eq!(state.get_minimum_stake(), 40_000_000_000);
         assert_eq!(state.get_maximum_stake(), 80_000_000_000);
+    }
+
+    #[test]
+    fn protocol_param_batch_accepts_valid_final_stake_interval() {
+        let mut state = ConsensusState::default();
+        state.push_protocol_param_change(ProtocolParam::MaximumStake(20_000_000_000));
+        state.push_protocol_param_change(ProtocolParam::MinimumStake(10_000_000_000));
+
+        let changed = state.apply_protocol_parameter_changes().unwrap();
+
+        assert!(changed);
+        assert_eq!(state.get_minimum_stake(), 10_000_000_000);
+        assert_eq!(state.get_maximum_stake(), 20_000_000_000);
+    }
+
+    #[test]
+    fn protocol_param_batch_rejects_inverted_final_stake_interval() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+        state.push_protocol_param_change(ProtocolParam::MinimumStake(80_000_000_000));
+
+        let err = state.apply_protocol_parameter_changes().unwrap_err();
+
+        assert!(matches!(err, Error::Invalid("ConsensusState", _)));
+        assert_eq!(state.get_minimum_stake(), 32_000_000_000);
+        assert_eq!(state.get_maximum_stake(), 32_000_000_000);
+        assert_eq!(state.ssz_tree().root(), root_before);
+        assert_eq!(state.protocol_param_changes.len(), 0);
+    }
+
+    #[test]
+    fn consensus_state_decode_rejects_inverted_stake_interval() {
+        let mut state = ConsensusState::default();
+        state.validator_minimum_stake = 80_000_000_000;
+        state.validator_maximum_stake = 32_000_000_000;
+
+        let mut encoded = state.encode();
+        let err = ConsensusState::decode(&mut encoded).unwrap_err();
+
+        assert!(matches!(err, Error::Invalid("ConsensusState", _)));
     }
 
     #[test]
@@ -2213,7 +2276,7 @@ mod tests {
 
         // --- Simulate epoch transition ---
         // Apply protocol param changes (none in this case)
-        state.apply_protocol_parameter_changes();
+        state.apply_protocol_parameter_changes().unwrap();
 
         // Activate the joining validator
         let mut account = state.get_account(&new_pubkey).unwrap().clone();
@@ -2263,7 +2326,7 @@ mod tests {
 
         // --- Simulate protocol param change ---
         state.push_protocol_param_change(ProtocolParam::MinimumStake(16_000_000_000));
-        state.apply_protocol_parameter_changes();
+        state.apply_protocol_parameter_changes().unwrap();
 
         let param_root = state.ssz_tree().root();
         state.rebuild_ssz_tree();

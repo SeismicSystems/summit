@@ -878,7 +878,13 @@ impl<
             }
 
             // Apply protocol parameter changes
-            let stake_changed = self.canonical_state.apply_protocol_parameter_changes();
+            let stake_changed = match self.canonical_state.apply_protocol_parameter_changes() {
+                Ok(stake_changed) => stake_changed,
+                Err(e) => {
+                    warn!("skipping invalid protocol parameter changes at epoch boundary: {e}");
+                    false
+                }
+            };
 
             // Build the committee for the next epoch.
             self.validator_exit = self.update_validator_committee(stake_changed);
