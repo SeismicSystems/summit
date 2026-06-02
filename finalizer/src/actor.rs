@@ -94,11 +94,11 @@ fn invalid_signature_refund_key(withdrawal_address: Address, deposit_index: u64)
 fn pubkeys_with_buffered_full_exit(state: &ConsensusState) -> BTreeSet<[u8; 32]> {
     let mut pubkeys = BTreeSet::new();
     for entry in state.pending_execution_requests() {
-        let Ok(parsed) = ExecutionRequest::try_from_eth_entry(entry.as_ref()) else {
+        let Ok(parsed) = ExecutionRequest::parse_eth_entry(entry.as_ref()) else {
             continue;
         };
         for req in parsed {
-            if let ExecutionRequest::Withdrawal(w) = req {
+            if let ParsedExecutionRequest::Valid(ExecutionRequest::Withdrawal(w)) = req {
                 pubkeys.insert(w.validator_pubkey);
             }
         }
