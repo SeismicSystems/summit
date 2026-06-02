@@ -2075,56 +2075,6 @@ async fn parse_execution_requests<
                         ParsedExecutionRequest::Valid(ExecutionRequest::Deposit(
                             deposit_request,
                         )) => {
-                            //<<<<<<< HEAD
-                            //    for request_bytes in &all_requests {
-                            //        match ExecutionRequest::parse_eth_entry(request_bytes.as_ref()) {
-                            //            Ok(parsed_requests) => {
-                            //                for parsed in parsed_requests {
-                            //                    match parsed {
-                            //                        ParsedExecutionRequest::MalformedDeposit(chunk) => {
-                            //                            // EIP-6110 grouping concatenates same-block deposit logs
-                            //                            // into one entry; a single contract-accepted but
-                            //                            // parser-invalid chunk must not poison the others.
-                            //                            // Route it through the same refund branch as a
-                            //                            // signature-invalid deposit.
-                            //                            info!(
-                            //                                reason = chunk.reason,
-                            //                                amount = chunk.amount,
-                            //                                index = chunk.index,
-                            //                                "refunding malformed deposit chunk",
-                            //                            );
-                            //                            queue_deposit_refund(
-                            //                                state,
-                            //                                chunk.withdrawal_credentials,
-                            //                                chunk.amount,
-                            //                                chunk.index,
-                            //                                DepositRejectionReason::MalformedKey,
-                            //                                consts,
-                            //                            );
-                            //                        }
-                            //                        ParsedExecutionRequest::Valid(ExecutionRequest::Deposit(
-                            //                            deposit_request,
-                            //                        )) => {
-                            //||||||| parent of 47173ec (fix: preserve deferred last-block withdrawals)
-                            //    for request_bytes in &all_requests {
-                            //        match ExecutionRequest::try_from_eth_entry(request_bytes.as_ref()) {
-                            //            Ok(execution_requests) => {
-                            //                for execution_request in execution_requests {
-                            //                    match execution_request {
-                            //                        ExecutionRequest::Deposit(deposit_request) => {
-                            //=======
-                            //    for (request_bytes, origin) in pending_requests.chain(current_requests) {
-                            //        match ExecutionRequest::try_from_eth_entry(request_bytes) {
-                            //            Ok(execution_requests) => {
-                            //                for execution_request in execution_requests {
-                            //                    let queued_request = QueuedExecutionRequest {
-                            //                        request: execution_request,
-                            //                        origin,
-                            //                    };
-                            //                    let is_deferred = queued_request.origin.is_deferred();
-                            //                    match queued_request.request {
-                            //                        ExecutionRequest::Deposit(deposit_request) => {
-                            //>>>>>>> 47173ec (fix: preserve deferred last-block withdrawals)
                             match verify_deposit_request(
                                 context,
                                 &deposit_request,
