@@ -200,10 +200,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("  root: 0x{}", alloy::hex::encode(proof_resp.root));
             println!("  el_block_number: {}", proof_resp.el_block_number);
-            println!("  proofs returned: {}", proof_resp.proofs.len());
-            for (i, proof) in proof_resp.proofs.iter().enumerate() {
-                println!("  proof[{i}]: gindex={}, leaf=0x{}, branch_len={}",
-                    proof.gindex, alloy::hex::encode(proof.leaf), proof.branch.len());
+            println!("  results returned: {}", proof_resp.results.len());
+            for (i, result) in proof_resp.results.iter().enumerate() {
+                match &result.proof {
+                    Some(proof) => println!(
+                        "  result[{i}] {}: gindex={}, leaf=0x{}, branch_len={}",
+                        result.key,
+                        proof.gindex,
+                        alloy::hex::encode(proof.leaf),
+                        proof.branch.len()
+                    ),
+                    None => println!(
+                        "  result[{i}] {}: missing ({})",
+                        result.key,
+                        result.error.as_deref().unwrap_or("unknown error")
+                    ),
+                }
             }
 
             // Build alloy provider with a funded wallet (for contract deploy)
@@ -290,7 +302,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let verify_selector = &keccak256(
                 "verify(uint256,uint256,bytes32,bytes32[])"
             )[..4];
-            for (i, proof) in proof_resp.proofs.iter().enumerate() {
+            for (i, result) in proof_resp.results.iter().enumerate() {
+                let proof = result
+                    .proof
+                    .as_ref()
+                    .expect("scalar state proof should be present");
                 let calldata = encode_verify(
                     timestamp,
                     proof.gindex,
@@ -327,10 +343,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .expect("getStateProof (validator) failed");
             println!("  root: 0x{}", alloy::hex::encode(val_proof_resp.root));
-            println!("  proofs returned: {}", val_proof_resp.proofs.len());
-            assert!(
-                !val_proof_resp.proofs.is_empty(),
-                "No proofs returned for validator"
+            println!("  results returned: {}", val_proof_resp.results.len());
+            assert_eq!(
+                val_proof_resp.results.len(),
+                1,
+                "Expected one result for validator"
             );
 
             // Wait for the target block to exist (might be a newer capture)
@@ -350,7 +367,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Block not found");
             let val_timestamp = val_block.header.timestamp;
 
-            let vp = &val_proof_resp.proofs[0];
+            let vp = val_proof_resp.results[0]
+                .proof
+                .as_ref()
+                .expect("No proof returned for validator");
             {
                 let calldata = encode_verify(
                     val_timestamp,
@@ -399,12 +419,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .expect("getStateProof (balance field) failed");
             println!("  root: 0x{}", alloy::hex::encode(balance_proof_resp.root));
-            assert!(
-                !balance_proof_resp.proofs.is_empty(),
-                "No proofs returned for balance field"
+            assert_eq!(
+                balance_proof_resp.results.len(),
+                1,
+                "Expected one result for balance field"
             );
 
-            let bp = &balance_proof_resp.proofs[0];
+            let bp = balance_proof_resp.results[0]
+                .proof
+                .as_ref()
+                .expect("No proof returned for balance field");
             println!(
                 "  gindex={}, leaf=0x{}, branch_len={}",
                 bp.gindex,

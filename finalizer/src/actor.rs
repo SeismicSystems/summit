@@ -1658,9 +1658,9 @@ impl<
             }
             ConsensusStateRequest::GenerateStateProof(keys) => {
                 let proof_tree = self.canonical_state.proof_tree();
-                let proofs: Vec<SszProof> = keys
+                let proofs: Vec<Option<SszProof>> = keys
                     .iter()
-                    .filter_map(|key| match key {
+                    .map(|key| match key {
                         SszStateKey::Scalar(leaf_index) => {
                             Some(proof_tree.generate_scalar_proof(*leaf_index))
                         }

@@ -7,7 +7,7 @@ use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
     EpochBoundsResponse, FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse,
-    StateProofResponse, StateRootResponse, ValidatorAccountResponse,
+    StateProofResponse, StateProofResult, StateRootResponse, ValidatorAccountResponse,
 };
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
@@ -416,15 +416,34 @@ impl SummitProofApiServer for SummitRpcServer {
             .map(|k| summit_types::ssz_tree_key::parse_key(k).map_err(RpcError::InvalidKey))
             .collect::<Result<Vec<_>, _>>()?;
 
+        let requested_len = keys.len();
         let (root, el_block_number, proofs) = self
             .finalizer_mailbox
             .generate_state_proof(parsed_keys)
             .await;
+        if proofs.len() != requested_len {
+            return Err(RpcError::Internal(format!(
+                "state proof response length mismatch: requested {requested_len}, got {}",
+                proofs.len()
+            ))
+            .into());
+        }
+
+        let results = keys
+            .into_iter()
+            .zip(proofs)
+            .map(|(key, proof)| {
+                let error = proof
+                    .is_none()
+                    .then(|| "key is absent or out of range".to_string());
+                StateProofResult { key, proof, error }
+            })
+            .collect();
 
         Ok(StateProofResponse {
             root,
             el_block_number,
-            proofs,
+            results,
         })
     }
 }

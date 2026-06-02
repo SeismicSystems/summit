@@ -371,19 +371,32 @@ The state root appears on-chain in EL block `el_block_number + 1`.
 
 ### `getStateProof`
 
-Takes a list of key strings and returns the state root, EL block number, and an `SszProof` for each key.
+Takes a list of key strings and returns the state root, EL block number, and one result for each key. Each result echoes the requested key and contains either an `SszProof` or an error for a key that is absent or out of range.
 
 ```json
 // Request
-{"jsonrpc":"2.0","method":"getStateProof","params":[["epoch","validator:0xABCD..."]],"id":1}
+{"jsonrpc":"2.0","method":"getStateProof","params":[["epoch","validator:0xABCD...","deposit:999999"]],"id":1}
 
 // Response
 {
   "root": "0x...",
   "el_block_number": 42,
-  "proofs": [
-    { "gindex": 32, "leaf": "0x...", "branch": ["0x...", ...] },
-    { "gindex": 1408, "leaf": "0x...", "branch": ["0x...", ...] }
+  "results": [
+    {
+      "key": "epoch",
+      "proof": { "gindex": 32, "leaf": "0x...", "branch": ["0x...", ...] },
+      "error": null
+    },
+    {
+      "key": "validator:0xABCD...",
+      "proof": { "gindex": 1408, "leaf": "0x...", "branch": ["0x...", ...] },
+      "error": null
+    },
+    {
+      "key": "deposit:999999",
+      "proof": null,
+      "error": "key is absent or out of range"
+    }
   ]
 }
 ```
