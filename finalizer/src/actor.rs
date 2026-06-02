@@ -372,6 +372,8 @@ impl<
             gauge
         };
 
+        let shared_state = state.clone_with_shared_epocher();
+
         (
             Self {
                 context: ContextCell::new(context),
@@ -380,7 +382,7 @@ impl<
                 oracle: cfg.oracle,
                 pending_height_notifys: BTreeMap::new(),
                 db,
-                canonical_state: state.clone(),
+                canonical_state: state,
                 fork_states: BTreeMap::new(),
                 orphaned_blocks: BTreeMap::new(),
                 pending_finalized: VecDeque::new(),
@@ -403,7 +405,7 @@ impl<
                 #[cfg(debug_assertions)]
                 consensus_state_stored_gauge,
             },
-            state,
+            shared_state,
             FinalizerMailbox::new(tx),
         )
     }
@@ -695,7 +697,9 @@ impl<
                 ?block_digest,
                 "reusing fork state for finalized block"
             );
-            self.canonical_state = fork_state.consensus_state.clone();
+            let live_epocher = self.canonical_state.get_epocher().clone();
+            live_epocher.replace_with(fork_state.consensus_state.get_epocher());
+            self.canonical_state = fork_state.consensus_state.clone_with_epocher(live_epocher);
         } else {
             // Block was not notarized before finalization (catch-up or missed notarization)
             // Execute it now on canonical state
