@@ -862,4 +862,104 @@ mod test {
         assert_eq!(actual_encoded.len(), pure_ssz.len() + 4);
         assert_eq!(actual_encoded.len(), encode_len);
     }
+
+    /// Builds a header identical in every fixed field, varying only the
+    /// validator-transition vectors, so any digest difference is attributable
+    /// solely to the added/removed partition.
+    fn header_with(added: Vec<AddedValidator>, removed: Vec<PublicKey>) -> Header {
+        Header::new(
+            [27u8; 32].into(),
+            27,
+            2727,
+            42,
+            1,
+            [1u8; 32].into(),
+            [2u8; 32].into(),
+            [3u8; 32].into(),
+            [4u8; 32].into(),
+            added,
+            removed,
+            [0u8; 32],
+        )
+    }
+
+    /// Regression test for the header-digest validator-partition ambiguity.
+    ///
+    /// The previous hand-rolled digest concatenated `added_validators` and
+    /// `removed_validators` as raw byte streams with no length, count, or boundary,
+    /// so the digest did not commit to where the added list ended and the removed
+    /// list began. The SSZ container the digest is now computed over places an
+    /// explicit offset for each variable-length field, so the boundary (and each
+    /// list's count) is bound by the digest: distinct partitions cannot alias.
+    #[test]
+    fn test_header_digest_commits_to_validator_partition() {
+        let a1 = AddedValidator {
+            node_key: create_test_public_key(0),
+            consensus_key: bls12381::PrivateKey::from_seed(1).public_key(),
+        };
+        // a2's node identity is the same key that appears as a *removed* key in h_a.
+        let a2 = AddedValidator {
+            node_key: create_test_public_key(1),
+            consensus_key: bls12381::PrivateKey::from_seed(2).public_key(),
+        };
+
+        // Same set of identities, partitioned differently across the boundary:
+        //   h_a: pk(1) is a removed validator.
+        //   h_b: pk(1) is instead the node identity of an added validator (a2).
+        let h_a = header_with(
+            vec![a1.clone()],
+            vec![create_test_public_key(1), create_test_public_key(2)],
+        );
+        let h_b = header_with(vec![a1.clone(), a2], vec![create_test_public_key(2)]);
+        assert_ne!(
+            h_a.get_digest(),
+            h_b.get_digest(),
+            "moving an identity across the added/removed boundary must change the digest"
+        );
+
+        // Changing only the count of one list must change the digest too.
+        let h_one_removed = header_with(vec![a1.clone()], vec![create_test_public_key(2)]);
+        let h_two_removed = header_with(
+            vec![a1],
+            vec![create_test_public_key(2), create_test_public_key(3)],
+        );
+        assert_ne!(
+            h_one_removed.get_digest(),
+            h_two_removed.get_digest(),
+            "the removed-validator count must be committed by the digest"
+        );
+    }
+
+    /// Regression test that the SSZ encoding the digest is computed over is
+    /// canonical: the boundary between the added and removed lists is committed by
+    /// offsets, so extra heap bytes cannot be silently absorbed into the removed
+    /// list to forge a second header that decodes to a different partition yet
+    /// shares the digest.
+    #[test]
+    fn test_header_decode_rejects_misaligned_validator_bytes() {
+        let a1 = AddedValidator {
+            node_key: create_test_public_key(0),
+            consensus_key: bls12381::PrivateKey::from_seed(1).public_key(),
+        };
+        let h = header_with(vec![a1], vec![create_test_public_key(1)]);
+
+        // The encoding round-trips deterministically.
+        let ssz = h.as_ssz_bytes();
+        let decoded = Header::from_ssz_bytes(&ssz).expect("valid header must decode");
+        assert_eq!(
+            decoded.as_ssz_bytes(),
+            ssz,
+            "encoding must be canonical (re-encode matches)"
+        );
+
+        // Appending a stray byte makes the trailing removed-validator region
+        // (one 32-byte key) no longer a clean multiple of the element size, so
+        // decode must reject it rather than absorb the byte into the list.
+        let mut padded = ssz.clone();
+        padded.push(0u8);
+        assert!(
+            Header::from_ssz_bytes(&padded).is_err(),
+            "trailing bytes must not be absorbed into the removed-validator list"
+        );
+    }
 }
