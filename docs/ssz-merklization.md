@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 27 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 27–31 are unused (zero-filled).
+32 leaf slots (depth 5), 28 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 28–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -67,6 +67,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 24 | `dynamic_epoch_schedule` | Scalar (SSZ byte-list root of the encoded `DynamicEpocher`) |
 | 25 | `minimum_validator_count` | Scalar |
 | 26 | `pending_active_validator_exits` | Scalar |
+| 27 | `invalid_deposit_tax` | Scalar |
 
 ### Collection Subtrees
 

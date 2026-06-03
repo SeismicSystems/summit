@@ -76,6 +76,17 @@ Refund withdrawals have `balance_deduction = 0` because the deposited funds were
 
 If the validator already has a pending withdrawal (e.g., a user-initiated exit), the refund is merged into it: the refund amount is added to the existing withdrawal's `amount`, while `balance_deduction` remains unchanged (the refund portion contributes 0). This produces a single withdrawal covering both the original balance and the refunded deposit.
 
+### Invalid Deposit Tax
+
+When an invalid deposit is refunded, a portion of the refund is retained by the network as a tax. The `invalid_deposit_tax` protocol parameter is a percentage in `[0, 100]` (configurable in genesis and adjustable via `ProtocolParam::InvalidDepositTax`). The refund is split as:
+
+```
+tax    = amount * invalid_deposit_tax / 100   (integer division)
+refund = amount - tax
+```
+
+The `refund` portion is sent to the depositor's withdrawal credentials, and the `tax` portion is sent to the treasury address (keyed by a synthetic `0xFD`-prefixed key derived from the treasury address and deposit index, so it does not collide with a real validator). Either withdrawal is only created when its amount is greater than zero, so a tax of `0` produces a single full refund and a tax of `100` produces only the treasury withdrawal. Both are refund withdrawals (`balance_deduction = 0`) since the deposit was never credited to a balance.
+
 ### Invalid Withdrawal Credentials
 
 Withdrawal credentials must be in Eth1 format: `0x01` prefix + 11 zero bytes + 20-byte Ethereum address.
