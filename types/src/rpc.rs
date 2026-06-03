@@ -56,6 +56,12 @@ pub struct FinalizedHeaderRes {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FinalizedHeaderDigestRes {
+    pub epoch: u64,
+    pub digest: [u8; 32],
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StateRootResponse {
     pub root: [u8; 32],
     /// The EL block number at capture time. The root appears on-chain in EL block

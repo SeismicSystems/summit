@@ -6,8 +6,9 @@ use crate::auth;
 use crate::error::RpcError;
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
-    EpochBoundsResponse, FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse,
-    StateProofResponse, StateProofResult, StateRootResponse, ValidatorAccountResponse,
+    EpochBoundsResponse, FinalizedHeaderDigestRes, FinalizedHeaderRes, PendingWithdrawalResponse,
+    PublicKeysResponse, StateProofResponse, StateProofResult, StateRootResponse,
+    ValidatorAccountResponse,
 };
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
@@ -156,6 +157,23 @@ impl SummitApiServer for SummitRpcServer {
         Ok(FinalizedHeaderRes {
             epoch,
             finalized_header: header.as_ssz_bytes(),
+        })
+    }
+
+    async fn get_finalized_header_digest(&self, epoch: u64) -> RpcResult<FinalizedHeaderDigestRes> {
+        let maybe_header = self
+            .finalizer_mailbox
+            .clone()
+            .get_finalized_header(epoch)
+            .await;
+
+        let Some(header) = maybe_header else {
+            return Err(RpcError::FinalizedHeaderNotFound.into());
+        };
+
+        Ok(FinalizedHeaderDigestRes {
+            epoch,
+            digest: header.header.digest.0,
         })
     }
 

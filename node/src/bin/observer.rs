@@ -513,6 +513,8 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         bench_block_dir: None,
         checkpoint_path: None,
         checkpoint_or_default: false,
+        weak_subjectivity_epoch: None,
+        weak_subjectivity_header_digest: None,
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,

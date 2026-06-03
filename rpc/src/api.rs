@@ -1,7 +1,7 @@
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
-    EpochBoundsResponse, FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse,
-    StateProofResponse, StateRootResponse, ValidatorAccountResponse,
+    EpochBoundsResponse, FinalizedHeaderDigestRes, FinalizedHeaderRes, PendingWithdrawalResponse,
+    PublicKeysResponse, StateProofResponse, StateRootResponse, ValidatorAccountResponse,
 };
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
@@ -25,6 +25,9 @@ pub trait SummitApi {
 
     #[method(name = "getFinalizedHeader")]
     async fn get_finalized_header(&self, epoch: u64) -> RpcResult<FinalizedHeaderRes>;
+
+    #[method(name = "getFinalizedHeaderDigest")]
+    async fn get_finalized_header_digest(&self, epoch: u64) -> RpcResult<FinalizedHeaderDigestRes>;
 
     #[method(name = "getLatestHeight")]
     async fn get_latest_height(&self) -> RpcResult<u64>;
