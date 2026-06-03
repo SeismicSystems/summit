@@ -47,9 +47,12 @@ impl Default for RpcBodyLimits {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn start_rpc_server(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
+    genesis_hash: [u8; 32],
+    namespace: Vec<u8>,
     port: u16,
     admin_port: u16,
     body_limits: RpcBodyLimits,
@@ -59,6 +62,8 @@ pub async fn start_rpc_server(
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
         finalizer_mailbox,
+        genesis_hash,
+        &namespace,
         #[cfg(feature = "permissioned")]
         paused,
     );
@@ -116,12 +121,16 @@ pub struct RpcHandles {
 pub async fn start_rpc_server_with_handle(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
+    genesis_hash: [u8; 32],
+    namespace: Vec<u8>,
     port: u16,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
         finalizer_mailbox,
+        genesis_hash,
+        &namespace,
         #[cfg(feature = "permissioned")]
         paused,
     );
@@ -154,6 +163,8 @@ pub async fn start_rpc_server_with_handle(
 pub async fn start_rpc_server_pair_with_handle(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
+    genesis_hash: [u8; 32],
+    namespace: Vec<u8>,
     port: u16,
     admin_port: u16,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
@@ -161,6 +172,8 @@ pub async fn start_rpc_server_pair_with_handle(
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
         finalizer_mailbox,
+        genesis_hash,
+        &namespace,
         #[cfg(feature = "permissioned")]
         paused,
     );

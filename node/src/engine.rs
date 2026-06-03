@@ -156,6 +156,7 @@ where
                 },
                 page_cache: page_cache.clone(),
                 genesis_hash: cfg.genesis_hash,
+                namespace: cfg.namespace.as_bytes().to_vec(),
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
                 node_public_key: cfg.key_store.node_key.public_key().clone(),

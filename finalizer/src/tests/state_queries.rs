@@ -170,6 +170,7 @@ fn test_generate_state_proof_preserves_batch_cardinality_for_missing_keys() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -261,6 +262,7 @@ fn test_get_latest_epoch() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -373,6 +375,7 @@ fn test_get_epoch_genesis_hash() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -473,6 +476,7 @@ fn test_get_aux_data_from_canonical_chain() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -547,6 +551,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 

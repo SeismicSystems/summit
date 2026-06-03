@@ -37,8 +37,7 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256};
 use clap::Parser;
 use commonware_codec::DecodeExt;
-use commonware_cryptography::Sha256;
-use commonware_cryptography::{Hasher, Signer, bls12381, ed25519::PrivateKey};
+use commonware_cryptography::{Signer, bls12381, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Runner as _, Spawner as _, tokio as cw_tokio};
 use commonware_utils::from_hex_formatted;
 use futures::{FutureExt, pin_mut};
@@ -57,8 +56,8 @@ use summit::args::{RunFlags, run_node_local};
 use summit::engine::VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
 use summit::test_harness::transactions::send_deposit_transaction;
 use summit_rpc::SummitApiClient;
-use summit_types::PROTOCOL_VERSION;
 use summit_types::PublicKey;
+use summit_types::deposit_signature_domain;
 use summit_types::execution_request::DepositRequest;
 use summit_types::genesis::Genesis;
 use summit_types::reth::Reth;
@@ -115,6 +114,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
     genesis.blocks_per_epoch = E2E_BLOCKS_PER_EPOCH;
+    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+        .expect("bad eth_genesis_hash")
+        .try_into()
+        .expect("bad eth_genesis_hash");
 
     // Write modified genesis for nodes to use
     fs::create_dir_all(&data_dir_path).expect("Failed to create data directory");
@@ -373,8 +376,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 index: 0,
             };
 
-            let protocol_version_digest = Sha256::hash(&PROTOCOL_VERSION.to_le_bytes());
-            let message = deposit_request.as_message(protocol_version_digest);
+            let deposit_domain = deposit_signature_domain(genesis_hash, b"_SUMMIT");
+            let message = deposit_request.as_message(deposit_domain);
 
             // Sign with node (ed25519) key
             let node_signature = ed25519_private_key.sign(&[], &message);

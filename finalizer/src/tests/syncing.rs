@@ -196,6 +196,7 @@ fn test_initial_startup_sync_waits_for_valid() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -269,6 +270,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -342,6 +344,7 @@ fn test_execute_block_retries_on_syncing() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -430,6 +433,7 @@ fn test_notarized_block_retries_on_syncing() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -510,6 +514,7 @@ fn test_checkpoint_startup_full_flow() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -630,6 +635,7 @@ fn test_finalizer_mailbox_responsive_under_persistent_syncing() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -751,6 +757,7 @@ fn test_finalizer_mailbox_responsive_during_startup_syncing() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -835,6 +842,7 @@ fn test_finalizer_shuts_down_when_pending_notarized_cap_is_reached() {
             drain_interval: Duration::from_millis(100),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 2,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -937,6 +945,7 @@ fn test_finalizer_finalized_buffer_drains_in_order() {
             drain_interval: Duration::from_millis(50),
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 

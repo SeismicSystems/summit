@@ -11,7 +11,7 @@ use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::Finalization;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
-use commonware_cryptography::{Digestible, Hasher, Sha256, Signer, Verifier as _, bls12381};
+use commonware_cryptography::{Digestible, Signer, Verifier as _, bls12381};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::EightCap;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
@@ -48,6 +48,7 @@ use summit_types::utils::{
 };
 use summit_types::{
     AddedValidator, Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature,
+    deposit_signature_domain,
 };
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
@@ -284,7 +285,7 @@ pub struct Finalizer<
 
     genesis_hash: [u8; 32],
     protocol_consts: ProtocolConsts,
-    protocol_version_digest: Digest,
+    deposit_signature_domain: Digest,
     oracle: O,
     node_public_key: PublicKey,
     validator_exit: bool,
@@ -395,7 +396,10 @@ impl<
                 pending_notarized_max: cfg.pending_notarized_max,
                 genesis_hash: cfg.genesis_hash,
                 protocol_consts: cfg.protocol_consts,
-                protocol_version_digest: Sha256::hash(&cfg.protocol_version.to_le_bytes()),
+                deposit_signature_domain: deposit_signature_domain(
+                    cfg.genesis_hash,
+                    &cfg.namespace,
+                ),
                 node_public_key: cfg.node_public_key,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,
@@ -715,7 +719,7 @@ impl<
                 &block,
                 &mut self.canonical_state,
                 &self.protocol_consts,
-                self.protocol_version_digest,
+                self.deposit_signature_domain,
             )
             .await
             {
@@ -1174,7 +1178,7 @@ impl<
                 &block,
                 &mut fork_state,
                 &self.protocol_consts,
-                self.protocol_version_digest,
+                self.deposit_signature_domain,
             )
             .await
             {
@@ -1897,7 +1901,7 @@ async fn execute_block<
     block: &Block,
     state: &mut ConsensusState,
     consts: &ProtocolConsts,
-    protocol_version_digest: Digest,
+    deposit_signature_domain: Digest,
 ) -> Result<ExecuteOutcome, summit_types::EngineClientError> {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
@@ -1951,7 +1955,7 @@ async fn execute_block<
         block,
         new_height,
         state,
-        protocol_version_digest,
+        deposit_signature_domain,
         consts,
     )
     .await;
@@ -2030,7 +2034,7 @@ async fn parse_execution_requests<
     block: &Block,
     new_height: u64,
     state: &mut ConsensusState,
-    protocol_version_digest: Digest,
+    deposit_signature_domain: Digest,
     consts: &ProtocolConsts,
 ) {
     // Combine any pending execution requests with the current block's requests.
@@ -2079,7 +2083,7 @@ async fn parse_execution_requests<
                                 context,
                                 &deposit_request,
                                 state,
-                                protocol_version_digest,
+                                deposit_signature_domain,
                                 new_height,
                                 state.get_minimum_stake(),
                                 state.get_maximum_stake(),
@@ -2606,7 +2610,7 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
     #[allow(unused)] context: &ContextCell<R>,
     deposit_request: &DepositRequest,
     state: &ConsensusState,
-    protocol_version_digest: Digest,
+    deposit_signature_domain: Digest,
     #[allow(unused)] new_height: u64,
     validator_minimum_stake: u64,
     validator_maximum_stake: u64,
@@ -2674,7 +2678,7 @@ fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clo
         return Err(DepositRejectionReason::Refund);
     }
 
-    let message = deposit_request.as_message(protocol_version_digest);
+    let message = deposit_request.as_message(deposit_signature_domain);
 
     let mut node_signature_bytes = &deposit_request.node_signature[..];
     let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
