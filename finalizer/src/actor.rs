@@ -1081,6 +1081,8 @@ impl<
                 counter!("finalizer_epochs_completed_total").increment(1);
             }
 
+            ack_tx.acknowledge();
+
             // Create the peer sets for the next epoch's P2P network.
             //
             // Only active validators go into the PRIMARY set: the backfill
@@ -1140,9 +1142,13 @@ impl<
                 }))
                 .await;
             epoch_change = true;
+        } else {
+            // Every block needs to be ack'ed.
+            // On the last block of an epoch we send the ack before updating the oracle and
+            // reporting to the orchestrator, because those calls might be blocking.
+            ack_tx.acknowledge();
         }
 
-        ack_tx.acknowledge();
         info!(new_height, epoch = current_epoch, "executed block");
 
         if epoch_change {
