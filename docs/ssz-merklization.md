@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 23 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 23–31 are unused (zero-filled).
+32 leaf slots (depth 5), 24 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 24–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -63,6 +63,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 20 | `max_withdrawals_per_epoch` | Scalar |
 | 21 | `observers_per_validator` | Scalar |
 | 22 | `pending_execution_requests` | Collection root |
+| 23 | `pending_checkpoint` | Scalar (checkpoint digest, or zero when absent) |
 
 ### Collection Subtrees
 
@@ -158,7 +159,7 @@ All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 - **`u32`**: Little-endian encoded, zero-padded to 32 bytes. Used by: observers_per_validator.
 - **`bool`**: `0x01` or `0x00`, zero-padded to 32 bytes. Used by: has_pending_deposit, has_pending_withdrawal.
 - **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3), zero-padded to 32 bytes.
-- **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal).
+- **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal), pending_checkpoint (the checkpoint digest, or the zero hash when no checkpoint is pending).
 - **`Address` (20 bytes)**: Zero-padded to 32 bytes. Used by: withdrawal_credentials (validator), address (withdrawal), treasury_address.
 - **Ed25519 public key (32 bytes)**: Used directly as the leaf value. Used by: node_pubkey (deposit), node_key (added validator), removed validator pubkeys.
 - **BLS public key (48 bytes)**: `SHA256(bytes[0..32] || pad(bytes[32..48]))` — 2 chunks hashed. Used by: consensus_pubkey (validator, deposit), consensus_key (added validator).
@@ -188,6 +189,8 @@ Single top-level leaf write + rehash of the 5-level path to root.
 | `set_max_withdrawals_per_epoch()` | `ssz_tree.set_max_withdrawals_per_epoch()` |
 | `set_observers_per_validator()` | `ssz_tree.set_observers_per_validator()` |
 | `set_next_withdrawal_index()` | `ssz_tree.set_next_withdrawal_index()` |
+| `set_pending_checkpoint()` | `ssz_tree.set_pending_checkpoint_digest()` |
+| `take_pending_checkpoint()` | `ssz_tree.set_pending_checkpoint_digest(None)` |
 | `set_forkchoice_head()` | `ssz_tree.set_forkchoice_head_block_hash()` |
 | `set_forkchoice_safe_and_finalized()` | Two setter calls (safe + finalized) |
 | `set_forkchoice()` | Three setter calls (head + safe + finalized) |
