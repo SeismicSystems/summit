@@ -1163,6 +1163,38 @@ fn handle_verify<ES: Epocher>(
     true
 }
 
+/// The largest encoded block we allow consensus to propose/verify, expressed as
+/// half the P2P message budget.
+///
+/// The cap exists because finalized data is repaired through single-message
+/// resolver responses (see `syncer`): a bare `block.encode()` for `Request::Block`,
+/// and `(finalization, block).encode()` / `(notarization, block).encode()` for the
+/// finalized/notarized requests. If any such response exceeds
+/// `max_message_size_bytes`, a lagging or checkpoint-joining peer can never repair
+/// that height — every serve fails the same size check. Bounding the block at
+/// consensus time (propose *and* verify, so even a Byzantine proposer can't get an
+/// oversized block finalized) keeps every response servable.
+///
+/// Why `/2` specifically: the response is `block + certificate + framing`, so the
+/// half not used by the block must cover everything else. That overhead is
+/// dominated by a small constant plus a term linear in the validator count `N`:
+///
+/// - `Proposal` metadata: `round` (epoch u64 + view u64 = 16) + `parent` view (8)
+///   + `payload` digest (32) = **56 bytes**, fixed.
+/// - certificate: one aggregated BLS signature (MinPk → a single G2 element,
+///   **96 bytes**, constant — signatures aggregate, they do not grow with `N`)
+///   plus the `Signers` set, which is a `BitMap<1>` = **⌈N/8⌉ bytes** (one bit per
+///   validator) and a small length field.
+/// - tuple / codec framing (the block's 4-byte length prefix, bitmap length
+///   varint): a handful of bytes.
+///
+/// So the non-block overhead is `~165 + ⌈N/8⌉` bytes, and the full response stays
+/// under `max_message_size_bytes` whenever `⌈N/8⌉ + ~165 <= max/2`, i.e. roughly
+/// `N <= 4 * max_message_size_bytes`. For any realistic cap (≥ ~1 MiB → ~4M
+/// validators; even a 64 KiB cap → ~256k) this holds with orders of magnitude of
+/// margin. The only term that scales with `N` is the 1-bit-per-validator bitmap;
+/// if a non-aggregating signature scheme were ever substituted (overhead becoming
+/// `O(N * sig_len)`), this `/2` headroom would need to be revisited.
 fn max_block_size_bytes(max_message_size_bytes: u32) -> usize {
     usize::try_from(max_message_size_bytes / 2)
         .expect("u32 will always fit into usize on 32/64-bit targets")
