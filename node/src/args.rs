@@ -226,6 +226,33 @@ impl Command {
     }
 }
 
+/// How the configured genesis path looks at startup. Extracted from
+/// [`acquire_genesis`] so the present-but-invalid decision can be exercised
+/// directly in tests — the live path calls `std::process::exit` on that case,
+/// which can't be asserted against in-process.
+enum GenesisPathState {
+    /// A valid genesis file is already present at the path.
+    Valid(Box<Genesis>),
+    /// A file exists at the path but does not parse/validate.
+    InvalidPresent(String),
+    /// No file at the path; first-boot provisioning is required.
+    Absent,
+}
+
+/// Classify the configured genesis path without side effects (no exit, no RPC).
+fn classify_genesis_path(genesis_path: &str) -> GenesisPathState {
+    let present = get_expanded_path(genesis_path)
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    if !present {
+        return GenesisPathState::Absent;
+    }
+    match Genesis::load_from_file(genesis_path) {
+        Ok(genesis) => GenesisPathState::Valid(Box::new(genesis)),
+        Err(e) => GenesisPathState::InvalidPresent(e.to_string()),
+    }
+}
+
 /// Resolve the node's genesis, provisioning it over the first-boot RPC if needed.
 ///
 /// Behavior is decided by the state of the configured genesis path:
@@ -240,19 +267,15 @@ impl Command {
 async fn acquire_genesis(context: &tokio::Context, flags: &RunFlags) -> Genesis {
     let genesis_path = flags.genesis_path.clone();
 
-    let present = get_expanded_path(&genesis_path)
-        .map(|p| p.exists())
-        .unwrap_or(false);
-    if present {
-        match Genesis::load_from_file(&genesis_path) {
-            Ok(genesis) => return genesis,
-            Err(e) => {
-                error!(
-                    "existing genesis file '{genesis_path}' is invalid: {e}; remove or replace it to recover"
-                );
-                std::process::exit(1);
-            }
+    match classify_genesis_path(&genesis_path) {
+        GenesisPathState::Valid(genesis) => return *genesis,
+        GenesisPathState::InvalidPresent(e) => {
+            error!(
+                "existing genesis file '{genesis_path}' is invalid: {e}; remove or replace it to recover"
+            );
+            std::process::exit(1);
         }
+        GenesisPathState::Absent => {}
     }
 
     // First boot: no usable genesis yet. Wait for the provisioning RPC to install
@@ -290,6 +313,44 @@ async fn acquire_genesis(context: &tokio::Context, flags: &RunFlags) -> Genesis 
     cancel_token.cancel();
 
     Genesis::load_from_file(&genesis_path).expect("genesis file should be valid after provisioning")
+}
+
+#[cfg(test)]
+mod genesis_path_tests {
+    use super::*;
+
+    #[test]
+    fn classify_absent_when_file_missing() {
+        let path = std::env::temp_dir().join("summit_classify_genesis_absent.toml");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(
+            classify_genesis_path(path.to_str().unwrap()),
+            GenesisPathState::Absent
+        ));
+    }
+
+    #[test]
+    fn classify_invalid_present_for_malformed_file() {
+        // Regression: an already-present but unparseable genesis file must be
+        // classified as InvalidPresent (rejected), never as Absent — otherwise
+        // startup would wrongly re-open first-boot provisioning over a stale or
+        // corrupt file instead of surfacing the error.
+        let path = std::env::temp_dir().join("summit_classify_genesis_invalid.toml");
+        std::fs::write(&path, b"definitely : not [valid genesis").unwrap();
+        let state = classify_genesis_path(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(state, GenesisPathState::InvalidPresent(_)));
+    }
+
+    #[test]
+    fn classify_valid_for_example_genesis() {
+        // The shipped example genesis must classify as a valid, present genesis.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../example_genesis.toml");
+        assert!(matches!(
+            classify_genesis_path(path),
+            GenesisPathState::Valid(_)
+        ));
+    }
 }
 
 async fn run_node_inner(
