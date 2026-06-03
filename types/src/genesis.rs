@@ -1,9 +1,7 @@
 use crate::PublicKey;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_EPOCH_LENGTH,
-    MAX_MAX_DEPOSITS_PER_EPOCH, MAX_MESSAGE_SIZE_BYTES_MAX, MAX_MESSAGE_SIZE_BYTES_MIN,
-    MAX_OBSERVERS_PER_VALIDATOR, MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN,
-    MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_EPOCH_LENGTH, MIN_MINIMUM_VALIDATOR_COUNT,
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_MESSAGE_SIZE_BYTES_MAX, MAX_MESSAGE_SIZE_BYTES_MIN,
+    MIN_MINIMUM_VALIDATOR_COUNT, ProtocolParam,
 };
 use alloy_primitives::Address;
 use anyhow::Context;
@@ -153,16 +151,12 @@ impl Genesis {
 
     fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
         // Genesis epoch length must satisfy the same bounds as a runtime
-        // EpochLength protocol-parameter update (see ProtocolParam). An oversized
-        // launch value defers every epoch-boundary mechanic — checkpoints, final-block
-        // withdrawals, committee transitions, queued param changes — until that
-        // boundary, turning epoch functionality into a liveness failure.
-        if self.blocks_per_epoch < MIN_EPOCH_LENGTH || self.blocks_per_epoch > MAX_EPOCH_LENGTH {
-            return Err(format!(
-                "blocks_per_epoch must be between {MIN_EPOCH_LENGTH} and {MAX_EPOCH_LENGTH}"
-            )
-            .into());
-        }
+        // EpochLength protocol-parameter update (hence the shared ProtocolParam
+        // validation). An oversized launch value defers every epoch-boundary
+        // mechanic — checkpoints, final-block withdrawals, committee transitions,
+        // queued param changes — until that boundary, turning epoch functionality
+        // into a liveness failure.
+        ProtocolParam::EpochLength(self.blocks_per_epoch).validate()?;
         if self.validator_minimum_stake > self.validator_maximum_stake {
             return Err(format!(
                 "validator_minimum_stake {} exceeds validator_maximum_stake {}",
@@ -183,15 +177,7 @@ impl Genesis {
             )
             .into());
         }
-        if self.allowed_timestamp_future_ms < MIN_ALLOWED_TIMESTAMP_FUTURE_MS
-            || self.allowed_timestamp_future_ms > MAX_ALLOWED_TIMESTAMP_FUTURE_MS
-        {
-            return Err(format!(
-                "allowed_timestamp_future_ms must be between {} and {}",
-                MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_ALLOWED_TIMESTAMP_FUTURE_MS
-            )
-            .into());
-        }
+        ProtocolParam::AllowedTimestampFuture(self.allowed_timestamp_future_ms).validate()?;
         self.treasury_address
             .parse::<Address>()
             .map_err(|e| format!("invalid treasury_address: {e}"))?;
@@ -220,33 +206,16 @@ impl Genesis {
                 "skip_timeout_views must be less than or equal to activity_timeout_views".into(),
             );
         }
-        // Genesis must respect the same upper bounds the runtime
-        // protocol-parameter update path enforces; otherwise an unchecked
-        // genesis value (e.g. supplied over a first-boot RPC) can drive
-        // consensus state outside any limit Summit policy was designed for.
-        if self.max_deposits_per_epoch > MAX_MAX_DEPOSITS_PER_EPOCH {
-            return Err(format!(
-                "max_deposits_per_epoch {} exceeds maximum {}",
-                self.max_deposits_per_epoch, MAX_MAX_DEPOSITS_PER_EPOCH
-            )
-            .into());
-        }
-        if self.max_withdrawals_per_epoch < MAX_WITHDRAWALS_PER_EPOCH_MIN
-            || self.max_withdrawals_per_epoch > MAX_WITHDRAWALS_PER_EPOCH_MAX
-        {
-            return Err(format!(
-                "max_withdrawals_per_epoch must be between {} and {}",
-                MAX_WITHDRAWALS_PER_EPOCH_MIN, MAX_WITHDRAWALS_PER_EPOCH_MAX
-            )
-            .into());
-        }
-        if u64::from(self.observers_per_validator) > MAX_OBSERVERS_PER_VALIDATOR {
-            return Err(format!(
-                "observers_per_validator {} exceeds maximum {}",
-                self.observers_per_validator, MAX_OBSERVERS_PER_VALIDATOR
-            )
-            .into());
-        }
+        // Genesis must respect the same bounds the runtime protocol-parameter
+        // update path enforces; otherwise an unchecked genesis value (e.g. supplied
+        // over a first-boot RPC) can drive consensus state outside any limit Summit
+        // policy was designed for. These reuse the single ProtocolParam validator so
+        // the genesis and runtime bounds cannot drift apart.
+        ProtocolParam::MaxDepositsPerEpoch(self.max_deposits_per_epoch).validate()?;
+        ProtocolParam::MaxWithdrawalsPerEpoch(self.max_withdrawals_per_epoch).validate()?;
+        ProtocolParam::ObserversPerValidator(u64::from(self.observers_per_validator)).validate()?;
+        // `minimum_validator_count` has no scalar bound in `ProtocolParam::validate`
+        // (it carries no `ParamBoundsError` variant), so its floor is enforced here.
         if self.minimum_validator_count < MIN_MINIMUM_VALIDATOR_COUNT {
             return Err(format!(
                 "minimum_validator_count {} is below minimum {}",
@@ -320,6 +289,10 @@ impl Genesis {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol_params::{
+        MAX_EPOCH_LENGTH, MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR,
+        MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_EPOCH_LENGTH,
+    };
 
     #[test]
     fn test_loading_genesis() {
