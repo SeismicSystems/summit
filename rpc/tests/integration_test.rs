@@ -9,7 +9,10 @@ use summit_rpc::{
     PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_pair_with_handle,
     start_rpc_server_with_handle,
 };
-use utils::{MockFinalizerState, create_test_finalizer_mailbox, create_test_keystore};
+use utils::{
+    MockFinalizerState, create_gated_proof_mailbox, create_test_finalizer_mailbox,
+    create_test_keystore,
+};
 
 const TEST_GENESIS_HASH: [u8; 32] = [7u8; 32];
 
@@ -110,6 +113,84 @@ async fn test_get_state_proof_rejects_excessive_cost() {
         ClientError::Call(obj) => assert_eq!(obj.code(), 3006),
         other => panic!("expected 3006 StateProofCostLimit, got {other:?}"),
     }
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_state_proof_concurrency_cap_rejects_excess() {
+    use futures::StreamExt as _;
+    use jsonrpsee::core::client::Error as ClientError;
+    use summit_rpc::{MAX_CONCURRENT_STATE_PROOFS, SummitProofApiClient};
+
+    // Gated mock: holds every proof generation open until we release, so we can
+    // pin `cap` requests in flight simultaneously and observe the cap engaging.
+    let (mailbox, _received, release_tx, _mock) = create_gated_proof_mailbox();
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let url = format!("http://{}", addr);
+    let cap = MAX_CONCURRENT_STATE_PROOFS;
+    let extra = 5;
+
+    // Fire cap + extra concurrent proof requests (one cheap scalar key each, well
+    // within the per-request limits). The gated mock never responds until we
+    // release, so the first `cap` hold their concurrency slots and the remaining
+    // `extra` must be rejected with the busy error (3007). No slot is freed before
+    // release, so the split is deterministic.
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    for _ in 0..(cap + extra) {
+        let client = HttpClientBuilder::default().build(&url).unwrap();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let res = client.get_state_proof(vec!["epoch".to_string()]).await;
+            let _ = tx.unbounded_send(res);
+        });
+    }
+    drop(tx);
+
+    let mut busy = 0usize;
+    let mut accepted = 0usize;
+    let mut release_tx = Some(release_tx);
+    while let Some(res) = rx.next().await {
+        match res {
+            Ok(_) => accepted += 1,
+            Err(ClientError::Call(obj)) => {
+                assert_eq!(
+                    obj.code(),
+                    3007,
+                    "over-cap request must be rejected as busy"
+                );
+                busy += 1;
+            }
+            Err(other) => panic!("unexpected client error: {other:?}"),
+        }
+        // Once every over-cap request has been rejected, the `cap` accepted ones
+        // are confirmed holding their slots in flight; release them to complete.
+        if busy == extra {
+            if let Some(tx) = release_tx.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    assert_eq!(busy, extra, "exactly the over-cap requests are rejected");
+    assert_eq!(
+        accepted, cap,
+        "exactly the cap is accepted concurrently before release"
+    );
 
     handle.stop().unwrap();
 }

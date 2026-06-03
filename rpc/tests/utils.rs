@@ -2,11 +2,13 @@ use alloy_primitives::Address;
 use commonware_codec::Encode as _;
 use commonware_cryptography::{bls12381, ed25519};
 use commonware_math::algebra::Random;
-use futures::StreamExt;
+use futures::{FutureExt as _, StreamExt, channel::oneshot};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use summit_types::account::ValidatorAccount;
 use summit_types::{
     Block,
@@ -154,6 +156,51 @@ pub fn create_test_finalizer_mailbox(
     });
 
     (query, handle)
+}
+
+/// A mock state-query mailbox whose `GenerateStateProof` responses are gated:
+/// every received proof request increments `received` and then blocks until the
+/// returned one-shot release trigger fires, letting a test hold many proof
+/// generations in flight at once. Each request is handled in its own spawned
+/// task (mirroring the finalizer's off-loop proof spawn) so the mock keeps
+/// accepting requests while earlier ones are held open.
+///
+/// Returns the query handle, an in-flight-received counter, and the release
+/// trigger (drop or send `()` to let all held requests complete).
+pub fn create_gated_proof_mailbox() -> (
+    ConsensusStateQuery<TestScheme>,
+    Arc<AtomicUsize>,
+    oneshot::Sender<()>,
+    JoinHandle<()>,
+) {
+    let (query, mut rx) = ConsensusStateQuery::new(1024);
+    let received = Arc::new(AtomicUsize::new(0));
+    let (release_tx, release_rx) = oneshot::channel::<()>();
+    let release = release_rx.shared();
+    let received_task = received.clone();
+
+    let handle = tokio::spawn(async move {
+        while let Some((request, response)) = rx.next().await {
+            match request {
+                ConsensusStateRequest::GenerateStateProof(keys) => {
+                    let received = received_task.clone();
+                    let release = release.clone();
+                    tokio::spawn(async move {
+                        received.fetch_add(1, Ordering::SeqCst);
+                        let _ = release.await;
+                        let _ = response.send(ConsensusStateResponse::StateProof {
+                            root: [0; 32],
+                            el_block_number: 0,
+                            proofs: keys.iter().map(|_| None).collect(),
+                        });
+                    });
+                }
+                _ => unreachable!("gated mock only serves GenerateStateProof"),
+            }
+        }
+    });
+
+    (query, received, release_tx, handle)
 }
 
 /// Creates a temporary key store directory with test keys

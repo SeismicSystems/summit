@@ -8,7 +8,7 @@ mod server;
 mod types;
 
 pub use genesis::{PathSender, SummitGenesisRpcServer};
-pub use server::SummitRpcServer;
+pub use server::{MAX_CONCURRENT_STATE_PROOFS, SummitRpcServer};
 pub use types::*;
 
 pub use api::{

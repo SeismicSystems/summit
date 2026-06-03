@@ -17,10 +17,10 @@ use commonware_cryptography::Signer;
 use commonware_utils::from_hex_formatted;
 use jsonrpsee::core::RpcResult;
 use ssz::Encode as _;
-#[cfg(feature = "permissioned")]
 use std::sync::Arc;
 #[cfg(feature = "permissioned")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use summit_types::consensus_state_query::ConsensusStateQuery;
 use summit_types::scheme::MultisigScheme;
 use summit_types::ssz_tree_key::SszStateKey;
@@ -31,6 +31,13 @@ use summit_types::{
 
 const MAX_STATE_PROOF_KEYS: usize = 128;
 const MAX_STATE_PROOF_COST: usize = 512;
+/// Maximum number of state-proof generations allowed to be in flight at once.
+/// Each accepted request spawns an off-loop proof task in the finalizer; this
+/// caps how many run concurrently so a flood of individually limit-respecting
+/// requests cannot just move the pressure onto the shared task pool. At capacity
+/// further requests are rejected (retryable) rather than queued, keeping task
+/// count and memory bounded under load.
+pub const MAX_CONCURRENT_STATE_PROOFS: usize = 16;
 
 #[derive(Clone)]
 pub struct SummitRpcServer {
@@ -43,8 +50,21 @@ pub struct SummitRpcServer {
     /// sign with the validator keystore, so keystore-signing methods are
     /// disabled when this is set.
     observer_node_key: Option<String>,
+    /// Count of in-flight state-proof generations, shared across all cloned
+    /// handler instances so the cap is global to the server.
+    in_flight_state_proofs: Arc<AtomicUsize>,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
+}
+
+/// Releases one in-flight state-proof slot on drop — covers normal completion,
+/// early return, and future cancellation alike.
+struct StateProofSlot(Arc<AtomicUsize>);
+
+impl Drop for StateProofSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl SummitRpcServer {
@@ -61,6 +81,7 @@ impl SummitRpcServer {
             state_query,
             deposit_signature_domain: deposit_signature_domain(genesis_hash, namespace),
             observer_node_key,
+            in_flight_state_proofs: Arc::new(AtomicUsize::new(0)),
             #[cfg(feature = "permissioned")]
             paused,
         }
@@ -480,6 +501,26 @@ impl SummitProofApiServer for SummitRpcServer {
             }
             .into());
         }
+
+        // Bound concurrent proof generation. The per-request key/cost limits cap
+        // each request, but without this a remote caller could still flood the
+        // node with accepted requests and pile up off-loop proof tasks on the
+        // shared pool. Acquire a slot or reject (retryable) — never queue — so
+        // task count and memory stay bounded under load. The RAII guard releases
+        // the slot on every exit path, including the await being cancelled.
+        if self
+            .in_flight_state_proofs
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < MAX_CONCURRENT_STATE_PROOFS).then_some(n + 1)
+            })
+            .is_err()
+        {
+            return Err(RpcError::StateProofBusy {
+                max: MAX_CONCURRENT_STATE_PROOFS,
+            }
+            .into());
+        }
+        let _slot = StateProofSlot(Arc::clone(&self.in_flight_state_proofs));
 
         let requested_len = keys.len();
         let (root, el_block_number, proofs) =

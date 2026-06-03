@@ -21,6 +21,9 @@ pub enum RpcError {
         max: usize,
         actual: usize,
     },
+    StateProofBusy {
+        max: usize,
+    },
     Internal(String),
     DisabledInObserverMode,
     #[cfg(feature = "permissioned")]
@@ -75,6 +78,13 @@ impl From<RpcError> for ErrorObjectOwned {
                 3006,
                 "State proof cost limit exceeded",
                 Some(format!("requested cost {actual}, maximum is {max}")),
+            ),
+            RpcError::StateProofBusy { max } => ErrorObjectOwned::owned(
+                3007,
+                "State proof generation at capacity",
+                Some(format!(
+                    "at the limit of {max} concurrent state proof requests; retry shortly"
+                )),
             ),
             RpcError::Internal(msg) => ErrorObjectOwned::owned(5000, "Internal error", Some(msg)),
             RpcError::DisabledInObserverMode => ErrorObjectOwned::owned(
