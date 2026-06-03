@@ -134,7 +134,7 @@ pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 4;
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
 pub struct SszStateTree {
-    /// Top-level tree: 32 leaves (depth 5), 27 used.
+    /// Top-level tree: 32 leaves (depth 5), 28 used.
     top: SszTree,
 
     /// Validator accounts subtree. Rebuilt from BTreeMap on every mutation.
