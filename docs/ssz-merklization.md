@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 24 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 24–31 are unused (zero-filled).
+32 leaf slots (depth 5), 25 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 25–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -64,6 +64,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 21 | `observers_per_validator` | Scalar |
 | 22 | `pending_execution_requests` | Collection root |
 | 23 | `pending_checkpoint` | Scalar (checkpoint digest, or zero when absent) |
+| 24 | `dynamic_epoch_schedule` | Scalar (SSZ byte-list root of the encoded `DynamicEpocher`) |
 
 ### Collection Subtrees
 
@@ -151,6 +152,14 @@ byte list: packed into 32-byte chunks (final chunk zero-padded), merkleized, the
 `mix_in_length(chunks_root, byte_len)`. The collection root is
 `mix_in_length(subtree.root(), request_count)`, like the other collections.
 
+#### Dynamic Epoch Schedule
+
+A single scalar leaf, not a collection. The leaf is the SSZ byte-list root of the
+encoded `DynamicEpocher` (same `hash_byte_list` encoding as a pending execution
+request). Because the epocher uses interior mutability and can change without a
+`ConsensusState` setter, this leaf is refreshed at `capture_state_root` (and in
+`rebuild`) rather than maintained incrementally.
+
 ## Leaf Encoding
 
 All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
@@ -169,6 +178,8 @@ All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 ## Tree Updates
 
 Every mutation to `ConsensusState` has a corresponding SSZ tree update. Updates are organized into tiers by optimization strategy.
+
+One exception: the `dynamic_epoch_schedule` leaf is not driven by a `ConsensusState` setter. The `DynamicEpocher` uses interior mutability and can change (epoch advance, length update) without a `&mut ConsensusState` call, so its leaf is recomputed in `capture_state_root` (and `rebuild`) instead.
 
 ### Tier 1: Scalar Fields — O(1)
 
