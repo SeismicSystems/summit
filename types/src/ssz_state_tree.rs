@@ -1,7 +1,11 @@
 //! Two-level SSZ binary Merkle tree for ConsensusState.
 //!
-//! The top-level tree has 32 leaf slots (17 used, depth 5). Scalar fields
-//! occupy leaves 0–10. Collection roots occupy leaves 11–16.
+//! The top-level tree has 32 leaf slots (23 used, depth 5). Scalar fields and
+//! collection roots are assigned to fixed leaf indices — see the field-index
+//! and `*_ROOT` constants below for the authoritative layout. Each collection
+//! root (validator accounts, deposit/withdrawal queues, protocol-param changes,
+//! added/removed validators, pending execution requests) is
+//! `mix_in_length(subtree_root, count)`.
 //!
 //! The validator accounts collection uses a dedicated subtree (`SszTree`)
 //! where each validator occupies 8 contiguous leaves (one per field),
@@ -19,7 +23,7 @@ use crate::account::ValidatorAccount;
 use crate::execution_request::DepositRequest;
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
-use crate::ssz_hash::{SszHashTreeRoot, hash_fixed_bytes_64, hash_fixed_bytes_96};
+use crate::ssz_hash::{SszHashTreeRoot, hash_byte_list, hash_fixed_bytes_64, hash_fixed_bytes_96};
 use crate::ssz_tree::{SszTree, mix_in_length};
 use crate::withdrawal::PendingWithdrawal;
 use crate::withdrawal::WithdrawalQueue;
@@ -51,9 +55,10 @@ pub const TREASURY_ADDRESS: usize = 18;
 pub const MAX_DEPOSITS_PER_EPOCH: usize = 19;
 pub const MAX_WITHDRAWALS_PER_EPOCH: usize = 20;
 pub const OBSERVERS_PER_VALIDATOR: usize = 21;
+pub const PENDING_EXECUTION_REQUESTS_ROOT: usize = 22;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 22;
+pub const NUM_TOP_LEAVES: usize = 23;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -116,7 +121,7 @@ pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 2;
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
 pub struct SszStateTree {
-    /// Top-level tree: 32 leaves (depth 5), 17 used.
+    /// Top-level tree: 32 leaves (depth 5), 23 used.
     top: SszTree,
 
     /// Validator accounts subtree. Rebuilt from BTreeMap on every mutation.
@@ -151,6 +156,10 @@ pub struct SszStateTree {
     /// Removed validators subtree.
     removed_validator_tree: SszTree,
     removed_validator_count: usize,
+
+    /// Pending execution requests subtree (one leaf per deferred request blob).
+    pending_execution_request_tree: SszTree,
+    pending_execution_request_count: usize,
 }
 
 impl SszStateTree {
@@ -172,6 +181,8 @@ impl SszStateTree {
             added_validator_count: 0,
             removed_validator_tree: SszTree::new(1),
             removed_validator_count: 0,
+            pending_execution_request_tree: SszTree::new(1),
+            pending_execution_request_count: 0,
         }
     }
 
@@ -856,6 +867,28 @@ impl SszStateTree {
         self.update_removed_validator_collection_root();
     }
 
+    /// Rebuild the pending-execution-requests subtree. Each deferred request is an
+    /// opaque byte blob hashed as an SSZ byte list; the collection root mixes in the
+    /// request count. Binds deferred deposits/withdrawals/exits into the state root.
+    pub fn rebuild_pending_execution_requests(&mut self, requests: &[alloy_primitives::Bytes]) {
+        let count = requests.len();
+        let capacity = count.max(1);
+        let mut tree = SszTree::new(capacity);
+        for (i, req) in requests.iter().enumerate() {
+            tree.set_leaf(i, hash_byte_list(req));
+        }
+        self.pending_execution_request_tree = tree;
+        self.pending_execution_request_count = count;
+        self.update_pending_execution_request_collection_root();
+    }
+
+    fn update_pending_execution_request_collection_root(&mut self) {
+        let subtree_root = self.pending_execution_request_tree.root();
+        let collection_root = mix_in_length(subtree_root, self.pending_execution_request_count);
+        self.top
+            .set_leaf(PENDING_EXECUTION_REQUESTS_ROOT, collection_root);
+    }
+
     fn update_removed_validator_collection_root(&mut self) {
         let subtree_root = self.removed_validator_tree.root();
         let collection_root = mix_in_length(subtree_root, self.removed_validator_count);
@@ -895,6 +928,7 @@ impl SszStateTree {
         max_deposits_per_epoch: u64,
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
+        pending_execution_requests: &[alloy_primitives::Bytes],
     ) {
         *self = Self::new();
 
@@ -925,6 +959,7 @@ impl SszStateTree {
         self.rebuild_protocol_params(protocol_param_changes);
         self.rebuild_added_validators(added_validators);
         self.rebuild_removed_validators(removed_validators);
+        self.rebuild_pending_execution_requests(pending_execution_requests);
     }
 
     // --- Proof generation ---
@@ -1799,6 +1834,7 @@ mod tests {
         inc.rebuild_protocol_params(&[]);
         inc.rebuild_added_validators(&BTreeMap::new());
         inc.rebuild_removed_validators(&[]);
+        inc.rebuild_pending_execution_requests(&[]);
 
         // Build via rebuild
         let mut rb = SszStateTree::new();
@@ -1825,9 +1861,37 @@ mod tests {
             3,
             16,
             5,
+            &[],
         );
 
         assert_eq!(inc.root(), rb.root());
+    }
+
+    #[test]
+    fn pending_execution_requests_affect_root() {
+        let mut tree = SszStateTree::new();
+        tree.rebuild_pending_execution_requests(&[]);
+        let empty_root = tree.root();
+
+        // Adding a deferred request changes the state root.
+        tree.rebuild_pending_execution_requests(&[alloy_primitives::Bytes::from(vec![1u8, 2, 3])]);
+        let one_root = tree.root();
+        assert_ne!(
+            empty_root, one_root,
+            "a pending execution request must be bound into the state root"
+        );
+
+        // Changing only the request contents changes the root.
+        tree.rebuild_pending_execution_requests(&[alloy_primitives::Bytes::from(vec![4u8, 5, 6])]);
+        assert_ne!(
+            one_root,
+            tree.root(),
+            "different pending request contents must produce a different root"
+        );
+
+        // Clearing returns to the empty-collection root.
+        tree.rebuild_pending_execution_requests(&[]);
+        assert_eq!(empty_root, tree.root());
     }
 
     #[test]
@@ -1860,6 +1924,7 @@ mod tests {
             3,
             16,
             0,
+            &[],
         );
 
         let root = tree.root();

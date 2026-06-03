@@ -488,11 +488,16 @@ impl ConsensusState {
     }
 
     pub fn take_pending_execution_requests(&mut self) -> Vec<alloy_primitives::Bytes> {
-        std::mem::take(&mut self.pending_execution_requests)
+        let taken = std::mem::take(&mut self.pending_execution_requests);
+        self.ssz_tree
+            .rebuild_pending_execution_requests(&self.pending_execution_requests);
+        taken
     }
 
     pub fn push_pending_execution_request(&mut self, request: alloy_primitives::Bytes) {
         self.pending_execution_requests.push(request);
+        self.ssz_tree
+            .rebuild_pending_execution_requests(&self.pending_execution_requests);
     }
 
     pub fn pending_execution_requests(&self) -> &[alloy_primitives::Bytes] {
@@ -894,6 +899,7 @@ impl ConsensusState {
             self.max_deposits_per_epoch,
             self.max_withdrawals_per_epoch,
             self.observers_per_validator,
+            &self.pending_execution_requests,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -1581,6 +1587,34 @@ mod tests {
         let actual_size = actual_encoded.len();
 
         assert_eq!(predicted_size, actual_size);
+    }
+
+    #[test]
+    fn pending_execution_requests_bind_into_captured_state_root() {
+        let mut state = ConsensusState::default();
+        state.rebuild_ssz_tree();
+        state.capture_state_root(0);
+        let before = state.get_state_root();
+
+        // Buffering a deferred request via the production mutator must change the
+        // captured state root (the mutator keeps the SSZ subtree in sync).
+        state.push_pending_execution_request(alloy_primitives::Bytes::from(vec![0xAAu8; 40]));
+        state.capture_state_root(0);
+        let after = state.get_state_root();
+        assert_ne!(
+            before, after,
+            "pushing a pending execution request must change the captured state root"
+        );
+
+        // Draining them restores the prior (empty-collection) root.
+        let taken = state.take_pending_execution_requests();
+        assert_eq!(taken.len(), 1);
+        state.capture_state_root(0);
+        assert_eq!(
+            state.get_state_root(),
+            before,
+            "draining pending requests must restore the prior state root"
+        );
     }
 
     #[test]
