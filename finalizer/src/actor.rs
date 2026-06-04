@@ -907,6 +907,37 @@ impl<
             return Ok(HandleOutcome::Applied);
         }
 
+        // Simplex guarantees the finalized chain is linear, so the
+        // next finalized block must extend our canonical head. A mismatch means a
+        // consensus safety violation (>=1/3 Byzantine finalizing a block conflicting
+        // with an already-finalized ancestor) or local divergence. Halt rather than
+        // execute a non-canonical block onto canonical state.
+        let canonical_height = self.canonical_state.get_latest_height();
+        let canonical_head = self.canonical_state.get_head_digest();
+        if height == canonical_height + 1 && block.parent() != canonical_head {
+            error!(
+                target: "critical",
+                height,
+                ?block_digest,
+                block_parent = ?block.parent(),
+                ?canonical_head,
+                canonical_height,
+                "finalized block does not extend canonical head; refusing to apply"
+            );
+            #[cfg(feature = "prom")]
+            counter!(
+                "critical_errors_total",
+                "reason" => "finalized_block_non_canonical",
+                "severity" => "critical"
+            )
+            .increment(1);
+            return Err(anyhow!(
+                "finalized block at height {height} (digest {block_digest:?}) has parent {:?} \
+                 but canonical head is {canonical_head:?}; consensus safety violation or divergence",
+                block.parent()
+            ));
+        }
+
         // Try to find the fork state for this block (if it was notarized before finalization)
         if let Some(fork_state) = self
             .fork_states
