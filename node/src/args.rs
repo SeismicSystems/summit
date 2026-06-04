@@ -674,7 +674,7 @@ where
         authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
     let oracle = DiscoveryOracle::new(oracle);
-    let config = EngineConfig::get_engine_config(
+    let mut config = EngineConfig::get_engine_config(
         engine_client,
         oracle,
         key_store,
@@ -687,6 +687,7 @@ where
         flags.finalizer_pending_notarized_max,
     )
     .unwrap();
+    config.force_verifier_only = flags.observer.is_some();
 
     let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
     let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
