@@ -217,6 +217,10 @@ fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epo
             protocol_version: 1,
             node_public_key: node_key.public_key(),
             cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
 
