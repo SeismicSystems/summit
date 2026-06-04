@@ -426,8 +426,8 @@ impl<
 
         // Initialize the current epoch with the validator set
         // This ensures the orchestrator can start consensus immediately
-        let active_validators = self.canonical_state.get_active_validators();
-        let network_keys: Vec<_> = active_validators
+        let current_epoch_validators = self.canonical_state.get_current_epoch_validators();
+        let network_keys: Vec<_> = current_epoch_validators
             .iter()
             .map(|(node_key, _)| node_key.clone())
             .collect();
@@ -446,7 +446,7 @@ impl<
         orchestrator_mailbox
             .report(Message::Enter(EpochTransition {
                 epoch: Epoch::new(self.canonical_state.get_epoch()),
-                validator_keys: active_validators,
+                validator_keys: current_epoch_validators,
             }))
             .await;
 

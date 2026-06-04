@@ -34,6 +34,10 @@ impl ValidatorStatus {
     pub fn is_active_or_joining(&self) -> bool {
         matches!(self, Self::Active) || matches!(self, Self::Joining)
     }
+
+    pub fn is_current_epoch_signer(&self) -> bool {
+        matches!(self, Self::Active | Self::SubmittedExitRequest)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
