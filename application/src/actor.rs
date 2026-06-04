@@ -671,12 +671,21 @@ impl<
         #[cfg(feature = "prom")]
         let compute_digest_start = std::time::Instant::now();
 
+        // EIP-7685 requires the request list to be ordered by request type byte in
+        // ascending order. Sort defensively so a block we author is spec-compliant
+        // even if the execution client returns the list out of order (e.g. the
+        // protocol-param type 0xFF before withdrawals 0x01 / consolidations 0x02).
+        // This is safe: the EL's `requests_hash` sorts internally, so reordering the
+        // raw list does not change the committed EL block hash.
+        let mut execution_requests = payload_envelope.execution_requests.to_vec();
+        execution_requests.sort_by_key(|req| req.first().copied().unwrap_or(0));
+
         let block = Block::compute_digest(
             parent_block.digest(),
             parent_block.height() + 1,
             current,
             payload_envelope.envelope_inner.execution_payload,
-            payload_envelope.execution_requests.to_vec(),
+            execution_requests,
             round.epoch().get(),
             round.view().get(),
             checkpoint_hash,
@@ -715,6 +724,31 @@ impl<
     fn drop(&mut self) {
         self.cancellation_token.cancel();
     }
+}
+
+/// Returns `true` if the EIP-7685 execution-request list is ordered by request
+/// type byte in strictly ascending order, with no empty elements.
+///
+/// The engine API requires request-list elements to be sorted by type
+/// (`OutOfOrderExecutionRequest` / `DuplicatedExecutionRequestType` otherwise).
+/// Seismic's protocol-param request (type `0xFF`) is the maximum type, so it must
+/// come last. We sort the list we propose; this predicate lets us reject a peer's
+/// block that violates the ordering rather than relaying it into a payload the EL
+/// will refuse.
+fn execution_requests_ascending(requests: &[impl AsRef<[u8]>]) -> bool {
+    let mut prev: Option<u8> = None;
+    for req in requests {
+        let Some(&request_type) = req.as_ref().first() else {
+            // An element with no type byte is malformed.
+            return false;
+        };
+        if prev.is_some_and(|p| request_type <= p) {
+            // Out of order or a duplicate request type.
+            return false;
+        }
+        prev = Some(request_type);
+    }
+    true
 }
 
 fn handle_verify<ES: Epocher>(
@@ -852,6 +886,18 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
+    // Validate EIP-7685 execution-request ordering. A block whose request list is
+    // not strictly ascending by type byte (e.g. the protocol-param type 0xFF before
+    // withdrawals/consolidations) is rejected by the execution client during
+    // replay, so vote it down here rather than relaying it into consensus.
+    if !execution_requests_ascending(&block.execution_requests) {
+        warn!(
+            height = block.height(),
+            "execution requests are not ascending by type byte; rejecting block"
+        );
+        return false;
+    }
+
     true
 }
 
@@ -866,6 +912,40 @@ mod tests {
     use std::num::NonZeroU64;
 
     const EPOCH_LENGTH: u64 = 10;
+
+    #[test]
+    fn execution_requests_ascending_accepts_sorted_rejects_unsorted() {
+        // Each element is `[request_type_byte, ..data]`.
+        let req = |ty: u8| vec![ty, 0xaa, 0xbb];
+
+        // Empty and single-element lists are trivially ordered.
+        let empty: &[Vec<u8>] = &[];
+        assert!(execution_requests_ascending(empty));
+        assert!(execution_requests_ascending(&[req(0xFF)]));
+
+        // Canonical order: deposit (0x00), withdrawal (0x01), consolidation (0x02),
+        // protocol-param (0xFF).
+        assert!(execution_requests_ascending(&[
+            req(0x00),
+            req(0x01),
+            req(0x02),
+            req(0xFF)
+        ]));
+
+        // The #300 case: protocol-param (0xFF) ahead of withdrawals/consolidations.
+        assert!(!execution_requests_ascending(&[
+            req(0x00),
+            req(0xFF),
+            req(0x01),
+            req(0x02)
+        ]));
+
+        // Duplicate request type is rejected.
+        assert!(!execution_requests_ascending(&[req(0x01), req(0x01)]));
+
+        // An element with no type byte is malformed.
+        assert!(!execution_requests_ascending(&[Vec::<u8>::new()]));
+    }
 
     fn empty_payload(height: u64, parent_hash: [u8; 32], timestamp: u64) -> ExecutionPayloadV3 {
         let mut block_hash = [0u8; 32];
