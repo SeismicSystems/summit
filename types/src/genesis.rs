@@ -1,8 +1,7 @@
 use crate::PublicKey;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_MAX_DEPOSITS_PER_EPOCH,
-    MAX_OBSERVERS_PER_VALIDATOR, MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN,
-    MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_MINIMUM_VALIDATOR_COUNT,
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_MESSAGE_SIZE_BYTES_MAX, MAX_MESSAGE_SIZE_BYTES_MIN,
+    MIN_MINIMUM_VALIDATOR_COUNT, ProtocolParam,
 };
 use alloy_primitives::Address;
 use anyhow::Context;
@@ -151,9 +150,13 @@ impl Genesis {
     }
 
     fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if self.blocks_per_epoch == 0 {
-            return Err("blocks_per_epoch must be greater than 0".into());
-        }
+        // Genesis epoch length must satisfy the same bounds as a runtime
+        // EpochLength protocol-parameter update (hence the shared ProtocolParam
+        // validation). An oversized launch value defers every epoch-boundary
+        // mechanic — checkpoints, final-block withdrawals, committee transitions,
+        // queued param changes — until that boundary, turning epoch functionality
+        // into a liveness failure.
+        ProtocolParam::EpochLength(self.blocks_per_epoch).validate()?;
         if self.validator_minimum_stake > self.validator_maximum_stake {
             return Err(format!(
                 "validator_minimum_stake {} exceeds validator_maximum_stake {}",
@@ -161,45 +164,58 @@ impl Genesis {
             )
             .into());
         }
-        if self.allowed_timestamp_future_ms < MIN_ALLOWED_TIMESTAMP_FUTURE_MS
-            || self.allowed_timestamp_future_ms > MAX_ALLOWED_TIMESTAMP_FUTURE_MS
+        // The P2P message ceiling must hold the largest legitimate message (full
+        // blocks, checkpoints) yet stay bounded against per-message allocation DoS,
+        // and must not exceed u32::MAX (the p2p config converts it with `as u32`,
+        // which would otherwise silently truncate). A zero value would reject every
+        // message and brick networking.
+        if self.max_message_size_bytes < MAX_MESSAGE_SIZE_BYTES_MIN
+            || self.max_message_size_bytes > MAX_MESSAGE_SIZE_BYTES_MAX
         {
             return Err(format!(
-                "allowed_timestamp_future_ms must be between {} and {}",
-                MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MAX_ALLOWED_TIMESTAMP_FUTURE_MS
+                "max_message_size_bytes must be between {MAX_MESSAGE_SIZE_BYTES_MIN} and {MAX_MESSAGE_SIZE_BYTES_MAX}"
             )
             .into());
         }
+        ProtocolParam::AllowedTimestampFuture(self.allowed_timestamp_future_ms).validate()?;
         self.treasury_address
             .parse::<Address>()
             .map_err(|e| format!("invalid treasury_address: {e}"))?;
-        // Genesis must respect the same upper bounds the runtime
-        // protocol-parameter update path enforces; otherwise an unchecked
-        // genesis value (e.g. supplied over a first-boot RPC) can drive
-        // consensus state outside any limit Summit policy was designed for.
-        if self.max_deposits_per_epoch > MAX_MAX_DEPOSITS_PER_EPOCH {
-            return Err(format!(
-                "max_deposits_per_epoch {} exceeds maximum {}",
-                self.max_deposits_per_epoch, MAX_MAX_DEPOSITS_PER_EPOCH
-            )
-            .into());
+        if self.leader_timeout_ms == 0 {
+            return Err("leader_timeout_ms must be greater than 0".into());
         }
-        if self.max_withdrawals_per_epoch < MAX_WITHDRAWALS_PER_EPOCH_MIN
-            || self.max_withdrawals_per_epoch > MAX_WITHDRAWALS_PER_EPOCH_MAX
-        {
-            return Err(format!(
-                "max_withdrawals_per_epoch must be between {} and {}",
-                MAX_WITHDRAWALS_PER_EPOCH_MIN, MAX_WITHDRAWALS_PER_EPOCH_MAX
-            )
-            .into());
+        if self.notarization_timeout_ms == 0 {
+            return Err("notarization_timeout_ms must be greater than 0".into());
         }
-        if u64::from(self.observers_per_validator) > MAX_OBSERVERS_PER_VALIDATOR {
-            return Err(format!(
-                "observers_per_validator {} exceeds maximum {}",
-                self.observers_per_validator, MAX_OBSERVERS_PER_VALIDATOR
-            )
-            .into());
+        if self.nullify_timeout_ms == 0 {
+            return Err("nullify_timeout_ms must be greater than 0".into());
         }
+        if self.activity_timeout_views == 0 {
+            return Err("activity_timeout_views must be greater than 0".into());
+        }
+        if self.skip_timeout_views == 0 {
+            return Err("skip_timeout_views must be greater than 0".into());
+        }
+        if self.leader_timeout_ms > self.notarization_timeout_ms {
+            return Err(
+                "leader_timeout_ms must be less than or equal to notarization_timeout_ms".into(),
+            );
+        }
+        if self.skip_timeout_views > self.activity_timeout_views {
+            return Err(
+                "skip_timeout_views must be less than or equal to activity_timeout_views".into(),
+            );
+        }
+        // Genesis must respect the same bounds the runtime protocol-parameter
+        // update path enforces; otherwise an unchecked genesis value (e.g. supplied
+        // over a first-boot RPC) can drive consensus state outside any limit Summit
+        // policy was designed for. These reuse the single ProtocolParam validator so
+        // the genesis and runtime bounds cannot drift apart.
+        ProtocolParam::MaxDepositsPerEpoch(self.max_deposits_per_epoch).validate()?;
+        ProtocolParam::MaxWithdrawalsPerEpoch(self.max_withdrawals_per_epoch).validate()?;
+        ProtocolParam::ObserversPerValidator(u64::from(self.observers_per_validator)).validate()?;
+        // `minimum_validator_count` has no scalar bound in `ProtocolParam::validate`
+        // (it carries no `ParamBoundsError` variant), so its floor is enforced here.
         if self.minimum_validator_count < MIN_MINIMUM_VALIDATOR_COUNT {
             return Err(format!(
                 "minimum_validator_count {} is below minimum {}",
@@ -273,6 +289,10 @@ impl Genesis {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol_params::{
+        MAX_EPOCH_LENGTH, MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR,
+        MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_EPOCH_LENGTH,
+    };
 
     #[test]
     fn test_loading_genesis() {
@@ -353,6 +373,87 @@ mod tests {
         genesis.max_withdrawals_per_epoch = MAX_WITHDRAWALS_PER_EPOCH_MAX + 1;
         assert!(genesis.validate().is_err());
         genesis.max_withdrawals_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_blocks_per_epoch_at_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.blocks_per_epoch = MIN_EPOCH_LENGTH;
+        assert!(genesis.validate().is_ok());
+        genesis.blocks_per_epoch = MAX_EPOCH_LENGTH;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_blocks_per_epoch_outside_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.blocks_per_epoch = 0;
+        assert!(genesis.validate().is_err());
+        genesis.blocks_per_epoch = MIN_EPOCH_LENGTH - 1;
+        assert!(genesis.validate().is_err());
+        genesis.blocks_per_epoch = MAX_EPOCH_LENGTH + 1;
+        assert!(genesis.validate().is_err());
+        genesis.blocks_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_max_message_size_bytes_at_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_message_size_bytes = MAX_MESSAGE_SIZE_BYTES_MIN;
+        assert!(genesis.validate().is_ok());
+        genesis.max_message_size_bytes = MAX_MESSAGE_SIZE_BYTES_MAX;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_max_message_size_bytes_outside_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_message_size_bytes = 0;
+        assert!(genesis.validate().is_err());
+        genesis.max_message_size_bytes = MAX_MESSAGE_SIZE_BYTES_MIN - 1;
+        assert!(genesis.validate().is_err());
+        genesis.max_message_size_bytes = MAX_MESSAGE_SIZE_BYTES_MAX + 1;
+        assert!(genesis.validate().is_err());
+        genesis.max_message_size_bytes = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_simplex_timeouts() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.leader_timeout_ms = 0;
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.notarization_timeout_ms = 0;
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.nullify_timeout_ms = 0;
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.activity_timeout_views = 0;
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.skip_timeout_views = 0;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_misordered_leader_and_notarization_timeouts() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.leader_timeout_ms = genesis.notarization_timeout_ms + 1;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_skip_timeout_above_activity_timeout() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.skip_timeout_views = genesis.activity_timeout_views + 1;
         assert!(genesis.validate().is_err());
     }
 

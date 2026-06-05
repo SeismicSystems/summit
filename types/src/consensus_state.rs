@@ -1187,6 +1187,21 @@ impl Read for ConsensusState {
 
         let max_deposits_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         let max_withdrawals_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Enforce the same lower/upper bound the runtime protocol-parameter update
+        // path applies (see ProtocolParam::read_cfg / try_from). Genesis and runtime
+        // updates already range-check this, so an out-of-range value here means a
+        // crafted checkpoint/state artifact or tampered blob. A zero cap would let
+        // the epoch-final selector emit no withdrawals and roll every due exit/refund
+        // forward indefinitely, so reject it at decode rather than trust it.
+        if !(crate::protocol_params::MAX_WITHDRAWALS_PER_EPOCH_MIN
+            ..=crate::protocol_params::MAX_WITHDRAWALS_PER_EPOCH_MAX)
+            .contains(&max_withdrawals_per_epoch)
+        {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "max withdrawals per epoch out of bounds",
+            ));
+        }
         let observers_per_validator = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
         let minimum_validator_count = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         if minimum_validator_count == 0 {
@@ -1927,6 +1942,42 @@ mod tests {
         let predicted_size = state.encode_size();
         let actual_size = state.encode().len();
         assert_eq!(predicted_size, actual_size);
+    }
+
+    #[test]
+    fn test_decode_rejects_out_of_range_max_withdrawals_per_epoch() {
+        use crate::protocol_params::{
+            MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN,
+        };
+
+        // Honest nodes only ever serialize a cap within [MIN, MAX] — genesis and
+        // runtime updates both range-check it. A decoded state outside that range
+        // can only come from a crafted checkpoint/state artifact or a tampered DB
+        // blob. The finalizer trusts this cap as authoritative (a zero cap silently
+        // drops every due withdrawal), so decoding must reject it rather than let
+        // the node start/restore from it.
+
+        // Valid boundary values must still decode.
+        for valid in [MAX_WITHDRAWALS_PER_EPOCH_MIN, MAX_WITHDRAWALS_PER_EPOCH_MAX] {
+            let mut state = ConsensusState::default();
+            state.max_withdrawals_per_epoch = valid;
+            let encoded = state.encode();
+            let decoded = ConsensusState::read(&mut encoded.as_ref()).unwrap_or_else(|_| {
+                panic!("valid max_withdrawals_per_epoch {valid} should decode")
+            });
+            assert_eq!(decoded.max_withdrawals_per_epoch, valid);
+        }
+
+        // Out-of-range values (0 below MIN, MAX+1 above MAX) must be rejected.
+        for invalid in [0, MAX_WITHDRAWALS_PER_EPOCH_MAX + 1] {
+            let mut state = ConsensusState::default();
+            state.max_withdrawals_per_epoch = invalid;
+            let encoded = state.encode();
+            assert!(
+                ConsensusState::read(&mut encoded.as_ref()).is_err(),
+                "max_withdrawals_per_epoch {invalid} should be rejected on decode"
+            );
+        }
     }
 
     #[test]
