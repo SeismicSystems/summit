@@ -168,6 +168,9 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
 
 fn parse_validator_field_name(name: &str) -> Result<usize, String> {
     match name {
+        // The account's map key (node ed25519 pubkey), committed as a leaf so a
+        // proof binds the account value to the pubkey it belongs to.
+        "node_pubkey" | "node_public_key" => Ok(ssz_state_tree::VALIDATOR_FIELD_NODE_PUBKEY),
         "consensus_pubkey" | "consensus_public_key" => {
             Ok(ssz_state_tree::VALIDATOR_FIELD_CONSENSUS_PUBKEY)
         }
@@ -222,6 +225,9 @@ fn parse_added_validator_field_name(name: &str) -> Result<usize, String> {
     match name {
         "node_key" => Ok(ssz_state_tree::ADDED_VALIDATOR_FIELD_NODE_KEY),
         "consensus_key" => Ok(ssz_state_tree::ADDED_VALIDATOR_FIELD_CONSENSUS_KEY),
+        // The scheduled-activation map key (target epoch), committed as a leaf so
+        // a proof binds the addition to the epoch it activates in.
+        "epoch" => Ok(ssz_state_tree::ADDED_VALIDATOR_FIELD_EPOCH),
         _ => Err(format!("unknown added_validator field: {name}")),
     }
 }
@@ -539,6 +545,28 @@ mod tests {
     #[test]
     fn parse_added_validator_field_unknown_errors() {
         assert!(parse_key("added_validator_field:0:nonexistent").is_err());
+    }
+
+    #[test]
+    fn parse_added_validator_epoch_key_field() {
+        // The activation-epoch map key is now committed and addressable.
+        let key = parse_key("added_validator_field:2:epoch").unwrap();
+        assert_eq!(
+            key,
+            SszStateKey::AddedValidatorField(2, ssz_state_tree::ADDED_VALIDATOR_FIELD_EPOCH)
+        );
+    }
+
+    #[test]
+    fn parse_validator_node_pubkey_key_field() {
+        // The node-pubkey map key is now committed and addressable as a field, so
+        // a consumer can prove the account value is bound to the pubkey it keyed.
+        let hex_key = "validator_field:0x0101010101010101010101010101010101010101010101010101010101010101:node_pubkey";
+        let SszStateKey::ValidatorField(pubkey, field_index) = parse_key(hex_key).unwrap() else {
+            panic!("expected ValidatorField");
+        };
+        assert_eq!(pubkey, [1u8; 32]);
+        assert_eq!(field_index, ssz_state_tree::VALIDATOR_FIELD_NODE_PUBKEY);
     }
 
     #[test]

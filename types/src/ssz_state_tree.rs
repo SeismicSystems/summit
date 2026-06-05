@@ -330,7 +330,8 @@ impl SszStateTree {
         self.update_validator_collection_root();
     }
 
-    /// Set the 8 field leaves for validator at positional slot `i`.
+    /// Set the validator's 9 field leaves (node-pubkey key + 8 account fields,
+    /// padded to a 16-leaf depth-4 subtree) at positional slot `i`.
     fn set_validator_fields(
         tree: &mut SszTree,
         slot: usize,
@@ -390,7 +391,7 @@ impl SszStateTree {
     /// Insert a new validator at positional `slot`, shifting existing validators right.
     ///
     /// Grows the tree if needed. Copies shifted validators' subtree nodes via memmove
-    /// (no rehash), then writes the new validator's 8 field leaves and rehashes only
+    /// (no rehash), then writes the new validator's 9 field leaves and rehashes only
     /// the new slot's subtree plus upper ancestors. O(N) memcpy + O(N/8) SHA256.
     pub fn insert_validator_at_slot(
         &mut self,
@@ -410,7 +411,7 @@ impl SszStateTree {
         // Write new validator's field leaves (no per-leaf rehash)
         Self::set_validator_fields_no_rehash(&mut self.validator_tree, slot, node_pubkey, account);
 
-        // Rehash only the new validator's subtree (3 internal levels above its 8 leaves)
+        // Rehash only the new validator's subtree (4 internal levels above its 16 leaves)
         self.validator_tree
             .rehash_block(slot, VALIDATOR_FIELDS_PER_ACCOUNT);
 
@@ -476,7 +477,8 @@ impl SszStateTree {
         self.update_validator_collection_root();
     }
 
-    /// Set the 8 field leaves without triggering per-leaf rehash.
+    /// Set the validator's 9 field leaves (node-pubkey key + 8 account fields)
+    /// without triggering per-leaf rehash.
     fn set_validator_fields_no_rehash(
         tree: &mut SszTree,
         slot: usize,
