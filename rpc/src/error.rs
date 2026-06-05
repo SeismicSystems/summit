@@ -10,6 +10,7 @@ pub enum RpcError {
     EpochNotFound,
     InvalidPublicKey(String),
     GenesisPathError(String),
+    InvalidGenesis(String),
     IoError(String),
     InvalidKey(String),
     Internal(String),
@@ -48,6 +49,9 @@ impl From<RpcError> for ErrorObjectOwned {
             }
             RpcError::GenesisPathError(msg) => {
                 ErrorObjectOwned::owned(2001, "Invalid genesis path", Some(msg))
+            }
+            RpcError::InvalidGenesis(msg) => {
+                ErrorObjectOwned::owned(2005, "Invalid genesis content", Some(msg))
             }
             RpcError::IoError(msg) => ErrorObjectOwned::owned(2002, "I/O error", Some(msg)),
             RpcError::InvalidKey(msg) => {

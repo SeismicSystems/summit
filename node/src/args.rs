@@ -202,26 +202,6 @@ impl Command {
         }
     }
 
-    fn has_file(path: &str) -> bool {
-        let path_buf = get_expanded_path(path).expect("Invalid filepath");
-        path_buf.exists()
-            || !std::fs::read_to_string(&path_buf)
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-    }
-
-    fn check_sender(path: String, tx: oneshot::Sender<()>) -> PathSender {
-        let sender = match Self::has_file(&path) {
-            true => {
-                let _ = tx.send(());
-                None
-            }
-            false => Some(tx),
-        };
-        PathSender::new(path, sender)
-    }
-
     pub fn run_node(&self, flags: &RunFlags) {
         // Initialize tokio-console subscriber if feature is enabled
         #[cfg(feature = "tokio-console")]
@@ -262,29 +242,75 @@ impl Command {
     }
 }
 
-async fn run_node_inner(
-    context: tokio::Context,
-    flags: RunFlags,
-    key_store: KeyStore<PrivateKey>,
-    loaded: LoadedCheckpoint<MultisigScheme>,
-) {
-    let context = context.with_label("summit_cw");
-    let (genesis_tx, genesis_rx) = oneshot::channel();
+/// How the configured genesis path looks at startup. Extracted from
+/// [`acquire_genesis`] so the present-but-invalid decision can be exercised
+/// directly in tests — the live path calls `std::process::exit` on that case,
+/// which can't be asserted against in-process.
+enum GenesisPathState {
+    /// A valid genesis file is already present at the path.
+    Valid(Box<Genesis>),
+    /// A file exists at the path but does not parse/validate.
+    InvalidPresent(String),
+    /// No file at the path; first-boot provisioning is required.
+    Absent,
+}
 
+/// Classify the configured genesis path without side effects (no exit, no RPC).
+fn classify_genesis_path(genesis_path: &str) -> GenesisPathState {
+    let present = get_expanded_path(genesis_path)
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    if !present {
+        return GenesisPathState::Absent;
+    }
+    match Genesis::load_from_file(genesis_path) {
+        Ok(genesis) => GenesisPathState::Valid(Box::new(genesis)),
+        Err(e) => GenesisPathState::InvalidPresent(e.to_string()),
+    }
+}
+
+/// Resolve the node's genesis, provisioning it over the first-boot RPC if needed.
+///
+/// Behavior is decided by the state of the configured genesis path:
+/// - **Absent:** start the genesis provisioning RPC and wait for a valid genesis to
+///   be installed (`send_genesis` validates and atomically renames into place).
+/// - **Present and valid:** return it immediately; the provisioning RPC is never
+///   exposed once a usable genesis exists.
+/// - **Present but invalid** (empty, partial, or malformed): exit with a clear
+///   error. We do not fall back to provisioning when a file already occupies the
+///   path, and we do not silently crash-loop on every restart — the operator must
+///   remove or replace the file to recover.
+async fn acquire_genesis(context: &tokio::Context, flags: &RunFlags) -> Genesis {
+    let genesis_path = flags.genesis_path.clone();
+
+    match classify_genesis_path(&genesis_path) {
+        GenesisPathState::Valid(genesis) => return *genesis,
+        GenesisPathState::InvalidPresent(e) => {
+            error!(
+                "existing genesis file '{genesis_path}' is invalid: {e}; remove or replace it to recover"
+            );
+            std::process::exit(1);
+        }
+        GenesisPathState::Absent => {}
+    }
+
+    // First boot: no usable genesis yet. Wait for the provisioning RPC to install
+    // one. Because `send_genesis` validates and atomically renames, once the signal
+    // fires the file at the path is guaranteed to parse and validate.
+    let (genesis_tx, genesis_rx) = oneshot::channel();
     let cancel_token = CancellationToken::new();
     let cloned_token = cancel_token.clone();
-
-    let genesis_path = flags.genesis_path.clone();
     let genesis_key_store_path = flags.key_store_path.clone();
     let genesis_rpc_port = flags.rpc_port;
     let rpc_body_limits = RpcBodyLimits {
         max_request_body_size: flags.rpc_max_request_body_size,
         max_response_body_size: flags.rpc_max_response_body_size,
     };
+    let rpc_genesis_path = genesis_path.clone();
     let _rpc_handle = context
         .with_label("rpc_genesis")
         .spawn(move |_context| async move {
-            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+            let genesis_sender = PathSender::new(rpc_genesis_path, Some(genesis_tx));
             if let Err(e) = start_rpc_server_for_genesis(
                 genesis_sender,
                 genesis_key_store_path,
@@ -298,12 +324,71 @@ async fn run_node_inner(
             }
         });
 
-    // Wait for genesis if needed
+    // Wait for genesis, then shut down the provisioning RPC.
     let _ = genesis_rx.await;
-    // Shut down the genesis rpc server after receiving the genesis file
     cancel_token.cancel();
 
-    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+    Genesis::load_from_file(&genesis_path).expect("genesis file should be valid after provisioning")
+}
+
+#[cfg(test)]
+mod genesis_path_tests {
+    use super::*;
+
+    #[test]
+    fn classify_absent_when_file_missing() {
+        let path = std::env::temp_dir().join("summit_classify_genesis_absent.toml");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(
+            classify_genesis_path(path.to_str().unwrap()),
+            GenesisPathState::Absent
+        ));
+    }
+
+    #[test]
+    fn classify_invalid_present_for_malformed_file() {
+        // Regression: an already-present but unparseable genesis file must be
+        // classified as InvalidPresent (rejected), never as Absent — otherwise
+        // startup would wrongly re-open first-boot provisioning over a stale or
+        // corrupt file instead of surfacing the error.
+        let path = std::env::temp_dir().join("summit_classify_genesis_invalid.toml");
+        std::fs::write(&path, b"definitely : not [valid genesis").unwrap();
+        let state = classify_genesis_path(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(state, GenesisPathState::InvalidPresent(_)));
+    }
+
+    #[test]
+    fn classify_valid_for_example_genesis() {
+        // The shipped example genesis must classify as a valid, present genesis.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../example_genesis.toml");
+        assert!(matches!(
+            classify_genesis_path(path),
+            GenesisPathState::Valid(_)
+        ));
+    }
+}
+
+async fn run_node_inner(
+    context: tokio::Context,
+    flags: RunFlags,
+    key_store: KeyStore<PrivateKey>,
+    loaded: LoadedCheckpoint<MultisigScheme>,
+) {
+    let context = context.with_label("summit_cw");
+
+    // Initialize telemetry first, before genesis acquisition. First-boot
+    // provisioning can block in acquire_genesis waiting for the genesis RPC, so the
+    // subscriber must already be installed or those logs (and the RPC's own
+    // "listening" line) are silently dropped.
+    let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
+    let critical_log_dir = flags
+        .critical_log_dir
+        .as_ref()
+        .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
+    let _critical_log_guard = crate::telemetry::init(log_level, critical_log_dir.as_deref());
+
+    let genesis = acquire_genesis(&context, &flags).await;
 
     let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
     committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
@@ -385,14 +470,6 @@ async fn run_node_inner(
         network_committee.push((our_public_key, our_ip));
         network_committee.sort();
     }
-
-    // Configure telemetry with optional critical file logger
-    let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
-    let critical_log_dir = flags
-        .critical_log_dir
-        .as_ref()
-        .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
-    let _critical_log_guard = crate::telemetry::init(log_level, critical_log_dir.as_deref());
 
     // Start prometheus endpoint (merges Summit + commonware runtime metrics)
     #[cfg(feature = "prom")]
@@ -513,40 +590,7 @@ async fn run_node_local_inner(
 ) {
     let context = context.with_label("summit_cw");
 
-    let (genesis_tx, genesis_rx) = oneshot::channel();
-
-    let cancel_token = CancellationToken::new();
-    let cloned_token = cancel_token.clone();
-    let genesis_rpc_port = flags.rpc_port;
-    let genesis_path = flags.genesis_path.clone();
-    let genesis_key_store_path = flags.key_store_path.clone();
-    let rpc_body_limits = RpcBodyLimits {
-        max_request_body_size: flags.rpc_max_request_body_size,
-        max_response_body_size: flags.rpc_max_response_body_size,
-    };
-    let _rpc_handle = context
-        .with_label("rpc_genesis")
-        .spawn(move |_context| async move {
-            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-            if let Err(e) = start_rpc_server_for_genesis(
-                genesis_sender,
-                genesis_key_store_path,
-                genesis_rpc_port,
-                rpc_body_limits,
-                cloned_token,
-            )
-            .await
-            {
-                error!("RPC server failed: {}", e);
-            }
-        });
-
-    // Wait for genesis if needed
-    let _ = genesis_rx.await;
-    // Shut down the genesis rpc server after receiving the genesis file
-    cancel_token.cancel();
-
-    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+    let genesis = acquire_genesis(&context, &flags).await;
 
     let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
     committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));

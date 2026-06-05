@@ -7,6 +7,7 @@ use jsonrpsee::core::RpcResult;
 use std::fs;
 use std::sync::Mutex;
 use summit_types::KeyPaths;
+use summit_types::genesis::Genesis;
 use summit_types::utils::get_expanded_path;
 
 pub struct PathSender {
@@ -66,8 +67,26 @@ impl SummitGenesisApiServer for SummitGenesisRpcServer {
                 .map_err(|e| RpcError::IoError(format!("Failed to create directory: {}", e)))?;
         }
 
-        fs::write(&path_buf, &genesis_content)
-            .map_err(|e| RpcError::IoError(format!("Failed to write genesis file: {}", e)))?;
+        // Stage the genesis to a temp file in the same directory, validate it, then
+        // atomically rename it into place. This guarantees the target path only ever
+        // holds a fully-written, parse-valid genesis: a partial/interrupted write or
+        // invalid content never appears there, so startup can treat path presence as
+        // a usable genesis without risking a crash loop.
+        let tmp_path = path_buf.with_extension("toml.tmp");
+
+        fs::write(&tmp_path, &genesis_content).map_err(|e| {
+            RpcError::IoError(format!("Failed to write temporary genesis file: {}", e))
+        })?;
+
+        if let Err(e) = Genesis::load_from_file(&tmp_path.to_string_lossy()) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(RpcError::InvalidGenesis(format!("rejected genesis content: {e}")).into());
+        }
+
+        fs::rename(&tmp_path, &path_buf).map_err(|e| {
+            let _ = fs::remove_file(&tmp_path);
+            RpcError::IoError(format!("Failed to install genesis file: {}", e))
+        })?;
 
         if let Some(sender) = self.genesis.sender.lock().unwrap().take() {
             let _ = sender.send(());
