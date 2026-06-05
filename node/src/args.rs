@@ -154,6 +154,22 @@ pub struct RunFlags {
     #[arg(long)]
     pub checkpoint_or_default: bool,
 
+    /// Trusted finalized-header epoch used as the weak-subjectivity anchor for checkpoint verification
+    #[arg(
+        long,
+        requires = "checkpoint_path",
+        requires = "weak_subjectivity_header_digest"
+    )]
+    pub weak_subjectivity_epoch: Option<u64>,
+
+    /// Trusted finalized-header digest used as the weak-subjectivity anchor for checkpoint verification
+    #[arg(
+        long,
+        requires = "checkpoint_path",
+        requires = "weak_subjectivity_epoch"
+    )]
+    pub weak_subjectivity_header_digest: Option<String>,
+
     /// IP address for this node (optional, will use genesis if not provided)
     #[arg(long)]
     pub ip: Option<String>,
@@ -301,16 +317,32 @@ async fn run_node_inner(
     );
 
     // Verify checkpoint if finalized headers chain was provided
+    let weak_subjectivity = weak_subjectivity_from_flags(&flags);
     if let (Some(raw_checkpoint), Some(headers_chain)) =
         (&loaded.raw_checkpoint, &loaded.finalized_headers_chain)
     {
-        checkpoint::verify_checkpoint_chain(&genesis, headers_chain, raw_checkpoint)
-            .expect("checkpoint verification failed");
+        let weak_subjectivity = weak_subjectivity.as_ref().expect(
+            "checkpoint verification requires --weak-subjectivity-epoch and \
+             --weak-subjectivity-header-digest when finalized_headers/ is present",
+        );
+        checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            headers_chain,
+            raw_checkpoint,
+            Some(weak_subjectivity),
+        )
+        .expect("checkpoint verification failed");
         info!(
             epochs_verified = headers_chain.len(),
+            weak_subjectivity_epoch = weak_subjectivity.epoch,
             "checkpoint verified successfully"
         );
     } else if loaded.raw_checkpoint.is_some() {
+        if weak_subjectivity.is_some() {
+            panic!(
+                "weak-subjectivity checkpoint verification requires a checkpoint directory with finalized_headers/"
+            );
+        }
         warn!("checkpoint loaded without finalized headers chain - skipping verification");
     }
 
@@ -804,6 +836,33 @@ fn get_initial_state(
         }
         state
     })
+}
+
+fn weak_subjectivity_from_flags(
+    flags: &RunFlags,
+) -> Option<checkpoint::WeakSubjectivityHeaderDigest> {
+    match (
+        flags.weak_subjectivity_epoch,
+        flags.weak_subjectivity_header_digest.as_ref(),
+    ) {
+        (Some(epoch), Some(header_digest)) => Some(checkpoint::WeakSubjectivityHeaderDigest {
+            epoch,
+            header_digest: parse_digest_arg(header_digest, "--weak-subjectivity-header-digest"),
+        }),
+        (None, None) => None,
+        _ => panic!(
+            "--weak-subjectivity-epoch and --weak-subjectivity-header-digest must be supplied together"
+        ),
+    }
+}
+
+fn parse_digest_arg(value: &str, arg_name: &str) -> summit_types::Digest {
+    let bytes = from_hex_formatted(value)
+        .unwrap_or_else(|| panic!("{arg_name} must be a 32-byte hex digest"));
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .unwrap_or_else(|_| panic!("{arg_name} must be a 32-byte hex digest"));
+    bytes.into()
 }
 
 async fn get_node_ip(

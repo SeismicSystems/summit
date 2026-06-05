@@ -30,7 +30,7 @@ fn test_checkpoint_verification_fixed_committee() {
     // Runs a network for multiple epochs, then fetches all finalized headers
     // and verifies the checkpoint chain cryptographically.
     let n = 5;
-    let num_epochs = 3u64;
+    let num_epochs = checkpoint::WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS + 2;
     let namespace = "_SUMMIT";
     let link = Link {
         latency: Duration::from_millis(80),
@@ -209,6 +209,88 @@ fn test_checkpoint_verification_fixed_committee() {
         // Verify the checkpoint chain
         checkpoint::verify_checkpoint_chain(&genesis, &finalized_headers, &raw_checkpoint)
             .expect("checkpoint verification failed");
+
+        assert!(
+            checkpoint_epoch > checkpoint::WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS,
+            "test needs a checkpoint beyond the weak-subjectivity window"
+        );
+
+        let weak_subjectivity_epoch =
+            checkpoint_epoch - checkpoint::WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS;
+        let weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
+            epoch: weak_subjectivity_epoch,
+            header_digest: finalized_headers[weak_subjectivity_epoch as usize]
+                .header
+                .digest,
+        };
+        checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            &finalized_headers,
+            &raw_checkpoint,
+            Some(&weak_subjectivity),
+        )
+        .expect("checkpoint verification with weak-subjectivity anchor failed");
+
+        let wrong_weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
+            epoch: weak_subjectivity_epoch,
+            header_digest: [0xFF; 32].into(),
+        };
+        let err = checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            &finalized_headers,
+            &raw_checkpoint,
+            Some(&wrong_weak_subjectivity),
+        )
+        .expect_err("verification should fail with a mismatched weak-subjectivity anchor");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::WeakSubjectivityHeaderDigestMismatch { epoch, .. }
+                    if epoch == weak_subjectivity_epoch
+            ),
+            "expected WeakSubjectivityHeaderDigestMismatch for epoch {weak_subjectivity_epoch}, got: {err}"
+        );
+
+        let stale_weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
+            epoch: 0,
+            header_digest: finalized_headers[0].header.digest,
+        };
+        let err = checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            &finalized_headers,
+            &raw_checkpoint,
+            Some(&stale_weak_subjectivity),
+        )
+        .expect_err("verification should fail with a stale weak-subjectivity anchor");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::WeakSubjectivityCheckpointTooOld {
+                    weak_subjectivity_epoch: 0,
+                    ..
+                }
+            ),
+            "expected WeakSubjectivityCheckpointTooOld for epoch 0, got: {err}"
+        );
+
+        let unavailable_weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
+            epoch: checkpoint_epoch + 1,
+            header_digest: [0u8; 32].into(),
+        };
+        let err = checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            &finalized_headers,
+            &raw_checkpoint,
+            Some(&unavailable_weak_subjectivity),
+        )
+        .expect_err("verification should fail when the weak-subjectivity epoch is unavailable");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::WeakSubjectivityEpochUnavailable { .. }
+            ),
+            "expected WeakSubjectivityEpochUnavailable, got: {err}"
+        );
 
         // Verify that a tampered signature causes verification to fail
         let mut tampered_sig_headers = finalized_headers.clone();

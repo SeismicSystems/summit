@@ -11,11 +11,14 @@ use commonware_cryptography::{Hasher, Sha256, ed25519};
 use commonware_parallel::Sequential;
 use commonware_utils::TryCollect;
 use commonware_utils::from_hex_formatted;
+use commonware_utils::hex;
 use commonware_utils::ordered::BiMap;
 use rand::rngs::OsRng;
 use ssz::{Decode, Encode as SszEncode};
 use std::collections::BTreeSet;
 use std::{error, fmt};
+
+pub const WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS: u64 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Checkpoint {
@@ -143,13 +146,40 @@ impl TryFrom<&Checkpoint> for ConsensusState {
 #[derive(Debug)]
 pub enum CheckpointVerificationError {
     NoHeaders,
-    NonContiguousEpochs { expected: u64, found: u64 },
-    SignatureVerificationFailed { epoch: u64 },
+    NonContiguousEpochs {
+        expected: u64,
+        found: u64,
+    },
+    SignatureVerificationFailed {
+        epoch: u64,
+    },
     CheckpointHashMismatch,
-    PrevEpochHeaderHashMismatch { epoch: u64 },
+    PrevEpochHeaderHashMismatch {
+        epoch: u64,
+    },
     InvalidGenesisHash(String),
+    WeakSubjectivityEpochUnavailable {
+        epoch: u64,
+        highest: u64,
+    },
+    WeakSubjectivityHeaderDigestMismatch {
+        epoch: u64,
+        expected: Digest,
+        found: Digest,
+    },
+    WeakSubjectivityCheckpointTooOld {
+        checkpoint_epoch: u64,
+        weak_subjectivity_epoch: u64,
+        max_age_epochs: u64,
+    },
     ValidatorSetMismatch(String),
     ValidatorSetError(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeakSubjectivityHeaderDigest {
+    pub epoch: u64,
+    pub header_digest: Digest,
 }
 
 impl fmt::Display for CheckpointVerificationError {
@@ -177,6 +207,34 @@ impl fmt::Display for CheckpointVerificationError {
             Self::InvalidGenesisHash(reason) => {
                 write!(f, "invalid genesis hash: {reason}")
             }
+            Self::WeakSubjectivityEpochUnavailable { epoch, highest } => {
+                write!(
+                    f,
+                    "weak-subjectivity epoch {epoch} is not present in finalized headers; highest available epoch is {highest}"
+                )
+            }
+            Self::WeakSubjectivityHeaderDigestMismatch {
+                epoch,
+                expected,
+                found,
+            } => {
+                write!(
+                    f,
+                    "weak-subjectivity header digest mismatch at epoch {epoch}: expected 0x{}, found 0x{}",
+                    hex(expected.as_ref()),
+                    hex(found.as_ref())
+                )
+            }
+            Self::WeakSubjectivityCheckpointTooOld {
+                checkpoint_epoch,
+                weak_subjectivity_epoch,
+                max_age_epochs,
+            } => {
+                write!(
+                    f,
+                    "checkpoint epoch {checkpoint_epoch} is more than {max_age_epochs} epochs after weak-subjectivity epoch {weak_subjectivity_epoch}"
+                )
+            }
             Self::ValidatorSetMismatch(reason) => {
                 write!(f, "validator set mismatch: {reason}")
             }
@@ -191,6 +249,10 @@ impl error::Error for CheckpointVerificationError {}
 
 /// Verifies a checkpoint by walking the chain of finalized headers from genesis.
 ///
+/// This checks internal chain consistency only. Checkpoint imports should call
+/// `verify_checkpoint_chain_with_weak_subjectivity` so the supplied history is
+/// tied to an independently trusted recent finalized-header digest.
+///
 /// For each epoch, the BLS aggregate signature is verified against the known
 /// validator set, and validator set changes (added/removed) are applied.
 /// Finally, the checkpoint hash in the last header is compared to the checkpoint digest.
@@ -198,6 +260,18 @@ pub fn verify_checkpoint_chain(
     genesis: &Genesis,
     finalized_headers: &[FinalizedHeader<MultisigScheme>],
     checkpoint: &Checkpoint,
+) -> Result<(), CheckpointVerificationError> {
+    verify_checkpoint_chain_with_weak_subjectivity(genesis, finalized_headers, checkpoint, None)
+}
+
+/// Verifies a checkpoint by walking the chain of finalized headers from genesis
+/// and requiring the chain to pass through an independently trusted finalized
+/// header digest.
+pub fn verify_checkpoint_chain_with_weak_subjectivity(
+    genesis: &Genesis,
+    finalized_headers: &[FinalizedHeader<MultisigScheme>],
+    checkpoint: &Checkpoint,
+    weak_subjectivity: Option<&WeakSubjectivityHeaderDigest>,
 ) -> Result<(), CheckpointVerificationError> {
     if finalized_headers.is_empty() {
         return Err(CheckpointVerificationError::NoHeaders);
@@ -294,6 +368,48 @@ pub fn verify_checkpoint_chain(
             participants.retain(|(pk, _)| pk != removed);
         }
         participants.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    if let Some(weak_subjectivity) = weak_subjectivity {
+        let Some(anchor_index) = usize::try_from(weak_subjectivity.epoch).ok() else {
+            let highest = finalized_headers.len() as u64 - 1;
+            return Err(
+                CheckpointVerificationError::WeakSubjectivityEpochUnavailable {
+                    epoch: weak_subjectivity.epoch,
+                    highest,
+                },
+            );
+        };
+        let Some(anchor_header) = finalized_headers.get(anchor_index) else {
+            let highest = finalized_headers.len() as u64 - 1;
+            return Err(
+                CheckpointVerificationError::WeakSubjectivityEpochUnavailable {
+                    epoch: weak_subjectivity.epoch,
+                    highest,
+                },
+            );
+        };
+
+        if anchor_header.header.digest != weak_subjectivity.header_digest {
+            return Err(
+                CheckpointVerificationError::WeakSubjectivityHeaderDigestMismatch {
+                    epoch: weak_subjectivity.epoch,
+                    expected: weak_subjectivity.header_digest,
+                    found: anchor_header.header.digest,
+                },
+            );
+        }
+
+        let checkpoint_epoch = finalized_headers.len() as u64 - 1;
+        if checkpoint_epoch - weak_subjectivity.epoch > WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS {
+            return Err(
+                CheckpointVerificationError::WeakSubjectivityCheckpointTooOld {
+                    checkpoint_epoch,
+                    weak_subjectivity_epoch: weak_subjectivity.epoch,
+                    max_age_epochs: WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS,
+                },
+            );
+        }
     }
 
     // Step 2: Compute the checkpoint digest and verify it matches the last header

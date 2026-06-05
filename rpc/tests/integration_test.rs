@@ -9,7 +9,10 @@ use summit_rpc::{
     PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_pair_with_handle,
     start_rpc_server_with_handle,
 };
-use utils::{MockFinalizerState, create_test_finalizer_mailbox, create_test_keystore};
+use utils::{
+    MockFinalizerState, create_test_finalized_header, create_test_finalizer_mailbox,
+    create_test_keystore,
+};
 
 const TEST_GENESIS_HASH: [u8; 32] = [7u8; 32];
 
@@ -107,6 +110,43 @@ async fn test_get_latest_epoch() {
     let response = client.get_latest_epoch().await;
     assert!(response.is_ok());
     assert_eq!(response.unwrap(), 10);
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_get_finalized_header_digest() {
+    use summit_rpc::SummitApiClient;
+
+    let epoch = 3;
+    let finalized_header = create_test_finalized_header(epoch);
+    let expected_digest = finalized_header.header.digest.0;
+    let state = MockFinalizerState {
+        finalized_headers: [(epoch, Some(finalized_header))].into(),
+        ..Default::default()
+    };
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(state);
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
+
+    let response = client.get_finalized_header_digest(epoch).await.unwrap();
+    assert_eq!(response.epoch, epoch);
+    assert_eq!(response.digest, expected_digest);
 
     handle.stop().unwrap();
 }
