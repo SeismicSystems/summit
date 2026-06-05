@@ -20,11 +20,14 @@ use futures::{StreamExt as _, channel::mpsc as futures_mpsc};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
-use summit_types::{Block, Digest};
+use summit_types::header::AddedValidator;
+use summit_types::network_oracle::NetworkOracle;
+use summit_types::{Block, Digest, PublicKey};
 use tokio_util::sync::CancellationToken;
 
 /// Helper to create a test block with specific parent, height, and epoch
@@ -548,6 +551,221 @@ fn last_block_exit_dominates_concurrent_max_stake_reduction() {
             account.has_pending_withdrawal,
             "the full-exit withdrawal must be scheduled"
         );
+
+        context.auditor().state()
+    });
+}
+
+/// A `NetworkOracle` that records every `track` call so a test can assert
+/// exactly which keys the finalizer advertises to the P2P/observer layer
+/// for each epoch.
+#[derive(Clone, Default)]
+struct RecordingOracle {
+    tracks: Arc<Mutex<Vec<(u64, Vec<PublicKey>)>>>,
+}
+
+impl NetworkOracle<PublicKey> for RecordingOracle {
+    async fn track(&mut self, index: u64, primary: Vec<PublicKey>, _secondary: Vec<PublicKey>) {
+        self.tracks.lock().unwrap().push((index, primary));
+    }
+}
+
+/// Regression test for the joining-validator withdrawal cancellation path.
+///
+/// A validator that has processed a new-validator deposit but is still in its
+/// warm-up window (`status == Joining`, `joining_epoch > current_epoch`)
+/// submits a valid full withdrawal before activation. The finalizer must both
+/// cancel the pending activation AND flip the account out of `Joining`, so the
+/// canceled validator is excluded from the active-or-joining set advertised to
+/// the network oracle at the next epoch transition (and therefore from its
+/// derived observer keys) — while its withdrawal record stays processable.
+///
+/// Before #187, the cancellation branch left the zero-balance account as
+/// `Joining`, so `get_active_or_joining_validators()` kept returning it and the
+/// finalizer tracked its primary + observer keys for an epoch it would never
+/// enter.
+#[test]
+fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
+    let cfg = deterministic::Config::default().with_seed(59);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x59u8; 32];
+
+        // Local node is an existing active validator (seed 0); it is never
+        // removed, so the finalizer keeps running across the epoch boundary.
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let node_pubkey = node_key.public_key();
+
+        // The joining validator under test (seed 4): deposited, warming up to
+        // join the committee at epoch 1, and controls its withdrawal address.
+        let joining_node_key = ed25519::PrivateKey::from_seed(4);
+        let joining_node_pubkey = joining_node_key.public_key();
+        let joining_pubkey_bytes: [u8; 32] = joining_node_pubkey.as_ref().try_into().unwrap();
+        let joining_withdrawal_address = Address::from([0x44u8; 20]);
+
+        let mut initial_state =
+            create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        // Stage the joining validator: a pending activation queued for epoch 1
+        // plus a matching warm-up account with no pending deposit/withdrawal.
+        let joining_consensus_key = {
+            use rand::SeedableRng;
+            let mut rng = rand::rngs::StdRng::seed_from_u64(99);
+            bls12381::PrivateKey::random(&mut rng).public_key()
+        };
+        initial_state.set_account(
+            joining_pubkey_bytes,
+            ValidatorAccount {
+                consensus_public_key: joining_consensus_key.clone(),
+                withdrawal_credentials: joining_withdrawal_address,
+                balance: 32_000_000_000,
+                status: ValidatorStatus::Joining,
+                has_pending_deposit: false,
+                has_pending_withdrawal: false,
+                joining_epoch: 1,
+                last_deposit_index: 0,
+            },
+        );
+        initial_state.add_validator(
+            1,
+            AddedValidator {
+                node_key: joining_node_pubkey.clone(),
+                consensus_key: joining_consensus_key,
+            },
+        );
+
+        let oracle = RecordingOracle::default();
+        let tracks = oracle.tracks.clone();
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, RecordingOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_joining_withdrawal_oracle".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_pubkey,
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, RecordingOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(50)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+
+        // Block 1 (epoch 0, not the last block): the joining validator submits a
+        // full withdrawal during its warm-up window, cancelling onboarding.
+        let b1 = create_test_block_with_requests(
+            parent_digest,
+            1,
+            2,
+            19001,
+            0,
+            vec![full_exit_withdrawal_entry(
+                joining_pubkey_bytes,
+                joining_withdrawal_address,
+            )],
+        );
+        parent_digest = b1.digest();
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((b1, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(30)).await;
+
+        // Blocks 2-3: empty filler to reach the last block of epoch 0.
+        for height in 2..4 {
+            let b =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 19000 + height, 0);
+            parent_digest = b.digest();
+            let (ack, _) = Exact::handle();
+            mailbox.report(Update::FinalizedBlock((b, None), ack)).await;
+            context.sleep(Duration::from_millis(30)).await;
+        }
+
+        // Block 4 (last block of epoch 0): crossing into epoch 1 triggers the
+        // network-oracle update for the new epoch.
+        let b4 = create_test_block_with_epoch(parent_digest, 4, 5, 19004, 0);
+        let b4_digest = b4.digest();
+        let finalization4 = make_finalization(b4_digest, 4, 3, &schemes, quorum);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((b4, Some(finalization4)), ack))
+            .await;
+        context.sleep(Duration::from_millis(50)).await;
+
+        // The canceled joining validator's account must leave `Joining` (to
+        // `Inactive`) with the withdrawal scheduled and the balance zeroed — the
+        // withdrawal record stays processable through the withdrawal window.
+        let account = mailbox
+            .get_validator_account(joining_node_pubkey.clone())
+            .await
+            .expect(
+                "canceled joining validator account must still exist during the withdrawal window",
+            );
+        assert_eq!(
+            account.status,
+            ValidatorStatus::Inactive,
+            "canceled joining validator must leave the Joining state"
+        );
+        assert!(
+            account.has_pending_withdrawal,
+            "the full-exit withdrawal must remain scheduled/processable"
+        );
+        assert_eq!(account.balance, 0, "full exit must zero the balance");
+
+        // The epoch-1 oracle update must NOT advertise the canceled validator's
+        // key (and hence none of its derived observer keys), while still
+        // advertising the genuine active validators.
+        let epoch1_primary = {
+            let tracks = tracks.lock().unwrap();
+            tracks
+                .iter()
+                .rev()
+                .find(|(index, _)| *index == 1)
+                .map(|(_, primary)| primary.clone())
+                .expect("finalizer must track a validator set for epoch 1")
+        };
+        assert!(
+            !epoch1_primary.contains(&joining_node_pubkey),
+            "canceled joining validator must be excluded from epoch-1 oracle tracking"
+        );
+        for seed in 0..4u64 {
+            let active = ed25519::PrivateKey::from_seed(seed).public_key();
+            assert!(
+                epoch1_primary.contains(&active),
+                "genuine active validator (seed {seed}) must still be tracked for epoch 1"
+            );
+        }
 
         context.auditor().state()
     });
