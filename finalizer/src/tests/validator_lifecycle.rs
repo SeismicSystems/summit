@@ -231,7 +231,7 @@ fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epo
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, _mailbox) =
+        let (finalizer, _state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
