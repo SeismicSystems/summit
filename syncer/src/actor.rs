@@ -1409,6 +1409,42 @@ where
             return false;
         }
 
+        // Final guard binding the block header to its certificate round.
+        //
+        // The per-ingress checks (direct Finalized/Notarized delivery) reject
+        // mismatches early, but a `(block, finalization)` pair becomes trusted
+        // storage here regardless of which path produced it — including paths
+        // that bypass those checks: a finalization cached first then the block
+        // fetched later by digest (`Request::Block`), a consensus finalization
+        // matched against a locally-found block, a notarized block paired with
+        // a cached finalization, checkpoint restart, and gap repair. Enforcing
+        // the binding at this join point ensures every order gets the same
+        // protection. Normal blocks bind epoch and view exactly; a same-digest
+        // reproposal of the epoch-terminal block may carry an older header view
+        // than the certificate (see `header_view_binds_to_round`).
+        if let Some(finalization) = &finalization {
+            let certified_round = finalization.round();
+            if finalization.proposal.payload != commitment
+                || block.epoch() != certified_round.epoch()
+                || !header_view_binds_to_round(
+                    &self.epocher,
+                    block.height().get(),
+                    block.view().get(),
+                    certified_round.view().get(),
+                )
+            {
+                warn!(
+                    ?certified_round,
+                    block_height = %block.height(),
+                    block_epoch = %block.epoch(),
+                    block_view = %block.view(),
+                    ?commitment,
+                    "rejecting finalization store with header/certificate round mismatch"
+                );
+                return false;
+            }
+        }
+
         self.notify_subscribers(commitment, &block).await;
 
         #[cfg(feature = "prom")]
