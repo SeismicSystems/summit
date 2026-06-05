@@ -377,7 +377,16 @@ impl<
                                     let requester = try_join(parent_request, block_request);
                                     select! {
                                         result = requester => {
-                                            let (parent, block) = result.unwrap();
+                                            // The syncer drops (cancels) a block subscription for a
+                                            // round older than its last_processed_round, so a stale
+                                            // verify path can see the request canceled. Treat that as
+                                            // a terminal "cannot verify" (vote false) rather than an
+                                            // invariant violation.
+                                            let Ok((parent, block)) = result else {
+                                                warn!(?round, "verify aborted: block subscription canceled (likely stale round)");
+                                                let _ = response.send(false);
+                                                return;
+                                            };
 
                                             let parent_digest = parent.digest();
                                             let parent_height = parent.height();
@@ -488,10 +497,13 @@ impl<
                 syncer
                     .subscribe(parent_round, parent.1)
                     .await
-                    .map(|x| x.context("")),
+                    .map(|x| x.context("parent block subscription canceled")),
             )
         };
-        let parent_block = parent_block.await.expect("sender dropped");
+        // The syncer cancels (drops) a subscription for a round older than its
+        // last_processed_round. Propagate that as an Err so the Propose handler
+        // aborts the proposal gracefully instead of panicking.
+        let parent_block = parent_block.await?;
 
         #[cfg(feature = "prom")]
         {
