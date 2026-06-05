@@ -346,6 +346,8 @@ pub fn capture_state_root(&mut self, el_block_number: u64) {
 
 This is called after `execute_block` in the finalizer. The frozen `proof_tree` is used for all subsequent proof generation (via RPC), while the live `ssz_tree` continues to be mutated by finalization operations. The snapshot includes the sorted validator keys (needed for positional index lookups) and the withdrawal pubkey index (stored inside the `SszStateTree`).
 
+At an epoch boundary the finalized last block applies transition mutations *after* `execute_block` — protocol-parameter changes, committee updates, the epoch increment, the epoch-genesis hash, and added/removed-validator cleanup. So `capture_state_root()` is called a second time, after those mutations complete, before any aux data is exposed for the next block. This guarantees the first block of the new epoch advertises a `parent_beacon_block_root` that commits to the post-transition consensus state (the committee and parameters that authorize it), rather than the pre-transition snapshot from `execute_block`. The re-capture also re-freezes the `proof_tree`, so RPC proofs served after the boundary verify against the same post-transition root.
+
 The state root appears on-chain in EL block `proof_el_block_number + 1`.
 
 ## RPC API

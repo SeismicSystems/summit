@@ -182,6 +182,29 @@ struct BlockSubscription<B: Block> {
     _aborter: Aborter,
 }
 
+/// Whether a block's header view may legitimately differ from the view of the
+/// certificate that certified it.
+///
+/// Header view must equal the certified view for every block, with one exception:
+/// a same-digest reproposal of the final block of an epoch. Summit re-proposes the
+/// epoch-terminal block in a later view until it finalizes, so the reused block
+/// bytes carry the original (earlier) view while the network re-certifies the same
+/// digest in the later view. The digest commits to the header view, so the
+/// certificate is for that exact block; honest validators only produced it because
+/// the live verification path (`handle_verify`) accepts such reproposals without a
+/// view check. Sync/import must mirror that, or catch-up rejects valid boundary
+/// reproposal certificates. The epoch is bound separately by the caller; this only
+/// relaxes the view comparison.
+fn header_view_binds_to_round<ES: Epocher>(
+    epocher: &ES,
+    height: u64,
+    header_view: u64,
+    certified_view: u64,
+) -> bool {
+    header_view == certified_view
+        || (is_last_block_of_epoch(epocher, height) && header_view < certified_view)
+}
+
 /// The [Actor] is responsible for receiving uncertified blocks from the broadcast mechanism,
 /// receiving notarizations and finalizations from consensus, and reconstructing a total order
 /// of blocks.
@@ -953,7 +976,12 @@ where
                     || finalization.proposal.payload != block.digest()
                     || finalization.epoch() != epoch
                     || block.epoch() != certified_round.epoch()
-                    || block.view() != certified_round.view()
+                    || !header_view_binds_to_round(
+                        &self.epocher,
+                        block.height().get(),
+                        block.view().get(),
+                        certified_round.view().get(),
+                    )
                 {
                     warn!(
                         ?certified_round,
@@ -1002,7 +1030,12 @@ where
                 if certified_round != round
                     || notarization.proposal.payload != block.digest()
                     || block.epoch() != certified_round.epoch()
-                    || block.view() != certified_round.view()
+                    || !header_view_binds_to_round(
+                        &self.epocher,
+                        block.height().get(),
+                        block.view().get(),
+                        certified_round.view().get(),
+                    )
                 {
                     warn!(
                         ?certified_round,
@@ -1611,5 +1644,47 @@ where
             }
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::header_view_binds_to_round;
+    use commonware_consensus::types::FixedEpocher;
+    use std::num::NonZeroU64;
+
+    // Epoch length 10: epoch E spans heights [E*10, E*10 + 9], so the last block
+    // of an epoch is E*10 + 9 (e.g. height 9 for epoch 0, height 19 for epoch 1).
+    fn epocher() -> FixedEpocher {
+        FixedEpocher::new(NonZeroU64::new(10).unwrap())
+    }
+
+    /// Regression for the sync/import side of "bind blocks to round": header view
+    /// must equal the certified view, EXCEPT for a same-digest reproposal of the
+    /// epoch-terminal block, where the reused bytes carry the original (earlier)
+    /// view. Without the exception, catch-up rejects valid boundary reproposal
+    /// certificates; without the strict check, a non-terminal block could carry a
+    /// header view that disagrees with the round it was certified in.
+    #[test]
+    fn header_view_binding_relaxes_only_for_epoch_terminal_reproposals() {
+        let e = epocher();
+        const NON_TERMINAL: u64 = 5; // mid-epoch 0
+        const TERMINAL: u64 = 9; // last block of epoch 0
+
+        // Matching views always bind, terminal or not.
+        assert!(header_view_binds_to_round(&e, NON_TERMINAL, 5, 5));
+        assert!(header_view_binds_to_round(&e, TERMINAL, 9, 9));
+
+        // Non-terminal block whose header view disagrees with the certified view
+        // is rejected — this is the core invariant the issue is about.
+        assert!(!header_view_binds_to_round(&e, NON_TERMINAL, 5, 7));
+
+        // Epoch-terminal block re-certified in a LATER view is accepted: this is
+        // the same-digest boundary reproposal that live verification accepts.
+        assert!(header_view_binds_to_round(&e, TERMINAL, 9, 12));
+
+        // But a terminal block whose header view is AHEAD of the certified view is
+        // still rejected (a header view can never lead its certificate).
+        assert!(!header_view_binds_to_round(&e, TERMINAL, 12, 9));
     }
 }
