@@ -312,6 +312,26 @@ impl ConsensusState {
         })
     }
 
+    /// Returns the minimum validator count that *will* apply after the queued
+    /// protocol-parameter changes are drained at the next epoch boundary. If no
+    /// `MinimumValidatorCount` change is queued, returns the currently-active value.
+    ///
+    /// Removals (voluntary exits and stake-bound force-removals) staged this epoch
+    /// only take effect next epoch — at the same boundary a queued
+    /// `MinimumValidatorCount` change applies. Floor checks therefore use this
+    /// prospective value so a same-epoch raise is honored before it is formally
+    /// applied, and a lowering doesn't over-restrict.
+    pub fn prospective_minimum_validator_count(&self) -> u64 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|p| match p {
+                ProtocolParam::MinimumValidatorCount(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(self.minimum_validator_count)
+    }
+
     pub fn set_minimum_stake(&mut self, stake: u64) {
         self.validator_minimum_stake = stake;
         self.ssz_tree.set_validator_minimum_stake(stake);
@@ -853,7 +873,7 @@ impl ConsensusState {
     pub fn can_accept_active_validator_exit(&self) -> bool {
         self.current_epoch_active_validator_count()
             .saturating_sub(self.pending_active_validator_exits.saturating_add(1))
-            >= self.minimum_validator_count
+            >= self.prospective_minimum_validator_count()
     }
 
     pub fn get_active_or_joining_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
@@ -1481,6 +1501,35 @@ mod tests {
         assert!(!state.can_accept_active_validator_exit());
 
         state.reset_pending_active_validator_exits();
+        assert!(state.can_accept_active_validator_exit());
+    }
+
+    #[test]
+    fn exit_floor_honors_queued_minimum_validator_count_raise() {
+        // Removals staged this epoch take effect next epoch, at the same boundary
+        // a queued MinimumValidatorCount change applies — so the floor check must
+        // use the prospective value, not the current one.
+        let mut state = ConsensusState::default();
+        state.set_minimum_validator_count(2);
+        for i in 0..3u8 {
+            state.set_account(
+                [i + 1; 32],
+                create_test_validator_account(i as u64 + 1, 32_000_000_000),
+            );
+        }
+
+        // 3 active, floor 2: one exit is acceptable (3 - 1 >= 2).
+        assert!(state.can_accept_active_validator_exit());
+
+        // Queue a raise to floor 3. The prospective floor now governs: 3 - 1 = 2 < 3.
+        state.push_protocol_param_change(ProtocolParam::MinimumValidatorCount(3));
+        assert_eq!(state.prospective_minimum_validator_count(), 3);
+        assert!(!state.can_accept_active_validator_exit());
+
+        // A queued lowering is likewise honored before it is applied.
+        state.protocol_param_changes.clear();
+        state.push_protocol_param_change(ProtocolParam::MinimumValidatorCount(1));
+        assert_eq!(state.prospective_minimum_validator_count(), 1);
         assert!(state.can_accept_active_validator_exit());
     }
 
