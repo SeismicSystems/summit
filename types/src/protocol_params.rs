@@ -14,6 +14,8 @@ pub const MAX_WITHDRAWALS_PER_EPOCH_MIN: u64 = 1;
 pub const MAX_WITHDRAWALS_PER_EPOCH_MAX: u64 = 256;
 pub const MIN_OBSERVERS_PER_VALIDATOR: u64 = 0;
 pub const MAX_OBSERVERS_PER_VALIDATOR: u64 = 256;
+pub const MIN_MINIMUM_VALIDATOR_COUNT: u64 = 1;
+pub const DEFAULT_MINIMUM_VALIDATOR_COUNT: u64 = 3;
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {
@@ -25,6 +27,7 @@ pub enum ProtocolParam {
     MaxDepositsPerEpoch(u64),
     MaxWithdrawalsPerEpoch(u64),
     ObserversPerValidator(u64),
+    MinimumValidatorCount(u64),
 }
 
 impl TryFrom<ProtocolParamRequest> for ProtocolParam {
@@ -166,6 +169,24 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                     observers_per_validator,
                 ))
             }
+            0x08 => {
+                if request.param.len() != 8 {
+                    return Err(anyhow!(
+                        "Failed to parse minimum validator count protocol param, invalid length {}",
+                        request.param.len()
+                    ));
+                }
+                let bytes: [u8; 8] = request.param.as_slice().try_into()?;
+                let minimum_validator_count = u64::from_le_bytes(bytes);
+                if minimum_validator_count < MIN_MINIMUM_VALIDATOR_COUNT {
+                    return Err(anyhow!(
+                        "Minimum validator count {minimum_validator_count} is below minimum {MIN_MINIMUM_VALIDATOR_COUNT}"
+                    ));
+                }
+                Ok(ProtocolParam::MinimumValidatorCount(
+                    minimum_validator_count,
+                ))
+            }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
             )),
@@ -182,7 +203,8 @@ impl EncodeSize for ProtocolParam {
             | ProtocolParam::AllowedTimestampFuture(_)
             | ProtocolParam::MaxDepositsPerEpoch(_)
             | ProtocolParam::MaxWithdrawalsPerEpoch(_)
-            | ProtocolParam::ObserversPerValidator(_) => 1 + 8, // 1 byte tag + 8 byte value
+            | ProtocolParam::ObserversPerValidator(_)
+            | ProtocolParam::MinimumValidatorCount(_) => 1 + 8, // 1 byte tag + 8 byte value
             ProtocolParam::TreasuryAddress(_) => 1 + 20, // 1 byte tag + 20 byte address
         }
     }
@@ -221,6 +243,10 @@ impl Write for ProtocolParam {
             }
             ProtocolParam::ObserversPerValidator(value) => {
                 buf.put_u8(0x07);
+                buf.put_u64(*value);
+            }
+            ProtocolParam::MinimumValidatorCount(value) => {
+                buf.put_u8(0x08);
                 buf.put_u64(*value);
             }
         }
@@ -299,6 +325,16 @@ impl Read for ProtocolParam {
                     ));
                 }
                 Ok(ProtocolParam::ObserversPerValidator(value))
+            }
+            0x08 => {
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+                if value < MIN_MINIMUM_VALIDATOR_COUNT {
+                    return Err(Error::Invalid(
+                        "ProtocolParam",
+                        "minimum validator count out of bounds",
+                    ));
+                }
+                Ok(ProtocolParam::MinimumValidatorCount(value))
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }
@@ -466,6 +502,7 @@ mod tests {
             ProtocolParam::MaximumStake(200),
             ProtocolParam::MinimumStake(0),
             ProtocolParam::MaximumStake(u64::MAX),
+            ProtocolParam::MinimumValidatorCount(3),
         ];
 
         for param in params {
@@ -668,6 +705,51 @@ mod tests {
     }
 
     #[test]
+    fn test_minimum_validator_count_encode_decode() {
+        let param = ProtocolParam::MinimumValidatorCount(3);
+
+        let mut buf = BytesMut::new();
+        param.write(&mut buf);
+
+        assert_eq!(buf.len(), param.encode_size());
+        assert_eq!(buf.len(), 9);
+        assert_eq!(buf[0], 0x08);
+
+        let decoded = ProtocolParam::read(&mut buf.as_ref()).unwrap();
+        match decoded {
+            ProtocolParam::MinimumValidatorCount(v) => assert_eq!(v, 3),
+            _ => panic!("Expected MinimumValidatorCount variant"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_minimum_validator_count() {
+        let request = ProtocolParamRequest {
+            param_id: 0x08,
+            param: 5u64.to_le_bytes().to_vec(),
+        };
+        let param = ProtocolParam::try_from(request).unwrap();
+        match param {
+            ProtocolParam::MinimumValidatorCount(v) => assert_eq!(v, 5),
+            _ => panic!("Expected MinimumValidatorCount variant"),
+        }
+    }
+
+    #[test]
+    fn test_minimum_validator_count_rejects_zero() {
+        let request = ProtocolParamRequest {
+            param_id: 0x08,
+            param: 0u64.to_le_bytes().to_vec(),
+        };
+        assert!(ProtocolParam::try_from(request).is_err());
+
+        let mut buf = BytesMut::new();
+        buf.put_u8(0x08);
+        buf.put_u64(0);
+        assert!(ProtocolParam::read(&mut buf.as_ref()).is_err());
+    }
+
+    #[test]
     fn test_decode_truncated_input_returns_err() {
         // Empty buffer — must not panic.
         let empty: &[u8] = &[];
@@ -677,7 +759,7 @@ mod tests {
         ));
 
         // Tag only, no payload.
-        for tag in 0x00u8..=0x07 {
+        for tag in 0x00u8..=0x08 {
             let mut buf = BytesMut::new();
             buf.put_u8(tag);
             assert!(
