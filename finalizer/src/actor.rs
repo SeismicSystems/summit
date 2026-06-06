@@ -912,6 +912,8 @@ impl<
                 &mut self.canonical_state,
                 &self.protocol_consts,
                 self.deposit_signature_domain,
+                // canonical path: instant finality (safe = finalized = head)
+                None,
             )
             .await
             {
@@ -1000,17 +1002,8 @@ impl<
             );
         }
 
-        if let Err(e) = self
-            .engine_client
-            .commit_hash(*self.canonical_state.get_forkchoice())
-            .await
-        {
-            error!(target: "critical", "engine client error on canonical commit_hash after finalization: {e}");
-            #[cfg(feature = "prom")]
-            counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
-                .increment(1);
-            return Err(anyhow!("engine client error on canonical commit_hash: {e}"));
-        }
+        // Forkchoice was already committed (and its status gated) inside
+        // `execute_block` before any state mutation.
 
         #[cfg(feature = "prom")]
         {
@@ -1406,6 +1399,9 @@ impl<
             // discard the block: certify will reject it on every honest validator, no
             // certify quorum will form, and no descendant can build on it (find_parent
             // gates on certified). The fork is dead; skip fork-state creation.
+            // Fork path: head is this block, but safe/finalized stay at the
+            // canonical finalized hash so the EL never finalizes a speculative fork.
+            let fork_finalized = self.canonical_state.get_forkchoice().finalized_block_hash;
             let exec_outcome = match execute_block(
                 &mut self.engine_client,
                 &self.context,
@@ -1413,6 +1409,7 @@ impl<
                 &mut fork_state,
                 &self.protocol_consts,
                 self.deposit_signature_domain,
+                Some(fork_finalized),
             )
             .await
             {
@@ -1494,22 +1491,8 @@ impl<
                 },
             );
 
-            // Commit this fork to reth so validators can build/verify blocks on top of it
-            // Keep the canonical finalized chain unchanged by using canonical finalized hash
-            let fork_forkchoice = ForkchoiceState {
-                head_block_hash: fork_state.get_forkchoice().head_block_hash,
-                safe_block_hash: self.canonical_state.get_forkchoice().finalized_block_hash,
-                finalized_block_hash: self.canonical_state.get_forkchoice().finalized_block_hash,
-            };
-            if let Err(e) = self.engine_client.commit_hash(fork_forkchoice).await {
-                error!(target: "critical", height, ?block_digest, "engine client error on fork commit_hash after notarization: {e}");
-                #[cfg(feature = "prom")]
-                counter!("critical_errors_total", "reason" => "engine_client_error", "severity" => "critical")
-                    .increment(1);
-                return Err(anyhow!(
-                    "engine client error on fork commit_hash at height {height}: {e}"
-                ));
-            }
+            // The fork forkchoice was already committed to reth (and its status
+            // gated) inside `execute_block`, so validators can build/verify on it.
 
             let total_fork_count: usize = self.fork_states.values().map(|f| f.len()).sum();
             info!(
@@ -2152,6 +2135,10 @@ async fn execute_block<
     state: &mut ConsensusState,
     consts: &ProtocolConsts,
     deposit_signature_domain: Digest,
+    // forkchoice safe/finalized hash for this block's EL commit: `None` on the
+    // canonical path (instant finality → safe = finalized = head), or the
+    // canonical finalized hash for a speculative notarized fork.
+    fork_finalized: Option<alloy_primitives::B256>,
 ) -> Result<ExecuteOutcome, summit_types::EngineClientError> {
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
@@ -2194,6 +2181,41 @@ async fn execute_block<
         eth_hash = hex(&eth_hash),
         "committing block to execution layer"
     );
+
+    // EL forkchoice handoff, gated as part of block execution and BEFORE the
+    // in-state forkchoice update and request processing below. Placing it here
+    // means a SYNCING/INVALID forkchoice reuses the same buffer/abort handling as
+    // check_payload, and a SYNCING retry replays cleanly because `state` is still
+    // untouched. Only the head varies per block; safe/finalized follow the path.
+    let safe_finalized = match fork_finalized {
+        Some(finalized) => finalized, // notarized fork: keep the canonical finalized
+        None => eth_hash.into(),      // canonical: instant finality (safe = finalized = head)
+    };
+    let forkchoice_status = engine_client
+        .commit_hash(ForkchoiceState {
+            head_block_hash: eth_hash.into(),
+            safe_block_hash: safe_finalized,
+            finalized_block_hash: safe_finalized,
+        })
+        .await?;
+    if forkchoice_status.is_syncing() {
+        debug!(
+            height = new_height,
+            "execution client returned SYNCING on forkchoice update; deferring block for later retry"
+        );
+        return Ok(ExecuteOutcome::Syncing);
+    }
+    if !forkchoice_status.is_valid() {
+        // The EL accepted the payload as VALID but won't adopt the forkchoice for
+        // it: an EL/CL inconsistency, not a normal rejection. Surface it like an
+        // invalid payload (finalized path shuts down; fork path discards).
+        warn!(
+            height = new_height,
+            ?forkchoice_status,
+            "execution client returned non-valid forkchoice update"
+        );
+        return Ok(ExecuteOutcome::InvalidPayload);
+    }
 
     state.set_forkchoice_head(eth_hash.into());
 

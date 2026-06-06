@@ -156,9 +156,9 @@ fn default_protocol_consts() -> ProtocolConsts {
 
 #[test]
 fn test_initial_startup_sync_waits_for_valid() {
-    // Test that the finalizer's initial forkchoice update loop retries
-    // when the execution client returns SYNCING, and proceeds once VALID.
-    // After the sync completes, finalized blocks should be processed normally.
+    // Test that the finalizer tolerates a SYNCING initial forkchoice update
+    // without blocking: it enters its main loop immediately, and finalized blocks
+    // are processed once the execution client returns VALID.
 
     let cfg = deterministic::Config::default().with_seed(100);
     let executor = Runner::from(cfg);
@@ -174,8 +174,10 @@ fn test_initial_startup_sync_waits_for_valid() {
         let node_key = ed25519::PrivateKey::from_seed(0);
 
         let engine_client = MockEngineClient::new();
-        // commit_hash returns SYNCING twice, then falls through to VALID
-        engine_client.queue_commit_hash_syncing(2);
+        // Startup forkchoice update returns SYNCING once (the finalizer enters its
+        // main loop without blocking); later commit_hash calls fall through to
+        // VALID so the block's own forkchoice update succeeds and it applies.
+        engine_client.queue_commit_hash_syncing(1);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
             mailbox_size: 100,
@@ -210,10 +212,9 @@ fn test_initial_startup_sync_waits_for_valid() {
 
         let _handle = finalizer.start(orchestrator_mailbox);
 
-        // The initial forkchoice loop sleeps 5s per SYNCING retry.
-        // With 2 SYNCING responses, the finalizer needs ~10s before it starts
-        // processing messages. Wait long enough for it to complete.
-        context.sleep(Duration::from_secs(12)).await;
+        // Startup does not block on SYNCING — it enters the main loop right away.
+        // A short pause lets startup finish before we send the block.
+        context.sleep(Duration::from_millis(200)).await;
 
         // Now send a finalized block — it should be processed normally
         // Height 6, epoch = 6/10 = 0, matches state.epoch
@@ -1101,6 +1102,236 @@ fn test_duplicate_finalized_delivery_is_idempotent() {
             engine_client_probe.check_payload_call_count(),
             calls_after_first,
             "duplicate finalized block must not be re-executed (check_payload was called again)"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_finalized_commit_hash_syncing_buffers_and_retries() {
+    // When the forkchoice update (commit_hash) returns SYNCING during finalized
+    // block execution, the finalizer must NOT advance — it buffers and retries,
+    // applying the block only once the EL adopts the forkchoice.
+    let cfg = deterministic::Config::default().with_seed(202);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x42u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // forkchoice update returns SYNCING 3 times for the first block, then VALID.
+        engine_client.queue_commit_hash_syncing(3);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_finalized_fcu_sync".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1, None), ack))
+            .await;
+
+        // Must NOT advance while the forkchoice is still SYNCING.
+        context.sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            mailbox.get_latest_height().await,
+            0,
+            "must not advance while the EL forkchoice is SYNCING"
+        );
+
+        // Once the retries clear and the EL returns VALID, the block applies.
+        context.sleep(Duration::from_secs(20)).await;
+        assert_eq!(
+            mailbox.get_latest_height().await,
+            1,
+            "block must apply once the EL adopts the forkchoice"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_finalized_commit_hash_invalid_shuts_down() {
+    // A non-valid (INVALID) forkchoice update for a finalized block is an EL/CL
+    // inconsistency (the payload was already VALID): the validator must shut down
+    // rather than advance on a head the EL has not adopted.
+    let cfg = deterministic::Config::default().with_seed(203);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x42u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // Startup forkchoice update consumes the first override; keep it VALID so
+        // only the finalized block's forkchoice update is INVALID.
+        engine_client.queue_commit_hash_valid(1);
+        engine_client.queue_commit_hash_invalid(1);
+
+        let token = CancellationToken::new();
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_finalized_fcu_invalid".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: token.clone(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(500)).await;
+
+        assert!(
+            token.is_cancelled(),
+            "a non-valid finalized forkchoice update must shut the validator down"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_notarized_commit_hash_invalid_discards_fork() {
+    // A non-valid (INVALID) forkchoice update for a notarized fork is discarded,
+    // not fatal: the finalizer drops the fork and keeps running.
+    let cfg = deterministic::Config::default().with_seed(204);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x42u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // Startup forkchoice update consumes the first override; keep it VALID so
+        // the notarized fork's forkchoice update is the INVALID one.
+        engine_client.queue_commit_hash_valid(1);
+        engine_client.queue_commit_hash_invalid(1);
+
+        let token = CancellationToken::new();
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_notarized_fcu_invalid".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: token.clone(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
+
+        // Notarized block whose forkchoice update is INVALID → fork discarded.
+        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        context.sleep(Duration::from_millis(500)).await;
+        assert!(
+            !token.is_cancelled(),
+            "a non-valid notarized forkchoice must not shut the validator down"
+        );
+
+        // The finalizer must keep working: finalize the same block (commit_hash now
+        // VALID) and confirm it advances.
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            mailbox.get_latest_height().await,
+            1,
+            "finalizer must recover and apply a valid block after discarding the fork"
         );
 
         context.auditor().state()
