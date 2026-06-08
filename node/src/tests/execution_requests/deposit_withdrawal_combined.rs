@@ -1950,6 +1950,211 @@ fn test_last_block_topup_does_not_drop_staged_removal_balance() {
 }
 
 #[test_traced("INFO")]
+fn test_pending_topup_does_not_evade_minimum_stake_increase() {
+    // A validator must not stay active below the minimum stake by having an insufficient top-up
+    // pending across a MinimumStake increase.
+    //
+    // Stake-bound enforcement is one-shot — it runs only at the boundary where a stake param
+    // actually changes (staging is gated by `has_pending_stake_bound_change()`, the scan by
+    // `stake_changed`). At that single boundary, #188 skips any account with a pending deposit.
+    // So if a top-up is still queued when the increase applies, the validator is skipped and is
+    // never re-checked: it remains active below the new minimum.
+    //
+    // This is reached through the real ingestion path (no state editing) with a zero
+    // deposit-processing cap — the "low/zero cap" trigger the finding describes — which keeps the
+    // top-up queued across the boundary. The victim's top-up (1 ETH) cannot cover the increase
+    // (32 -> 40), so even once processed it could never satisfy the new minimum.
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let max_stake = 100_000_000_000;
+    let new_min_stake = 40_000_000_000;
+    let topup_amount = 1_000_000_000; // 1 ETH — far short of the 8 ETH needed to reach the new min
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        let mut addresses = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+            addresses.push(Address::from([i as u8; 20]));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Victim is validators[0]. Its top-up uses its own keys so it is a valid top-up.
+        let victim_idx = 0usize;
+        let victim_pubkey = validators[victim_idx].0.clone();
+        let victim_address = addresses[victim_idx];
+        let mut victim_credentials = [0u8; 32];
+        victim_credentials[0] = 0x01;
+        victim_credentials[12..32].copy_from_slice(victim_address.as_ref());
+        let (topup_deposit, _, _) = common::create_deposit_request(
+            50,
+            topup_amount,
+            common::get_domain(),
+            Some(key_stores[victim_idx].node_key.clone()),
+            Some(key_stores[victim_idx].consensus_key.clone()),
+            Some(victim_credentials),
+        );
+
+        // Submit the top-up and the MinimumStake increase early in epoch 0 (param applies at the
+        // epoch-0 boundary; the top-up is queued and — with the zero cap — stays queued across it).
+        let min_stake_update = common::create_protocol_param_request(0x00, new_min_stake);
+        let submit_block = 3;
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(
+            submit_block,
+            common::execution_requests_to_requests(vec![
+                ExecutionRequest::Deposit(topup_deposit.clone()),
+                ExecutionRequest::ProtocolParam(min_stake_update),
+            ]),
+        );
+
+        // Run well past the increase and any withdrawal window so a correctly-enforced removal
+        // would have completed.
+        let stop_height =
+            last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, VALIDATOR_WITHDRAWAL_NUM_EPOCHS + 2) + 1;
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+
+        let mut initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+        initial_state.set_maximum_stake(max_stake);
+        // Zero deposit-processing cap keeps the top-up queued across the MinimumStake boundary.
+        initial_state.set_max_deposits_per_epoch(0);
+        // Only the victim should fall below the raised minimum. Give every other validator a
+        // balance comfortably above it so the increase doesn't force-remove the rest of the
+        // committee (which would collapse consensus and confound the test).
+        let healthy_balance = 50_000_000_000;
+        for idx in 0..n as usize {
+            if idx == victim_idx {
+                continue;
+            }
+            let pk_bytes: [u8; 32] = validators[idx].0.as_ref().try_into().unwrap();
+            let mut account = initial_state.get_account(&pk_bytes).unwrap().clone();
+            account.balance = healthy_balance;
+            initial_state.set_account(pk_bytes, account);
+        }
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // The victim should be force-removed, so only n-1 validators keep finalizing once the fix
+        // is in place. Without the fix all n keep going, so wait for at least n-1.
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 >= n - 1 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Sanity: the MinimumStake increase was applied.
+        let state_query = consensus_state_queries.get(&1).unwrap();
+        assert_eq!(state_query.get_minimum_stake().await, new_min_stake);
+
+        // The victim cannot satisfy the raised minimum, so it must not remain an active
+        // below-minimum validator — it should be force-removed (its stake withdrawn).
+        let account = state_query.get_validator_account(victim_pubkey).await;
+        assert!(
+            account
+                .as_ref()
+                .is_none_or(|account| account.balance >= new_min_stake),
+            "validator below the raised minimum must be force-removed, not left active below it: {account:?}"
+        );
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
 fn test_deposit_and_withdrawal_same_block() {
     // Tests that when a deposit and withdrawal for the same validator are in the same block,
     // the second request is blocked by the first one's pending flag.
