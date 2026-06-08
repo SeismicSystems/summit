@@ -31,6 +31,10 @@ use alloy_transport::TransportError;
 use alloy_transport_ipc::IpcConnect;
 use std::future::Future;
 
+/// The number of times the engine client will try to reconnect
+/// after failing to connect to the IPC socket.
+const IPC_CONNECT_MAX_RETRIES: u32 = 200;
+
 /// Typed error returned by `EngineClient` methods so callers can decide
 /// whether to retry, drop a round, or shut down — instead of the wrapper
 /// panicking on every non-transport JSON-RPC failure.
@@ -106,7 +110,7 @@ impl RethEngineClient {
     }
 
     pub async fn wait_until_reconnect_available(&mut self) {
-        loop {
+        for _ in 0..IPC_CONNECT_MAX_RETRIES {
             let ipc = IpcConnect::new(self.engine_ipc_path.clone());
 
             match ProviderBuilder::default().connect_ipc(ipc).await {
@@ -256,7 +260,7 @@ impl BadBlockEngineClient {
     }
 
     pub async fn wait_until_reconnect_available(&mut self) {
-        loop {
+        for _ in 0..IPC_CONNECT_MAX_RETRIES {
             let ipc = IpcConnect::new(self.engine_ipc_path.clone());
 
             match ProviderBuilder::default().connect_ipc(ipc).await {
