@@ -1700,6 +1700,256 @@ fn test_withdrawal_blocked_by_pending_deposit() {
 }
 
 #[test_traced("INFO")]
+fn test_last_block_topup_does_not_drop_staged_removal_balance() {
+    // Regression test for the stake-bound staged-removal + last-block top-up balance drop.
+    //
+    // Scenario (audit issue):
+    //   1. A MinimumStake increase (32 -> 33 ETH) is submitted early in epoch 0.
+    //   2. The victim validator (validators[0], 32 ETH) will fall below the new minimum. The
+    //      other validators are at 40 ETH, so only the victim is a removal candidate (and the
+    //      minimum-validator-count floor of 3 still permits staging one of the five).
+    //   3. At the penultimate block of epoch 0 the victim is staged into removed_validators.
+    //   4. At the last block of epoch 0 the victim submits a 1 ETH top-up. This sets
+    //      has_pending_deposit = true and queues the deposit: 32 + 1 = 33 still passes the
+    //      parse-time bounds check because the raised minimum has not been applied yet.
+    //   5. At the epoch boundary the staged removal marks the victim Inactive (balance 32 kept),
+    //      and the stake-bound withdrawal scan SKIPS the victim because has_pending_deposit.
+    //   6. At the next penultimate block (epoch 1) the queued top-up is processed against the
+    //      now-Inactive account. The buggy code treats it as a new-validator deposit, uses
+    //      new_balance = request.amount (1 ETH), refunds only the 1 ETH and removes the account.
+    //
+    // Correct behavior (removal wins): the staged removal is honored. When the top-up is processed
+    // against the Inactive account, the victim's original 32 ETH bonded balance is withdrawn to its
+    // withdrawal address and the 1 ETH top-up is refunded (never credited). With no invalid-deposit
+    // tax configured, the full 33 ETH is returned to the victim's address and the account is
+    // removed. The original bonded balance is never silently dropped.
+    let n = 5;
+    let min_stake = 32_000_000_000; // 32 ETH (victim's balance)
+    let healthy_balance = 40_000_000_000; // 40 ETH (other validators, above the raised minimum)
+    let max_stake = 100_000_000_000; // 100 ETH
+    let new_min_stake = 33_000_000_000; // 33 ETH (raised minimum, above the victim's balance)
+    let topup_amount = 1_000_000_000; // 1 ETH last-block top-up
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        // Withdrawal credentials per validator, created after sorting so they align.
+        let addresses: Vec<Address> = (0..n).map(|i| Address::from([i as u8; 20])).collect();
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // The victim is validators[0] (smallest pubkey after sorting).
+        let victim_idx = 0usize;
+        let victim_pubkey = validators[victim_idx].0.clone();
+        let victim_address = addresses[victim_idx];
+
+        // The victim's last-block top-up reuses the victim's node + consensus keys so it is
+        // recognized as an existing-validator top-up rather than a new validator.
+        let mut victim_withdrawal_credentials = [0u8; 32];
+        victim_withdrawal_credentials[0] = 0x01;
+        victim_withdrawal_credentials[12..32].copy_from_slice(victim_address.as_ref());
+        let (topup_deposit, _, _) = common::create_deposit_request(
+            50, // deposit index distinct from the genesis validators
+            topup_amount,
+            common::get_domain(),
+            Some(key_stores[victim_idx].node_key.clone()),
+            Some(key_stores[victim_idx].consensus_key.clone()),
+            Some(victim_withdrawal_credentials),
+        );
+
+        // MinimumStake increase (param_id 0x00).
+        let min_stake_update = common::create_protocol_param_request(0x00, new_min_stake);
+
+        // Block schedule (DEFAULT_BLOCKS_PER_EPOCH = 10):
+        //   - param update early in epoch 0 (pending through the epoch, applied at its last block)
+        //   - victim staged at the penultimate block of epoch 0
+        //   - victim top-up at the LAST block of epoch 0 (after staging)
+        let param_block = 3;
+        let topup_block = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0);
+        // The queued top-up is processed at the penultimate block of epoch 1, where the resulting
+        // refund/withdrawal is scheduled `VALIDATOR_WITHDRAWAL_NUM_EPOCHS` epochs out.
+        let resolution_epoch = 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let resolution_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, resolution_epoch);
+        let stop_height = resolution_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(
+            param_block,
+            common::execution_requests_to_requests(vec![ExecutionRequest::ProtocolParam(
+                min_stake_update,
+            )]),
+        );
+        execution_requests_map.insert(
+            topup_block,
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(
+                topup_deposit.clone(),
+            )]),
+        );
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+
+        // Genesis: victim at 32 ETH, every other validator at 40 ETH (above the raised minimum),
+        // maximum stake raised to 100 ETH so the healthy validators stay in range.
+        let mut initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+        initial_state.set_maximum_stake(max_stake);
+        for idx in 0..n as usize {
+            if idx == victim_idx {
+                continue;
+            }
+            let pk_bytes: [u8; 32] = validators[idx].0.as_ref().try_into().unwrap();
+            let mut account = initial_state.get_account(&pk_bytes).unwrap().clone();
+            account.balance = healthy_balance;
+            initial_state.set_account(pk_bytes, account);
+        }
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // The victim exits the validator set, so only n-1 validators keep finalizing.
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 1 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Query a surviving validator's view of the canonical state.
+        let state_query = consensus_state_queries.get(&1).unwrap();
+
+        // Sanity: the MinimumStake increase was applied.
+        assert_eq!(state_query.get_minimum_stake().await, new_min_stake);
+
+        // The staged removal is honored: the victim account no longer exists.
+        let victim_account = state_query.get_validator_account(victim_pubkey).await;
+        assert!(
+            victim_account.is_none(),
+            "staged-removal validator should be removed once its top-up is resolved, got {victim_account:?}"
+        );
+
+        // The victim's original bonded balance is returned to the EL rather than silently dropped:
+        // the full 32 ETH is withdrawn and the 1 ETH top-up is refunded (no invalid-deposit tax),
+        // so 33 ETH total reaches the victim's withdrawal address.
+        let withdrawals = engine_client_network.get_withdrawals();
+        let total_withdrawn_to_victim: u64 = withdrawals
+            .values()
+            .flatten()
+            .filter(|withdrawal| withdrawal.address == victim_address)
+            .map(|withdrawal| withdrawal.amount)
+            .sum();
+        assert_eq!(
+            total_withdrawn_to_victim,
+            min_stake + topup_amount,
+            "expected the original bonded balance ({min_stake}) plus the refunded top-up \
+             ({topup_amount}) to be returned to the victim's address, got {total_withdrawn_to_victim}"
+        );
+
+        // The network stays consistent across the validators that remain.
+        let victim_client_id = format!("validator_{}", validators[victim_idx].0);
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &[&victim_client_id])
+                .is_ok()
+        );
+        common::assert_state_root_consensus_skip(&consensus_state_queries, &[victim_idx]).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
 fn test_deposit_and_withdrawal_same_block() {
     // Tests that when a deposit and withdrawal for the same validator are in the same block,
     // the second request is blocked by the first one's pending flag.

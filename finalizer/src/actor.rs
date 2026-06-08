@@ -2525,6 +2525,64 @@ async fn process_execution_requests<
                 account.has_pending_deposit = false;
 
                 if account.status == ValidatorStatus::Inactive {
+                    // A nonzero balance means this is not a fresh new-validator
+                    // placeholder. Placeholders are created with balance 0 at parse
+                    // time (see `parse_execution_requests`); an Inactive account that
+                    // still holds a balance is a validator that was staged for
+                    // stake-bound removal and marked Inactive at the epoch boundary,
+                    // with this top-up left queued behind it. The boundary stake-bound
+                    // withdrawal scan skips accounts with `has_pending_deposit`, so the
+                    // bonded balance was never withdrawn there. Honor the removal
+                    // exactly as that scan would have: withdraw the full bonded balance
+                    // and refund the top-up separately, so the original stake is never
+                    // silently dropped.
+                    if account.balance > 0 {
+                        let bonded_balance = account.balance;
+                        let withdrawal_credentials = account.withdrawal_credentials;
+                        let withdrawal_epoch =
+                            state.get_epoch() + consts.validator_withdrawal_num_epochs;
+
+                        info!(
+                            validator = hex::encode(node_pubkey_bytes),
+                            balance = bonded_balance,
+                            deposit_amount = request.amount,
+                            "queued top-up resolved against staged-removal validator: withdrawing bonded balance and refunding top-up"
+                        );
+
+                        // Withdraw the full pre-existing bonded balance. This stake was
+                        // credited on the EL, so balance_deduction = balance. Mirrors
+                        // the stake-bound full-exit path; the account is removed by the
+                        // withdrawal-completion path once its balance reaches 0.
+                        account.balance = 0;
+                        account.has_pending_withdrawal = true;
+                        state.set_account(node_pubkey_bytes, account);
+
+                        state.push_withdrawal_request(
+                            WithdrawalRequest {
+                                source_address: withdrawal_credentials,
+                                validator_pubkey: node_pubkey_bytes,
+                                amount: bonded_balance,
+                            },
+                            withdrawal_epoch,
+                            bonded_balance,
+                        );
+
+                        // Refund the top-up, which was never credited to the balance
+                        // (taxed like any other invalid-deposit refund).
+                        let refund_pubkey =
+                            refunded_deposit_key(withdrawal_credentials, request.index);
+                        push_invalid_deposit_withdrawals(
+                            state,
+                            withdrawal_credentials,
+                            refund_pubkey,
+                            request.index,
+                            request.amount,
+                            withdrawal_epoch,
+                        );
+
+                        continue;
+                    }
+
                     // New validator: account was created early with Inactive status
                     let new_balance = request.amount;
 
