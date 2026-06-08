@@ -3,7 +3,7 @@
 use super::mocks::{MockEngineClient, MockNetworkOracle};
 use crate::actor::Finalizer;
 use crate::config::{FinalizerConfig, ProtocolConsts};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rpc_types_engine::{
     ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
 };
@@ -209,6 +209,123 @@ fn test_orphaned_block_processed_when_parent_arrives() {
 
         assert!(result1, "Block 1 should be in fork_states");
         assert!(result2, "Block 2 should be processed after parent arrived");
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_fork_aux_data_does_not_finalize_unfinalized_fork_head() {
+    // Regression test: aux data for a block proposed on a notarized-but-unfinalized
+    // fork must never advertise the speculative fork head as the EL-finalized hash.
+    //
+    // `execute_block` normalizes a fork state's safe/finalized forkchoice hashes to
+    // the fork head so the SSZ state root is independent of processing order. That
+    // stored forkchoice must NOT be exposed verbatim to the Engine API: the safe and
+    // finalized hashes sent to engine_forkchoiceUpdatedV3 have to keep pointing at the
+    // canonical finalized block, exactly as the immediate fork commit does. Otherwise
+    // a validator building on a fork tells its EL the speculative head is finalized,
+    // and if the fork loses the local EL can no longer follow the canonical finalized
+    // branch.
+
+    let cfg = deterministic::Config::default().with_seed(42);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x42u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_fork_aux_finalized".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let genesis_digest = genesis_block.digest();
+
+        // Notarize (but never finalize) block1 on top of genesis. It lands in
+        // fork_states as a speculative fork head; canonical finalized stays at genesis.
+        let block1 = create_test_block(genesis_digest, 1, 2, 1001);
+        let block1_digest = block1.digest();
+        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        let in_forks = mailbox
+            .notify_at_height(1, block1_digest)
+            .await
+            .await
+            .expect("notify channel closed");
+        assert!(
+            in_forks,
+            "block1 should be tracked as a notarized fork state"
+        );
+
+        // Request aux data for a child proposed on the fork head (height 2).
+        let aux = mailbox
+            .get_aux_data(2, block1_digest)
+            .await
+            .await
+            .expect("aux data channel closed")
+            .expect("aux data should be available for the fork parent");
+
+        let canonical_finalized: B256 = genesis_hash.into();
+        let fork_head_el: B256 = block1.eth_block_hash().into();
+
+        // The fork head is notarized but unfinalized: it must never be advertised as
+        // the EL-finalized (or safe) hash. Both must stay at the canonical finalized
+        // block, while the head we build on is the fork head.
+        assert_ne!(
+            aux.forkchoice.finalized_block_hash, fork_head_el,
+            "fork aux data must not mark the unfinalized fork head as EL-finalized"
+        );
+        assert_eq!(
+            aux.forkchoice.finalized_block_hash, canonical_finalized,
+            "fork aux data finalized hash must remain the canonical finalized block"
+        );
+        assert_eq!(
+            aux.forkchoice.safe_block_hash, canonical_finalized,
+            "fork aux data safe hash must remain the canonical finalized block"
+        );
+        assert_eq!(
+            aux.forkchoice.head_block_hash, fork_head_el,
+            "fork aux data head must be the fork head being built on"
+        );
 
         context.auditor().state()
     });
