@@ -579,6 +579,14 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
         let stale_notify = mailbox.notify_at_height(1, stale_block.digest()).await;
         let future_notify = mailbox.notify_at_height(3, future_block.digest()).await;
 
+        // Finalize sequentially (the syncer never skips a height): canonical
+        // advances 0 -> 1 -> 2.
+        let (ack1, _waiter1) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1.clone(), None), ack1))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
         let (ack, _waiter) = Exact::handle();
         mailbox
             .report(Update::FinalizedBlock((block2.clone(), None), ack))
@@ -868,6 +876,15 @@ fn test_fork_states_pruned_after_finalization() {
         assert!(notify1.await.unwrap(), "Block 1 should be in fork_states");
         assert!(notify2.await.unwrap(), "Block 2 should be in fork_states");
         assert!(notify3.await.unwrap(), "Block 3 should be in fork_states");
+
+        // Finalize sequentially: the syncer delivers finalized blocks in
+        // monotonic height order with no gaps, so the finalizer advances
+        // canonical 0 -> 1 -> 2 rather than jumping straight to height 2.
+        let (ack1, _waiter1) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1.clone(), None), ack1))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
 
         // Now finalize block2 (height 2)
         let (ack, _waiter) = Exact::handle();

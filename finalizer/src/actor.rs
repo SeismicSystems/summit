@@ -914,7 +914,8 @@ impl<
         // execute a non-canonical block onto canonical state.
         let canonical_height = self.canonical_state.get_latest_height();
         let canonical_head = self.canonical_state.get_head_digest();
-        if height == canonical_height + 1 && block.parent() != canonical_head {
+
+        if height != canonical_height + 1 || block.parent() != canonical_head {
             error!(
                 target: "critical",
                 height,
