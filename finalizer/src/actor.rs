@@ -2983,6 +2983,25 @@ async fn process_execution_requests<
                     continue;
                 };
 
+                // Guard against a stale deposit binding to a replacement validator that reused
+                // this node pubkey: if the stored consensus key differs from the one the deposit
+                // was accepted with, the account is a different identity — refund the deposit
+                // rather than crediting the wrong validator's lifecycle.
+                if account.consensus_public_key != request.consensus_pubkey {
+                    warn!(
+                        "Deposit request consensus key does not match the current account, refunding: {request:?}"
+                    );
+                    queue_deposit_refund(
+                        state,
+                        request.withdrawal_credentials,
+                        request.amount,
+                        request.index,
+                        DepositRejectionReason::Refund,
+                        consts,
+                    );
+                    continue;
+                }
+
                 // Clear the pending deposit flag since we're processing it now
                 account.has_pending_deposit = false;
 
