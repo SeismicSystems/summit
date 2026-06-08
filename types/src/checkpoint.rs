@@ -86,9 +86,20 @@ impl Decode for Checkpoint {
         let data: Vec<u8> = decoder.decode_next()?;
         let digest_bytes: [u8; 32] = decoder.decode_next()?;
 
+        // Bind the redundant `digest` field to `data`: a decoded checkpoint must
+        // satisfy `digest == sha256(data)`.
+        let digest = Digest::from(digest_bytes);
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        if hasher.finalize() != digest {
+            return Err(ssz::DecodeError::BytesInvalid(
+                "checkpoint digest does not match sha256(data)".to_string(),
+            ));
+        }
+
         Ok(Self {
             data: Bytes::from(data),
-            digest: Digest::from(digest_bytes),
+            digest,
         })
     }
 }
@@ -1084,6 +1095,43 @@ mod tests {
         let outer_checkpoint = Checkpoint::new(&outer_state);
         let result = ConsensusState::try_from(&outer_checkpoint);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_ssz_bytes_rejects_digest_data_mismatch() {
+        // A decoded Checkpoint must satisfy `digest == sha256(data)`. Encoding a
+        // checkpoint whose stored digest does not match its data and decoding it
+        // must fail. This is the path `ConsensusState::read_cfg` uses to decode an
+        // embedded pending_checkpoint.
+        let valid = Checkpoint::new(&ConsensusState::default());
+        let tampered = Checkpoint {
+            data: valid.data.clone(),
+            digest: [0xFF; 32].into(),
+        };
+        assert!(Checkpoint::from_ssz_bytes(&tampered.as_ssz_bytes()).is_err());
+
+        // Sanity: a self-consistent checkpoint still round-trips.
+        assert_eq!(
+            Checkpoint::from_ssz_bytes(&valid.as_ssz_bytes()).unwrap(),
+            valid
+        );
+    }
+
+    #[test]
+    fn test_consensus_state_decode_rejects_tampered_pending_checkpoint_digest() {
+        use commonware_codec::Encode as _;
+
+        // ConsensusState::read_cfg decodes an embedded pending_checkpoint through
+        // Checkpoint::from_ssz_bytes, so a pending_checkpoint whose digest does
+        // not match its data must be rejected on decode rather than trusted.
+        let mut pending = Checkpoint::new(&ConsensusState::default());
+        pending.digest = [0xFF; 32].into();
+
+        let mut state = ConsensusState::default();
+        state.set_pending_checkpoint(Some(pending));
+
+        let mut encoded = state.encode();
+        assert!(ConsensusState::decode(&mut encoded).is_err());
     }
 
     #[test]
