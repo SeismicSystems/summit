@@ -121,7 +121,7 @@ epoch_N_subtree:
   8 leaves per withdrawal (same field layout as below)
 ```
 
-Each withdrawal occupies 8 leaves (7 fields + 1 zero padding):
+Each withdrawal occupies 8 leaves (8 fields):
 
 | Field Index | Field |
 |-------------|-------|
@@ -132,7 +132,7 @@ Each withdrawal occupies 8 leaves (7 fields + 1 zero padding):
 | 4 | `pubkey` |
 | 5 | `balance_deduction` |
 | 6 | `epoch` |
-| 7 | (zero padding) |
+| 7 | `kind` |
 
 A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by validator pubkey.
 
