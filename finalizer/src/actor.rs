@@ -2316,15 +2316,24 @@ impl<
                 .canonical_state
                 .validator_accounts_iter()
                 .filter_map(|(key, acc)| {
-                    if !acc.has_pending_deposit
-                        && !pending_exit_pubkeys.contains(key)
-                        && (acc.balance < self.canonical_state.get_minimum_stake()
-                            || acc.balance > self.canonical_state.get_maximum_stake())
+                    let min_stake = self.canonical_state.get_minimum_stake();
+                    let max_stake = self.canonical_state.get_maximum_stake();
+                    if pending_exit_pubkeys.contains(key)
+                        || !(acc.balance < min_stake || acc.balance > max_stake)
                     {
-                        Some((*key, acc.balance, acc.withdrawal_credentials))
-                    } else {
-                        None
+                        return None;
                     }
+                    // Defer to deposit processing only if a queued deposit could bring this
+                    // validator back into range; otherwise enforce now, so a too-small (or
+                    // never-processed) deposit can't let an out-of-bounds validator linger.
+                    if acc.has_pending_deposit {
+                        let prospective =
+                            acc.balance + self.canonical_state.pending_deposit_amount(key);
+                        if (min_stake..=max_stake).contains(&prospective) {
+                            return None;
+                        }
+                    }
+                    Some((*key, acc.balance, acc.withdrawal_credentials))
                 })
                 .collect();
 
@@ -3197,11 +3206,21 @@ async fn process_execution_requests<
             let candidates: Vec<([u8; 32], u64, ValidatorStatus)> = state
                 .validator_accounts_iter()
                 .filter_map(|(key, account)| {
-                    if !account.has_pending_deposit && account.balance < prospective_min {
-                        Some((*key, account.joining_epoch, account.status.clone()))
-                    } else {
-                        None
+                    // Real, funded validators only — a zero-balance account is a new-validator
+                    // placeholder whose deposit is still pending (handled at deposit processing,
+                    // not via the committee removed_validators delta).
+                    if account.balance == 0 || account.balance >= prospective_min {
+                        return None;
                     }
+                    // Defer removal only if a queued deposit could lift this validator to the
+                    // prospective minimum; a too-small (or never-processed) deposit must not let
+                    // a below-minimum validator escape removal.
+                    if account.has_pending_deposit
+                        && account.balance + state.pending_deposit_amount(key) >= prospective_min
+                    {
+                        return None;
+                    }
+                    Some((*key, account.joining_epoch, account.status.clone()))
                 })
                 .collect();
             let already_removed: HashSet<PublicKey> =
