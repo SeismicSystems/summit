@@ -1039,6 +1039,129 @@ fn test_losing_fork_descendant_rejected_after_conflicting_ancestor_finalizes() {
 }
 
 #[test]
+fn test_finalized_dead_fork_descendant_out_of_sequence_halts() {
+    // Defense-in-depth for the finalized-block path: a finalized block must
+    // extend the canonical head at exactly canonical_height + 1. If a descendant
+    // of a losing fork is delivered as a *finalized* block out of sequence (which
+    // can only arise from a consensus safety violation plus out-of-order
+    // delivery — the syncer never delivers finalized blocks with a gap), the
+    // finalizer must halt rather than execute it onto canonical state.
+    //
+    // Scenario:
+    // 1. Notarize A1 -> A2 -> A3 (heights 1, 2, 3; all in fork_states).
+    // 2. Finalize conflicting B1 at height 1 (canonical -> 1; A1/A2/A3 pruned).
+    // 3. Deliver A3 (height 3) as a FinalizedBlock while canonical is 1.
+    // 4. The strict guard rejects it (3 != 1 + 1) and triggers coordinated
+    //    shutdown; canonical never advances to 3.
+
+    let cfg = deterministic::Config::default().with_seed(51);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x51u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        // Hold a clone so we can observe the coordinated shutdown the guard triggers.
+        let cancellation_token = CancellationToken::new();
+        let token = cancellation_token.clone();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_finalized_dead_fork_out_of_sequence".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token,
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let genesis_digest = genesis_block.digest();
+
+        // Losing fork A1 -> A2 -> A3.
+        let block_a1 = create_test_block(genesis_digest, 1, 2, 9001);
+        let block_a1_digest = block_a1.digest();
+        let block_a2 = create_test_block(block_a1_digest, 2, 3, 9002);
+        let block_a2_digest = block_a2.digest();
+        let block_a3 = create_test_block(block_a2_digest, 3, 4, 9003);
+        // Conflicting winner B1 at height 1.
+        let block_b1 = create_test_block(genesis_digest, 1, 5, 9004);
+        assert_ne!(block_a1_digest, block_b1.digest());
+
+        mailbox
+            .report(Update::NotarizedBlock(block_a1.clone()))
+            .await;
+        mailbox
+            .report(Update::NotarizedBlock(block_a2.clone()))
+            .await;
+        mailbox
+            .report(Update::NotarizedBlock(block_a3.clone()))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Finalize the conflicting ancestor B1; this prunes the A-fork and
+        // advances canonical to height 1.
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block_b1.clone(), None), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+        assert_eq!(mailbox.get_latest_height().await, 1);
+        assert!(
+            !token.is_cancelled(),
+            "finalizer must still be running after a normal sequential finalization"
+        );
+
+        // Deliver the pruned descendant A3 (height 3) as a finalized block while
+        // canonical is only at height 1. The strict guard must reject it.
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block_a3.clone(), None), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            token.is_cancelled(),
+            "an out-of-sequence finalized block (height 3 while canonical is 1) \
+             must trigger coordinated shutdown rather than execute onto canonical state"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
 fn test_orphaned_blocks_pruned_after_finalization() {
     // Test that orphaned_blocks at or below the finalized height are pruned.
     //
