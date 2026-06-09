@@ -171,6 +171,7 @@ impl ConsensusState {
             ssz_tree: self.ssz_tree.clone(),
             proof_tree: self.proof_tree.clone(),
             proof_validator_keys: self.proof_validator_keys.clone(),
+            captured_bytes: self.captured_bytes.clone(),
             state_root: self.state_root,
             proof_el_block_number: self.proof_el_block_number,
         }
