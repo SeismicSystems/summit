@@ -1701,34 +1701,55 @@ fn test_withdrawal_blocked_by_pending_deposit() {
 
 #[test_traced("INFO")]
 fn test_last_block_topup_does_not_drop_staged_removal_balance() {
-    // Regression test for the stake-bound staged-removal + last-block top-up balance drop.
-    //
-    // Scenario (audit issue):
-    //   1. A MinimumStake increase (32 -> 33 ETH) is submitted early in epoch 0.
-    //   2. The victim validator (validators[0], 32 ETH) will fall below the new minimum. The
-    //      other validators are at 40 ETH, so only the victim is a removal candidate (and the
-    //      minimum-validator-count floor of 3 still permits staging one of the five).
-    //   3. At the penultimate block of epoch 0 the victim is staged into removed_validators.
-    //   4. At the last block of epoch 0 the victim submits a 1 ETH top-up. This sets
-    //      has_pending_deposit = true and queues the deposit: 32 + 1 = 33 still passes the
-    //      parse-time bounds check because the raised minimum has not been applied yet.
-    //   5. At the epoch boundary the staged removal marks the victim Inactive (balance 32 kept),
-    //      and the stake-bound withdrawal scan SKIPS the victim because has_pending_deposit.
-    //   6. At the next penultimate block (epoch 1) the queued top-up is processed against the
-    //      now-Inactive account. The buggy code treats it as a new-validator deposit, uses
-    //      new_balance = request.amount (1 ETH), refunds only the 1 ETH and removes the account.
-    //
-    // Correct behavior (removal wins): the staged removal is honored. When the top-up is processed
-    // against the Inactive account, the victim's original 32 ETH bonded balance is withdrawn to its
-    // withdrawal address and the 1 ETH top-up is refunded (never credited). With no invalid-deposit
-    // tax configured, the full 33 ETH is returned to the victim's address and the account is
-    // removed. The original bonded balance is never silently dropped.
+    // No invalid-deposit tax configured: the full 33 ETH (32 bonded + 1 top-up) is
+    // returned to the victim's address.
+    run_staged_removal_topup_scenario(0);
+}
+
+#[test_traced("INFO")]
+fn test_last_block_topup_staged_removal_refund_is_untaxed() {
+    // A nonzero invalid_deposit_tax must NOT skim the refunded top-up. The top-up was
+    // a valid deposit (valid shape, signature, and resulting balance) refunded only
+    // because the independent stake-bound removal wins — the depositor is blameless,
+    // the bonded balance is returned untaxed, and the canonical stake-bound exit
+    // applies no tax. So with a 25% tax configured the victim must still receive the
+    // full 33 ETH and the treasury must receive nothing.
+    run_staged_removal_topup_scenario(25);
+}
+
+// Shared scenario for the stake-bound staged-removal + last-block top-up balance drop.
+//
+// Scenario (audit issue):
+//   1. A MinimumStake increase (32 -> 33 ETH) is submitted early in epoch 0.
+//   2. The victim validator (validators[0], 32 ETH) will fall below the new minimum. The
+//      other validators are at 40 ETH, so only the victim is a removal candidate (and the
+//      minimum-validator-count floor of 3 still permits staging one of the five).
+//   3. At the penultimate block of epoch 0 the victim is staged into removed_validators.
+//   4. At the last block of epoch 0 the victim submits a 1 ETH top-up. This sets
+//      has_pending_deposit = true and queues the deposit: 32 + 1 = 33 still passes the
+//      parse-time bounds check because the raised minimum has not been applied yet.
+//   5. At the epoch boundary the staged removal marks the victim Inactive (balance 32 kept),
+//      and the stake-bound withdrawal scan SKIPS the victim because has_pending_deposit.
+//   6. At the next penultimate block (epoch 1) the queued top-up is processed against the
+//      now-Inactive account. The buggy code treats it as a new-validator deposit, uses
+//      new_balance = request.amount (1 ETH), refunds only the 1 ETH and removes the account.
+//
+// Correct behavior (removal wins): the staged removal is honored. When the top-up is processed
+// against the Inactive account, the victim's original 32 ETH bonded balance is withdrawn to its
+// withdrawal address and the 1 ETH top-up is refunded in full (never credited, never taxed),
+// so the full 33 ETH is returned to the victim's address and the account is removed. The
+// original bonded balance is never silently dropped, and the treasury never receives a cut of
+// the valid top-up regardless of `invalid_deposit_tax`.
+fn run_staged_removal_topup_scenario(invalid_deposit_tax: u64) {
     let n = 5;
     let min_stake = 32_000_000_000; // 32 ETH (victim's balance)
     let healthy_balance = 40_000_000_000; // 40 ETH (other validators, above the raised minimum)
     let max_stake = 100_000_000_000; // 100 ETH
     let new_min_stake = 33_000_000_000; // 33 ETH (raised minimum, above the victim's balance)
     let topup_amount = 1_000_000_000; // 1 ETH last-block top-up
+    // Distinct from every validator address ([0x00..0x04]) so a taxed cut, if one
+    // were (wrongly) taken, would land here and be observable.
+    let treasury_address = Address::from([0xEE; 20]);
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -1839,6 +1860,8 @@ fn test_last_block_topup_does_not_drop_staged_removal_balance() {
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
         initial_state.set_maximum_stake(max_stake);
+        initial_state.set_treasury_address(treasury_address);
+        initial_state.set_invalid_deposit_tax(invalid_deposit_tax);
         for idx in 0..n as usize {
             if idx == victim_idx {
                 continue;
@@ -1920,8 +1943,8 @@ fn test_last_block_topup_does_not_drop_staged_removal_balance() {
         );
 
         // The victim's original bonded balance is returned to the EL rather than silently dropped:
-        // the full 32 ETH is withdrawn and the 1 ETH top-up is refunded (no invalid-deposit tax),
-        // so 33 ETH total reaches the victim's withdrawal address.
+        // the full 32 ETH is withdrawn and the 1 ETH top-up is refunded in full, so 33 ETH total
+        // reaches the victim's withdrawal address regardless of the configured tax.
         let withdrawals = engine_client_network.get_withdrawals();
         let total_withdrawn_to_victim: u64 = withdrawals
             .values()
@@ -1936,6 +1959,20 @@ fn test_last_block_topup_does_not_drop_staged_removal_balance() {
              ({topup_amount}) to be returned to the victim's address, got {total_withdrawn_to_victim}"
         );
 
+        // The refunded top-up is a valid deposit returned only because the removal wins, so it
+        // must never be taxed: the treasury receives nothing even with a nonzero tax configured.
+        let total_to_treasury: u64 = withdrawals
+            .values()
+            .flatten()
+            .filter(|withdrawal| withdrawal.address == treasury_address)
+            .map(|withdrawal| withdrawal.amount)
+            .sum();
+        assert_eq!(
+            total_to_treasury, 0,
+            "the valid top-up refund must not be taxed (tax = {invalid_deposit_tax}), \
+             but the treasury received {total_to_treasury}"
+        );
+
         // The network stays consistent across the validators that remain.
         let victim_client_id = format!("validator_{}", validators[victim_idx].0);
         assert!(
@@ -1946,7 +1983,7 @@ fn test_last_block_topup_does_not_drop_staged_removal_balance() {
         common::assert_state_root_consensus_skip(&consensus_state_queries, &[victim_idx]).await;
 
         context.auditor().state()
-    })
+    });
 }
 
 #[test_traced("INFO")]

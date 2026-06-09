@@ -3018,17 +3018,26 @@ async fn process_execution_requests<
                             bonded_balance,
                         );
 
-                        // Refund the top-up, which was never credited to the balance
-                        // (taxed like any other invalid-deposit refund).
+                        // Refund the top-up in full, untaxed. Unlike the
+                        // invalid-deposit refund paths, this top-up was valid in
+                        // shape, signature, and resulting balance (it passed
+                        // admission and would have landed in range) — it is refunded
+                        // only because the independent stake-bound removal wins. The
+                        // depositor is blameless, the bonded balance above is also
+                        // returned untaxed, and the canonical stake-bound exit applies
+                        // no tax, so `invalid_deposit_tax` must not apply here. The
+                        // top-up was never credited to the balance, so
+                        // balance_deduction = 0.
                         let refund_pubkey =
                             refunded_deposit_key(withdrawal_credentials, request.index);
-                        push_invalid_deposit_withdrawals(
-                            state,
-                            withdrawal_credentials,
-                            refund_pubkey,
-                            request.index,
-                            request.amount,
+                        state.push_refund_withdrawal_request(
+                            WithdrawalRequest {
+                                source_address: withdrawal_credentials,
+                                validator_pubkey: refund_pubkey,
+                                amount: request.amount,
+                            },
                             withdrawal_epoch,
+                            0,
                         );
 
                         continue;
