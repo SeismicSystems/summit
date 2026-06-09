@@ -1337,3 +1337,193 @@ fn test_notarized_commit_hash_invalid_discards_fork() {
         context.auditor().state()
     });
 }
+
+#[test]
+fn test_finalized_reuse_path_commits_finalized_forkchoice_and_shuts_down_on_invalid() {
+    // A block notarized before finalization is executed speculatively into a fork
+    // state with safe=finalized=old_canonical_finalized. When it later finalizes, the
+    // reuse path must still send and gate the canonical finalized forkchoice
+    // (head=safe=finalized=B). Here that finalized forkchoice is INVALID — an EL/CL
+    // inconsistency — so the validator must shut down rather than promote the fork.
+    //
+    // Regression guard: before the fix the reuse path skipped the finalized forkchoice
+    // entirely, so this INVALID would never be sent and the node would advance to
+    // height 1 instead of shutting down.
+    let cfg = deterministic::Config::default().with_seed(205);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x42u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // commit_hash order: startup (VALID), notarized-fork execution (VALID),
+        // finalized reuse-path forkchoice (INVALID).
+        engine_client.queue_commit_hash_valid(2);
+        engine_client.queue_commit_hash_invalid(1);
+
+        let token = CancellationToken::new();
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_finalized_reuse_fcu_invalid".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: token.clone(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
+        let block1_digest = block1.digest();
+
+        // Notarize first → block lands in fork_states (forkchoice VALID).
+        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        context.sleep(Duration::from_millis(200)).await;
+        let notify = mailbox.notify_at_height(1, block1_digest).await;
+        assert!(
+            notify.await.expect("notify channel closed"),
+            "notarized block must be in fork_states before finalization"
+        );
+        assert!(
+            !token.is_cancelled(),
+            "notarizing a valid block must not shut the validator down"
+        );
+
+        // Finalize the same block → reuse path sends the finalized forkchoice, which
+        // the EL rejects as INVALID → fatal shutdown.
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(500)).await;
+
+        assert!(
+            token.is_cancelled(),
+            "a non-valid finalized forkchoice on the reuse path must shut the validator down"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_finalized_reuse_path_buffers_on_syncing() {
+    // When the finalized forkchoice on the reuse path returns SYNCING, the finalizer
+    // must NOT advance (canonical state stays untouched so the retry replays cleanly)
+    // and must apply the block only once the EL adopts the finalized forkchoice.
+    let cfg = deterministic::Config::default().with_seed(206);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x42u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // commit_hash order: startup (VALID), notarized-fork execution (VALID), then
+        // the finalized reuse-path forkchoice returns SYNCING 3 times before VALID.
+        engine_client.queue_commit_hash_valid(2);
+        engine_client.queue_commit_hash_syncing(3);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_finalized_reuse_fcu_sync".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
+        let block1_digest = block1.digest();
+
+        // Notarize first → block lands in fork_states (forkchoice VALID). Notarization
+        // does not advance the finalized height.
+        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        context.sleep(Duration::from_millis(200)).await;
+        let notify = mailbox.notify_at_height(1, block1_digest).await;
+        assert!(
+            notify.await.expect("notify channel closed"),
+            "notarized block must be in fork_states before finalization"
+        );
+        assert_eq!(
+            mailbox.get_latest_height().await,
+            0,
+            "notarization must not advance the finalized height"
+        );
+
+        // Finalize the same block → reuse path forkchoice is SYNCING: must buffer.
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            mailbox.get_latest_height().await,
+            0,
+            "must not advance while the finalized forkchoice is SYNCING"
+        );
+
+        // Once the retries clear and the EL adopts the forkchoice, the block applies.
+        context.sleep(Duration::from_secs(20)).await;
+        assert_eq!(
+            mailbox.get_latest_height().await,
+            1,
+            "block must apply once the EL adopts the finalized forkchoice"
+        );
+
+        context.auditor().state()
+    });
+}
