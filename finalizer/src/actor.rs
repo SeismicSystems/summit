@@ -916,7 +916,7 @@ impl<
             let header_start = Instant::now();
             self.db
                 .store_finalized_header(self.canonical_state.get_epoch(), &finalized_header)
-                .await;
+                .await?;
             #[cfg(feature = "prom")]
             {
                 let header_duration = header_start.elapsed().as_micros() as f64;
@@ -989,7 +989,7 @@ impl<
                         checkpoint,
                         block.clone(),
                     )
-                    .await;
+                    .await?;
                 #[cfg(feature = "prom")]
                 {
                     let checkpoint_duration = checkpoint_start.elapsed().as_micros() as f64;
@@ -1025,7 +1025,7 @@ impl<
             let consensus_state_start = Instant::now();
             self.db
                 .store_consensus_state(self.canonical_state.get_epoch(), &self.canonical_state)
-                .await;
+                .await?;
             #[cfg(feature = "prom")]
             {
                 let consensus_state_duration = consensus_state_start.elapsed().as_micros() as f64;
@@ -1038,7 +1038,7 @@ impl<
             // This will commit all changes to the state db
             #[cfg(feature = "prom")]
             let commit_start = Instant::now();
-            self.db.commit().await;
+            self.db.commit().await?;
             #[cfg(feature = "prom")]
             {
                 let commit_duration = commit_start.elapsed().as_micros() as f64;
