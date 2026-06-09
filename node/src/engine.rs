@@ -399,7 +399,7 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-    ) -> Handle<()> {
+    ) -> Handle<anyhow::Result<()>> {
         self.context.clone().spawn(|_| {
             self.run(
                 pending_network,
@@ -436,7 +436,7 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-    ) {
+    ) -> anyhow::Result<()> {
         // start the application
         let app_handle = self
             .application
@@ -487,16 +487,35 @@ where
 
         futures::select! {
             result = actors_fut => {
-                if let Err(e) = result {
-                    error!(?e, "engine failed");
-                } else {
-                    warn!("engine stopped");
+                match result {
+                    Err(e) => {
+                        error!(?e, "engine failed: a tracked actor returned an error");
+                        Err(anyhow::anyhow!("consensus engine actor failed: {e}"))
+                    }
+                    Ok(_) => {
+                        // Without a cancellation signal, a tracked actor returning on its own
+                        // is an unexpected exit. It should be surfaced as a failure so the node comes
+                        // down for restart rather than lingering.
+                        warn!("engine stopped: a tracked actor exited unexpectedly");
+                        Err(anyhow::anyhow!(
+                            "consensus engine stopped: a tracked actor exited unexpectedly"
+                        ))
+                    }
                 }
             }
             _ = cancellation_fut => {
                 info!("cancellation triggered, waiting for actors to finish");
-                if let Err(e) = actors_fut.await {
-                    error!(?e, "engine failed during graceful shutdown");
+                match actors_fut.await {
+                    Err(e) => {
+                        error!(?e, "engine failed during graceful shutdown");
+                        Err(anyhow::anyhow!(
+                            "consensus engine failed during graceful shutdown: {e}"
+                        ))
+                    }
+                    // Cancellation is an intentional shutdown (fatal-error self-cancel or
+                    // committee exit). The node still comes down via the supervisor; this is
+                    // not a panic, so report it as a clean stop.
+                    Ok(_) => Ok(()),
                 }
             }
         }
