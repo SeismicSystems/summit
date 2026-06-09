@@ -685,6 +685,51 @@ impl<
         let height = block.height();
         let block_digest = block.digest();
 
+        // Idempotence guard. The syncer contract is at-least-once (see `summit-syncer`
+        // docs), so a finalized block may be re-delivered after it was already applied
+        // (restart/recovery/replay paths). The notarized path ignores blocks at or below
+        // canonical height; the finalized path must do the same. We must still ACK the
+        // duplicate so the syncer's pending-ack pipeline doesn't stall, and we must NOT
+        // re-execute it — re-execution would re-run the EL payload check, re-process
+        // deposits/withdrawals, regress the height, or trip the epoch assertion in
+        // `execute_block` when the canonical state has already advanced past an epoch
+        // boundary.
+        let latest_height = self.canonical_state.get_latest_height();
+        if height <= latest_height {
+            // At the canonical head the digest is known, so a mismatch here means two
+            // different blocks were finalized at the same height — a consensus safety
+            // violation we must surface rather than silently skip or re-execute.
+            if height == latest_height && block_digest != self.canonical_state.get_head_digest() {
+                error!(
+                    target: "critical",
+                    height,
+                    ?block_digest,
+                    head_digest = ?self.canonical_state.get_head_digest(),
+                    "received a conflicting finalized block at the canonical head height"
+                );
+                #[cfg(feature = "prom")]
+                counter!(
+                    "critical_errors_total",
+                    "reason" => "conflicting_finalization",
+                    "severity" => "critical"
+                )
+                .increment(1);
+                return Err(anyhow!(
+                    "conflicting finalized block at height {height}: got {block_digest:?}, \
+                     canonical head is {:?}",
+                    self.canonical_state.get_head_digest()
+                ));
+            }
+            debug!(
+                height,
+                ?block_digest,
+                latest_height,
+                "ignoring duplicate finalized block at or below canonical height"
+            );
+            ack_tx.acknowledge();
+            return Ok(HandleOutcome::Applied);
+        }
+
         // Try to find the fork state for this block (if it was notarized before finalization)
         if let Some(fork_state) = self
             .fork_states
