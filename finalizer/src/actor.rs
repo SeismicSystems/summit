@@ -1482,6 +1482,18 @@ impl<
         // The consensus state is saved every `epoch_num_blocks` blocks.
         // The proposed block will contain the checkpoint that was saved at the previous height.
         let is_last = is_last_block_of_epoch(self.canonical_state.get_epocher(), height);
+
+        // Build on the selected parent head, but keep the EL safe/finalized hashes
+        // pinned to the canonical finalized block. A stored fork state has its
+        // safe/finalized normalized to its own head (so the SSZ root is independent
+        // of processing order, see `execute_block`); exposing that verbatim would tell
+        // the EL that a notarized-but-unfinalized fork head is finalized.
+        let forkchoice = ForkchoiceState {
+            head_block_hash: state.get_forkchoice().head_block_hash,
+            safe_block_hash: self.canonical_state.get_forkchoice().finalized_block_hash,
+            finalized_block_hash: self.canonical_state.get_forkchoice().finalized_block_hash,
+        };
+
         let aux_data = if is_last {
             // The pending_checkpoint should have been set when processing the penultimate block.
             // If it's None, we can't propose the last block (e.g., node restarted from checkpoint).
@@ -1527,7 +1539,7 @@ impl<
                     .cloned()
                     .unwrap_or_default(),
                 removed_validators: state.get_removed_validators().clone(),
-                forkchoice: *state.get_forkchoice(),
+                forkchoice,
                 suggested_fee_recipient,
                 state_root: state.get_state_root(),
                 allowed_timestamp_future_ms: state.get_allowed_timestamp_future_ms(),
@@ -1540,7 +1552,7 @@ impl<
                 header_hash: [0; 32].into(),
                 added_validators: vec![],
                 removed_validators: vec![],
-                forkchoice: *state.get_forkchoice(),
+                forkchoice,
                 suggested_fee_recipient,
                 state_root: state.get_state_root(),
                 allowed_timestamp_future_ms: state.get_allowed_timestamp_future_ms(),
