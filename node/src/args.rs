@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_utils::from_hex_formatted;
-use futures::{channel::oneshot, future::try_join_all};
+use futures::{FutureExt, channel::oneshot};
 use governor::Quota;
 use ssz::Decode;
 use std::{
@@ -556,10 +556,8 @@ async fn run_node_inner(
         .await
     };
 
-    // Wait for any task to error
-    if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
-        error!(?e, "task failed");
-    }
+    // Bring the whole node down as soon as any core task exits.
+    supervise_node_tasks(p2p, engine, rpc_handle).await;
 }
 
 pub fn run_node_local(
@@ -723,9 +721,22 @@ async fn run_node_local_inner(
         MetricServer::new(config).serve(stop_signal).await.unwrap();
     }
 
-    // Wait for any task to error
-    if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
-        error!(?e, "task failed");
+    // Bring the whole node down as soon as any core task exits.
+    supervise_node_tasks(p2p, engine, rpc_handle).await;
+}
+
+/// Wait until any of the core node tasks (P2P, consensus engine, RPC) exits, then
+/// return so the runtime tears the process down and an external supervisor can restart
+/// it.
+async fn supervise_node_tasks(p2p: Handle<()>, engine: Handle<()>, rpc: Handle<()>) {
+    let p2p = p2p.fuse();
+    let engine = engine.fuse();
+    let rpc = rpc.fuse();
+    futures::pin_mut!(p2p, engine, rpc);
+    futures::select! {
+        res = p2p => error!(?res, "p2p network task exited; shutting down node"),
+        res = engine => error!(?res, "consensus engine task exited; shutting down node"),
+        res = rpc => error!(?res, "rpc task exited; shutting down node"),
     }
 }
 
@@ -1066,5 +1077,34 @@ where
         }
     } else {
         panic!("Could not find checkpoint");
+    }
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    use super::*;
+    use commonware_runtime::deterministic;
+
+    // The node must come down as soon as any core task exits.
+    // Here two tasks run forever (standing in for P2P and RPC) and the engine task exits
+    // immediately (a stopped/crashed consensus engine). `supervise_node_tasks` must
+    // return promptly.
+    #[test]
+    fn supervise_returns_when_engine_exits_even_if_siblings_run_forever() {
+        let executor = deterministic::Runner::from(deterministic::Config::default());
+        executor.start(|context| async move {
+            let p2p = context
+                .with_label("p2p")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let rpc = context
+                .with_label("rpc")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            // Engine task returns immediately.
+            let engine = context.with_label("engine").spawn(|_| async move {});
+
+            // Returns only because the engine task exited; if this waited on the
+            // never-ending p2p/rpc tasks the deterministic runtime would stall.
+            supervise_node_tasks(p2p, engine, rpc).await;
+        });
     }
 }
