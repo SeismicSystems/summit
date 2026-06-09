@@ -109,21 +109,34 @@ impl RethEngineClient {
         }
     }
 
-    pub async fn wait_until_reconnect_available(&mut self) {
-        for _ in 0..IPC_CONNECT_MAX_RETRIES {
+    /// Try to reconnect the IPC provider, retrying up to
+    /// [`IPC_CONNECT_MAX_RETRIES`] times. Returns `Ok(())` once reconnected, or
+    /// `Err` carrying the last transport error if the attempts are exhausted, so
+    /// callers surface "reconnect attempts exhausted" instead of retrying against
+    /// a stale provider that is still disconnected.
+    pub async fn wait_until_reconnect_available(&mut self) -> Result<(), EngineClientError> {
+        let mut last_err = None;
+        for attempt in 1..=IPC_CONNECT_MAX_RETRIES {
             let ipc = IpcConnect::new(self.engine_ipc_path.clone());
 
             match ProviderBuilder::default().connect_ipc(ipc).await {
                 Ok(provider) => {
                     self.provider = provider;
-                    break;
+                    return Ok(());
                 }
                 Err(e) => {
-                    error!("Failed to connect to IPC, retrying: {}", e);
+                    error!(
+                        "Failed to connect to IPC (attempt {attempt}/{IPC_CONNECT_MAX_RETRIES}), retrying: {e}"
+                    );
+                    last_err = Some(e);
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
         }
+        error!("exhausted {IPC_CONNECT_MAX_RETRIES} IPC reconnect attempts; giving up");
+        Err(EngineClientError::from(last_err.expect(
+            "IPC_CONNECT_MAX_RETRIES is non-zero, so at least one attempt ran",
+        )))
     }
 }
 
@@ -152,7 +165,7 @@ impl EngineClient for RethEngineClient {
         {
             Ok(res) => res,
             Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
+                self.wait_until_reconnect_available().await?;
                 self.provider
                     .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
                     .await
@@ -178,7 +191,7 @@ impl EngineClient for RethEngineClient {
         match self.provider.get_payload_v4(payload_id).await {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
+                self.wait_until_reconnect_available().await?;
                 self.provider
                     .get_payload_v4(payload_id)
                     .await
@@ -201,7 +214,7 @@ impl EngineClient for RethEngineClient {
         {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
+                self.wait_until_reconnect_available().await?;
                 self.provider
                     .new_payload_v4(
                         block.payload.clone(),
@@ -227,7 +240,7 @@ impl EngineClient for RethEngineClient {
         {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
+                self.wait_until_reconnect_available().await?;
                 self.provider
                     .fork_choice_updated_v3(fork_choice_state, None)
                     .await
@@ -259,21 +272,34 @@ impl BadBlockEngineClient {
         }
     }
 
-    pub async fn wait_until_reconnect_available(&mut self) {
-        for _ in 0..IPC_CONNECT_MAX_RETRIES {
+    /// Try to reconnect the IPC provider, retrying up to
+    /// [`IPC_CONNECT_MAX_RETRIES`] times. Returns `Ok(())` once reconnected, or
+    /// `Err` carrying the last transport error if the attempts are exhausted, so
+    /// callers surface "reconnect attempts exhausted" instead of retrying against
+    /// a stale provider that is still disconnected.
+    pub async fn wait_until_reconnect_available(&mut self) -> Result<(), EngineClientError> {
+        let mut last_err = None;
+        for attempt in 1..=IPC_CONNECT_MAX_RETRIES {
             let ipc = IpcConnect::new(self.engine_ipc_path.clone());
 
             match ProviderBuilder::default().connect_ipc(ipc).await {
                 Ok(provider) => {
                     self.provider = provider;
-                    break;
+                    return Ok(());
                 }
                 Err(e) => {
-                    error!("Failed to connect to IPC, retrying: {}", e);
+                    error!(
+                        "Failed to connect to IPC (attempt {attempt}/{IPC_CONNECT_MAX_RETRIES}), retrying: {e}"
+                    );
+                    last_err = Some(e);
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
         }
+        error!("exhausted {IPC_CONNECT_MAX_RETRIES} IPC reconnect attempts; giving up");
+        Err(EngineClientError::from(last_err.expect(
+            "IPC_CONNECT_MAX_RETRIES is non-zero, so at least one attempt ran",
+        )))
     }
 }
 
@@ -303,7 +329,7 @@ impl EngineClient for BadBlockEngineClient {
         {
             Ok(res) => res,
             Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
+                self.wait_until_reconnect_available().await?;
                 self.provider
                     .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
                     .await
@@ -329,7 +355,7 @@ impl EngineClient for BadBlockEngineClient {
         match self.provider.get_payload_v4(payload_id).await {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
+                self.wait_until_reconnect_available().await?;
                 self.provider
                     .get_payload_v4(payload_id)
                     .await
@@ -358,7 +384,7 @@ impl EngineClient for BadBlockEngineClient {
         {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
+                self.wait_until_reconnect_available().await?;
                 self.provider
                     .new_payload_v4(
                         block.payload.clone(),
@@ -384,7 +410,7 @@ impl EngineClient for BadBlockEngineClient {
         {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
-                self.wait_until_reconnect_available().await;
+                self.wait_until_reconnect_available().await?;
                 self.provider
                     .fork_choice_updated_v3(fork_choice_state, None)
                     .await
