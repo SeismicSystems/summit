@@ -632,17 +632,49 @@ impl<
                             self.handle_aux_data_mailbox(height, parent_digest, response).await;
                         },
                         FinalizerMessage::GetEpochGenesisHash { epoch, response } => {
-                            // The finalizer sends a message to the orchestrator to start the new epoch.
-                            // The orchestrator will start the new Simplex instance, which will then request
-                            // the epoch genesis hash from the finalizer.
-                            // Since the finalizer increments `self.canonical_state.epoch` before sending the message to the
-                            // orchestrator, the finalizer should never receive a GetEpochGenesisHash request for the wrong epoch.
-                            if epoch != self.canonical_state.get_epoch() {
-                                error!(target: "critical", "Finalizer received epoch genesis hash request from a different epoch. This should not happen and is a bug. Our epoch: {}, requested epoch {}", self.canonical_state.get_epoch(), epoch);
-                                #[cfg(feature = "prom")]
-                                counter!("critical_errors_total", "reason" => "epoch_mismatch", "severity" => "critical").increment(1);
+                            // Serve the genesis hash keyed to the requested epoch, not just
+                            // the current canonical one. During recovery/catch-up a stale
+                            // Enter(epoch) can be drained after the finalizer has already
+                            // advanced, so the requesting engine must still get its own
+                            // epoch's genesis (the digest that roots that epoch's consensus);
+                            // answering with the current epoch's genesis would root an
+                            // old-epoch engine in the wrong digest.
+                            let current = self.canonical_state.get_epoch();
+                            let genesis = if epoch == current {
+                                // Current epoch: held in canonical state (in-memory).
+                                Some(self.canonical_state.get_epoch_genesis_hash())
+                            } else if epoch == 0 {
+                                // Epoch 0 is rooted at the configured genesis hash.
+                                Some(self.genesis_hash)
+                            } else if epoch < current {
+                                // Past epoch: its genesis is the digest of the last block of
+                                // epoch-1, which is a durable finalized header.
+                                self.db
+                                    .get_finalized_header(epoch - 1)
+                                    .await
+                                    .map(|h| h.header.digest.0)
+                            } else {
+                                // Future epoch we have not reached: no genesis to serve.
+                                None
+                            };
+
+                            match genesis {
+                                Some(hash) => {
+                                    let _ = response.send(hash);
+                                }
+                                None => {
+                                    // Decline rather than return a wrong genesis: dropping
+                                    // `response` surfaces an error to the caller.
+                                    error!(
+                                        target: "critical",
+                                        current,
+                                        requested = epoch,
+                                        "cannot serve epoch genesis hash for requested epoch; declining"
+                                    );
+                                    #[cfg(feature = "prom")]
+                                    counter!("critical_errors_total", "reason" => "epoch_genesis_unavailable", "severity" => "critical").increment(1);
+                                }
                             }
-                            let _ = response.send(self.canonical_state.get_epoch_genesis_hash());
                         },
                         FinalizerMessage::QueryState { request, response } => {
                             self.handle_consensus_state_query(request, response).await;

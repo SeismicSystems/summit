@@ -440,6 +440,192 @@ fn test_get_epoch_genesis_hash() {
 }
 
 #[test]
+fn test_get_epoch_genesis_hash_for_past_epoch() {
+    // Regression: after advancing past an epoch, a GetEpochGenesisHash request for that
+    // past epoch must return that epoch's genesis — NOT the current epoch's. (A stale
+    // Enter(epoch) drained after the finalizer advanced asks for its own epoch's genesis;
+    // serving the current one would root an old-epoch engine in the wrong digest.)
+    let cfg = deterministic::Config::default().with_seed(354);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x57u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_epoch_hash_past".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+
+        // Epoch 0: blocks 1-3, then block 4 (last of epoch 0, with finalization) -> epoch 1.
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, _) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            context.sleep(Duration::from_millis(50)).await;
+        }
+        let block4 = create_test_block_with_epoch(parent_digest, 4, 5, 13004, 0);
+        let epoch1_genesis = block4.digest(); // genesis of epoch 1 == last block of epoch 0
+        let finalization4 = make_finalization(epoch1_genesis, 4, 3, &schemes, quorum);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+        parent_digest = epoch1_genesis;
+        assert_eq!(mailbox.get_latest_epoch().await, 1, "should be epoch 1");
+
+        // Epoch 1: blocks 5-8, then block 9 (last of epoch 1, with finalization) -> epoch 2.
+        for height in 5..9 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 1);
+            parent_digest = block.digest();
+            let (ack, _) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            context.sleep(Duration::from_millis(50)).await;
+        }
+        let block9 = create_test_block_with_epoch(parent_digest, 9, 10, 13009, 1);
+        let epoch2_genesis = block9.digest(); // genesis of epoch 2 == last block of epoch 1
+        let finalization9 = make_finalization(epoch2_genesis, 9, 8, &schemes, quorum);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block9, Some(finalization9)), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+        assert_eq!(mailbox.get_latest_epoch().await, 2, "should be epoch 2");
+
+        // Current epoch (2) genesis is the last block of epoch 1 (fast path, works today).
+        assert_eq!(
+            mailbox.get_epoch_genesis_hash(2).await.await.unwrap(),
+            epoch2_genesis.0,
+            "current-epoch genesis must be the last block of the previous epoch"
+        );
+
+        // A request for the PAST epoch (1) must still return block 4 — not the current
+        // epoch's genesis. Today the finalizer returns the current canonical genesis here.
+        assert_eq!(
+            mailbox.get_epoch_genesis_hash(1).await.await.unwrap(),
+            epoch1_genesis.0,
+            "a request for a past epoch must return that epoch's genesis, not the current one"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_get_epoch_genesis_hash_for_future_epoch() {
+    // A request for an epoch the finalizer has NOT reached has no correct genesis, so it
+    // must be declined (the response is dropped, surfacing as an error to the caller)
+    // rather than answered with the current canonical genesis — which would root consensus
+    // in the wrong digest.
+    //
+    // Written as the intended behavior: red today (the finalizer returns
+    // canonical_state.get_epoch_genesis_hash() for any epoch), green once a request above
+    // the current epoch is declined.
+    let cfg = deterministic::Config::default().with_seed(355);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x58u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_epoch_hash_future".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Finalizer is at epoch 0; epoch 5 has not been reached.
+        assert_eq!(mailbox.get_latest_epoch().await, 0);
+        let res = mailbox.get_epoch_genesis_hash(5).await.await;
+        assert!(
+            res.is_err(),
+            "a request for a future (not-yet-reached) epoch must be declined, not answered \
+             with the current genesis; got {res:?}"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
 fn test_get_aux_data_from_canonical_chain() {
     // Test that get_aux_data returns correct data when building on the canonical chain.
 
