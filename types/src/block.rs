@@ -6,12 +6,13 @@ use anyhow::{Result, anyhow};
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::Viewable;
-use commonware_consensus::types::{Height, View};
-use commonware_consensus::{Block as ConsensusBlock, Heightable};
+use commonware_consensus::types::{Epoch, Height, View};
+use commonware_consensus::{Block as ConsensusBlock, Epochable, Heightable};
 use commonware_cryptography::{Digestible, Hasher, Sha256, sha256::Digest};
 use ssz::Encode as _;
+use ssz_derive::Encode;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Encode)]
 pub struct Block {
     pub header: Header,
     pub payload: ExecutionPayloadV3,
@@ -21,8 +22,8 @@ pub struct Block {
 impl Block {
     pub fn eth_block_hash(&self) -> [u8; 32] {
         // if genesis return your own digest
-        if self.header.height == 0 {
-            self.header.digest.as_ref().try_into().unwrap()
+        if self.header.height() == 0 {
+            self.header.get_digest().as_ref().try_into().unwrap()
         } else {
             self.payload.payload_inner.payload_inner.block_hash.into()
         }
@@ -67,7 +68,7 @@ impl Block {
             [0; 32].into()
         };
 
-        let header = Header::compute_digest(
+        let header = Header::new(
             parent,
             height,
             timestamp,
@@ -108,10 +109,10 @@ impl Block {
             [0; 32].into()
         };
 
-        if payload_hash != header.payload_hash {
+        if payload_hash != header.payload_hash() {
             return Err(anyhow!("Payload hash mismatch"));
         }
-        if execution_request_hash != header.execution_request_hash {
+        if execution_request_hash != header.execution_request_hash() {
             return Err(anyhow!("Execution request hash mismatch"));
         }
         Ok(Self {
@@ -128,21 +129,21 @@ impl Block {
         hasher.update(&payload_ssz);
         let payload_hash = hasher.finalize();
 
-        let header = Header {
-            parent: genesis_hash.into(),
-            height: 0,
-            timestamp: 0,
-            epoch: 0,
-            view: 1,
+        let header = Header::new_with_digest(
+            genesis_hash.into(),
+            0,
+            0,
+            0,
+            1,
             payload_hash,
-            execution_request_hash: [0; 32].into(),
-            checkpoint_hash: [0; 32].into(),
-            prev_epoch_header_hash: [0; 32].into(),
-            added_validators: Vec::new(),
-            removed_validators: Vec::new(),
-            parent_beacon_block_root: [0; 32],
-            digest: genesis_hash.into(),
-        };
+            [0; 32].into(),
+            [0; 32].into(),
+            [0; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0; 32],
+            genesis_hash.into(),
+        );
         Self {
             header,
             payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
@@ -151,72 +152,77 @@ impl Block {
     }
 
     pub fn parent(&self) -> Digest {
-        self.header.parent
+        self.header.parent()
     }
 
     pub fn height(&self) -> u64 {
-        self.header.height
+        self.header.height()
     }
 
     pub fn digest(&self) -> Digest {
-        self.header.digest
+        self.header.get_digest()
     }
 
     pub fn timestamp(&self) -> u64 {
-        self.header.timestamp
+        self.header.timestamp()
     }
 
     pub fn view(&self) -> u64 {
-        self.header.view
+        self.header.view()
     }
 
     pub fn epoch(&self) -> u64 {
-        self.header.epoch
+        self.header.epoch()
     }
 }
 
 impl Heightable for Block {
     fn height(&self) -> Height {
-        Height::new(self.header.height)
+        Height::new(self.header.height())
+    }
+}
+
+impl Epochable for Block {
+    fn epoch(&self) -> Epoch {
+        Epoch::new(self.header.epoch())
     }
 }
 
 impl ConsensusBlock for Block {
     fn parent(&self) -> Self::Digest {
-        self.header.parent
+        self.header.parent()
     }
 }
 
 impl Viewable for Block {
     fn view(&self) -> View {
-        View::new(self.header.view)
+        View::new(self.header.view())
     }
 }
 
-impl ssz::Encode for Block {
-    fn is_ssz_fixed_len() -> bool {
-        false
-    }
-
-    fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let offset = ssz::BYTES_PER_LENGTH_OFFSET * 3; // 3 variable-length fields
-
-        let mut encoder = ssz::SszEncoder::container(buf, offset);
-
-        encoder.append(&self.header);
-        encoder.append(&self.payload);
-        encoder.append(&self.execution_requests);
-        encoder.finalize();
-    }
-
-    fn ssz_bytes_len(&self) -> usize {
-        self.header.ssz_bytes_len()
-            + self.payload.ssz_bytes_len()
-            + self.execution_requests.ssz_bytes_len()
-            + ssz::BYTES_PER_LENGTH_OFFSET * 3 // 3 variable-length fields need 3 offsets
+impl EncodeSize for Block {
+    fn encode_size(&self) -> usize {
+        self.ssz_bytes_len() + 4 // We additionally write the ssz len as u32(bytes)
     }
 }
 
+impl Write for Block {
+    fn write(&self, buf: &mut impl BufMut) {
+        let ssz_bytes = &*self.as_ssz_bytes();
+        let bytes_len = ssz_bytes.len() as u32;
+
+        buf.put(&bytes_len.to_be_bytes()[..]);
+        buf.put(ssz_bytes);
+    }
+}
+
+// NOTE: `Decode` is implemented manually (rather than via `ssz_derive`) so that
+// decoding re-derives the body commitments and verifies them against the header
+// via `new_with_verify`. Without this, SSZ decode could produce a block whose
+// `payload`/`execution_requests` do not match the `payload_hash`/
+// `execution_request_hash` committed in the (signed) header. The block digest is
+// computed solely from the header, so a mismatched body would otherwise share the
+// same digest and pass certificate verification.
 impl ssz::Decode for Block {
     fn is_ssz_fixed_len() -> bool {
         false
@@ -236,22 +242,6 @@ impl ssz::Decode for Block {
 
         Self::new_with_verify(header, payload, execution_requests)
             .map_err(|e| ssz::DecodeError::BytesInvalid(e.to_string()))
-    }
-}
-
-impl EncodeSize for Block {
-    fn encode_size(&self) -> usize {
-        self.ssz_bytes_len() + 4 // We additionally write the ssz len as u32(bytes)
-    }
-}
-
-impl Write for Block {
-    fn write(&self, buf: &mut impl BufMut) {
-        let ssz_bytes = &*self.as_ssz_bytes();
-        let bytes_len = ssz_bytes.len() as u32;
-
-        buf.put(&bytes_len.to_be_bytes()[..]);
-        buf.put(ssz_bytes);
     }
 }
 
@@ -276,7 +266,7 @@ impl Digestible for Block {
     type Digest = Digest;
 
     fn digest(&self) -> Digest {
-        self.header.digest
+        self.header.get_digest()
     }
 }
 
@@ -450,6 +440,64 @@ mod test {
         let bytes = block.encode();
 
         Block::decode(bytes).unwrap();
+    }
+
+    #[test]
+    fn test_decode_rejects_body_header_commitment_mismatch() {
+        let payload = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
+        let (added_validators, removed_validators) = create_test_validators();
+
+        // Same header inputs, but different execution_requests -> different
+        // execution_request_hash committed in the header.
+        let block_full = Block::compute_digest(
+            [1u8; 32].into(),
+            1,
+            1,
+            payload.clone(),
+            vec![AlloyBytes::from_static(&[1, 2, 3])],
+            0,
+            1,
+            None,
+            [0u8; 32].into(),
+            added_validators.clone(),
+            removed_validators.clone(),
+            [0u8; 32],
+        );
+        let block_empty = Block::compute_digest(
+            [1u8; 32].into(),
+            1,
+            1,
+            payload,
+            Vec::new(),
+            0,
+            1,
+            None,
+            [0u8; 32].into(),
+            added_validators,
+            removed_validators,
+            [0u8; 32],
+        );
+
+        // Sanity: each block decodes back to itself.
+        assert_eq!(
+            block_full,
+            Block::decode(block_full.encode()).expect("valid block decodes")
+        );
+
+        // Splice block_full's header (commits to a non-empty execution request)
+        // onto block_empty's body (no execution requests). The SSZ bytes are
+        // structurally valid but the header commitment no longer matches the body.
+        let mut spliced = Vec::new();
+        let mut encoder =
+            ssz::SszEncoder::container(&mut spliced, ssz::BYTES_PER_LENGTH_OFFSET * 3);
+        encoder.append(&block_full.header);
+        encoder.append(&block_empty.payload);
+        encoder.append(&block_empty.execution_requests);
+        encoder.finalize();
+
+        // Decode must reject the tampered block rather than silently accept a
+        // body that disagrees with the signed header commitments.
+        assert!(<Block as ssz::Decode>::from_ssz_bytes(&spliced).is_err());
     }
 
     #[test]

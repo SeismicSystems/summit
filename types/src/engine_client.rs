@@ -190,7 +190,7 @@ impl EngineClient for RethEngineClient {
             .new_payload_v4(
                 block.payload.clone(),
                 Vec::new(),
-                block.header.parent_beacon_block_root.into(),
+                block.header.parent_beacon_block_root().into(),
                 block.execution_requests.clone(),
             )
             .await
@@ -202,7 +202,7 @@ impl EngineClient for RethEngineClient {
                     .new_payload_v4(
                         block.payload.clone(),
                         Vec::new(),
-                        block.header.parent_beacon_block_root.into(),
+                        block.header.parent_beacon_block_root().into(),
                         block.execution_requests.clone(),
                     )
                     .await
@@ -339,7 +339,7 @@ impl EngineClient for BadBlockEngineClient {
         let parent_beacon_block_root = if block.view().is_multiple_of(self.bad_block_timing) {
             [1; 32].into()
         } else {
-            block.header.parent_beacon_block_root.into()
+            block.header.parent_beacon_block_root().into()
         };
 
         match self
@@ -359,7 +359,7 @@ impl EngineClient for BadBlockEngineClient {
                     .new_payload_v4(
                         block.payload.clone(),
                         Vec::new(),
-                        block.header.parent_beacon_block_root.into(),
+                        block.header.parent_beacon_block_root().into(),
                         block.execution_requests.clone(),
                     )
                     .await

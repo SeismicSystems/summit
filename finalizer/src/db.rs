@@ -525,7 +525,7 @@ mod tests {
                 create_test_db_with_context::<_, MinPk>("test_finalized_header", context).await;
 
             // Create a test header
-            let header = summit_types::Header::compute_digest(
+            let header = summit_types::Header::new(
                 [1u8; 32].into(), // parent
                 100,              // height
                 1234567890,       // timestamp
@@ -542,9 +542,9 @@ mod tests {
 
             // Create finalization proof
             let proposal = Proposal {
-                round: Round::new(Epoch::new(header.epoch), View::new(header.view)),
-                parent: View::new(header.height),
-                payload: header.digest,
+                round: Round::new(Epoch::new(header.epoch()), View::new(header.view())),
+                parent: View::new(header.height()),
+                payload: header.get_digest(),
             };
             let finalized = Finalization {
                 proposal,
@@ -566,15 +566,15 @@ mod tests {
             let retrieved = db.get_finalized_header(100).await;
             assert!(retrieved.is_some());
             let retrieved = retrieved.unwrap();
-            assert_eq!(retrieved.header.height, header.height);
-            assert_eq!(retrieved.header.digest, header.digest);
-            assert_eq!(retrieved.header.timestamp, header.timestamp);
+            assert_eq!(retrieved.header.height(), header.height());
+            assert_eq!(retrieved.header.get_digest(), header.get_digest());
+            assert_eq!(retrieved.header.timestamp(), header.timestamp());
 
             // Test that non-existent header returns None
             assert!(db.get_finalized_header(200).await.is_none());
 
             // Store another header at different height
-            let header2 = summit_types::Header::compute_digest(
+            let header2 = summit_types::Header::new(
                 [5u8; 32].into(), // parent
                 200,              // height
                 1234567900,       // timestamp
@@ -589,9 +589,9 @@ mod tests {
                 [0u8; 32],        // parent_beacon_block_root
             );
             let proposal2 = Proposal {
-                round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
-                parent: View::new(header2.height),
-                payload: header2.digest,
+                round: Round::new(Epoch::new(header2.epoch()), View::new(header2.view())),
+                parent: View::new(header2.height()),
+                payload: header2.get_digest(),
             };
             let finalized2 = Finalization {
                 proposal: proposal2,
@@ -608,16 +608,16 @@ mod tests {
             // Both headers should be accessible
             let h1 = db.get_finalized_header(100).await.unwrap();
             let h2 = db.get_finalized_header(200).await.unwrap();
-            assert_eq!(h1.header.height, 100);
-            assert_eq!(h2.header.height, 200);
-            assert_ne!(h1.header.digest, h2.header.digest);
+            assert_eq!(h1.header.height(), 100);
+            assert_eq!(h2.header.height(), 200);
+            assert_ne!(h1.header.get_digest(), h2.header.get_digest());
 
             // Test get_most_recent_finalized_header returns the latest header
             let most_recent = db.get_most_recent_finalized_header().await;
             assert!(most_recent.is_some());
             let most_recent = most_recent.unwrap();
-            assert_eq!(most_recent.header.height, 200);
-            assert_eq!(most_recent.header.digest, header2.digest);
+            assert_eq!(most_recent.header.height(), 200);
+            assert_eq!(most_recent.header.get_digest(), header2.get_digest());
         });
     }
 
@@ -636,7 +636,7 @@ mod tests {
             assert!(db.get_most_recent_finalized_header().await.is_none());
 
             // Store headers out of order
-            let header1 = summit_types::Header::compute_digest(
+            let header1 = summit_types::Header::new(
                 [1u8; 32].into(), // parent
                 100,              // height
                 1234567890,       // timestamp
@@ -651,9 +651,9 @@ mod tests {
                 [0u8; 32],        // parent_beacon_block_root
             );
             let proposal1 = Proposal {
-                round: Round::new(Epoch::new(header1.epoch), View::new(header1.view)),
-                parent: View::new(header1.height),
-                payload: header1.digest,
+                round: Round::new(Epoch::new(header1.epoch()), View::new(header1.view())),
+                parent: View::new(header1.height()),
+                payload: header1.get_digest(),
             };
 
             let finalized1 = Finalization {
@@ -666,7 +666,7 @@ mod tests {
             let finalized_header1 =
                 summit_types::FinalizedHeader::new(header1.clone(), finalized1, 3);
 
-            let header3 = summit_types::Header::compute_digest(
+            let header3 = summit_types::Header::new(
                 [7u8; 32].into(),  // parent
                 300,               // height
                 1234567920,        // timestamp
@@ -681,9 +681,9 @@ mod tests {
                 [0u8; 32],         // parent_beacon_block_root
             );
             let proposal3 = Proposal {
-                round: Round::new(Epoch::new(header3.epoch), View::new(header3.view)),
-                parent: View::new(header3.height),
-                payload: header3.digest,
+                round: Round::new(Epoch::new(header3.epoch()), View::new(header3.view())),
+                parent: View::new(header3.height()),
+                payload: header3.get_digest(),
             };
 
             let finalized3 = Finalization {
@@ -696,7 +696,7 @@ mod tests {
             let finalized_header3 =
                 summit_types::FinalizedHeader::new(header3.clone(), finalized3, 3);
 
-            let header2 = summit_types::Header::compute_digest(
+            let header2 = summit_types::Header::new(
                 [5u8; 32].into(), // parent
                 200,              // height
                 1234567900,       // timestamp
@@ -711,9 +711,9 @@ mod tests {
                 [0u8; 32],        // parent_beacon_block_root
             );
             let proposal2 = Proposal {
-                round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
-                parent: View::new(header2.height),
-                payload: header2.digest,
+                round: Round::new(Epoch::new(header2.epoch()), View::new(header2.view())),
+                parent: View::new(header2.height()),
+                payload: header2.get_digest(),
             };
 
             let finalized2 = Finalization {
@@ -732,8 +732,8 @@ mod tests {
 
             // Most recent should be height 100
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height, 100);
-            assert_eq!(most_recent.header.digest, header1.digest);
+            assert_eq!(most_recent.header.height(), 100);
+            assert_eq!(most_recent.header.get_digest(), header1.get_digest());
 
             // Store height 300
             db.store_finalized_header(300, &finalized_header3).await;
@@ -741,8 +741,8 @@ mod tests {
 
             // Most recent should now be height 300
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height, 300);
-            assert_eq!(most_recent.header.digest, header3.digest);
+            assert_eq!(most_recent.header.height(), 300);
+            assert_eq!(most_recent.header.get_digest(), header3.get_digest());
 
             // Store height 200 (lower than current max)
             db.store_finalized_header(200, &finalized_header2).await;
@@ -750,16 +750,16 @@ mod tests {
 
             // Most recent should still be height 300
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height, 300);
-            assert_eq!(most_recent.header.digest, header3.digest);
+            assert_eq!(most_recent.header.height(), 300);
+            assert_eq!(most_recent.header.get_digest(), header3.get_digest());
 
             // Verify all headers are still individually accessible
             let h1 = db.get_finalized_header(100).await.unwrap();
             let h2 = db.get_finalized_header(200).await.unwrap();
             let h3 = db.get_finalized_header(300).await.unwrap();
-            assert_eq!(h1.header.height, 100);
-            assert_eq!(h2.header.height, 200);
-            assert_eq!(h3.header.height, 300);
+            assert_eq!(h1.header.height(), 100);
+            assert_eq!(h2.header.height(), 200);
+            assert_eq!(h3.header.height(), 300);
         });
     }
 

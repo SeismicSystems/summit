@@ -447,7 +447,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!(
                 "    latest finalized block (epoch {}, view {}) has {} signers, none of which is the observer",
-                finalized_header.header.epoch, finalized_header.header.view, signer_count
+                finalized_header.header.epoch(), finalized_header.header.view(), signer_count
             );
 
             println!("Test completed successfully!");

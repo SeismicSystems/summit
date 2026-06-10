@@ -1687,7 +1687,7 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
             .await
             .expect("failed to get finalized header for last block of epoch 0");
 
-        let removed_validators = &finalized_header.header.removed_validators;
+        let removed_validators = finalized_header.header.removed_validators();
         assert!(
             removed_validators.contains(&kicked_pubkey),
             "force-removed validator (stake-bound) should be in removed_validators of \
@@ -1927,7 +1927,7 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
             .await
             .expect("failed to get finalized header for last block of epoch 1");
 
-        let added = &finalized_header.header.added_validators;
+        let added = finalized_header.header.added_validators();
         assert!(
             !added.iter().any(|av| av.node_key == new_validator_pubkey),
             "force-removed Joining validator should NOT appear in added_validators of \

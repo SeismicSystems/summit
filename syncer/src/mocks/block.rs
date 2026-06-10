@@ -1,7 +1,9 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, Read, ReadExt, Write, varint::UInt};
-use commonware_consensus::types::Height;
+use commonware_consensus::types::{Epoch, Height, View};
 use commonware_cryptography::{Digest, Digestible, Hasher};
+
+const MOCK_BLOCKS_PER_EPOCH: u64 = 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block<D: Digest> {
@@ -13,6 +15,12 @@ pub struct Block<D: Digest> {
 
     /// The timestamp of the block (in milliseconds since the Unix epoch).
     pub timestamp: u64,
+
+    /// The epoch associated with this block in syncer tests.
+    pub epoch: Epoch,
+
+    /// The view associated with this block in syncer tests.
+    pub view: View,
 
     /// Pre-computed digest of the block.
     digest: D,
@@ -29,10 +37,14 @@ impl<D: Digest> Block<D> {
 
     pub fn new<H: Hasher<Digest = D>>(parent: D, height: Height, timestamp: u64) -> Self {
         let digest = Self::compute_digest::<H>(&parent, height, timestamp);
+        let epoch = Epoch::new(height.get() / MOCK_BLOCKS_PER_EPOCH);
+        let view = View::new(height.get());
         Self {
             parent,
             height,
             timestamp,
+            epoch,
+            view,
             digest,
         }
     }
@@ -54,6 +66,8 @@ impl<D: Digest> Read for Block<D> {
         let parent = D::read(reader)?;
         let height = Height::read(reader)?;
         let timestamp = UInt::read(reader)?.into();
+        let epoch = Epoch::new(height.get() / MOCK_BLOCKS_PER_EPOCH);
+        let view = View::new(height.get());
         let digest = D::read(reader)?;
 
         // Pre-compute the digest
@@ -61,6 +75,8 @@ impl<D: Digest> Read for Block<D> {
             parent,
             height,
             timestamp,
+            epoch,
+            view,
             digest,
         })
     }
@@ -89,8 +105,20 @@ impl<D: Digest> commonware_consensus::Heightable for Block<D> {
     }
 }
 
+impl<D: Digest> commonware_consensus::Epochable for Block<D> {
+    fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+}
+
 impl<D: Digest> commonware_consensus::Block for Block<D> {
     fn parent(&self) -> Self::Digest {
         self.parent
+    }
+}
+
+impl<D: Digest> commonware_consensus::Viewable for Block<D> {
+    fn view(&self) -> View {
+        self.view
     }
 }
