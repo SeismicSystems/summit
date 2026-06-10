@@ -36,5 +36,5 @@ alloy-rpc-types-engine.workspace = true
 
 [features]
 prom = ["metrics"]
-bench = []
+bench = ["summit-types/bench"]
 permissioned = []

@@ -80,6 +80,14 @@ pub struct ConsensusState {
     /// The EL (Reth) block number at the time `capture_state_root()` was called.
     /// The state root appears on-chain in EL block `proof_el_block_number + 1`.
     pub(crate) proof_el_block_number: u64,
+
+    /// Serialized snapshot of this `ConsensusState` taken at `capture_state_root()`
+    /// time, with the snapshot's own `captured_bytes` cleared to prevent recursion.
+    /// On restart, decoding the inner state and reading its `proof_tree` yields the
+    /// capture-time proof tree exactly, so a restarted validator agrees with uninterrupted peers on
+    /// `state_root` (and hence on `parent_beacon_block_root`).
+    /// `None` only before the first `capture_state_root` call.
+    pub(crate) captured_bytes: Option<Vec<u8>>,
 }
 
 impl Clone for ConsensusState {
@@ -118,6 +126,7 @@ impl Default for ConsensusState {
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
+            captured_bytes: None,
 
             state_root: [0u8; 32],
             proof_el_block_number: 0,
@@ -162,6 +171,7 @@ impl ConsensusState {
             ssz_tree: self.ssz_tree.clone(),
             proof_tree: self.proof_tree.clone(),
             proof_validator_keys: self.proof_validator_keys.clone(),
+            captured_bytes: self.captured_bytes.clone(),
             state_root: self.state_root,
             proof_el_block_number: self.proof_el_block_number,
         }
@@ -217,6 +227,7 @@ impl ConsensusState {
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
+            captured_bytes: None,
 
             state_root: [0u8; 32],
             proof_el_block_number: 0,
@@ -653,6 +664,15 @@ impl ConsensusState {
         self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
         self.proof_el_block_number = el_block_number;
 
+        // Snapshot the entire state so a restart can rebuild `proof_tree`
+        // from the capture-time data fields even after the live state has
+        // been mutated (epoch transitions in particular). Clear the
+        // snapshot's own `captured_bytes` first to prevent recursive nesting.
+        let mut snapshot = self.clone();
+        snapshot.captured_bytes = None;
+        let bytes = commonware_codec::Encode::encode(&snapshot);
+        self.captured_bytes = Some(bytes.to_vec());
+
         #[cfg(feature = "prom")]
         histogram!("ssz_capture_state_root_micros").record(start.elapsed().as_micros() as f64);
     }
@@ -1056,6 +1076,9 @@ impl EncodeSize for ConsensusState {
         + 8 // validator_maximum_stake
         + 8 // allowed_timestamp_future_ms
         + 20 // treasury_address
+        + 8 // proof_el_block_number
+        + 1 // captured_bytes presence flag
+        + self.captured_bytes.as_ref().map_or(0, |b| 4 + b.len())
         + 8 // max_deposits_per_epoch
         + 8 // max_withdrawals_per_epoch
         + 4 // observers_per_validator
@@ -1229,6 +1252,21 @@ impl Read for ConsensusState {
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
+        // Trailers added by the proof-snapshot persistence: the only
+        // primitive that isn't derivable from the captured data, plus the
+        // serialized capture-time snapshot itself.
+        let proof_el_block_number = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let has_captured = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? != 0;
+        let captured_bytes = if has_captured {
+            let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            let mut bytes = vec![0u8; len];
+            buf.try_copy_to_slice(&mut bytes)
+                .map_err(|_| Error::EndOfBuffer)?;
+            Some(bytes)
+        } else {
+            None
+        };
+
         let mut state = Self {
             epoch,
             view,
@@ -1257,11 +1295,28 @@ impl Read for ConsensusState {
             ssz_tree: SszStateTree::default(),
             proof_tree: SszStateTree::default(),
             proof_validator_keys: Vec::new(),
+            captured_bytes: captured_bytes.clone(),
 
             state_root: [0u8; 32],
-            proof_el_block_number: 0,
+            proof_el_block_number,
         };
+        // Build the live tree from the post-mutation data fields. This sets
+        // `state_root` and `proof_tree` from the *live* tree. We'll override
+        // them below using the capture-time snapshot.
         state.rebuild_ssz_tree();
+
+        if let Some(bytes) = captured_bytes {
+            // Decode the capture-time snapshot. Its own `rebuild_ssz_tree`
+            // runs as part of decode and produces the exact tree that
+            // existed when `capture_state_root` ran. `state_root` and
+            // `proof_validator_keys` are derived from it. Neither is
+            // stored separately in the wire format.
+            let inner = ConsensusState::decode(bytes.as_slice())?;
+            state.proof_tree = inner.proof_tree.clone();
+            state.state_root = state.proof_tree.root();
+            state.proof_validator_keys = inner.validator_accounts.keys().copied().collect();
+        }
+
         Ok(state)
     }
 }
@@ -1358,6 +1413,23 @@ impl Write for ConsensusState {
 
         // Write epocher
         self.epocher.write(buf);
+
+        // Write proof_el_block_number (not derivable from consensus data —
+        // it's a parameter passed into `capture_state_root`).
+        buf.put_u64(self.proof_el_block_number);
+
+        // Write captured_bytes (serialized capture-time snapshot, used on
+        // Read to rebuild `proof_tree` exactly). `state_root` and
+        // `proof_validator_keys` are derived from the rebuilt tree on Read,
+        // so they don't need separate persistence.
+        match &self.captured_bytes {
+            Some(bytes) => {
+                buf.put_u8(1);
+                buf.put_u32(bytes.len() as u32);
+                buf.put_slice(bytes);
+            }
+            None => buf.put_u8(0),
+        }
     }
 }
 
@@ -2452,6 +2524,94 @@ mod tests {
             .generate_validator_proof(&[1u8; 32], state.proof_validator_keys())
             .unwrap();
         assert!(proof.verify(&captured_root));
+    }
+
+    /// A restart between `capture_state_root` and the next block must preserve
+    /// the captured snapshot: `state_root`, `proof_tree`, `proof_validator_keys`,
+    /// and `proof_el_block_number`. The finalizer captures the root inside
+    /// `execute_block` and only persists ConsensusState *after* the
+    /// epoch-transition mutations run, so the live SSZ tree at persistence
+    /// time differs from the captured one. If `Read` rebuilds the snapshot
+    /// from the post-mutation live fields, restarted validators end up with
+    /// a different aux-data `state_root` than uninterrupted peers — they
+    /// reject each other's proposals on `parent_beacon_block_root`.
+    #[test]
+    fn test_serialization_preserves_captured_proof_snapshot() {
+        // Build state with one validator and capture a snapshot.
+        let mut state = ConsensusState::default();
+        state.set_epoch(5);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+        state.capture_state_root(100);
+
+        let captured_root = state.get_state_root();
+        let captured_proof_root = state.proof_tree().root();
+        let captured_validator_keys = state.proof_validator_keys().to_vec();
+        let captured_el_block = state.get_proof_el_block_number();
+
+        // Mutate the live fields the same way an epoch-boundary apply does:
+        // bump epoch, swap a validator account out. Any live-tree mutation is
+        // sufficient — these specific ones ensure the post-mutation live root
+        // is provably different from the captured one.
+        state.set_epoch(99);
+        state.set_account([2u8; 32], create_test_validator_account(2, 32_000_000_000));
+        assert_ne!(
+            state.ssz_tree().root(),
+            captured_root,
+            "live tree mutations must produce a different root; the captured \
+             snapshot must NOT track them — this is the property the audit \
+             worries restart breaks"
+        );
+        // The frozen snapshot is unaffected by the live mutations: this is
+        // the invariant `capture_state_root` exists to provide, and it's the
+        // invariant the encode/decode roundtrip below must preserve.
+        assert_eq!(
+            state.get_state_root(),
+            captured_root,
+            "post-capture mutations must not touch the frozen state_root"
+        );
+
+        // Persist and restore.
+        let mut encoded = state.encode();
+        let restored = ConsensusState::decode(&mut encoded).expect("decode");
+
+        // Property 1: cross-validator block-validity agreement. A restarted
+        // validator and an uninterrupted peer both need to derive the same
+        // `parent_beacon_block_root` expectation; this is the field they use.
+        assert_eq!(
+            restored.get_state_root(),
+            captured_root,
+            "state_root must equal the pre-mutation captured root after restart, \
+             not the post-mutation live root"
+        );
+
+        // Property 2: proof generation. A restarted validator must be able to
+        // produce proofs that verify against the same on-chain root.
+        assert_eq!(
+            restored.proof_tree().root(),
+            captured_proof_root,
+            "proof_tree must reflect the captured snapshot, not the post-mutation tree"
+        );
+        assert_eq!(
+            restored.proof_validator_keys(),
+            captured_validator_keys.as_slice(),
+            "proof_validator_keys must be the captured snapshot"
+        );
+        assert_eq!(
+            restored.get_proof_el_block_number(),
+            captured_el_block,
+            "proof_el_block_number must be the captured value"
+        );
+
+        // End-to-end: a proof generated by the restored state must verify
+        // against the captured root.
+        let restored_proof = restored
+            .proof_tree()
+            .generate_validator_proof(&[1u8; 32], restored.proof_validator_keys())
+            .unwrap();
+        assert!(
+            restored_proof.verify(&captured_root),
+            "proof generated post-restart must verify against the captured root"
+        );
     }
 
     #[test]
