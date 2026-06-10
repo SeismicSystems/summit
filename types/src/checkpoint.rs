@@ -390,12 +390,12 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
             );
         };
 
-        if anchor_header.header.digest != weak_subjectivity.header_digest {
+        if anchor_header.header.get_digest() != weak_subjectivity.header_digest {
             return Err(
                 CheckpointVerificationError::WeakSubjectivityHeaderDigestMismatch {
                     epoch: weak_subjectivity.epoch,
                     expected: weak_subjectivity.header_digest,
-                    found: anchor_header.header.digest,
+                    found: anchor_header.header.get_digest(),
                 },
             );
         }

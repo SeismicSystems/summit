@@ -120,7 +120,7 @@ async fn test_get_finalized_header_digest() {
 
     let epoch = 3;
     let finalized_header = create_test_finalized_header(epoch);
-    let expected_digest = finalized_header.header.digest.0;
+    let expected_digest = finalized_header.header.get_digest().0;
     let state = MockFinalizerState {
         finalized_headers: [(epoch, Some(finalized_header))].into(),
         ..Default::default()

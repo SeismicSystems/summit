@@ -246,7 +246,7 @@ fn test_checkpoint_verification_fixed_committee() {
             epoch: weak_subjectivity_epoch,
             header_digest: finalized_headers[weak_subjectivity_epoch as usize]
                 .header
-                .digest,
+                .get_digest(),
         };
         checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
             &genesis,
@@ -278,7 +278,7 @@ fn test_checkpoint_verification_fixed_committee() {
 
         let stale_weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
             epoch: 0,
-            header_digest: finalized_headers[0].header.digest,
+            header_digest: finalized_headers[0].header.get_digest(),
         };
         let err = checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
             &genesis,

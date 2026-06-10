@@ -181,7 +181,7 @@ pub fn create_test_finalized_header(epoch: u64) -> summit_types::FinalizedHeader
     };
     use commonware_utils::Participant;
 
-    let header = summit_types::Header::compute_digest(
+    let header = summit_types::Header::new(
         [1u8; 32].into(),
         epoch * 10 + 9,
         1234567890 + epoch,
@@ -197,9 +197,9 @@ pub fn create_test_finalized_header(epoch: u64) -> summit_types::FinalizedHeader
     );
 
     let proposal = Proposal {
-        round: Round::new(Epoch::new(header.epoch), View::new(header.view)),
-        parent: View::new(header.height),
-        payload: header.digest,
+        round: Round::new(Epoch::new(header.epoch()), View::new(header.view())),
+        parent: View::new(header.height()),
+        payload: header.get_digest(),
     };
 
     let mut rng = StdRng::seed_from_u64(42);
