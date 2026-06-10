@@ -538,7 +538,12 @@ async fn run_node_inner(
         };
 
     let listen = wildcard_listen_for(our_ip, flags.port);
-    let namespace = genesis.namespace.as_bytes();
+    // Bind the live p2p authentication domain to immutable chain identity so a
+    // peer from a different deployment that reuses this namespace and the same
+    // node keys cannot authenticate against us.
+    let p2p_domain =
+        summit_types::chain_domain(genesis.genesis_hash(), genesis.namespace.as_bytes());
+    let namespace = p2p_domain.as_slice();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
     let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
@@ -698,7 +703,12 @@ async fn run_node_local_inner(
         };
 
     let listen = wildcard_listen_for(our_ip, flags.port);
-    let namespace = genesis.namespace.as_bytes();
+    // Bind the live p2p authentication domain to immutable chain identity so a
+    // peer from a different deployment that reuses this namespace and the same
+    // node keys cannot authenticate against us.
+    let p2p_domain =
+        summit_types::chain_domain(genesis.genesis_hash(), genesis.namespace.as_bytes());
+    let namespace = p2p_domain.as_slice();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
     let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {

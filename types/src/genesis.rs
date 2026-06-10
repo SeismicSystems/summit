@@ -142,6 +142,16 @@ impl TryFrom<&GenesisValidator> for Validator {
 }
 
 impl Genesis {
+    /// The EL genesis hash as raw bytes, the immutable identity of this chain
+    /// deployment. Panics if `eth_genesis_hash` is not a 32-byte hex string;
+    /// genesis files are operator-provided and validated at load time.
+    pub fn genesis_hash(&self) -> [u8; 32] {
+        from_hex_formatted(&self.eth_genesis_hash)
+            .map(|bytes| bytes.try_into())
+            .expect("bad eth_genesis_hash")
+            .expect("bad eth_genesis_hash")
+    }
+
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let file_string = std::fs::read_to_string(path)?;
         let genesis: Genesis = toml::from_str(&file_string)?;

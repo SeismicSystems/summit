@@ -2,7 +2,6 @@ use crate::keys::read_keys_from_keystore;
 use anyhow::{Context, Result};
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381;
-use commonware_utils::from_hex_formatted;
 use governor::Quota;
 use std::{num::NonZeroU32, time::Duration};
 use summit_types::Block;
@@ -113,10 +112,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             fetch_concurrent: FETCH_CONCURRENT,
             fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(FETCH_RATE_P2P).unwrap()),
             namespace: genesis.namespace.clone(),
-            genesis_hash: from_hex_formatted(&genesis.eth_genesis_hash)
-                .map(|hash_bytes| hash_bytes.try_into())
-                .expect("bad eth_genesis_hash")
-                .expect("bad eth_genesis_hash"),
+            genesis_hash: genesis.genesis_hash(),
             initial_state,
             checkpoint_last_block,
             checkpoint_finalized_header,

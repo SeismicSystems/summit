@@ -323,7 +323,11 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
         .get_validators()
         .map_err(|e| CheckpointVerificationError::ValidatorSetError(e.to_string()))?;
 
-    let namespace = genesis.namespace.as_bytes().to_vec();
+    // The finalization certificates were produced over the live consensus
+    // domain, which is bound to immutable chain identity. The verifier must
+    // reconstruct that same domain (see `chain_domain`) rather than the raw
+    // configured namespace, or the aggregate signatures will not verify.
+    let namespace = crate::chain_domain(genesis_hash.0, genesis.namespace.as_bytes()).to_vec();
 
     // Build the participant set as Vec<(ed25519::PublicKey, MinPk::Public)>
     // so we can mutate it across epochs
