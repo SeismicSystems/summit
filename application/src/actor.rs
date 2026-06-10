@@ -253,17 +253,23 @@ impl<
                                         let parent_digest = block.parent();
                                         if parent_digest != genesis_hash.into() {
                                             let parent_height = block.height().saturating_sub(1);
-                                            let parent_executed = finalizer_clone
+                                            // `notify_at_height` blocks while the finalizer is
+                                            // merely behind (it resolves true once the parent is
+                                            // executed). A false/dropped result means the
+                                            // finalizer does not have this parent on its chain, which
+                                            // indicates a non-canonical fork, a digest mismatch,
+                                            // or the request was dropped.
+                                            let parent_confirmed = finalizer_clone
                                                 .notify_at_height(parent_height, parent_digest)
                                                 .await
                                                 .await
                                                 .unwrap_or(false);
-                                            if !parent_executed {
+                                            if !parent_confirmed {
                                                 warn!(
                                                     ?round,
                                                     parent_height,
                                                     ?parent_digest,
-                                                    "certify: parent block not executed by finalizer"
+                                                    "certify: finalizer did not confirm parent on its chain (superseded, fork, or digest mismatch)"
                                                 );
                                                 return false;
                                             }
@@ -391,20 +397,25 @@ impl<
                                             let parent_digest = parent.digest();
                                             let parent_height = parent.height();
 
-                                            // Wait for parent block to be executed by finalizer
-                                            // This ensures the parent's state is available for aux_data
-                                            let parent_executed = finalizer_clone
+                                            // Wait for the parent to be executed so its state is
+                                            // available for aux_data. `notify_at_height` blocks
+                                            // while the finalizer is merely behind (it resolves
+                                            // true once the parent is executed). A false/dropped
+                                            // result means the finalizer does not have this parent
+                                            // on its chain, which indicates a non-canonical fork, a
+                                            // digest mismatch, or the request was dropped.
+                                            let parent_confirmed = finalizer_clone
                                                 .notify_at_height(parent_height, parent_digest)
                                                 .await
                                                 .await
                                                 .unwrap_or(false);
 
-                                            if !parent_executed {
+                                            if !parent_confirmed {
                                                 warn!(
                                                     ?round,
                                                     parent_height,
                                                     ?parent_digest,
-                                                    "parent block not executed by finalizer"
+                                                    "verify: finalizer did not confirm parent on its chain (superseded, fork, or digest mismatch)"
                                                 );
                                                 let _ = response.send(false);
                                                 return;
