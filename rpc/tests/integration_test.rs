@@ -16,6 +16,20 @@ use utils::{
 
 const TEST_GENESIS_HASH: [u8; 32] = [7u8; 32];
 
+/// Derive the observer child transport key for the keystore's node key, the
+/// same way `--observer <index>` derives the live P2P signer.
+fn derive_observer_node_key(key_store_path: &str, index: u32) -> String {
+    use commonware_cryptography::Signer as _;
+    use summit_types::{KeyPaths, ext_private_key::ExtPrivateKey};
+
+    let node_key = KeyPaths::new(key_store_path.to_string())
+        .read_node_key_from_file()
+        .unwrap();
+    ExtPrivateKey::derive_child_signer(&node_key, index)
+        .public_key()
+        .to_string()
+}
+
 #[tokio::test]
 async fn test_health_endpoint() {
     use summit_rpc::SummitApiClient;
@@ -561,6 +575,7 @@ async fn test_get_deposit_signature_not_on_public_listener() {
         b"_SUMMIT".to_vec(),
         0,
         0,
+        None,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
     )
@@ -609,6 +624,115 @@ async fn test_get_deposit_signature_not_on_public_listener() {
         handles.admin_addr.ip().is_loopback(),
         "admin listener must be bound to loopback; bound to {}",
         handles.admin_addr.ip()
+    );
+
+    handles.public_handle.stop().unwrap();
+    handles.admin_handle.stop().unwrap();
+}
+
+/// An observer node's live P2P identity is a child key derived from the
+/// master node key; signing a deposit would bind the master validator
+/// identity from a process that doesn't represent it. `getDepositSignature`
+/// must therefore be rejected in observer mode, even on the admin listener.
+#[tokio::test]
+async fn test_get_deposit_signature_disabled_in_observer_mode() {
+    use jsonrpsee::core::ClientError;
+    use summit_rpc::SummitAdminApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+    let observer_node_key = derive_observer_node_key(&key_store_path, 0);
+
+    let handles = start_rpc_server_pair_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        0,
+        Some(observer_node_key),
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let admin_url = format!("http://{}", handles.admin_addr);
+    let admin_client = HttpClientBuilder::default().build(&admin_url).unwrap();
+    let address = format!("0x{}", "a".repeat(40));
+    let resp =
+        SummitAdminApiClient::get_deposit_signature(&admin_client, 32_000_000_000, address).await;
+
+    match resp {
+        Err(ClientError::Call(err)) => {
+            assert_eq!(
+                err.code(),
+                4003,
+                "expected observer-mode rejection (4003), got {:?}",
+                err
+            );
+        }
+        other => panic!(
+            "observer node must not serve getDepositSignature; got {:?}",
+            other
+        ),
+    }
+
+    handles.public_handle.stop().unwrap();
+    handles.admin_handle.stop().unwrap();
+}
+
+/// In observer mode `getPublicKeys` must report the derived child key — the
+/// node's live P2P transport identity — rather than the master keystore
+/// identity, and must leave the consensus key empty so the response can't be
+/// read as speaking for the validator's consensus identity.
+#[tokio::test]
+async fn test_get_public_keys_reports_observer_key_in_observer_mode() {
+    use summit_rpc::SummitApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+    let observer_node_key = derive_observer_node_key(&key_store_path, 3);
+    let master_node_key = {
+        use summit_types::KeyPaths;
+        KeyPaths::new(key_store_path.clone())
+            .node_public_key()
+            .unwrap()
+    };
+
+    let handles = start_rpc_server_pair_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        0,
+        Some(observer_node_key.clone()),
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let public_url = format!("http://{}", handles.public_addr);
+    let public_client = HttpClientBuilder::default().build(&public_url).unwrap();
+    let keys = SummitApiClient::get_public_keys(&public_client)
+        .await
+        .expect("observer node should still serve getPublicKeys");
+    assert_eq!(
+        keys.node, observer_node_key,
+        "observer should report its derived transport key"
+    );
+    assert_ne!(
+        keys.node, master_node_key,
+        "observer must not report the master node key"
+    );
+    assert!(
+        keys.consensus.is_empty(),
+        "observer must not report a consensus key; got {}",
+        keys.consensus
     );
 
     handles.public_handle.stop().unwrap();

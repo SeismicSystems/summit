@@ -750,6 +750,16 @@ where
         authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
     let oracle = DiscoveryOracle::new(oracle);
+
+    // In observer mode the live P2P identity is this derived child key, not
+    // the master node key; the RPC server reports it instead of the keystore
+    // identity and disables keystore-signing methods.
+    let observer_node_key = flags.observer.map(|index| {
+        ExtPrivateKey::derive_child_signer(&key_store.node_key, index)
+            .public_key()
+            .to_string()
+    });
+
     let mut config = EngineConfig::get_engine_config(
         engine_client,
         oracle,
@@ -809,6 +819,7 @@ where
             admin_rpc_port,
             rpc_body_limits,
             stop_signal,
+            observer_node_key,
             #[cfg(feature = "permissioned")]
             paused,
         )
