@@ -71,11 +71,18 @@ fn test_observer_reaches_end_height() {
         let master_priv_key = validator_key_stores[0].node_key.clone();
         let master_consensus_key = validator_key_stores[0].consensus_key.clone();
         let master_pub_key = master_priv_key.public_key();
-        let observer_signer = ExtPrivateKey::derive_child_signer(&master_priv_key, observer_index);
+        // Must match the namespace the nodes run with (below), so the derived observer
+        // identity matches the finalizer's authorized observer set (#335).
+        let observer_namespace = b"_SUMMIT";
+        let observer_signer = ExtPrivateKey::derive_child_signer(
+            &master_priv_key,
+            observer_namespace,
+            observer_index,
+        );
         let observer_pubkey = observer_signer.public_key();
         assert_eq!(
             observer_pubkey,
-            derive_child_public(master_pub_key.clone(), observer_index),
+            derive_child_public(master_pub_key.clone(), observer_namespace, observer_index),
             "signer and public-only derivation must agree"
         );
 

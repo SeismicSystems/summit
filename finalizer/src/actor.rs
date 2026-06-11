@@ -288,6 +288,10 @@ pub struct Finalizer<
     deposit_signature_domain: Digest,
     oracle: O,
     node_public_key: PublicKey,
+
+    /// Chain namespace (genesis), mixed into observer child-key derivation for
+    /// domain separation across deployments.
+    namespace: Vec<u8>,
     validator_exit: bool,
     cancellation_token: CancellationToken,
     _signer_marker: PhantomData<S>,
@@ -401,6 +405,7 @@ impl<
                     &cfg.namespace,
                 ),
                 node_public_key: cfg.node_public_key,
+                namespace: cfg.namespace,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,
                 _signer_marker: PhantomData,
@@ -433,6 +438,7 @@ impl<
             .collect();
         let observer_keys = derive_observer_keys(
             &network_keys,
+            &self.namespace,
             self.canonical_state.get_observers_per_validator(),
         );
         self.oracle
@@ -1054,6 +1060,7 @@ impl<
                 .collect();
             let observer_keys = derive_observer_keys(
                 &network_keys,
+                &self.namespace,
                 self.canonical_state.get_observers_per_validator(),
             );
             self.oracle

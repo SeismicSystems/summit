@@ -383,8 +383,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 from_hex_formatted(&master_key_hex).expect("invalid hex in master node key");
             let master_priv_key = PrivateKey::decode(&master_key_bytes[..])
                 .expect("failed to decode master private key");
-            let observer_pubkey =
-                derive_child_public(master_priv_key.public_key(), OBSERVER_DERIVE_IDX);
+            // Observer child keys are namespace-separated (#335); use the same genesis
+            // namespace the validators authorize against so this matches their derived set.
+            let observer_namespace = Genesis::load_from_file(&e2e_genesis_path_str)
+                .expect("failed to load genesis for observer namespace")
+                .namespace;
+            let observer_pubkey = derive_child_public(
+                master_priv_key.public_key(),
+                observer_namespace.as_bytes(),
+                OBSERVER_DERIVE_IDX,
+            );
 
             let val_rpc_port = get_node_flags(0, &e2e_genesis_path_str).rpc_port;
             let checkpoint_res = fetch_latest_checkpoint(val_rpc_port)
