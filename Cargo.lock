@@ -6029,6 +6029,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "anyhow",
+ "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-macros",

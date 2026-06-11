@@ -14,14 +14,16 @@ use futures::{
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
+use commonware_consensus::simplex::Plan;
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::types::{Epoch, Epocher, Round, View};
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{PublicKey, Signer};
 use std::marker::PhantomData;
 #[cfg(feature = "permissioned")]
+use std::sync::Arc;
+#[cfg(feature = "permissioned")]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use summit_finalizer::FinalizerMailbox;
 use tracing::{debug, error, info, warn};
@@ -44,9 +46,8 @@ pub struct Actor<
     ES: Epocher,
 > {
     context: ContextCell<R>,
-    mailbox: mpsc::Receiver<Message>,
+    mailbox: mpsc::Receiver<Message<P>>,
     engine_client: C,
-    built_block: Arc<Mutex<Option<(Block, Round)>>>,
     genesis_hash: [u8; 32],
     epocher: ES,
     cancellation_token: CancellationToken,
@@ -61,7 +62,7 @@ pub struct Actor<
 impl<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
-    S: Scheme<Digest>,
+    S: Scheme<Digest, PublicKey = P>,
     P: PublicKey,
     K: Signer,
     V: Variant,
@@ -78,7 +79,6 @@ impl<
                 context: ContextCell::new(context),
                 mailbox: rx,
                 engine_client: cfg.engine_client,
-                built_block: Arc::new(Mutex::new(None)),
                 genesis_hash,
                 epocher: cfg.epocher,
                 cancellation_token: cfg.cancellation_token,
@@ -142,7 +142,6 @@ impl<
                             debug!("{rand_id} application: Handling message Propose for round {} (epoch {}, view {}), parent view: {}",
                                 round, round.epoch(), round.view(), parent.0);
 
-                            let built = self.built_block.clone();
                             #[cfg(feature = "prom")]
                             let proposal_start = std::time::Instant::now();
 
@@ -150,14 +149,9 @@ impl<
                                     res = self.handle_proposal(parent, &mut syncer, &mut finalizer, round) => {
                                         match res {
                                             Ok(block) => {
-                                                // store block
                                                 let digest = block.digest();
                                                 let height = block.height();
                                                 let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
-                                                {
-                                                    let mut built = built.lock().expect("locked poisoned");
-                                                    *built = Some((block.clone(), round));
-                                                }
 
                                                 info!(
                                                     height,
@@ -202,21 +196,26 @@ impl<
                                     }
                             }
                         }
-                        Message::Broadcast { payload: _ } => {
+                        Message::Broadcast { payload, plan } => {
                             #[cfg(feature = "permissioned")]
                             if self.paused.load(Ordering::Relaxed) {
                                 warn!("consensus paused, skipping broadcast");
                                 continue;
                             }
 
-                            info!("{rand_id} Handling message Broadcast");
-
-                            let built_block = self.built_block.lock().expect("poisoned lock").take();
-
-                            if let Some((block, round)) = built_block {
-                                syncer.proposed(round, block).await;
-                            } else {
-                                warn!("Asked to broadcast a block without one built");
+                            match plan {
+                                // Our own proposal was already cached and broadcast
+                                // to all peers via syncer.proposed() at propose time,
+                                // before the digest was returned to consensus.
+                                Plan::Propose => {
+                                    debug!(?payload, "{rand_id} Broadcast(Propose): already broadcast at propose time");
+                                }
+                                // Push the certified block to voters consensus has
+                                // identified as missing it (ForwardingPolicy::SilentVoters).
+                                Plan::Forward { round, peers } => {
+                                    debug!(?round, n_peers = peers.len(), "{rand_id} Broadcast(Forward): forwarding to silent voters");
+                                    syncer.forward(round, payload, peers).await;
+                                }
                             }
                         }
 
