@@ -135,6 +135,15 @@ where
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
         let blocks_per_epoch = cfg.blocks_per_epoch;
 
+        // The key this node identifies itself by: the derived child key in
+        // observer mode (the live P2P identity), the master node key otherwise.
+        // Using the master key on an observer would make the resolver exclude
+        // the parent validator as "self" and skip it as a backfill source.
+        let node_public_key = cfg
+            .observer_network_key
+            .clone()
+            .unwrap_or_else(|| cfg.key_store.node_key.public_key());
+
         let page_cache = CacheRef::from_pooler(
             &context,
             NonZero::new(BUFFER_POOL_PAGE_SIZE).unwrap(),
@@ -171,7 +180,7 @@ where
                 namespace: cfg.namespace.as_bytes().to_vec(),
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
-                node_public_key: cfg.key_store.node_key.public_key().clone(),
+                node_public_key: node_public_key.clone(),
                 cancellation_token: cancellation_token.clone(),
                 drain_interval: FINALIZER_DRAIN_INTERVAL,
                 buffered_blocks_warn_threshold: FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD,
@@ -203,7 +212,7 @@ where
         let (buffer, buffer_mailbox) = buffered::Engine::new(
             context.with_label("buffer"),
             buffered::Config {
-                public_key: cfg.key_store.node_key.public_key(),
+                public_key: node_public_key.clone(),
                 mailbox_size: cfg.mailbox_size,
                 deque_size: cfg.deque_size,
                 priority: true,
@@ -374,7 +383,7 @@ where
             orchestrator,
             orchestrator_mailbox,
             oracle: cfg.oracle,
-            node_public_key: cfg.key_store.node_key.public_key(),
+            node_public_key,
             mailbox_size: cfg.mailbox_size,
             fetch_timeout: cfg.fetch_timeout,
             sync_start,

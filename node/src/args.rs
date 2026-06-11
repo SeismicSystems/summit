@@ -845,14 +845,16 @@ where
 
     let oracle = DiscoveryOracle::new(oracle);
 
-    // In observer mode the live P2P identity is this derived child key, not
-    // the master node key; the RPC server reports it instead of the keystore
-    // identity and disables keystore-signing methods.
-    let observer_node_key = flags.observer.map(|index| {
+    // In observer mode the node's identity is this derived child key, not the
+    // master node key: the engine identifies itself by it (resolver
+    // self-exclusion, broadcast attribution, finalizer self-lookup), and the
+    // RPC server reports it instead of the keystore identity and disables
+    // keystore-signing methods.
+    let observer_network_key = flags.observer.map(|index| {
         ExtPrivateKey::derive_child_signer(&key_store.node_key, genesis.namespace.as_bytes(), index)
             .public_key()
-            .to_string()
     });
+    let observer_node_key = observer_network_key.as_ref().map(|pk| pk.to_string());
 
     let mut config = EngineConfig::get_engine_config(
         engine_client,
@@ -868,6 +870,7 @@ where
     )
     .unwrap();
     config.force_verifier_only = flags.observer.is_some();
+    config.observer_network_key = observer_network_key;
 
     let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
     let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);

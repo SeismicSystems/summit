@@ -70,6 +70,12 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
     pub blocks_per_epoch: u64,
     pub force_verifier_only: bool,
+    /// The derived child key used as the live P2P identity when the node runs
+    /// with `--observer`; `None` on validator nodes. When set, the engine
+    /// identifies itself by this key everywhere (resolver self-exclusion,
+    /// broadcast attribution, finalizer self-lookup) instead of the master
+    /// node key in `key_store`.
+    pub observer_network_key: Option<PublicKey>,
 }
 
 impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C, S, O> {
@@ -116,6 +122,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             checkpoint_finalized_header,
             blocks_per_epoch: genesis.blocks_per_epoch,
             force_verifier_only: false,
+            observer_network_key: None,
         })
     }
 }
