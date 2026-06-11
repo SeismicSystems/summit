@@ -15,6 +15,7 @@ use commonware_math::algebra::Random;
 use commonware_parallel::Sequential;
 use commonware_utils::ordered::{BiMap, Map};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::{Block, Digest, EngineClient, PublicKey};
@@ -86,6 +87,7 @@ pub fn make_finalization(
 pub struct MockEngineClient {
     check_payload_overrides: Arc<Mutex<VecDeque<PayloadStatus>>>,
     commit_hash_overrides: Arc<Mutex<VecDeque<ForkchoiceUpdated>>>,
+    check_payload_calls: Arc<AtomicU64>,
 }
 
 impl MockEngineClient {
@@ -93,7 +95,15 @@ impl MockEngineClient {
         Self {
             check_payload_overrides: Arc::new(Mutex::new(VecDeque::new())),
             commit_hash_overrides: Arc::new(Mutex::new(VecDeque::new())),
+            check_payload_calls: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Number of times `check_payload` has been invoked. Used to detect whether a
+    /// finalized block was (re-)executed against the execution layer.
+    #[allow(unused)]
+    pub fn check_payload_call_count(&self) -> u64 {
+        self.check_payload_calls.load(Ordering::SeqCst)
     }
 
     /// Queue SYNCING responses for check_payload. After these are consumed,
@@ -181,6 +191,7 @@ impl EngineClient for MockEngineClient {
         &mut self,
         _block: &Block,
     ) -> Result<PayloadStatus, summit_types::EngineClientError> {
+        self.check_payload_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(override_status) = self.check_payload_overrides.lock().unwrap().pop_front() {
             return Ok(override_status);
         }

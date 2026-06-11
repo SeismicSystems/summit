@@ -993,3 +993,116 @@ fn test_finalizer_finalized_buffer_drains_in_order() {
         context.auditor().state()
     });
 }
+
+#[test]
+fn test_duplicate_finalized_delivery_is_idempotent() {
+    // The syncer documents at-least-once finalized delivery (syncer/src/lib.rs: "The actor
+    // will deliver a block to the reporter at-least-once. The reporter should be prepared to
+    // handle duplicate deliveries."). So the finalizer must tolerate a duplicate
+    // Update::FinalizedBlock for a block it has already applied: it must NOT re-execute the
+    // block against the execution layer or regress its canonical height, but it MUST still
+    // acknowledge the duplicate so the syncer's pending-ack pipeline does not stall.
+    //
+    // Regression guard for the missing idempotence guard in handle_finalized_block: the
+    // notarized path ignores blocks at or below canonical height, the finalized path does
+    // not. On the pre-fix code the duplicate is re-executed, so check_payload runs a second
+    // time (and execution requests would be re-processed / the height regressed).
+    let cfg = deterministic::Config::default().with_seed(77);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let engine_client = MockEngineClient::new();
+        // Shares the call counter with the client moved into the finalizer (Arc-backed).
+        let engine_client_probe = engine_client.clone();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_duplicate_finalized".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: default_protocol_consts(),
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(50),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(20)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let block1 = create_test_block(genesis_block.digest(), 1, 1, 77001);
+
+        // First (legitimate) finalized delivery: the block is applied and executed once.
+        let (ack1, _waiter1) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1.clone(), None), ack1))
+            .await;
+        context.sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            mailbox.get_latest_height().await,
+            1,
+            "first finalized block must apply"
+        );
+        let calls_after_first = engine_client_probe.check_payload_call_count();
+        assert_eq!(
+            calls_after_first, 1,
+            "first finalized delivery should execute the block exactly once"
+        );
+
+        // Duplicate finalized delivery of the SAME block (at-least-once contract).
+        let (ack2, waiter2) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block1.clone(), None), ack2))
+            .await;
+        context.sleep(Duration::from_millis(200)).await;
+
+        // The duplicate must be acknowledged so the syncer's pending-ack pipeline does not
+        // stall. (A guard that returns early without acking would drop the handle and the
+        // waiter would resolve Err(Canceled).)
+        assert!(
+            waiter2.await.is_ok(),
+            "duplicate finalized delivery must be acknowledged, not dropped"
+        );
+
+        // The duplicate must not change/regress canonical height.
+        assert_eq!(
+            mailbox.get_latest_height().await,
+            1,
+            "duplicate finalized block must not change canonical height"
+        );
+
+        // The duplicate must NOT be re-executed against the execution layer.
+        assert_eq!(
+            engine_client_probe.check_payload_call_count(),
+            calls_after_first,
+            "duplicate finalized block must not be re-executed (check_payload was called again)"
+        );
+
+        context.auditor().state()
+    });
+}
