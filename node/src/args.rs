@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use commonware_codec::Read;
 use commonware_cryptography::{Signer, certificate::Scheme};
 use commonware_p2p::{Ingress, authenticated};
-use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
+use commonware_runtime::{Handle, Metrics as _, Runner, Spawner, tokio};
 use summit_rpc::{
     DEFAULT_RPC_BODY_LIMIT_BYTES, PathSender, RpcBodyLimits, start_rpc_server,
     start_rpc_server_for_genesis,
@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_utils::from_hex_formatted;
-use futures::{channel::oneshot, future::try_join_all};
+use futures::{FutureExt, channel::oneshot};
 use governor::Quota;
 use ssz::Decode;
 use std::{
@@ -556,9 +556,13 @@ async fn run_node_inner(
         .await
     };
 
-    // Wait for any task to error
-    if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
-        error!(?e, "task failed");
+    // Bring the whole node down as soon as any core task exits; a failed core task exits
+    // non-zero so an external supervisor restarts the node.
+    if supervise_node_tasks(&context, p2p, engine, rpc_handle)
+        .await
+        .is_err()
+    {
+        std::process::exit(1);
     }
 }
 
@@ -723,9 +727,70 @@ async fn run_node_local_inner(
         MetricServer::new(config).serve(stop_signal).await.unwrap();
     }
 
-    // Wait for any task to error
-    if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
-        error!(?e, "task failed");
+    // Bring the node down as soon as any core task exits, then return so the runtime
+    // tears down cleanly and destructors run. Unlike the production path we do NOT
+    // `process::exit` here: this entrypoint runs inside a caller-managed runtime/thread
+    // (testnet and the e2e scenario binaries), and an abrupt exit would skip the caller's
+    // shutdown — e.g. orphaning the child Reth processes the scenarios spawn.
+    if let Err(e) = supervise_node_tasks(&context, p2p, engine, rpc_handle).await {
+        error!(?e, "node core task failed; shutting down node runtime");
+    }
+}
+
+/// Supervise the core node tasks (P2P, consensus engine, RPC): as soon as any of them
+/// exits, bring the whole node down.
+///
+/// The engine handle carries `anyhow::Result<()>` (a tracked-actor failure or panic
+/// is surfaced as `Err` by `Engine::run`), so we can tell a clean stop from a failure:
+/// - clean engine stop (e.g. this validator left the committee) -> `Ok(())`;
+/// - engine failure / panic, or P2P/RPC exiting (they should run for the node's lifetime)
+///   -> `Err`.
+///
+/// The caller turns `Err` into a non-zero `exit`.
+///
+/// A requested runtime stop (`context.stopped()` — SIGTERM, or a harness calling
+/// `node_context.stop()` to take a node down on purpose) is an intentional, clean
+/// shutdown: during it the P2P/RPC/engine tasks all wind down to `Ok`, so it must NOT be
+/// treated as a failure. The stop-signal arm is checked first (`select_biased!`) so it
+/// wins the race against those tasks completing.
+async fn supervise_node_tasks<Sp: Spawner>(
+    context: &Sp,
+    p2p: Handle<()>,
+    engine: Handle<anyhow::Result<()>>,
+    rpc: Handle<()>,
+) -> anyhow::Result<()> {
+    let stopped = context.stopped().fuse();
+    let p2p = p2p.fuse();
+    let engine = engine.fuse();
+    let rpc = rpc.fuse();
+    futures::pin_mut!(stopped, p2p, engine, rpc);
+    futures::select_biased! {
+        _ = stopped => {
+            info!("runtime stop requested; shutting down node");
+            Ok(())
+        }
+        res = engine => match res {
+            Ok(Ok(())) => {
+                warn!("consensus engine stopped cleanly; shutting down node");
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                error!(%e, "consensus engine failed; shutting down node");
+                Err(e)
+            }
+            Err(e) => {
+                error!(?e, "consensus engine task panicked; shutting down node");
+                Err(anyhow::anyhow!("consensus engine task panicked: {e:?}"))
+            }
+        },
+        res = p2p => {
+            error!(?res, "p2p network task exited unexpectedly; shutting down node");
+            Err(anyhow::anyhow!("p2p network task exited unexpectedly: {res:?}"))
+        }
+        res = rpc => {
+            error!(?res, "rpc task exited unexpectedly; shutting down node");
+            Err(anyhow::anyhow!("rpc task exited unexpectedly: {res:?}"))
+        }
     }
 }
 
@@ -741,7 +806,7 @@ async fn start_network_and_engine<S, EC>(
     initial_state: ConsensusState,
     checkpoint_last_block: Option<Block>,
     checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
-) -> (Handle<()>, Handle<()>, Handle<()>)
+) -> (Handle<anyhow::Result<()>>, Handle<()>, Handle<()>)
 where
     S: Signer<PublicKey = PublicKey>,
     EC: EngineClient,
@@ -1066,5 +1131,91 @@ where
         }
     } else {
         panic!("Could not find checkpoint");
+    }
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    use super::*;
+    use commonware_runtime::deterministic;
+
+    // The node must come down as soon as any core task exits. A clean
+    // engine stop (Ok) returns `Ok(())` (exit 0); an engine failure (Err) returns `Err`
+    // (exit non-zero).
+    #[test]
+    fn supervise_returns_ok_on_clean_engine_stop() {
+        let executor = deterministic::Runner::from(deterministic::Config::default());
+        executor.start(|context| async move {
+            let p2p = context
+                .with_label("p2p")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let rpc = context
+                .with_label("rpc")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            // Engine returns Ok immediately, simulating a clean stop (e.g. committee exit).
+            let engine = context
+                .with_label("engine")
+                .spawn(|_| async move { Ok::<(), anyhow::Error>(()) });
+
+            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            assert!(
+                outcome.is_ok(),
+                "a clean engine stop must not trigger a non-zero exit, got {outcome:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn supervise_returns_err_on_engine_failure() {
+        let executor = deterministic::Runner::from(deterministic::Config::default());
+        executor.start(|context| async move {
+            let p2p = context
+                .with_label("p2p")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let rpc = context
+                .with_label("rpc")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            // Engine surfaces a tracked-actor failure as Err — the node must exit non-zero.
+            let engine = context.with_label("engine").spawn(|_| async move {
+                Err::<(), anyhow::Error>(anyhow::anyhow!("tracked actor failed"))
+            });
+
+            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            assert!(
+                outcome.is_err(),
+                "an engine failure must trigger a non-zero exit, got {outcome:?}"
+            );
+        });
+    }
+
+    // Regression: a harness/operator stopping the runtime on purpose (e.g.
+    // stake-and-checkpoint stops a node to copy its Reth dir) must be a CLEAN shutdown,
+    // not a failure — even though P2P/RPC tasks wind down to Ok during it. All three core
+    // tasks run forever here, so the only way to return is via the runtime-stop signal.
+    #[test]
+    fn supervise_returns_ok_on_runtime_stop() {
+        let executor = deterministic::Runner::from(deterministic::Config::default());
+        executor.start(|context| async move {
+            let p2p = context
+                .with_label("p2p")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let rpc = context
+                .with_label("rpc")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let engine = context
+                .with_label("engine")
+                .spawn(|_| async move { futures::future::pending::<anyhow::Result<()>>().await });
+            // Request a runtime stop from a background task so `context.stopped()` resolves.
+            let stopper = context.clone();
+            context
+                .with_label("stopper")
+                .spawn(move |_| async move { stopper.stop(0, None).await });
+
+            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            assert!(
+                outcome.is_ok(),
+                "an intentional runtime stop must be a clean shutdown, got {outcome:?}"
+            );
+        });
     }
 }
