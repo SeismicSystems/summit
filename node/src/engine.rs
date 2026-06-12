@@ -16,7 +16,7 @@ use commonware_storage::archive::immutable;
 use commonware_utils::acknowledgement::Exact;
 use commonware_utils::{NZU64, NZUsize};
 use futures::FutureExt;
-use futures::future::try_join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
@@ -495,49 +495,60 @@ where
             self.orchestrator
                 .start(pending_network, recovered_network, resolver_network);
 
-        // Wait for either all actors to finish or cancellation signal
-        let actors_fut = try_join_all(vec![
-            app_handle,
-            buffer_handle,
-            finalizer_handle,
-            syncer_handle,
-            orchestrator_handle,
-        ])
-        .fuse();
-        let cancellation_fut = self.cancellation_token.cancelled().fuse();
-        futures::pin_mut!(actors_fut, cancellation_fut);
+        // Supervise actors with first-completion semantics: any actor finishing —
+        // cleanly or not — without a coordinated cancellation is a failure. A join
+        // that waits for all actors would leave the engine pending on a single
+        // clean Ok(()) exit, keeping the node half-alive with a dead service.
+        let mut actors: FuturesUnordered<_> = [
+            ("application", app_handle),
+            ("buffer", buffer_handle),
+            ("finalizer", finalizer_handle),
+            ("syncer", syncer_handle),
+            ("orchestrator", orchestrator_handle),
+        ]
+        .into_iter()
+        .map(|(name, handle)| handle.map(move |result| (name, result)))
+        .collect();
 
-        futures::select! {
-            result = actors_fut => {
-                match result {
-                    Err(e) => {
-                        error!(?e, "engine failed: a tracked actor returned an error");
-                        Err(anyhow::anyhow!("consensus engine actor failed: {e}"))
-                    }
-                    Ok(_) => {
-                        // Without a cancellation signal, a tracked actor returning on its own
-                        // is an unexpected exit. It should be surfaced as a failure so the node comes
-                        // down for restart rather than lingering.
-                        warn!("engine stopped: a tracked actor exited unexpectedly");
-                        Err(anyhow::anyhow!(
-                            "consensus engine stopped: a tracked actor exited unexpectedly"
-                        ))
-                    }
-                }
-            }
+        let cancellation_fut = self.cancellation_token.cancelled().fuse();
+        futures::pin_mut!(cancellation_fut);
+
+        futures::select_biased! {
+            // Cancellation is polled first: a fatal-error self-cancel or committee
+            // exit makes the cancelling actor finish in the same instant, and must
+            // not be misclassified as an unexpected exit.
             _ = cancellation_fut => {
                 info!("cancellation triggered, waiting for actors to finish");
-                match actors_fut.await {
+                let mut failure = None;
+                while let Some((name, result)) = actors.next().await {
+                    if let Err(e) = result {
+                        error!(?e, actor = name, "actor failed during graceful shutdown");
+                        failure.get_or_insert(anyhow::anyhow!(
+                            "consensus engine actor {name} failed during graceful shutdown: {e}"
+                        ));
+                    }
+                }
+                // Cancellation is an intentional shutdown (fatal-error self-cancel or
+                // committee exit). The node still comes down via the supervisor; this is
+                // not a panic, so report it as a clean stop.
+                failure.map_or(Ok(()), Err)
+            }
+            completed = actors.next() => {
+                let (name, result) = completed.expect("actor set is non-empty");
+                // Bring the siblings down too; actual teardown is the process exit
+                // triggered when this error reaches the node supervisor.
+                self.cancellation_token.cancel();
+                match result {
                     Err(e) => {
-                        error!(?e, "engine failed during graceful shutdown");
+                        error!(?e, actor = name, "engine failed: a tracked actor returned an error");
+                        Err(anyhow::anyhow!("consensus engine actor {name} failed: {e}"))
+                    }
+                    Ok(()) => {
+                        warn!(actor = name, "engine stopped: a tracked actor exited unexpectedly");
                         Err(anyhow::anyhow!(
-                            "consensus engine failed during graceful shutdown: {e}"
+                            "consensus engine actor {name} exited unexpectedly"
                         ))
                     }
-                    // Cancellation is an intentional shutdown (fatal-error self-cancel or
-                    // committee exit). The node still comes down via the supervisor; this is
-                    // not a panic, so report it as a clean stop.
-                    Ok(_) => Ok(()),
                 }
             }
         }
