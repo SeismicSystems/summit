@@ -57,7 +57,7 @@ use tracing::{debug, error, info, trace, warn};
 const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DepositRejectionReason {
+pub(crate) enum DepositRejectionReason {
     Refund,
     InvalidSignature,
     /// Deposit chunk's Ed25519 / BLS key bytes did not decode. A single
@@ -68,31 +68,37 @@ enum DepositRejectionReason {
     MalformedKey,
 }
 
-fn deposit_refund_key(domain_tag: u8, withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
+/// Build the merge key for a pending deposit refund.
+///
+/// The key deliberately omits the deposit index so that every rejected deposit
+/// to the same `(domain_tag, withdrawal_address)` collapses onto a single queue
+/// entry (amounts are summed by `WithdrawalQueue::push_request_with_kind`).
+/// Keying per deposit index instead would let an actor submit unbounded junk
+/// deposits and grow the ready backlog without bound, forcing O(backlog) queue
+/// collection and SSZ rebuild work on the finalizer at every epoch boundary.
+fn deposit_refund_key(domain_tag: u8, withdrawal_address: Address) -> [u8; 32] {
     let mut key = [0u8; 32];
     key[0] = domain_tag;
-    key[1..9].copy_from_slice(&deposit_index.to_le_bytes());
     key[12..32].copy_from_slice(withdrawal_address.as_ref());
     key
 }
 
-fn refunded_deposit_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
-    deposit_refund_key(0xFE, withdrawal_address, deposit_index)
+fn refunded_deposit_key(withdrawal_address: Address) -> [u8; 32] {
+    deposit_refund_key(0xFE, withdrawal_address)
 }
 
-fn invalid_signature_refund_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
-    deposit_refund_key(0xFF, withdrawal_address, deposit_index)
+fn invalid_signature_refund_key(withdrawal_address: Address) -> [u8; 32] {
+    deposit_refund_key(0xFF, withdrawal_address)
 }
 
-fn invalid_deposit_tax_key(treasury_address: Address, deposit_index: u64) -> [u8; 32] {
-    deposit_refund_key(0xFD, treasury_address, deposit_index)
+fn invalid_deposit_tax_key(treasury_address: Address) -> [u8; 32] {
+    deposit_refund_key(0xFD, treasury_address)
 }
 
 fn push_invalid_deposit_withdrawals(
     state: &mut ConsensusState,
     withdrawal_credentials: Address,
     refund_pubkey: [u8; 32],
-    deposit_index: u64,
     amount: u64,
     withdrawal_epoch: u64,
 ) {
@@ -116,7 +122,7 @@ fn push_invalid_deposit_withdrawals(
         state.push_refund_withdrawal_request(
             WithdrawalRequest {
                 source_address: treasury_address,
-                validator_pubkey: invalid_deposit_tax_key(treasury_address, deposit_index),
+                validator_pubkey: invalid_deposit_tax_key(treasury_address),
                 amount: tax_amount,
             },
             withdrawal_epoch,
@@ -149,8 +155,8 @@ fn pubkeys_with_buffered_full_exit(state: &ConsensusState) -> BTreeSet<[u8; 32]>
     pubkeys
 }
 
-fn malformed_deposit_refund_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
-    deposit_refund_key(0xFD, withdrawal_address, deposit_index)
+fn malformed_deposit_refund_key(withdrawal_address: Address) -> [u8; 32] {
+    deposit_refund_key(0xFD, withdrawal_address)
 }
 
 /// Queue an immediate refund withdrawal for a deposit that was rejected
@@ -158,7 +164,7 @@ fn malformed_deposit_refund_key(withdrawal_address: Address, deposit_index: u64)
 /// failures (`Refund` / `InvalidSignature`) and per-chunk parse failures
 /// (`MalformedKey`) so a malformed deposit chunk follows the same
 /// no-account, balance_deduction=0 refund path as a signature-invalid one.
-fn queue_deposit_refund(
+pub(crate) fn queue_deposit_refund(
     state: &mut ConsensusState,
     withdrawal_credentials_bytes: [u8; 32],
     amount: u64,
@@ -193,13 +199,11 @@ fn queue_deposit_refund(
     };
 
     let refund_pubkey = match reason {
-        DepositRejectionReason::Refund => refunded_deposit_key(withdrawal_address, deposit_index),
+        DepositRejectionReason::Refund => refunded_deposit_key(withdrawal_address),
         DepositRejectionReason::InvalidSignature => {
-            invalid_signature_refund_key(withdrawal_address, deposit_index)
+            invalid_signature_refund_key(withdrawal_address)
         }
-        DepositRejectionReason::MalformedKey => {
-            malformed_deposit_refund_key(withdrawal_address, deposit_index)
-        }
+        DepositRejectionReason::MalformedKey => malformed_deposit_refund_key(withdrawal_address),
     };
 
     let withdrawal_epoch = state.get_epoch() + consts.validator_withdrawal_num_epochs;
@@ -207,7 +211,6 @@ fn queue_deposit_refund(
         state,
         withdrawal_address,
         refund_pubkey,
-        deposit_index,
         amount,
         withdrawal_epoch,
     );
@@ -2597,13 +2600,11 @@ async fn process_execution_requests<
 
                         // Refund the top-up, which was never credited to the balance
                         // (taxed like any other invalid-deposit refund).
-                        let refund_pubkey =
-                            refunded_deposit_key(withdrawal_credentials, request.index);
+                        let refund_pubkey = refunded_deposit_key(withdrawal_credentials);
                         push_invalid_deposit_withdrawals(
                             state,
                             withdrawal_credentials,
                             refund_pubkey,
-                            request.index,
                             request.amount,
                             withdrawal_epoch,
                         );
@@ -2624,8 +2625,7 @@ async fn process_execution_requests<
                             state.get_minimum_stake(),
                             state.get_maximum_stake()
                         );
-                        let refund_pubkey =
-                            refunded_deposit_key(account.withdrawal_credentials, request.index);
+                        let refund_pubkey = refunded_deposit_key(account.withdrawal_credentials);
                         let withdrawal_epoch =
                             state.get_epoch() + consts.validator_withdrawal_num_epochs;
 
@@ -2633,7 +2633,6 @@ async fn process_execution_requests<
                             state,
                             account.withdrawal_credentials,
                             refund_pubkey,
-                            request.index,
                             request.amount,
                             withdrawal_epoch,
                         );
@@ -2708,8 +2707,7 @@ async fn process_execution_requests<
                             state.get_minimum_stake(),
                             state.get_maximum_stake()
                         );
-                        let refund_pubkey =
-                            refunded_deposit_key(account.withdrawal_credentials, request.index);
+                        let refund_pubkey = refunded_deposit_key(account.withdrawal_credentials);
                         let withdrawal_epoch =
                             state.get_epoch() + consts.validator_withdrawal_num_epochs;
 
@@ -2717,7 +2715,6 @@ async fn process_execution_requests<
                             state,
                             account.withdrawal_credentials,
                             refund_pubkey,
-                            request.index,
                             request.amount,
                             withdrawal_epoch,
                         );
