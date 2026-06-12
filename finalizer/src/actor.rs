@@ -1088,23 +1088,46 @@ impl<
                 self.canonical_state.clear_removed_validators();
             }
 
-            // Create the list of validators for the p2p network for the next epoch.
-            // We also include the validators that already staked and are waiting to join the committee.
-            let active_validators = self.canonical_state.get_active_or_joining_validators();
-            let network_keys: Vec<_> = active_validators
+            // Create the peer sets for the next epoch's P2P network.
+            //
+            // Only active validators go into the PRIMARY set: the backfill
+            // resolver draws its fetch sources from primary, so a peer that is
+            // merely warming up (Joining) must not be selectable as a source it
+            // may be unable to serve. Joining validators are tracked as SECONDARY
+            // instead, connectable for warm-up but not a backfill source, and
+            // are promoted to primary automatically once they become active in a
+            // later epoch transition. Observers are derived from the full active
+            // or joining set so a joining validator's observer children still
+            // connect during warm-up.
+            let active_node_keys: Vec<_> = self
+                .canonical_state
+                .get_active_validators()
                 .iter()
                 .map(|(node_key, _)| node_key.clone())
                 .collect();
+            let active_or_joining_node_keys: Vec<_> = self
+                .canonical_state
+                .get_active_or_joining_validators()
+                .iter()
+                .map(|(node_key, _)| node_key.clone())
+                .collect();
+            let joining_node_keys: Vec<_> = active_or_joining_node_keys
+                .iter()
+                .filter(|key| !active_node_keys.contains(key))
+                .cloned()
+                .collect();
             let observer_keys = derive_observer_keys(
-                &network_keys,
+                &active_or_joining_node_keys,
                 &self.namespace,
                 self.canonical_state.get_observers_per_validator(),
             );
+            let secondary_keys: Vec<_> =
+                joining_node_keys.into_iter().chain(observer_keys).collect();
             self.oracle
                 .track(
                     self.canonical_state.get_epoch(),
-                    network_keys,
-                    observer_keys,
+                    active_node_keys,
+                    secondary_keys,
                 )
                 .await;
 
