@@ -55,6 +55,12 @@ const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
 const FREEZER_TABLE_INITIAL_SIZE: u32 = 1024 * 1024; // 100mb
 const MAX_REPAIR: NonZero<usize> = NZUsize!(10);
 
+/// Initial expected per-peer latency assumed by the backfill resolver's
+/// peer-performance tracking before any responses are observed.
+const BACKFILL_INITIAL_EXPECTED: Duration = Duration::from_secs(1);
+/// Delay before re-queuing a backfill fetch after a timeout or failed send.
+const BACKFILL_FETCH_RETRY_TIMEOUT: Duration = Duration::from_millis(1500);
+
 //
 // Onboarding config
 
@@ -107,6 +113,7 @@ pub struct Engine<
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: usize,
+    fetch_timeout: Duration,
     sync_start: SyncStart,
     checkpoint: Option<SyncCheckpoint<Block, MultisigScheme>>,
     cancellation_token: CancellationToken,
@@ -366,11 +373,34 @@ where
             oracle: cfg.oracle,
             node_public_key: cfg.key_store.node_key.public_key(),
             mailbox_size: cfg.mailbox_size,
+            fetch_timeout: cfg.fetch_timeout,
             sync_start,
             checkpoint,
             cancellation_token,
             #[cfg(feature = "permissioned")]
             paused,
+        }
+    }
+
+    /// Configuration for the backfill resolver.
+    ///
+    /// The active-request timeout must come from [`EngineConfig::fetch_timeout`]: the
+    /// resolver drops in-flight requests when the timeout fires, so responses arriving
+    /// later are discarded and backfill never completes if the timeout is shorter than
+    /// what peers need to serve finalized history.
+    pub(crate) fn backfill_resolver_config(
+        &self,
+    ) -> summit_syncer::resolver::p2p::Config<PublicKey, O, O> {
+        summit_syncer::resolver::p2p::Config {
+            public_key: self.node_public_key.clone(),
+            provider: self.oracle.clone(),
+            blocker: self.oracle.clone(),
+            mailbox_size: self.mailbox_size,
+            initial: BACKFILL_INITIAL_EXPECTED,
+            timeout: self.fetch_timeout,
+            fetch_retry_timeout: BACKFILL_FETCH_RETRY_TIMEOUT,
+            priority_requests: false,
+            priority_responses: false,
         }
     }
 
@@ -437,6 +467,9 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> anyhow::Result<()> {
+        // Build the backfill resolver config before actors take ownership of engine fields
+        let resolver_config = self.backfill_resolver_config();
+
         // start the application
         let app_handle = self
             .application
@@ -445,17 +478,6 @@ where
         let buffer_handle = self.buffer.start(broadcast_network);
 
         // Initialize resolver for backfill
-        let resolver_config = summit_syncer::resolver::p2p::Config {
-            public_key: self.node_public_key.clone(),
-            provider: self.oracle.clone(),
-            blocker: self.oracle.clone(),
-            mailbox_size: self.mailbox_size,
-            initial: Duration::from_secs(1),
-            timeout: Duration::from_secs(2),
-            fetch_retry_timeout: Duration::from_millis(1500),
-            priority_requests: false,
-            priority_responses: false,
-        };
         let (resolver_rx, resolver) =
             summit_syncer::resolver::p2p::init(&self.context, resolver_config, backfill_network);
 
