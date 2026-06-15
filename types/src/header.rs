@@ -917,7 +917,8 @@ mod test {
         };
         let finalized_header = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::new(
             header, finalized, 3,
-        );
+        )
+        .expect("payload is bound to the header digest");
 
         let ssz = finalized_header.as_ssz_bytes();
         // Sanity: the well-formed header (participant_count = 3) decodes.
