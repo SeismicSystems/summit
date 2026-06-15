@@ -24,7 +24,7 @@ use futures::{FutureExt, channel::oneshot};
 use governor::Quota;
 use ssz::Decode;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     num::{NonZeroU32, NonZeroU64},
     path::Path,
     str::FromStr as _,
@@ -367,6 +367,28 @@ mod genesis_path_tests {
             GenesisPathState::Valid(_)
         ));
     }
+
+    #[test]
+    fn listener_family_follows_ipv4_dialable() {
+        // An IPv4 advertised address must bind the IPv4 wildcard so peers that
+        // dial the signed record reach the listener.
+        let dialable: SocketAddr = "203.0.113.10:18551".parse().unwrap();
+        let listen = wildcard_listen_for(dialable, 26000);
+        assert_eq!(listen, "0.0.0.0:26000".parse::<SocketAddr>().unwrap());
+        assert!(listen.is_ipv4());
+    }
+
+    #[test]
+    fn listener_family_follows_ipv6_dialable() {
+        // Regression: an IPv6 advertised address (genesis ip_address, --ip, or an
+        // IPv6 public-IP result) must bind the IPv6 wildcard, not IPv4 `0.0.0.0`.
+        // Otherwise the node signs and gossips an IPv6 discovery record it never
+        // listens on.
+        let dialable: SocketAddr = "[2001:db8::10]:18551".parse().unwrap();
+        let listen = wildcard_listen_for(dialable, 26000);
+        assert_eq!(listen, "[::]:26000".parse::<SocketAddr>().unwrap());
+        assert!(listen.is_ipv6());
+    }
 }
 
 async fn run_node_inner(
@@ -502,7 +524,7 @@ async fn run_node_inner(
                 .collect()
         };
 
-    let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
+    let listen = wildcard_listen_for(our_ip, flags.port);
     let namespace = genesis.namespace.as_bytes();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
@@ -656,7 +678,7 @@ async fn run_node_local_inner(
                 .collect()
         };
 
-    let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
+    let listen = wildcard_listen_for(our_ip, flags.port);
     let namespace = genesis.namespace.as_bytes();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
@@ -983,6 +1005,23 @@ fn parse_digest_arg(value: &str, arg_name: &str) -> summit_types::Digest {
         .try_into()
         .unwrap_or_else(|_| panic!("{arg_name} must be a 32-byte hex digest"));
     bytes.into()
+}
+
+/// Returns the wildcard listen address whose family matches the node's
+/// advertised (dialable) address.
+///
+/// Commonware signs and gossips `dialable` as this node's peer record, and
+/// peers dial that address. The listener must therefore accept the same address
+/// family, or peers learn a valid IPv6 record the node never listens on (it
+/// would only ever bind IPv4 `0.0.0.0`). An IPv4 dialable binds `0.0.0.0`; an
+/// IPv6 dialable binds `[::]`, which on dual-stack hosts also accepts
+/// IPv4-mapped connections.
+fn wildcard_listen_for(dialable: SocketAddr, port: u16) -> SocketAddr {
+    let host = match dialable.ip() {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    };
+    SocketAddr::new(host, port)
 }
 
 async fn get_node_ip(
