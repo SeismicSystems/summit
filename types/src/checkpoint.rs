@@ -352,9 +352,9 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
         let expected_prev = if i == 0 {
             genesis_hash
         } else {
-            finalized_headers[i - 1].header.get_digest()
+            finalized_headers[i - 1].header().get_digest()
         };
-        if finalized_header.header.prev_epoch_header_hash() != expected_prev {
+        if finalized_header.header().prev_epoch_header_hash() != expected_prev {
             return Err(CheckpointVerificationError::PrevEpochHeaderHashMismatch {
                 epoch: expected_epoch,
             });
@@ -414,12 +414,12 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
             );
         };
 
-        if anchor_header.header.get_digest() != weak_subjectivity.header_digest {
+        if anchor_header.header().get_digest() != weak_subjectivity.header_digest {
             return Err(
                 CheckpointVerificationError::WeakSubjectivityHeaderDigestMismatch {
                     epoch: weak_subjectivity.epoch,
                     expected: weak_subjectivity.header_digest,
-                    found: anchor_header.header.get_digest(),
+                    found: anchor_header.header().get_digest(),
                 },
             );
         }
@@ -1290,7 +1290,7 @@ mod tests {
 
         let genesis = Genesis {
             validators: genesis_validators,
-            eth_genesis_hash: "0x00".to_string(),
+            eth_genesis_hash: format!("0x{}", "00".repeat(32)),
             leader_timeout_ms: 1_000,
             notarization_timeout_ms: 1_000,
             nullify_timeout_ms: 1_000,
@@ -1306,6 +1306,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            minimum_validator_count: 1,
         };
 
         let mut state = ConsensusState::new(
@@ -1318,6 +1319,7 @@ mod tests {
             3,
             16,
             0,
+            1,
         );
         state.set_validator_accounts(validator_accounts);
         let checkpoint = Checkpoint::new(&state);

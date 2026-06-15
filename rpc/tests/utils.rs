@@ -220,6 +220,7 @@ pub fn create_test_finalized_header(epoch: u64) -> summit_types::FinalizedHeader
     };
 
     summit_types::FinalizedHeader::new(header, finalized, 3)
+        .expect("test finalized header should be payload-bound")
 }
 
 /// Creates a temporary key store directory with test keys

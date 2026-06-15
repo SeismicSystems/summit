@@ -28,9 +28,12 @@ use summit_types::keystore::KeyStore;
 
 /// Returns a clone of `header` with the first byte of `prev_epoch_header_hash`
 /// flipped. The header fields are private, so the value is rebuilt via the
-/// public constructor. The epoch-header chain-link check runs before signature
-/// verification in `verify_checkpoint_chain`, so this isolates
-/// `PrevEpochHeaderHashMismatch` from any signature failure.
+/// public constructor. Callers must rebind the accompanying finalization's
+/// payload to the returned header's digest (see `rebind_finalization`): the
+/// payload/header binding check runs first in `verify_checkpoint_chain`, so a
+/// header with a stale payload would trip `PayloadDigestMismatch` before the
+/// chain-link check. The chain-link check runs before signature verification,
+/// so `PrevEpochHeaderHashMismatch` still surfaces without a valid signature.
 fn tamper_prev_epoch_header_hash(header: &Header) -> Header {
     let mut prev = header.prev_epoch_header_hash();
     prev.0[0] ^= 0xFF;
@@ -245,7 +248,7 @@ fn test_checkpoint_verification_fixed_committee() {
         let weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
             epoch: weak_subjectivity_epoch,
             header_digest: finalized_headers[weak_subjectivity_epoch as usize]
-                .header
+                .header()
                 .get_digest(),
         };
         checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
@@ -278,7 +281,7 @@ fn test_checkpoint_verification_fixed_committee() {
 
         let stale_weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
             epoch: 0,
-            header_digest: finalized_headers[0].header.get_digest(),
+            header_digest: finalized_headers[0].header().get_digest(),
         };
         let err = checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
             &genesis,
@@ -364,8 +367,17 @@ fn test_checkpoint_verification_fixed_committee() {
         // signature (which is over `header.digest`), so this exercises the
         // chain check independently.
         let mut chain_tampered_headers = finalized_headers.clone();
-        chain_tampered_headers[1].header =
-            tamper_prev_epoch_header_hash(&chain_tampered_headers[1].header);
+        let tampered_header = tamper_prev_epoch_header_hash(chain_tampered_headers[1].header());
+        let mut tampered_finalization = chain_tampered_headers[1].finalization().clone();
+        // Keep the payload bound to the tampered header so the chain-link check
+        // (not the payload-binding check) is the one that fails.
+        tampered_finalization.proposal.payload = tampered_header.get_digest();
+        let tampered_pc = chain_tampered_headers[1].participant_count();
+        chain_tampered_headers[1] = summit_types::FinalizedHeader::new_unchecked(
+            tampered_header,
+            tampered_finalization,
+            tampered_pc,
+        );
         let err =
             checkpoint::verify_checkpoint_chain(&genesis, &chain_tampered_headers, &raw_checkpoint)
                 .expect_err("verification should fail with broken chain link");
@@ -379,8 +391,18 @@ fn test_checkpoint_verification_fixed_committee() {
 
         // Same check for the genesis anchor (epoch 0).
         let mut genesis_anchor_tampered = finalized_headers.clone();
-        genesis_anchor_tampered[0].header =
-            tamper_prev_epoch_header_hash(&genesis_anchor_tampered[0].header);
+        let anchor_tampered_header =
+            tamper_prev_epoch_header_hash(genesis_anchor_tampered[0].header());
+        let mut anchor_tampered_finalization = genesis_anchor_tampered[0].finalization().clone();
+        // Keep the payload bound to the tampered header so the chain-link check
+        // (not the payload-binding check) is the one that fails.
+        anchor_tampered_finalization.proposal.payload = anchor_tampered_header.get_digest();
+        let anchor_tampered_pc = genesis_anchor_tampered[0].participant_count();
+        genesis_anchor_tampered[0] = summit_types::FinalizedHeader::new_unchecked(
+            anchor_tampered_header,
+            anchor_tampered_finalization,
+            anchor_tampered_pc,
+        );
         let err = checkpoint::verify_checkpoint_chain(
             &genesis,
             &genesis_anchor_tampered,
