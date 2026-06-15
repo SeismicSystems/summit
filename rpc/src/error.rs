@@ -14,6 +14,7 @@ pub enum RpcError {
     IoError(String),
     InvalidKey(String),
     Internal(String),
+    DisabledInObserverMode,
     #[cfg(feature = "permissioned")]
     InvalidAdminAddress(String),
     #[cfg(feature = "permissioned")]
@@ -58,6 +59,13 @@ impl From<RpcError> for ErrorObjectOwned {
                 ErrorObjectOwned::owned(3002, "Invalid key descriptor", Some(msg))
             }
             RpcError::Internal(msg) => ErrorObjectOwned::owned(5000, "Internal error", Some(msg)),
+            RpcError::DisabledInObserverMode => ErrorObjectOwned::owned(
+                4003,
+                "Method disabled in observer mode",
+                Some(
+                    "this node runs with --observer and does not sign with the validator keystore",
+                ),
+            ),
             #[cfg(feature = "permissioned")]
             RpcError::InvalidAdminAddress(msg) => {
                 ErrorObjectOwned::owned(4000, "Invalid admin address", Some(msg))

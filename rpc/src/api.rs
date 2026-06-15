@@ -91,7 +91,9 @@ pub trait SummitPermissionedApi {
 /// Admin-only RPC surface. Must be served on a localhost-bound listener.
 ///
 /// `getDepositSignature` uses the node's local validator private keys to sign
-/// caller-supplied deposit data.
+/// caller-supplied deposit data. It is disabled on observer nodes
+/// (`--observer`), whose live P2P identity is a derived child key rather than
+/// the master node key this method signs for.
 #[rpc(server, client)]
 pub trait SummitAdminApi {
     #[method(name = "getDepositSignature")]

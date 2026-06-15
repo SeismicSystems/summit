@@ -57,6 +57,7 @@ pub async fn start_rpc_server(
     admin_port: u16,
     body_limits: RpcBodyLimits,
     stop_signal: Signal,
+    observer_node_key: Option<String>,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let rpc_impl = SummitRpcServer::new(
@@ -64,6 +65,7 @@ pub async fn start_rpc_server(
         finalizer_mailbox,
         genesis_hash,
         &namespace,
+        observer_node_key,
         #[cfg(feature = "permissioned")]
         paused,
     );
@@ -131,6 +133,9 @@ pub async fn start_rpc_server_with_handle(
         finalizer_mailbox,
         genesis_hash,
         &namespace,
+        // This helper is only used by tests of validator-mode behavior, so
+        // observer mode is irrelevant here.
+        None,
         #[cfg(feature = "permissioned")]
         paused,
     );
@@ -160,6 +165,7 @@ pub async fn start_rpc_server_with_handle(
 /// handles + bound addresses for both. Used by tests that exercise the
 /// admin (localhost-only) RPC surface. Passing `0` for either port asks
 /// the OS to allocate a free port.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_rpc_server_pair_with_handle(
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     key_store_path: String,
@@ -167,6 +173,7 @@ pub async fn start_rpc_server_pair_with_handle(
     namespace: Vec<u8>,
     port: u16,
     admin_port: u16,
+    observer_node_key: Option<String>,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<RpcHandles> {
     let rpc_impl = SummitRpcServer::new(
@@ -174,6 +181,7 @@ pub async fn start_rpc_server_pair_with_handle(
         finalizer_mailbox,
         genesis_hash,
         &namespace,
+        observer_node_key,
         #[cfg(feature = "permissioned")]
         paused,
     );

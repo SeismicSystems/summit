@@ -34,6 +34,12 @@ pub struct SummitRpcServer {
     key_store_path: String,
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     deposit_signature_domain: Digest,
+    /// The derived child public key (hex) used as the live P2P identity when
+    /// the node runs with `--observer`; `None` on validator nodes. Observers
+    /// report this key instead of the master keystore identity and must not
+    /// sign with the validator keystore, so keystore-signing methods are
+    /// disabled when this is set.
+    observer_node_key: Option<String>,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
 }
@@ -44,12 +50,14 @@ impl SummitRpcServer {
         finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
         genesis_hash: [u8; 32],
         namespace: &[u8],
+        observer_node_key: Option<String>,
         #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
     ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
             deposit_signature_domain: deposit_signature_domain(genesis_hash, namespace),
+            observer_node_key,
             #[cfg(feature = "permissioned")]
             paused,
         }
@@ -63,6 +71,16 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_public_keys(&self) -> RpcResult<PublicKeysResponse> {
+        // An observer's live P2P identity is the derived child key and it
+        // never acts as a consensus participant; report that key with no
+        // consensus key rather than the validator master identity.
+        if let Some(observer_node_key) = &self.observer_node_key {
+            return Ok(PublicKeysResponse {
+                node: observer_node_key.clone(),
+                consensus: String::new(),
+            });
+        }
+
         let key_paths = KeyPaths::new(self.key_store_path.clone());
 
         let node = key_paths.node_public_key().map_err(|e| {
@@ -330,6 +348,13 @@ impl SummitAdminApiServer for SummitRpcServer {
         amount: u64,
         address: String,
     ) -> RpcResult<DepositTransactionResponse> {
+        // An observer's live P2P identity is a derived child key, not the
+        // master node key this method would sign for — refuse rather than
+        // produce a deposit binding the master validator identity.
+        if self.observer_node_key.is_some() {
+            return Err(RpcError::DisabledInObserverMode.into());
+        }
+
         let mut withdrawal_credentials = [0u8; 32];
         withdrawal_credentials[0] = 0x01;
 
