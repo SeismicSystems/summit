@@ -3,7 +3,9 @@ use crate::checkpoint::Checkpoint;
 use crate::dynamic_epocher::DynamicEpocher;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
-use crate::protocol_params::{DEFAULT_MINIMUM_VALIDATOR_COUNT, ProtocolParam};
+use crate::protocol_params::{
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MIN_ALLOWED_TIMESTAMP_FUTURE_MS, ProtocolParam,
+};
 use crate::ssz_state_tree::SszStateTree;
 use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use crate::{Digest, PublicKey};
@@ -115,7 +117,10 @@ impl Default for ConsensusState {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
-            allowed_timestamp_future_ms: 50,
+            // Must stay within the protocol-parameter bound (see ProtocolParam::validate
+            // and the decode guard in read_cfg); genesis would reject anything below
+            // MIN_ALLOWED_TIMESTAMP_FUTURE_MS, so the default sits at that floor.
+            allowed_timestamp_future_ms: MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
@@ -1202,6 +1207,19 @@ impl Read for ConsensusState {
         let validator_maximum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         validate_stake_interval(validator_minimum_stake, validator_maximum_stake)?;
         let allowed_timestamp_future_ms = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Enforce the same bound the runtime protocol-parameter path applies (see
+        // ProtocolParam::validate). An out-of-range window here means a crafted or
+        // tampered checkpoint/state artifact; reject it rather than boot under a
+        // timestamp tolerance that genesis and live updates would refuse.
+        if !(crate::protocol_params::MIN_ALLOWED_TIMESTAMP_FUTURE_MS
+            ..=crate::protocol_params::MAX_ALLOWED_TIMESTAMP_FUTURE_MS)
+            .contains(&allowed_timestamp_future_ms)
+        {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "allowed timestamp future out of bounds",
+            ));
+        }
 
         let mut treasury_address_bytes = [0u8; 20];
         buf.try_copy_to_slice(&mut treasury_address_bytes)
@@ -1209,6 +1227,16 @@ impl Read for ConsensusState {
         let treasury_address = Address::from(treasury_address_bytes);
 
         let max_deposits_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Same upper bound the runtime protocol-parameter path applies (see
+        // ProtocolParam::validate). An oversized deposit cap from a crafted or
+        // tampered artifact would let the penultimate-block selector admit more
+        // deposits per epoch than genesis/live updates allow.
+        if max_deposits_per_epoch > crate::protocol_params::MAX_MAX_DEPOSITS_PER_EPOCH {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "max deposits per epoch out of bounds",
+            ));
+        }
         let max_withdrawals_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         // Enforce the same lower/upper bound the runtime protocol-parameter update
         // path applies (see ProtocolParam::read_cfg / try_from). Genesis and runtime
@@ -1226,6 +1254,15 @@ impl Read for ConsensusState {
             ));
         }
         let observers_per_validator = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
+        // Same upper bound the runtime protocol-parameter path applies (see
+        // ProtocolParam::validate). Caps the per-validator observer fan-out an
+        // imported state can request.
+        if observers_per_validator as u64 > crate::protocol_params::MAX_OBSERVERS_PER_VALIDATOR {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "observers per validator out of bounds",
+            ));
+        }
         let minimum_validator_count = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         if minimum_validator_count == 0 {
             return Err(Error::Invalid(
@@ -2050,6 +2087,92 @@ mod tests {
                 "max_withdrawals_per_epoch {invalid} should be rejected on decode"
             );
         }
+    }
+
+    #[test]
+    fn test_decode_rejects_out_of_range_max_deposits_per_epoch() {
+        // Genesis and runtime updates cap deposits at MAX_MAX_DEPOSITS_PER_EPOCH;
+        // a decoded cap above it can only come from a crafted/tampered artifact and
+        // would let the penultimate-block selector admit more deposits than policy
+        // allows, so decode must reject it.
+        use crate::protocol_params::{MAX_MAX_DEPOSITS_PER_EPOCH, MIN_MAX_DEPOSITS_PER_EPOCH};
+
+        for valid in [MIN_MAX_DEPOSITS_PER_EPOCH, MAX_MAX_DEPOSITS_PER_EPOCH] {
+            let mut state = ConsensusState::default();
+            state.max_deposits_per_epoch = valid;
+            let encoded = state.encode();
+            let decoded = ConsensusState::read(&mut encoded.as_ref())
+                .unwrap_or_else(|_| panic!("valid max_deposits_per_epoch {valid} should decode"));
+            assert_eq!(decoded.max_deposits_per_epoch, valid);
+        }
+
+        let mut state = ConsensusState::default();
+        state.max_deposits_per_epoch = MAX_MAX_DEPOSITS_PER_EPOCH + 1;
+        let encoded = state.encode();
+        assert!(
+            ConsensusState::read(&mut encoded.as_ref()).is_err(),
+            "oversized max_deposits_per_epoch should be rejected on decode"
+        );
+    }
+
+    #[test]
+    fn test_decode_rejects_out_of_range_allowed_timestamp_future_ms() {
+        // The timestamp tolerance gates block-validity; genesis and runtime updates
+        // bound it to [MIN, MAX]. An out-of-range window from a crafted/tampered
+        // artifact would put a booting node's clock tolerance outside policy.
+        use crate::protocol_params::{
+            MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+        };
+
+        for valid in [
+            MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+            MAX_ALLOWED_TIMESTAMP_FUTURE_MS,
+        ] {
+            let mut state = ConsensusState::default();
+            state.allowed_timestamp_future_ms = valid;
+            let encoded = state.encode();
+            let decoded = ConsensusState::read(&mut encoded.as_ref()).unwrap_or_else(|_| {
+                panic!("valid allowed_timestamp_future_ms {valid} should decode")
+            });
+            assert_eq!(decoded.allowed_timestamp_future_ms, valid);
+        }
+
+        for invalid in [
+            MIN_ALLOWED_TIMESTAMP_FUTURE_MS - 1,
+            MAX_ALLOWED_TIMESTAMP_FUTURE_MS + 1,
+        ] {
+            let mut state = ConsensusState::default();
+            state.allowed_timestamp_future_ms = invalid;
+            let encoded = state.encode();
+            assert!(
+                ConsensusState::read(&mut encoded.as_ref()).is_err(),
+                "allowed_timestamp_future_ms {invalid} should be rejected on decode"
+            );
+        }
+    }
+
+    #[test]
+    fn test_decode_rejects_out_of_range_observers_per_validator() {
+        // Genesis and runtime updates cap observers at MAX_OBSERVERS_PER_VALIDATOR;
+        // a decoded value above it can only come from a crafted/tampered artifact.
+        use crate::protocol_params::MAX_OBSERVERS_PER_VALIDATOR;
+
+        for valid in [0u32, MAX_OBSERVERS_PER_VALIDATOR as u32] {
+            let mut state = ConsensusState::default();
+            state.observers_per_validator = valid;
+            let encoded = state.encode();
+            let decoded = ConsensusState::read(&mut encoded.as_ref())
+                .unwrap_or_else(|_| panic!("valid observers_per_validator {valid} should decode"));
+            assert_eq!(decoded.observers_per_validator, valid);
+        }
+
+        let mut state = ConsensusState::default();
+        state.observers_per_validator = MAX_OBSERVERS_PER_VALIDATOR as u32 + 1;
+        let encoded = state.encode();
+        assert!(
+            ConsensusState::read(&mut encoded.as_ref()).is_err(),
+            "oversized observers_per_validator should be rejected on decode"
+        );
     }
 
     #[test]
