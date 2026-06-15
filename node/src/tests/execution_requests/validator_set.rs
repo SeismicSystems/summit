@@ -182,7 +182,7 @@ fn test_added_validators_at_epoch_boundary() {
         // Verify the header contains the new validator in added_validators
         // The new validator's joining_epoch = 2, and at block 19 (last block of epoch 1),
         // the header should include validators joining in epoch 2 (next_epoch).
-        let added_validators = finalized_header.header.added_validators();
+        let added_validators = finalized_header.header().added_validators();
 
         // Assert that added_validators contains the new validator
         assert!(
@@ -405,7 +405,7 @@ fn test_removed_validators_at_epoch_boundary() {
             .expect("Failed to get finalized header for last block of epoch 0");
 
         // Verify the header contains the withdrawing validator in removed_validators
-        let removed_validators = finalized_header.header.removed_validators();
+        let removed_validators = finalized_header.header().removed_validators();
 
         // Assert that removed_validators contains the withdrawing validator
         assert!(

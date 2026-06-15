@@ -448,7 +448,7 @@ where
         // If we have a checkpoint, finalize the last block to complete the checkpoint
         if let Some(checkpoint) = checkpoint {
             let height = checkpoint.last_block.height();
-            let finalization = checkpoint.finalized_header.map(|h| h.finalization);
+            let finalization = checkpoint.finalized_header.map(|h| h.into_finalization());
             self.store_finalization(
                 height,
                 checkpoint.last_block.digest(),

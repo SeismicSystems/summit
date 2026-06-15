@@ -427,7 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .expect("failed to decode finalized header");
 
-            let signers = &finalized_header.finalization.certificate.signers;
+            let signers = &finalized_header.finalization().certificate.signers;
             let signer_count = signers.count();
             let expected_quorum = 2 * active_validators.len() / 3 + 1;
             assert!(
@@ -455,7 +455,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!(
                 "    latest finalized block (epoch {}, view {}) has {} signers, none of which is the observer",
-                finalized_header.header.epoch(), finalized_header.header.view(), signer_count
+                finalized_header.header().epoch(), finalized_header.header().view(), signer_count
             );
 
             println!("Test completed successfully!");

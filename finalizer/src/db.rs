@@ -553,7 +553,8 @@ mod tests {
                     signature: create_dummy_signature().into(), // Valid dummy signature for test
                 },
             };
-            let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized, 3);
+            let finalized_header =
+                summit_types::FinalizedHeader::new_unchecked(header.clone(), finalized, 3);
 
             // Test that no header exists initially
             assert!(db.get_finalized_header(100).await.is_none());
@@ -566,9 +567,9 @@ mod tests {
             let retrieved = db.get_finalized_header(100).await;
             assert!(retrieved.is_some());
             let retrieved = retrieved.unwrap();
-            assert_eq!(retrieved.header.height(), header.height());
-            assert_eq!(retrieved.header.get_digest(), header.get_digest());
-            assert_eq!(retrieved.header.timestamp(), header.timestamp());
+            assert_eq!(retrieved.header().height(), header.height());
+            assert_eq!(retrieved.header().get_digest(), header.get_digest());
+            assert_eq!(retrieved.header().timestamp(), header.timestamp());
 
             // Test that non-existent header returns None
             assert!(db.get_finalized_header(200).await.is_none());
@@ -601,23 +602,23 @@ mod tests {
                 },
             };
             let finalized_header2 =
-                summit_types::FinalizedHeader::new(header2.clone(), finalized2, 3);
+                summit_types::FinalizedHeader::new_unchecked(header2.clone(), finalized2, 3);
             db.store_finalized_header(200, &finalized_header2).await;
             db.commit().await;
 
             // Both headers should be accessible
             let h1 = db.get_finalized_header(100).await.unwrap();
             let h2 = db.get_finalized_header(200).await.unwrap();
-            assert_eq!(h1.header.height(), 100);
-            assert_eq!(h2.header.height(), 200);
-            assert_ne!(h1.header.get_digest(), h2.header.get_digest());
+            assert_eq!(h1.header().height(), 100);
+            assert_eq!(h2.header().height(), 200);
+            assert_ne!(h1.header().get_digest(), h2.header().get_digest());
 
             // Test get_most_recent_finalized_header returns the latest header
             let most_recent = db.get_most_recent_finalized_header().await;
             assert!(most_recent.is_some());
             let most_recent = most_recent.unwrap();
-            assert_eq!(most_recent.header.height(), 200);
-            assert_eq!(most_recent.header.get_digest(), header2.get_digest());
+            assert_eq!(most_recent.header().height(), 200);
+            assert_eq!(most_recent.header().get_digest(), header2.get_digest());
         });
     }
 
@@ -664,7 +665,7 @@ mod tests {
                 },
             };
             let finalized_header1 =
-                summit_types::FinalizedHeader::new(header1.clone(), finalized1, 3);
+                summit_types::FinalizedHeader::new_unchecked(header1.clone(), finalized1, 3);
 
             let header3 = summit_types::Header::new(
                 [7u8; 32].into(),  // parent
@@ -694,7 +695,7 @@ mod tests {
                 },
             };
             let finalized_header3 =
-                summit_types::FinalizedHeader::new(header3.clone(), finalized3, 3);
+                summit_types::FinalizedHeader::new_unchecked(header3.clone(), finalized3, 3);
 
             let header2 = summit_types::Header::new(
                 [5u8; 32].into(), // parent
@@ -724,7 +725,7 @@ mod tests {
                 },
             };
             let finalized_header2 =
-                summit_types::FinalizedHeader::new(header2.clone(), finalized2, 3);
+                summit_types::FinalizedHeader::new_unchecked(header2.clone(), finalized2, 3);
 
             // Store headers in non-sequential order: 100, 300, 200
             db.store_finalized_header(100, &finalized_header1).await;
@@ -732,8 +733,8 @@ mod tests {
 
             // Most recent should be height 100
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height(), 100);
-            assert_eq!(most_recent.header.get_digest(), header1.get_digest());
+            assert_eq!(most_recent.header().height(), 100);
+            assert_eq!(most_recent.header().get_digest(), header1.get_digest());
 
             // Store height 300
             db.store_finalized_header(300, &finalized_header3).await;
@@ -741,8 +742,8 @@ mod tests {
 
             // Most recent should now be height 300
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height(), 300);
-            assert_eq!(most_recent.header.get_digest(), header3.get_digest());
+            assert_eq!(most_recent.header().height(), 300);
+            assert_eq!(most_recent.header().get_digest(), header3.get_digest());
 
             // Store height 200 (lower than current max)
             db.store_finalized_header(200, &finalized_header2).await;
@@ -750,16 +751,16 @@ mod tests {
 
             // Most recent should still be height 300
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height(), 300);
-            assert_eq!(most_recent.header.get_digest(), header3.get_digest());
+            assert_eq!(most_recent.header().height(), 300);
+            assert_eq!(most_recent.header().get_digest(), header3.get_digest());
 
             // Verify all headers are still individually accessible
             let h1 = db.get_finalized_header(100).await.unwrap();
             let h2 = db.get_finalized_header(200).await.unwrap();
             let h3 = db.get_finalized_header(300).await.unwrap();
-            assert_eq!(h1.header.height(), 100);
-            assert_eq!(h2.header.height(), 200);
-            assert_eq!(h3.header.height(), 300);
+            assert_eq!(h1.header().height(), 100);
+            assert_eq!(h2.header().height(), 200);
+            assert_eq!(h3.header().height(), 300);
         });
     }
 

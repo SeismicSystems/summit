@@ -191,7 +191,7 @@ impl SummitApiServer for SummitRpcServer {
 
         Ok(FinalizedHeaderDigestRes {
             epoch,
-            digest: header.header.get_digest().0,
+            digest: header.header().get_digest().0,
         })
     }
 

@@ -903,9 +903,14 @@ impl<
             // Get participant count from the certificate signers
             let participant_count = finalization.certificate.signers.len();
 
-            // Store the finalized block header in the database
-            let finalized_header =
-                FinalizedHeader::new(block.header.clone(), finalization, participant_count);
+            // Store the finalized block header in the database. The binding
+            // between the block header and this finalization was just
+            // established by consensus (asserted above), so construct directly.
+            let finalized_header = FinalizedHeader::new_unchecked(
+                block.header.clone(),
+                finalization,
+                participant_count,
+            );
 
             #[cfg(feature = "prom")]
             let header_start = Instant::now();
@@ -925,8 +930,8 @@ impl<
                 self.context.register(
                     format!(
                         "<header>{}</header><prev_header>{}</prev_header>_finalized_header_stored",
-                        hex::encode(finalized_header.header.get_digest()),
-                        hex::encode(finalized_header.header.prev_epoch_header_hash())
+                        hex::encode(finalized_header.header().get_digest()),
+                        hex::encode(finalized_header.header().prev_epoch_header_hash())
                     ),
                     "chain height",
                     gauge,
@@ -1564,7 +1569,7 @@ impl<
             // the block that contains the last checkpoint
             let prev_header_hash =
                 if let Some(finalized_header) = self.db.get_most_recent_finalized_header().await {
-                    finalized_header.header.get_digest()
+                    finalized_header.header().get_digest()
                 } else {
                     self.genesis_hash.into()
                 };
