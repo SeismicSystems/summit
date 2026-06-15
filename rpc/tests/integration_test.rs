@@ -25,7 +25,7 @@ fn derive_observer_node_key(key_store_path: &str, index: u32) -> String {
     let node_key = KeyPaths::new(key_store_path.to_string())
         .read_node_key_from_file()
         .unwrap();
-    ExtPrivateKey::derive_child_signer(&node_key, index)
+    ExtPrivateKey::derive_child_signer(&node_key, b"_SUMMIT", index)
         .public_key()
         .to_string()
 }
