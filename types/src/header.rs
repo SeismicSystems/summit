@@ -430,6 +430,15 @@ impl fmt::Display for FinalizedHeaderError {
 
 impl std::error::Error for FinalizedHeaderError {}
 
+/// Upper bound on the participant count read from a raw finalized header before
+/// it is used to size certificate (signer-bitmap) decoding. The count is
+/// unauthenticated at decode time (it arrives via checkpoint bundles and other
+/// raw-header import paths), and the certificate decoder allocates a bitmap of
+/// up to `participant_count` bits before validating the encoded bytes, so an
+/// unbounded count is a memory-pressure vector. This ceiling sits far above any
+/// realistic committee size while capping the worst-case allocation to a few KB.
+pub const MAX_FINALIZED_HEADER_PARTICIPANTS: usize = 100_000;
+
 /// A header paired with the finalization certificate that finalized it.
 ///
 /// The fields are private and the only validating constructor
@@ -545,6 +554,16 @@ where
         let header_bytes: Vec<u8> = decoder.decode_next()?;
         let participant_count: u32 = decoder.decode_next()?;
         let finalized_bytes: Vec<u8> = decoder.decode_next()?;
+
+        // The participant count is unauthenticated here and is used below to size
+        // certificate (signer-bitmap) decoding, which allocates before the encoded
+        // bytes are validated. Reject an oversized count up front so a malformed
+        // raw header cannot drive a large allocation.
+        if participant_count as usize > MAX_FINALIZED_HEADER_PARTICIPANTS {
+            return Err(ssz::DecodeError::BytesInvalid(format!(
+                "participant_count {participant_count} exceeds maximum {MAX_FINALIZED_HEADER_PARTICIPANTS}"
+            )));
+        }
 
         let header = Header::from_ssz_bytes(&header_bytes)
             .map_err(|e| ssz::DecodeError::BytesInvalid(format!("{e:?}")))?;
@@ -861,6 +880,70 @@ mod test {
         );
 
         assert_eq!(finalized_header.header(), &header);
+    }
+
+    /// A raw finalized header that claims an oversized participant count must be
+    /// rejected before the certificate (signer-bitmap) decode, which would
+    /// otherwise size its allocation from that unauthenticated count.
+    #[test]
+    fn from_ssz_bytes_rejects_oversized_participant_count() {
+        let (added_validators, removed_validators) = create_test_validators();
+        let header = Header::new(
+            [27u8; 32].into(),
+            27,
+            2727,
+            42,
+            1,
+            [1u8; 32].into(),
+            [2u8; 32].into(),
+            [3u8; 32].into(),
+            [4u8; 32].into(),
+            added_validators,
+            removed_validators,
+            [0u8; 32],
+        );
+
+        let proposal = Proposal {
+            round: Round::new(Epoch::new(0), View::new(header.view)),
+            parent: View::new(header.height),
+            payload: header.get_digest(),
+        };
+        let finalized = Finalization {
+            proposal,
+            certificate: Certificate::<MinPk> {
+                signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
+                signature: create_dummy_signature().into(),
+            },
+        };
+        let finalized_header = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::new(
+            header, finalized, 3,
+        )
+        .expect("payload is bound to the header digest");
+
+        let ssz = finalized_header.as_ssz_bytes();
+        // Sanity: the well-formed header (participant_count = 3) decodes.
+        assert!(
+            FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::from_ssz_bytes(&ssz)
+                .is_ok()
+        );
+
+        // participant_count is the u32 in the container's fixed region, after the
+        // first variable-field offset (bytes 4..8), little-endian.
+        let mut tampered = ssz.clone();
+        assert_eq!(
+            u32::from_le_bytes(tampered[4..8].try_into().unwrap()),
+            3,
+            "expected participant_count at bytes 4..8"
+        );
+        tampered[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let result = FinalizedHeader::<bls12381_multisig::Scheme<PublicKey, MinPk>>::from_ssz_bytes(
+            &tampered,
+        );
+        assert!(
+            matches!(result, Err(ssz::DecodeError::BytesInvalid(ref msg)) if msg.contains("participant_count")),
+            "oversized participant_count must be rejected before certificate decode, got: {result:?}"
+        );
     }
 
     #[test]
