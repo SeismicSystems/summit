@@ -820,7 +820,7 @@ where
     // the master node key; the RPC server reports it instead of the keystore
     // identity and disables keystore-signing methods.
     let observer_node_key = flags.observer.map(|index| {
-        ExtPrivateKey::derive_child_signer(&key_store.node_key, index)
+        ExtPrivateKey::derive_child_signer(&key_store.node_key, genesis.namespace.as_bytes(), index)
             .public_key()
             .to_string()
     });
