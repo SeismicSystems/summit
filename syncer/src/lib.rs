@@ -1384,4 +1384,75 @@ mod tests {
             assert_eq!(fetched, block);
         });
     }
+
+    /// A targeted forward (the application relay's translation of Commonware's
+    /// `Plan::Forward`, e.g. for `ForwardingPolicy::SilentVoters`) must deliver
+    /// the block to exactly the requested peers: the target receives it without
+    /// any full broadcast having happened, and a non-recipient does not.
+    #[test_traced("WARN")]
+    fn test_forward_targeted_block_delivery() {
+        let runner = deterministic::Runner::timed(Duration::from_secs(60));
+        runner.start(|mut context| async move {
+            use futures::FutureExt as _;
+
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+
+            let mut manager = oracle.manager();
+            manager
+                .track(0, ordered::Set::try_from(participants.clone()).unwrap())
+                .await;
+
+            let mut actors = Vec::new();
+            for (i, validator) in participants.iter().enumerate() {
+                let (_application, actor, _processed_height) = setup_validator(
+                    context.with_label(&format!("validator_{i}")),
+                    &mut oracle,
+                    validator.clone(),
+                    ConstantProvider::new(schemes[i].clone()),
+                )
+                .await;
+                actors.push(actor);
+            }
+
+            setup_network_links(&mut oracle, &participants, LINK).await;
+
+            let parent = Sha256::hash(b"");
+            let block = B::new::<Sha256>(parent, Height::new(1), 1);
+            let commitment = block.digest();
+            let round = Round::new(Epoch::zero(), View::new(1));
+
+            // The target and a bystander both wait for the block.
+            let mut target = actors[1].clone();
+            let mut bystander = actors[2].clone();
+            let target_rx = target.subscribe(None, commitment).await;
+            let bystander_rx = bystander.subscribe(None, commitment).await;
+
+            // The source caches the block locally WITHOUT broadcasting it
+            // (Message::Verified only populates the cache).
+            let mut source = actors[0].clone();
+            source.verified(round, block.clone()).await;
+
+            // Forward only to the target.
+            source
+                .forward(round, commitment, vec![participants[1].clone()])
+                .await;
+
+            // The target receives the block via the targeted send.
+            let received = target_rx.await.unwrap();
+            assert_eq!(received.digest(), commitment);
+            assert_eq!(received.height, Height::new(1));
+
+            // The bystander was not a recipient and must not have the block.
+            context.sleep(Duration::from_millis(100)).await;
+            assert!(
+                bystander_rx.now_or_never().is_none(),
+                "targeted forward must not reach non-recipients"
+            );
+        });
+    }
 }
