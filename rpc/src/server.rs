@@ -22,6 +22,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use summit_types::consensus_state_query::ConsensusStateQuery;
+#[cfg(feature = "permissioned")]
+use summit_types::pause_signature_domain;
 use summit_types::scheme::MultisigScheme;
 use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::{
@@ -55,6 +57,12 @@ pub struct SummitRpcServer {
     in_flight_state_proofs: Arc<AtomicUsize>,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
+    /// Hex of the pause-authorization domain (genesis hash + namespace). Bound
+    /// into every pause/unpause signed message so an authorization for one
+    /// deployment cannot be replayed against another that trusts the same
+    /// admin key.
+    #[cfg(feature = "permissioned")]
+    pause_scope: String,
 }
 
 /// Releases one in-flight state-proof slot on drop — covers normal completion,
@@ -84,6 +92,11 @@ impl SummitRpcServer {
             in_flight_state_proofs: Arc::new(AtomicUsize::new(0)),
             #[cfg(feature = "permissioned")]
             paused,
+            #[cfg(feature = "permissioned")]
+            pause_scope: alloy_primitives::hex::encode(pause_signature_domain(
+                genesis_hash,
+                namespace,
+            )),
         }
     }
 }
@@ -447,14 +460,24 @@ impl SummitAdminApiServer for SummitRpcServer {
 #[async_trait]
 impl SummitPermissionedApiServer for SummitRpcServer {
     async fn pause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
-        auth::verify_action(auth::ACTION_PAUSE, timestamp_secs, &signature)?;
+        auth::verify_action(
+            &self.pause_scope,
+            auth::ACTION_PAUSE,
+            timestamp_secs,
+            &signature,
+        )?;
         self.paused.store(true, Ordering::Relaxed);
         tracing::info!("consensus paused via RPC");
         Ok(true)
     }
 
     async fn unpause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
-        auth::verify_action(auth::ACTION_UNPAUSE, timestamp_secs, &signature)?;
+        auth::verify_action(
+            &self.pause_scope,
+            auth::ACTION_UNPAUSE,
+            timestamp_secs,
+            &signature,
+        )?;
         self.paused.store(false, Ordering::Relaxed);
         tracing::info!("consensus unpaused via RPC");
         Ok(true)
