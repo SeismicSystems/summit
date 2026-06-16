@@ -501,7 +501,7 @@ fn test_joining_validator_peer_tier_follows_activation() {
         context.sleep(Duration::from_millis(100)).await;
 
         // Drive two epoch boundaries (epoch_length = 5). A finalization
-        // certificate on the last block of each epoch (heights 5 and 10) drives
+        // certificate on the last block of each epoch (heights 4 and 9) drives
         // that epoch's transition and its peer-tracking.
         let genesis_block = Block::genesis(genesis_hash);
         let mut parent_digest = genesis_block.digest();
