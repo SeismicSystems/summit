@@ -213,7 +213,7 @@ fn test_checkpoint_created() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });
@@ -417,7 +417,7 @@ fn test_previous_header_hash_matches() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });

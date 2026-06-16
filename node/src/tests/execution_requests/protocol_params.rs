@@ -150,7 +150,7 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -313,7 +313,7 @@ fn test_protocol_param_allowed_timestamp_future() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -492,7 +492,7 @@ fn test_protocol_param_max_stake() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -782,7 +782,7 @@ fn test_protocol_param_stake_update_committee() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[9]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[9]).await;
 
         context.auditor().state()
     })
@@ -969,7 +969,7 @@ fn test_minimum_validator_count_limits_stake_bound_force_removals() {
                 .verify_consensus_skip(None, Some(stop_height), &[validator_uids[0].as_str()])
                 .is_ok()
         );
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -1162,7 +1162,7 @@ fn test_protocol_param_treasury_address() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -1317,7 +1317,7 @@ fn test_protocol_param_max_deposits_per_epoch() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -1472,7 +1472,7 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -2180,7 +2180,7 @@ fn test_stake_bound_skips_pending_deposit_placeholder() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -2459,7 +2459,7 @@ fn test_stake_bound_refunds_top_up_when_max_lowered_before_processing() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })

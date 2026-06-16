@@ -230,3 +230,41 @@ impl commonware_p2p::Blocker for MockNetworkOracle {
     type PublicKey = PublicKey;
     async fn block(&mut self, _public_key: Self::PublicKey) {}
 }
+
+/// A single recorded `track` call: the epoch and the peer tiers handed to the
+/// P2P oracle.
+#[derive(Clone)]
+pub struct TrackCall {
+    pub index: u64,
+    pub primary: Vec<PublicKey>,
+    pub secondary: Vec<PublicKey>,
+}
+
+/// A NetworkOracle that records every `track` call so tests can assert how
+/// validators are tiered (primary = resolver backfill sources + outbound dial,
+/// secondary = connectable-only).
+#[derive(Clone, Default)]
+pub struct RecordingNetworkOracle {
+    pub calls: Arc<Mutex<Vec<TrackCall>>>,
+}
+
+impl RecordingNetworkOracle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl NetworkOracle<PublicKey> for RecordingNetworkOracle {
+    async fn track(&mut self, index: u64, primary: Vec<PublicKey>, secondary: Vec<PublicKey>) {
+        self.calls.lock().unwrap().push(TrackCall {
+            index,
+            primary,
+            secondary,
+        });
+    }
+}
+
+impl commonware_p2p::Blocker for RecordingNetworkOracle {
+    type PublicKey = PublicKey;
+    async fn block(&mut self, _public_key: Self::PublicKey) {}
+}

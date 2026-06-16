@@ -1,6 +1,9 @@
 //! Tests for validator lifecycle: exit, removal from committee, etc.
 
-use super::mocks::{MockEngineClient, MockNetworkOracle, create_test_schemes, make_finalization};
+use super::mocks::{
+    MockEngineClient, MockNetworkOracle, RecordingNetworkOracle, create_test_schemes,
+    make_finalization,
+};
 use crate::actor::Finalizer;
 use crate::config::{FinalizerConfig, ProtocolConsts};
 use alloy_primitives::{Address, U256};
@@ -394,6 +397,164 @@ fn test_validator_exit_triggers_cancellation() {
         assert!(
             token_clone.is_cancelled(),
             "Token should be cancelled at first block of new epoch after validator exit"
+        );
+
+        context.auditor().state()
+    });
+}
+
+/// A deposited validator's P2P peer tier must follow its lifecycle.
+///
+/// The backfill resolver draws its fetch sources from the PRIMARY peer set, so
+/// while a validator is `Joining` (warming up, not yet an active voter) it must
+/// be tracked as SECONDARY only — connectable for warm-up but not selectable as
+/// a backfill source. Once it activates it must move INTO primary so it serves
+/// backfill and is dialed like any voter.
+///
+/// Drives two epoch boundaries: the validator is Joining at the epoch-1
+/// transition (assert secondary, not primary) and activates at the epoch-2
+/// transition (assert primary).
+#[test]
+fn test_joining_validator_peer_tier_follows_activation() {
+    let cfg = deterministic::Config::default().with_seed(334);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x33u8; 32];
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let node_pubkey = node_key.public_key();
+
+        // 4 active validators, plus a fifth that has deposited and is Joining.
+        let mut initial_state =
+            create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        use rand::SeedableRng;
+        let joining_key = ed25519::PrivateKey::from_seed(99);
+        let joining_pubkey = joining_key.public_key();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(99);
+        let joining_consensus = bls12381::PrivateKey::random(&mut rng).public_key();
+        let joining_account = ValidatorAccount {
+            consensus_public_key: joining_consensus.clone(),
+            withdrawal_credentials: Address::from([99u8; 20]),
+            balance: 32_000_000_000,
+            status: ValidatorStatus::Joining,
+            has_pending_deposit: false,
+            has_pending_withdrawal: false,
+            // Activates at epoch 2: still Joining across the epoch-1 boundary,
+            // promoted to Active at the epoch-2 boundary.
+            joining_epoch: 2,
+            last_deposit_index: 0,
+        };
+        let joining_bytes: [u8; 32] = joining_pubkey.as_ref().try_into().unwrap();
+        initial_state.set_account(joining_bytes, joining_account);
+        // Registering the validator in the added-validators queue for epoch 2 is
+        // what drives the Joining -> Active promotion at that epoch boundary.
+        initial_state.add_validator(
+            2,
+            AddedValidator {
+                node_key: joining_pubkey.clone(),
+                consensus_key: joining_consensus,
+            },
+        );
+
+        let oracle = RecordingNetworkOracle::new();
+        let track_calls = oracle.calls.clone();
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, RecordingNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_joining_secondary".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_pubkey,
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) = Finalizer::<
+            _,
+            MockEngineClient,
+            RecordingNetworkOracle,
+            ed25519::PrivateKey,
+            MinPk,
+        >::new(context.with_label("finalizer"), finalizer_cfg)
+        .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Drive two epoch boundaries (epoch_length = 5). A finalization
+        // certificate on the last block of each epoch (heights 4 and 9) drives
+        // that epoch's transition and its peer-tracking.
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+
+        for height in 1..=10u64 {
+            let epoch = height / 5; // heights 1-4 -> epoch 0, 5-9 -> epoch 1, 10 -> epoch 2
+            let block = create_test_block_with_epoch(
+                parent_digest,
+                height,
+                height + 1,
+                13000 + height,
+                epoch,
+            );
+            let block_digest = block.digest();
+            parent_digest = block_digest;
+            // The last block of an epoch (heights 4 and 9) carries a finalization
+            // and triggers the transition + peer-tracking for the next epoch.
+            let finalization = (height % 5 == 4)
+                .then(|| make_finalization(block_digest, height, height + 1, &schemes, quorum));
+            let (ack, _) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, finalization), ack))
+                .await;
+            context.sleep(Duration::from_millis(50)).await;
+        }
+
+        let calls = track_calls.lock().unwrap();
+        assert!(!calls.is_empty(), "finalizer must have tracked peers");
+
+        // While Joining (epoch-1 transition): secondary, never primary.
+        let epoch1 = calls
+            .iter()
+            .find(|c| c.index == 1)
+            .expect("expected a track() for epoch 1");
+        assert!(
+            !epoch1.primary.contains(&joining_pubkey),
+            "joining validator must NOT be a primary peer (resolver backfill source) before activation"
+        );
+        assert!(
+            epoch1.secondary.contains(&joining_pubkey),
+            "joining validator should be a secondary (warm-up) peer while it is Joining"
+        );
+
+        // After activation (epoch-2 transition): promoted into primary.
+        let epoch2 = calls
+            .iter()
+            .find(|c| c.index == 2)
+            .expect("expected a track() for epoch 2");
+        assert!(
+            epoch2.primary.contains(&joining_pubkey),
+            "once active, the validator must be a primary peer (eligible backfill source + dialed)"
         );
 
         context.auditor().state()
