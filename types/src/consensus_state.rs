@@ -12,7 +12,7 @@ use crate::{Digest, PublicKey};
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Write};
+use commonware_codec::{Encode, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{bls12381, sha256};
 #[cfg(feature = "prom")]
 use metrics::histogram;
@@ -1474,7 +1474,7 @@ impl TryFrom<Checkpoint> for ConsensusState {
     type Error = Error;
 
     fn try_from(checkpoint: Checkpoint) -> Result<Self, Self::Error> {
-        ConsensusState::decode(checkpoint.data)
+        Self::try_from(&checkpoint)
     }
 }
 
