@@ -403,6 +403,107 @@ fn test_validator_exit_triggers_cancellation() {
     });
 }
 
+/// A finalized block delivered via catch-up (no prior fork state) must extend
+/// the canonical finalized head: its parent must equal the current head digest.
+///
+/// The syncer accepts finalized blocks by height + certificate without checking
+/// parent linkage, so the finalizer must reject a wrong-parent block rather than
+/// execute it onto canonical state (which would advance the node onto an
+/// impossible history). A wrong-parent finalized block must fail-stop the node.
+#[test]
+fn test_finalizer_rejects_finalized_block_with_wrong_parent() {
+    let cfg = deterministic::Config::default().with_seed(56);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x56u8; 32];
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let node_pubkey = node_key.public_key();
+
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let cancellation_token = CancellationToken::new();
+        let token_clone = cancellation_token.clone();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_wrong_parent".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_pubkey,
+            cancellation_token,
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Establish a canonical chain: blocks 1 and 2 with correct parents.
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+        for height in 1..3 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, _) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            context.sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !token_clone.is_cancelled(),
+            "token must not cancel for a correctly chained finalized sequence"
+        );
+
+        // Deliver block 3 with a WRONG parent (not block 2's digest). Height 3 is
+        // not an epoch boundary (epoch_length 5), so it carries no finalization.
+        // Without the parent-linkage check the finalizer executes it onto canonical
+        // state; it must instead fail-stop.
+        let wrong_parent = Digest::from([0xABu8; 32]);
+        assert_ne!(wrong_parent, parent_digest);
+        let bad_block = create_test_block_with_epoch(wrong_parent, 3, 4, 13003, 0);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((bad_block, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(150)).await;
+
+        assert!(
+            token_clone.is_cancelled(),
+            "finalizer must fail-stop on a finalized block whose parent does not \
+             extend the canonical head"
+        );
+
+        context.auditor().state()
+    });
+}
+
 /// A deposited validator's P2P peer tier must follow its lifecycle.
 ///
 /// The backfill resolver draws its fetch sources from the PRIMARY peer set, so
