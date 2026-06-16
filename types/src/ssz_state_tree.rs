@@ -314,10 +314,11 @@ impl SszStateTree {
 
     /// Rebuild the validator subtree from the full validator accounts map.
     ///
-    /// Each validator occupies 8 contiguous leaves (one per field) in the subtree,
-    /// forming a depth-3 per-validator sub-subtree. Slot assignment is purely
-    /// positional: the i-th entry in BTreeMap iteration order occupies leaves
-    /// `[i*8 .. i*8+7]`.
+    /// Each validator occupies 16 contiguous leaves (8 fields incl. the
+    /// `node_pubkey` map key, plus zero padding) in the subtree, forming a
+    /// depth-4 per-validator sub-subtree. Slot assignment is purely positional:
+    /// the i-th entry in BTreeMap iteration order occupies leaves
+    /// `[i*16 .. i*16+15]`.
     pub fn rebuild_validators(&mut self, accounts: &BTreeMap<[u8; 32], ValidatorAccount>) {
         let count = accounts.len();
         let leaf_count = (count * VALIDATOR_FIELDS_PER_ACCOUNT).max(1);
@@ -885,8 +886,9 @@ impl SszStateTree {
 
     /// Rebuild added validators subtree (flattened across all epochs).
     ///
-    /// Each added validator occupies 2 contiguous leaves (node_key, consensus_key),
-    /// forming a depth-1 per-item sub-subtree, enabling field-level proofs.
+    /// Each added validator occupies 4 contiguous leaves (node_key, consensus_key,
+    /// epoch map key, and zero padding), forming a depth-2 per-item sub-subtree,
+    /// enabling field-level proofs.
     pub fn rebuild_added_validators(&mut self, validators: &BTreeMap<u64, Vec<AddedValidator>>) {
         let items: Vec<(u64, &AddedValidator)> = validators
             .iter()
@@ -1157,11 +1159,11 @@ impl SszStateTree {
     /// Build a proof for the whole validator at positional `slot`.
     ///
     /// Returns (gindex, node_value, branch) where the node is the
-    /// per-validator subtree root (3 levels above the field leaves).
+    /// per-validator subtree root (4 levels above the field leaves).
     fn validator_account_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
         let sd = self.validator_tree.depth();
-        // Per-validator root is at depth (sd - 3) in the subtree.
-        // Its 1-based tree index is: capacity / 8 + slot
+        // Per-validator root is at depth (sd - 4) in the subtree (16 leaves/item).
+        // Its 1-based tree index is: capacity / VALIDATOR_FIELDS_PER_ACCOUNT + slot
         let node_index = self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT + slot;
         let node_value = self.validator_tree.get_node(node_index);
 
@@ -1543,9 +1545,9 @@ impl SszStateTree {
 
     /// Generate a proof for an added validator at a given flattened index (whole item).
     ///
-    /// The proof leaf is the per-item subtree root (internal node 1 level
-    /// above the field leaves). The branch is 1 element shorter than a
-    /// field-level proof.
+    /// The proof leaf is the per-item subtree root (internal node 2 levels
+    /// above the field leaves, since each item is a depth-2 / 4-leaf subtree).
+    /// The branch is 2 elements shorter than a field-level proof.
     pub fn generate_added_validator_proof(&self, index: usize) -> Option<SszProof> {
         if index >= self.added_validator_count {
             return None;

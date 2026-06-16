@@ -89,7 +89,7 @@ Each validator occupies 16 contiguous leaves (depth-4 per-validator subtree): 9 
 | 8 | `node_pubkey` (map key) |
 | 9–15 | (zero padding) |
 
-Slot assignment is positional: the i-th entry in `BTreeMap` iteration order occupies leaves `[i*8 .. i*8+7]`. The subtree capacity is always a power of 2, growing/shrinking as validators are added/removed.
+Slot assignment is positional: the i-th entry in `BTreeMap` iteration order occupies leaves `[i*16 .. i*16+15]`. The subtree capacity is always a power of 2, growing/shrinking as validators are added/removed.
 
 #### Deposit Queue
 
@@ -333,7 +333,7 @@ The proof branch concatenates sibling hashes from multiple tree levels:
 
 Proofs can target different levels of the tree:
 
-- **Whole-account proof**: The leaf is the per-validator subtree root (internal node 3 levels above field leaves). Shorter branch.
+- **Whole-account proof**: The leaf is the per-validator subtree root (internal node 4 levels above field leaves). Shorter branch.
 - **Field-level proof**: The leaf is an individual field (e.g., just the balance). Longer branch but proves a single field.
 
 The same applies to deposits and withdrawals — both whole-item and field-level proofs are supported.
