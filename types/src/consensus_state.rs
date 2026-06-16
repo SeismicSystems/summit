@@ -1072,9 +1072,14 @@ impl ConsensusState {
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
-        // after deserialization or bulk reset.
+        // after deserialization or bulk reset. proof_validator_keys is frozen
+        // alongside the proof_tree so positional validator proofs line up with the
+        // committee the snapshot commits to. the decode with capture path overrides
+        // these from the capture time snapshot afterwards, so this is only the
+        // baseline for construction, bulk reset, and capture less restarts.
         self.state_root = self.ssz_tree.root();
         self.proof_tree = self.ssz_tree.clone();
+        self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
 
         #[cfg(feature = "prom")]
         histogram!("ssz_rebuild_tree_micros").record(start.elapsed().as_micros() as f64);
@@ -3145,6 +3150,65 @@ mod tests {
             batched.ssz_tree().root(),
             per_record.ssz_tree().root(),
             "batched root should match a full rebuild"
+        );
+    }
+
+    // Genesis startup builds ConsensusState::new (which
+    // freezes the proof snapshot over an empty validator set), then inserts the
+    // genesis committee via set_account, which only touches the live tree. A
+    // rebuild_ssz_tree after materialization must re-freeze so the exposed
+    // state_root, proof_tree, and proof_validator_keys all commit to the
+    // installed committee, rather than staying stale until the first capture.
+    #[test]
+    fn test_genesis_materialization_refreshes_proof_snapshot() {
+        let mut state = ConsensusState::new(
+            ForkchoiceState::default(),
+            0,
+            0,
+            NonZeroU64::new(10).unwrap(),
+            10_000,
+            Address::ZERO,
+            3,
+            16,
+            0,
+            0,
+        );
+
+        // mirror node/src/args.rs genesis materialization.
+        let mut keys: Vec<[u8; 32]> = Vec::new();
+        for i in 0..4u64 {
+            let mut pubkey = [0u8; 32];
+            pubkey[0] = i as u8 + 1;
+            state.set_account(pubkey, create_test_validator_account(i, 32_000_000_000));
+            keys.push(pubkey);
+        }
+        keys.sort();
+
+        // before re freezing, the frozen snapshot still reflects the empty set
+        // that new() captured, so it diverges from the live tree.
+        assert_ne!(
+            state.get_state_root(),
+            state.ssz_tree().root(),
+            "frozen root should be stale before the post genesis rebuild"
+        );
+
+        // the fix: re-freeze after the committee is installed.
+        state.rebuild_ssz_tree();
+
+        assert_eq!(
+            state.get_state_root(),
+            state.ssz_tree().root(),
+            "state_root should commit to the live tree after rebuild"
+        );
+        assert_eq!(
+            state.proof_tree().root(),
+            state.ssz_tree().root(),
+            "proof_tree should commit to the live tree after rebuild"
+        );
+        assert_eq!(
+            state.proof_validator_keys(),
+            keys.as_slice(),
+            "proof_validator_keys should list the genesis committee after rebuild"
         );
     }
 
