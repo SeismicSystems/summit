@@ -198,6 +198,12 @@ pub enum CheckpointVerificationError {
     PayloadDigestMismatch {
         epoch: u64,
     },
+    /// The decoded checkpoint state's consensus position (height, epoch, or head
+    /// digest) is not bound to the verified terminal finalized header. The
+    /// checkpoint is created at the penultimate block of an epoch, so a valid
+    /// checkpoint's `latest_height` is exactly one below the terminal (last-block)
+    /// header, its `head_digest` is that header's parent, and its epoch matches.
+    CheckpointStatePositionMismatch(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -269,6 +275,12 @@ impl fmt::Display for CheckpointVerificationError {
                 write!(
                     f,
                     "epoch {epoch}: header fields do not match the finalization payload digest"
+                )
+            }
+            Self::CheckpointStatePositionMismatch(reason) => {
+                write!(
+                    f,
+                    "checkpoint state position not bound to terminal header: {reason}"
                 )
             }
         }
@@ -519,6 +531,45 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
                 "validator {key:?} is active in checkpoint but not in accumulated signing set"
             )));
         }
+    }
+
+    // Step 4: Bind the decoded state position to the terminal finalized header.
+    // The verified terminal header (`last_header`) authenticates the exact
+    // checkpoint bytes (Step 2), but their decoded *position* is otherwise free.
+    // The checkpoint is created at the penultimate block of an epoch and the
+    // terminal header is the last block of that epoch (see finalizer/src/actor.rs),
+    // so for an honest checkpoint: `latest_height` is one below the terminal
+    // header's height, `head_digest` is the terminal header's parent, and the
+    // epoch matches. Reject any checkpoint whose decoded position does not.
+    let terminal = last_header.header();
+    let expected_terminal_height = checkpoint_state.get_latest_height().saturating_add(1);
+    if terminal.height() != expected_terminal_height {
+        return Err(
+            CheckpointVerificationError::CheckpointStatePositionMismatch(format!(
+                "decoded latest_height {} implies terminal height {}, but terminal header is at height {}",
+                checkpoint_state.get_latest_height(),
+                expected_terminal_height,
+                terminal.height()
+            )),
+        );
+    }
+    if checkpoint_state.get_epoch() != terminal.epoch() {
+        return Err(
+            CheckpointVerificationError::CheckpointStatePositionMismatch(format!(
+                "decoded epoch {} does not match terminal header epoch {}",
+                checkpoint_state.get_epoch(),
+                terminal.epoch()
+            )),
+        );
+    }
+    if checkpoint_state.get_head_digest() != terminal.parent() {
+        return Err(
+            CheckpointVerificationError::CheckpointStatePositionMismatch(format!(
+                "decoded head_digest 0x{} is not the terminal header's parent 0x{}",
+                hex(checkpoint_state.get_head_digest().as_ref()),
+                hex(terminal.parent().as_ref())
+            )),
+        );
     }
 
     Ok(())
@@ -1308,7 +1359,15 @@ mod tests {
     // checkpoint, a *different* ("attacker-controlled") checkpoint, and an honest
     // finalized header whose certificate genuinely signs the honest header digest
     // and whose `checkpoint_hash` commits to the honest checkpoint.
-    fn checkpoint_verification_fixture() -> (
+    // Builds a checkpoint whose decoded state sits at `state_latest_height` and a
+    // terminal finalized header at `terminal_header_height` that validly signs it.
+    // An honest checkpoint sets `terminal_header_height == state_latest_height + 1`
+    // (checkpoint at the penultimate block, terminal header at the last block);
+    // passing any other terminal height produces a position-inconsistent checkpoint.
+    fn checkpoint_verification_fixture(
+        state_latest_height: u64,
+        terminal_header_height: u64,
+    ) -> (
         Genesis,
         Checkpoint,
         Checkpoint,
@@ -1411,6 +1470,10 @@ mod tests {
             0,
         );
         state.set_validator_accounts(validator_accounts);
+        // The terminal header below is always built at height 0; passing a
+        // non-zero `state_latest_height` makes the decoded checkpoint position
+        // disagree with the terminal header it is bound to.
+        state.set_latest_height(state_latest_height);
         let checkpoint = Checkpoint::new(&state);
 
         // A distinct checkpoint the attacker would like the chain to authenticate.
@@ -1422,7 +1485,7 @@ mod tests {
         // Honest header commits to the honest checkpoint.
         let header = Header::new(
             [0u8; 32].into(),
-            0,
+            terminal_header_height,
             0,
             0,
             0,
@@ -1468,6 +1531,40 @@ mod tests {
         (genesis, checkpoint, tampered_checkpoint, finalized_header)
     }
 
+    // Binds the decoded checkpoint state position to the verified terminal header.
+    // The terminal header authenticates the checkpoint *bytes* (sha256), but
+    // without this check the decoded `ConsensusState` could advertise a consensus
+    // position (height/epoch/head_digest) that does not correspond to the verified
+    // header chain, letting a node start from the wrong position. The checkpoint is
+    // taken at the penultimate block, so an honest checkpoint's `latest_height` is
+    // exactly one below the terminal (last-block) header.
+    #[test]
+    fn test_checkpoint_verifier_binds_state_position_to_terminal_header() {
+        // Honest: decoded state at penultimate height 5, terminal header at 6.
+        let (genesis, checkpoint, _tampered, honest) = checkpoint_verification_fixture(5, 6);
+        super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
+            .expect("a position-consistent checkpoint must verify");
+
+        // Inconsistent: same decoded state (latest_height 5) but the terminal header
+        // claims height 9, so latest_height + 1 (6) != 9. The bytes are still validly
+        // committed by the terminal header and the validator set checks out, yet the
+        // position binding must reject it.
+        let (genesis, checkpoint, _tampered, mismatched) = checkpoint_verification_fixture(5, 9);
+        let result = super::verify_checkpoint_chain(
+            &genesis,
+            std::slice::from_ref(&mismatched),
+            &checkpoint,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(super::CheckpointVerificationError::CheckpointStatePositionMismatch(_))
+            ),
+            "verifier must reject a checkpoint whose decoded state position is not bound \
+             to the terminal finalized header, got {result:?}"
+        );
+    }
+
     // Closes the typed-API trust-boundary gap: a finalized header carries header
     // fields (e.g. `checkpoint_hash`) and a certificate that signs a digest. The
     // fields must be bound to the signed digest, otherwise an attacker can pair a
@@ -1477,7 +1574,8 @@ mod tests {
     fn test_checkpoint_verifier_rejects_typed_header_field_mutation() {
         use crate::header::{FinalizedHeader, FinalizedHeaderError, Header};
 
-        let (genesis, checkpoint, tampered_checkpoint, honest) = checkpoint_verification_fixture();
+        let (genesis, checkpoint, tampered_checkpoint, honest) =
+            checkpoint_verification_fixture(0, 1);
 
         // Sanity: the honest finalized header verifies against the honest checkpoint.
         super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
