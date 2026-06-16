@@ -179,7 +179,7 @@ fn test_deposit_request_single() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });
@@ -1024,7 +1024,7 @@ fn test_deposit_request_invalid_node_signature() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });
@@ -1224,7 +1224,7 @@ fn test_deposit_request_invalid_consensus_signature() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });

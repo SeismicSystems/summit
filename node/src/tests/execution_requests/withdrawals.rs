@@ -214,7 +214,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -630,7 +630,7 @@ fn test_duplicate_withdrawal_blocked() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -811,7 +811,7 @@ fn test_withdrawal_wrong_source_address_rejected() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -990,7 +990,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -1207,7 +1207,7 @@ fn test_withdrawal_during_onboarding_aborts() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -1403,7 +1403,7 @@ fn test_minimum_validator_count_blocks_excess_active_validator_exits() {
                 .verify_consensus_skip(None, Some(stop_height), &[validator_uids[0].as_str()])
                 .is_ok()
         );
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -1635,7 +1635,8 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[last_idx]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[last_idx])
+            .await;
 
         context.auditor().state()
     })
@@ -1828,7 +1829,12 @@ fn test_grouped_withdrawal_on_last_block_of_epoch_only_requeues_deferred_request
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[idx_a, idx_b]).await;
+        common::assert_state_root_consensus_synced(
+            &context,
+            &consensus_state_queries,
+            &[idx_a, idx_b],
+        )
+        .await;
 
         context.auditor().state()
     })
@@ -2072,7 +2078,12 @@ fn test_duplicate_last_block_exit_does_not_consume_active_exit_budget() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[idx_a, idx_b]).await;
+        common::assert_state_root_consensus_synced(
+            &context,
+            &consensus_state_queries,
+            &[idx_a, idx_b],
+        )
+        .await;
 
         context.auditor().state()
     })
@@ -2294,7 +2305,7 @@ fn test_stake_bounds_skips_zero_balance_validator() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -2518,7 +2529,12 @@ fn test_withdrawal_overflow_rescheduled_to_next_epoch() {
                 .verify_consensus_skip(None, Some(stop_height), &skip_refs)
                 .is_ok()
         );
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0, 1, 2, 3]).await;
+        common::assert_state_root_consensus_synced(
+            &context,
+            &consensus_state_queries,
+            &[0, 1, 2, 3],
+        )
+        .await;
 
         context.auditor().state()
     })

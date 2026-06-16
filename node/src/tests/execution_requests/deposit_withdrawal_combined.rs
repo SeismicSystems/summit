@@ -217,7 +217,7 @@ fn test_deposit_and_withdrawal_request_single() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -470,7 +470,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -677,7 +677,7 @@ fn test_deposit_blocked_by_pending_withdrawal() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -885,7 +885,7 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -1131,7 +1131,7 @@ fn test_process_time_invalid_new_validator_refund_does_not_merge_with_reused_pub
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -1329,7 +1329,7 @@ fn test_withdrawal_blocked_by_pending_deposit() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -1533,7 +1533,7 @@ fn test_deposit_and_withdrawal_same_block() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })

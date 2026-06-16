@@ -283,7 +283,7 @@ pub fn run_until_height(
         }
 
         // Verify all validators share the same state root
-        assert_state_root_consensus(&consensus_state_queries).await;
+        assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
