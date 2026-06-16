@@ -1,22 +1,30 @@
 use http::{HeaderValue, Method};
 use jsonrpsee::server::{ServerBuilder, ServerConfigBuilder, ServerHandle};
 use std::net::SocketAddr;
+use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::timeout::TimeoutLayer;
 
 pub struct RpcServerBuilder {
     addr: SocketAddr,
     config: ServerConfigBuilder,
     cors_domains: Option<String>,
+    request_timeout: Duration,
 }
 
-pub struct RpcServer {
-    inner: jsonrpsee::server::Server<
-        tower::layer::util::Stack<
-            tower::util::Either<CorsLayer, tower::layer::util::Identity>,
-            tower::layer::util::Identity,
-        >,
+/// The HTTP middleware stack applied to every RPC server: a per-request
+/// timeout wrapping an optional CORS layer (see `build`).
+type RpcHttpMiddleware = tower::layer::util::Stack<
+    TimeoutLayer,
+    tower::layer::util::Stack<
+        tower::util::Either<CorsLayer, tower::layer::util::Identity>,
+        tower::layer::util::Identity,
     >,
+>;
+
+pub struct RpcServer {
+    inner: jsonrpsee::server::Server<RpcHttpMiddleware>,
 }
 
 impl RpcServer {
@@ -38,6 +46,7 @@ impl RpcServerBuilder {
             addr: SocketAddr::from(([0, 0, 0, 0], port)),
             config: ServerConfigBuilder::new(),
             cors_domains: None,
+            request_timeout: Duration::from_secs(crate::DEFAULT_RPC_REQUEST_TIMEOUT_SECS),
         }
     }
 
@@ -49,6 +58,7 @@ impl RpcServerBuilder {
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
             config: ServerConfigBuilder::new(),
             cors_domains: None,
+            request_timeout: Duration::from_secs(crate::DEFAULT_RPC_REQUEST_TIMEOUT_SECS),
         }
     }
 
@@ -72,6 +82,17 @@ impl RpcServerBuilder {
         self
     }
 
+    /// Sets the per-request timeout. jsonrpsee takes the `max_connections`
+    /// permit before reading the HTTP body and has no body read deadline of its
+    /// own, so without a bound a slow or withheld body holds a permit
+    /// indefinitely and a few hundred such requests can deny all RPC. This caps
+    /// how long any single request may hold its permit, from accept through body
+    /// read and method dispatch.
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
+    }
+
     pub async fn build(self) -> anyhow::Result<RpcServer> {
         let cors_layer = self
             .cors_domains
@@ -79,7 +100,9 @@ impl RpcServerBuilder {
             .map(create_cors_layer)
             .transpose()?;
 
-        let http_middleware = ServiceBuilder::new().option_layer(cors_layer);
+        let http_middleware = ServiceBuilder::new()
+            .option_layer(cors_layer)
+            .layer(TimeoutLayer::new(self.request_timeout));
 
         let server = ServerBuilder::new()
             .set_config(self.config.build())
