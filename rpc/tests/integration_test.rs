@@ -61,6 +61,50 @@ async fn test_health_endpoint() {
 }
 
 #[tokio::test]
+async fn test_websocket_upgrades_are_rejected() {
+    // The RPC server is http-only: Summit's API is request/response (no
+    // subscriptions). Disabling websocket upgrades closes the idle-connection
+    // permit-exhaustion vector (jsonrpsee enables websockets with pings off by
+    // default, so idle upgraded connections would hold their max_connections
+    // permit indefinitely). HTTP must still work; websocket connects must fail.
+    use jsonrpsee::ws_client::WsClientBuilder;
+    use summit_rpc::SummitApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    // HTTP still works.
+    let http = HttpClientBuilder::default()
+        .build(format!("http://{addr}"))
+        .unwrap();
+    assert_eq!(http.health().await.unwrap(), "Ok");
+
+    // Websocket upgrade is refused, so idle WS connections cannot be opened.
+    let ws = WsClientBuilder::default()
+        .build(format!("ws://{addr}"))
+        .await;
+    assert!(
+        ws.is_err(),
+        "websocket upgrade must be rejected when the server is http-only"
+    );
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
 async fn test_get_latest_height() {
     use summit_rpc::SummitApiClient;
 
