@@ -74,7 +74,7 @@ Each collection leaf in the top-level tree holds `mix_in_length(subtree.root(), 
 
 #### Validator Accounts
 
-Each validator occupies 8 contiguous leaves (depth-3 per-validator subtree):
+Each validator occupies 16 contiguous leaves (depth-4 per-validator subtree): 9 fields padded to the next power of two. `node_pubkey` is the `BTreeMap` key (the validator's identity) — committing it as a leaf binds the key into the root and into validator proofs. Leaves 9–15 are zero padding.
 
 | Field Index | Field |
 |-------------|-------|
@@ -86,8 +86,10 @@ Each validator occupies 8 contiguous leaves (depth-3 per-validator subtree):
 | 5 | `has_pending_withdrawal` |
 | 6 | `joining_epoch` |
 | 7 | `last_deposit_index` |
+| 8 | `node_pubkey` (map key) |
+| 9–15 | (zero padding) |
 
-Slot assignment is positional: the i-th entry in `BTreeMap` iteration order occupies leaves `[i*8 .. i*8+7]`. The subtree capacity is always a power of 2, growing/shrinking as validators are added/removed.
+Slot assignment is positional: the i-th entry in `BTreeMap` iteration order occupies leaves `[i*16 .. i*16+15]`. The subtree capacity is always a power of 2, growing/shrinking as validators are added/removed.
 
 #### Deposit Queue
 
@@ -141,7 +143,7 @@ A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by 
 
 #### Added Validators
 
-2 leaves per item (node_key + consensus_key), flattened across all epochs.
+4 leaves per item (depth-2 subtree): 3 fields — `node_key` (0), `consensus_key` (1), `epoch` (2) — padded to 4 (leaf 3 is zero). Items are flattened across all epochs, so the `epoch` field commits each item's activation epoch (the `BTreeMap` key), which would otherwise be lost by the flattening.
 
 #### Removed Validators
 
@@ -331,7 +333,7 @@ The proof branch concatenates sibling hashes from multiple tree levels:
 
 Proofs can target different levels of the tree:
 
-- **Whole-account proof**: The leaf is the per-validator subtree root (internal node 3 levels above field leaves). Shorter branch.
+- **Whole-account proof**: The leaf is the per-validator subtree root (internal node 4 levels above field leaves). Shorter branch.
 - **Field-level proof**: The leaf is an individual field (e.g., just the balance). Longer branch but proves a single field.
 
 The same applies to deposits and withdrawals — both whole-item and field-level proofs are supported.
