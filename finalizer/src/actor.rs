@@ -1193,13 +1193,31 @@ impl<
             // the finalization.
             let finalization = finalization
                 .expect("finalization is always included for the last block of an epoch");
-            debug_assert!(block.header.get_digest() == finalization.proposal.payload);
+            // Release-enforced binding: never construct a finalized header from a
+            // block whose digest the certificate does not finalize. The syncer
+            // pairs the block and certificate by height from two independently
+            // keyed archives; a mismatch here means an upstream archive
+            // inconsistency, and exporting it would poison finalized-header and
+            // checkpoint material. Fail-stop instead of trusting it.
+            if block.header.get_digest() != finalization.proposal.payload {
+                error!(
+                    target: "critical",
+                    height = new_height,
+                    header = ?block.header.get_digest(),
+                    certified = ?finalization.proposal.payload,
+                    "epoch-boundary block header does not match its finalization \
+                     certificate; refusing to store a misbound finalized header"
+                );
+                return Err(anyhow!(
+                    "finalized block/certificate digest mismatch at height {new_height}"
+                ));
+            }
             // Get participant count from the certificate signers
             let participant_count = finalization.certificate.signers.len();
 
             // Store the finalized block header in the database. The binding
-            // between the block header and this finalization was just
-            // established by consensus (asserted above), so construct directly.
+            // between the block header and this finalization was just verified
+            // above, so construct directly.
             let finalized_header = FinalizedHeader::new_unchecked(
                 block.header.clone(),
                 finalization,

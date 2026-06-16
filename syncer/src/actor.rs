@@ -1258,6 +1258,23 @@ where
                     return;
                 };
 
+                // The block and finalization are loaded independently by height
+                // from two immutable archives. Re-verify the stored block is the
+                // one this certificate finalizes before binding them into a
+                // finalized-header report: a mismatch means the local archives are
+                // inconsistent and must not be exported as a finalized header.
+                if finalization.proposal.payload != commitment {
+                    error!(
+                        target: "critical",
+                        %height,
+                        stored_block = ?commitment,
+                        certified = ?finalization.proposal.payload,
+                        "finalized block does not match the stored finalization for its \
+                         height; local archive inconsistency, halting dispatch"
+                    );
+                    return;
+                }
+
                 application
                     .report(Update::FinalizedBlock((block, Some(finalization)), ack))
                     .await;
@@ -1443,6 +1460,27 @@ where
                 );
                 return false;
             }
+        }
+
+        // The finalized-block archive is immutable: a duplicate index is silently
+        // ignored on put. If a *different* block already occupies this height
+        // (stale data-dir reuse, interrupted repair, corruption), the fresh block
+        // put below would be dropped while the finalization archive accepts the
+        // certificate, leaving them misbound. Reject the write so the two archives
+        // can never reach a (stale block, fresh certificate) state. A re-delivery
+        // of the same block is idempotent and proceeds.
+        if let Some(existing) = self.get_finalized_block(height).await
+            && existing.digest() != commitment
+        {
+            error!(
+                target: "critical",
+                %height,
+                existing = ?existing.digest(),
+                incoming = ?commitment,
+                "finalized-block archive already holds a different block at this \
+                 height; refusing to store a mismatched finalization"
+            );
+            return false;
         }
 
         self.notify_subscribers(commitment, &block).await;
