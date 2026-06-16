@@ -234,10 +234,19 @@ fn parse_added_validator_field_name(name: &str) -> Result<usize, String> {
 
 fn parse_hex_pubkey(hex_str: &str) -> Result<[u8; 32], String> {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid hex: {e}"))?;
-    bytes
-        .try_into()
-        .map_err(|_| "pubkey must be exactly 32 bytes".to_string())
+    // a 32 byte pubkey is exactly 64 hex characters. validate the encoded length
+    // before decoding: parse_key runs on unauthenticated, caller supplied
+    // descriptors at the public rpc boundary, and hex::decode (const_hex) would
+    // otherwise allocate and decode a heap buffer sized to half the input before
+    // any length check, letting a large malformed key force avoidable allocation
+    // and decode work. reject the wrong length first, then decode straight into
+    // the fixed array with no intermediate heap allocation.
+    if hex_str.len() != 64 {
+        return Err("pubkey must be exactly 32 bytes (64 hex characters)".to_string());
+    }
+    let mut pubkey = [0u8; 32];
+    hex::decode_to_slice(hex_str, &mut pubkey).map_err(|e| format!("invalid hex: {e}"))?;
+    Ok(pubkey)
 }
 
 #[cfg(test)]
@@ -287,6 +296,21 @@ mod tests {
     #[test]
     fn parse_deposit_key_invalid() {
         assert!(parse_key("deposit:abc").is_err());
+    }
+
+    #[test]
+    fn parse_pubkey_rejects_wrong_length_before_decoding() {
+        // a pubkey descriptor that is valid hex but not 64 characters must be
+        // rejected on the length check, without decoding a large heap buffer.
+        let oversized = format!("validator:0x{}", "01".repeat(4096)); // 8192 hex chars
+        assert!(parse_key(&oversized).is_err());
+
+        // too short is rejected the same way.
+        assert!(parse_key("validator:0x0101").is_err());
+
+        // the valid 64 character form still parses.
+        let valid = "validator:0x0101010101010101010101010101010101010101010101010101010101010101";
+        assert_eq!(parse_key(valid).unwrap(), SszStateKey::Validator([1u8; 32]));
     }
 
     #[test]
