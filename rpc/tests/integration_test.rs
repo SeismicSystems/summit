@@ -323,6 +323,61 @@ async fn test_get_state_proof_permit_outlives_cancelled_request() {
 }
 
 #[tokio::test]
+async fn test_oversized_batch_is_rejected() {
+    // The server caps JSON-RPC batch size (default DEFAULT_RPC_MAX_BATCH_SIZE).
+    // jsonrpsee defaults to unlimited, which lets one request fan out into very
+    // many expensive calls; a batch over the limit must be rejected, while a
+    // batch within the limit still works.
+    use jsonrpsee::core::client::ClientT;
+    use jsonrpsee::core::params::BatchRequestBuilder;
+    use summit_rpc::DEFAULT_RPC_MAX_BATCH_SIZE;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let client = HttpClientBuilder::default()
+        .build(format!("http://{addr}"))
+        .unwrap();
+
+    // Within the limit: succeeds.
+    let mut ok_batch = BatchRequestBuilder::new();
+    for _ in 0..10 {
+        ok_batch.insert("health", jsonrpsee::rpc_params![]).unwrap();
+    }
+    assert!(
+        client.batch_request::<String>(ok_batch).await.is_ok(),
+        "a batch within the limit must be served"
+    );
+
+    // Over the limit: rejected.
+    let mut big_batch = BatchRequestBuilder::new();
+    for _ in 0..(DEFAULT_RPC_MAX_BATCH_SIZE as usize + 1) {
+        big_batch
+            .insert("health", jsonrpsee::rpc_params![])
+            .unwrap();
+    }
+    assert!(
+        client.batch_request::<String>(big_batch).await.is_err(),
+        "a batch exceeding the configured limit must be rejected"
+    );
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
 async fn test_get_latest_height() {
     use summit_rpc::SummitApiClient;
 

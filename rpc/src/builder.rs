@@ -1,5 +1,5 @@
 use http::{HeaderValue, Method};
-use jsonrpsee::server::{ServerBuilder, ServerConfigBuilder, ServerHandle};
+use jsonrpsee::server::{BatchRequestConfig, ServerBuilder, ServerConfigBuilder, ServerHandle};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tower::ServiceBuilder;
@@ -49,7 +49,9 @@ impl RpcServerBuilder {
             // disabled by default, and an idle upgraded connection holds its
             // max_connections permit until the client closes; disabling websocket
             // upgrades removes that idle-permit-exhaustion vector entirely.
-            config: ServerConfigBuilder::new().http_only(),
+            config: ServerConfigBuilder::new()
+                .http_only()
+                .set_batch_request_config(default_batch_config()),
             cors_domains: None,
             request_timeout: Duration::from_secs(crate::DEFAULT_RPC_REQUEST_TIMEOUT_SECS),
         }
@@ -63,7 +65,9 @@ impl RpcServerBuilder {
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
             // http-only: see `new`. websockets are unused, so disabling upgrades
             // closes the idle-connection permit-exhaustion vector.
-            config: ServerConfigBuilder::new().http_only(),
+            config: ServerConfigBuilder::new()
+                .http_only()
+                .set_batch_request_config(default_batch_config()),
             cors_domains: None,
             request_timeout: Duration::from_secs(crate::DEFAULT_RPC_REQUEST_TIMEOUT_SECS),
         }
@@ -100,6 +104,17 @@ impl RpcServerBuilder {
         self
     }
 
+    /// Limits the number of calls in a single JSON-RPC batch. jsonrpsee defaults
+    /// to unlimited, which lets one body-size-bounded request fan out into very
+    /// many (potentially expensive, finalizer-bound) method calls. `0` disables
+    /// batching entirely; any other value caps the batch at that many calls.
+    pub fn with_batch_limit(mut self, limit: u32) -> Self {
+        self.config = self
+            .config
+            .set_batch_request_config(batch_config_for(limit));
+        self
+    }
+
     pub async fn build(self) -> anyhow::Result<RpcServer> {
         let cors_layer = self
             .cors_domains
@@ -118,6 +133,20 @@ impl RpcServerBuilder {
             .await?;
 
         Ok(RpcServer { inner: server })
+    }
+}
+
+fn default_batch_config() -> BatchRequestConfig {
+    batch_config_for(crate::DEFAULT_RPC_MAX_BATCH_SIZE)
+}
+
+/// Maps a batch-size limit to a [`BatchRequestConfig`]: `0` disables batching,
+/// any other value caps a batch at that many calls.
+fn batch_config_for(limit: u32) -> BatchRequestConfig {
+    if limit == 0 {
+        BatchRequestConfig::Disabled
+    } else {
+        BatchRequestConfig::Limit(limit)
     }
 }
 

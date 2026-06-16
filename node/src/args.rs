@@ -12,8 +12,8 @@ use commonware_cryptography::{Signer, certificate::Scheme};
 use commonware_p2p::{Ingress, authenticated};
 use commonware_runtime::{Handle, Metrics as _, Runner, Spawner, tokio};
 use summit_rpc::{
-    DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_REQUEST_TIMEOUT_SECS, PathSender, RpcBodyLimits,
-    start_rpc_server, start_rpc_server_for_genesis,
+    DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_MAX_BATCH_SIZE, DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
+    PathSender, RpcBodyLimits, start_rpc_server, start_rpc_server_for_genesis,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -130,6 +130,11 @@ pub struct RunFlags {
     /// Bounds slow/partial-body clients that would otherwise occupy permits.
     #[arg(long, default_value_t = DEFAULT_RPC_REQUEST_TIMEOUT_SECS)]
     pub rpc_request_timeout_secs: u64,
+
+    /// Maximum number of calls allowed in a single JSON-RPC batch request.
+    /// Bounds batch fan-out into expensive methods. `0` disables batching.
+    #[arg(long, default_value_t = DEFAULT_RPC_MAX_BATCH_SIZE)]
+    pub rpc_max_batch_size: u32,
 
     /// Number of tokio worker threads (defaults to number of logical CPUs)
     #[arg(long)]
@@ -312,6 +317,7 @@ async fn acquire_genesis(context: &tokio::Context, flags: &RunFlags) -> Genesis 
         max_request_body_size: flags.rpc_max_request_body_size,
         max_response_body_size: flags.rpc_max_response_body_size,
         request_timeout: std::time::Duration::from_secs(flags.rpc_request_timeout_secs),
+        max_batch_size: flags.rpc_max_batch_size,
     };
     let rpc_genesis_path = genesis_path.clone();
     let _rpc_handle = context
@@ -915,6 +921,7 @@ where
         max_request_body_size: flags.rpc_max_request_body_size,
         max_response_body_size: flags.rpc_max_response_body_size,
         request_timeout: std::time::Duration::from_secs(flags.rpc_request_timeout_secs),
+        max_batch_size: flags.rpc_max_batch_size,
     };
     let stop_signal = context.stopped();
     let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
