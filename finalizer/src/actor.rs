@@ -658,7 +658,7 @@ impl<
                                 self.db
                                     .get_finalized_header(epoch - 1)
                                     .await
-                                    .map(|h| h.header.digest.0)
+                                    .map(|h| h.header().get_digest().0)
                             } else {
                                 // Future epoch we have not reached: no genesis to serve.
                                 None
