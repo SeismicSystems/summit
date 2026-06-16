@@ -417,7 +417,7 @@ fn test_checkpoint_verification_fixed_committee() {
             "expected PrevEpochHeaderHashMismatch for epoch 0, got: {err}"
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });
@@ -648,8 +648,12 @@ fn test_checkpoint_verification_dynamic_committee() {
         checkpoint::verify_checkpoint_chain(&genesis, &finalized_headers, &raw_checkpoint)
             .expect("checkpoint verification with dynamic committee failed");
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[withdrawing_idx])
-            .await;
+        common::assert_state_root_consensus_synced(
+            &context,
+            &consensus_state_queries,
+            &[withdrawing_idx],
+        )
+        .await;
 
         context.auditor().state()
     });
