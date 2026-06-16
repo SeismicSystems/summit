@@ -2205,6 +2205,12 @@ async fn parse_execution_requests<
     // budget, and therefore starving other validators' legitimate exits in the same block.
     let mut deferred_exit_pubkeys: HashSet<[u8; 32]> = HashSet::new();
 
+    // accumulate decoded protocol param changes across every request in this
+    // block and flush them through a single subtree rebuild after the loop.
+    // pushing per record rebuilds the whole pending param subtree each time,
+    // which is o(n^2) over a grouped batch of 0xFF records.
+    let mut protocol_param_batch: Vec<ProtocolParam> = Vec::new();
+
     for (request_bytes, origin) in pending_requests.chain(current_requests) {
         let is_deferred = origin.is_deferred();
         match ExecutionRequest::parse_eth_entry(request_bytes) {
@@ -2494,7 +2500,7 @@ async fn parse_execution_requests<
                             match ProtocolParam::try_from(protocol_param_request) {
                                 Ok(protocol_param) => {
                                     info!("Adding protocol param change: {protocol_param:?}");
-                                    state.push_protocol_param_change(protocol_param);
+                                    protocol_param_batch.push(protocol_param);
                                 }
                                 Err(e) => {
                                     warn!("Failed to parse protocol param request: {e}");
@@ -2508,6 +2514,12 @@ async fn parse_execution_requests<
                 warn!("Failed to parse execution request: {}", e);
             }
         }
+    }
+
+    // flush every protocol param change decoded above through a single subtree
+    // rebuild, rather than rebuilding once per record.
+    if !protocol_param_batch.is_empty() {
+        state.push_protocol_param_changes(protocol_param_batch);
     }
 }
 
