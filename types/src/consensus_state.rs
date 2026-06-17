@@ -759,6 +759,26 @@ impl ConsensusState {
         Some(request)
     }
 
+    /// pops the front deposit without touching the ssz tree.
+    ///
+    /// front removal shifts every remaining item, so ssz_tree.pop_deposit
+    /// rebuilds the whole deposit subtree. when draining up to the per epoch
+    /// cap that is one full rebuild per pop, which is o(cap * backlog). callers
+    /// that drain a capped batch should pop through here and call
+    /// rebuild_deposit_tree once after the loop instead. the deposit subtree
+    /// root is stale until that flush, so this must only be used in a sequence
+    /// that ends in rebuild_deposit_tree before the state root is read.
+    pub fn pop_deposit_deferred(&mut self) -> Option<DepositRequest> {
+        self.deposit_queue.pop_front()
+    }
+
+    /// rebuilds the deposit subtree from the current queue in a single pass.
+    /// pairs with pop_deposit_deferred to collapse a capped drain into one
+    /// rebuild.
+    pub fn rebuild_deposit_tree(&mut self) {
+        self.ssz_tree.rebuild_deposits(&self.deposit_queue);
+    }
+
     // Withdrawal queue operations
     pub fn push_withdrawal_request(
         &mut self,
@@ -3125,6 +3145,104 @@ mod tests {
             batched.ssz_tree().root(),
             per_record.ssz_tree().root(),
             "batched root should match a full rebuild"
+        );
+    }
+
+    // Draining a capped batch of deposits through
+    // pop_deposit_deferred + a single rebuild_deposit_tree must land in the
+    // exact same state (queue length and ssz root) as draining the same count
+    // one pop at a time, where every pop rebuilt the whole remaining subtree.
+    #[test]
+    fn test_deferred_deposit_drain_matches_per_pop() {
+        // backlog larger than the cap so the drain is partial and the remaining
+        // subtree is non trivial.
+        let backlog = 64usize;
+        let cap = 16usize;
+
+        let mut per_pop = ConsensusState::default();
+        let mut deferred = ConsensusState::default();
+        for i in 0..backlog as u64 {
+            let deposit = create_test_deposit_request(i, 32_000_000_000 + i);
+            per_pop.push_deposit(deposit.clone());
+            deferred.push_deposit(deposit);
+        }
+        assert_eq!(
+            per_pop.ssz_tree().root(),
+            deferred.ssz_tree().root(),
+            "states should start identical"
+        );
+
+        // per pop path: rebuild on every pop (the original behaviour).
+        for _ in 0..cap {
+            per_pop.pop_deposit();
+        }
+
+        // deferred path: pop without rebuilding, then rebuild exactly once.
+        for _ in 0..cap {
+            deferred.pop_deposit_deferred();
+        }
+        deferred.rebuild_deposit_tree();
+
+        assert_eq!(
+            deferred.deposit_count(),
+            per_pop.deposit_count(),
+            "both paths should drain the same number of deposits"
+        );
+        assert_eq!(deferred.deposit_count(), backlog - cap);
+        assert_eq!(
+            deferred.ssz_tree().root(),
+            per_pop.ssz_tree().root(),
+            "deferred single rebuild root should match per pop root"
+        );
+
+        // and the deferred root must equal a fresh full rebuild from the queue.
+        deferred.rebuild_ssz_tree();
+        assert_eq!(
+            deferred.ssz_tree().root(),
+            per_pop.ssz_tree().root(),
+            "deferred root should match a full rebuild"
+        );
+    }
+
+    // draining a backlog smaller than the cap must fully empty the queue and
+    // leave a root identical to per pop draining (mirrors the finalizer break
+    // on empty queue).
+    #[test]
+    fn test_deferred_deposit_drain_empties_small_backlog() {
+        let backlog = 5usize;
+        let cap = 16usize;
+
+        let mut per_pop = ConsensusState::default();
+        let mut deferred = ConsensusState::default();
+        for i in 0..backlog as u64 {
+            let deposit = create_test_deposit_request(i, 32_000_000_000 + i);
+            per_pop.push_deposit(deposit.clone());
+            deferred.push_deposit(deposit);
+        }
+
+        let mut drained_any = false;
+        for _ in 0..cap {
+            if per_pop.pop_deposit().is_none() {
+                break;
+            }
+        }
+        for _ in 0..cap {
+            if deferred.pop_deposit_deferred().is_some() {
+                drained_any = true;
+            } else {
+                break;
+            }
+        }
+        if drained_any {
+            deferred.rebuild_deposit_tree();
+        }
+
+        assert_eq!(deferred.deposit_count(), 0);
+        assert_eq!(per_pop.deposit_count(), 0);
+        assert_eq!(
+            deferred.ssz_tree().root(),
+            per_pop.ssz_tree().root(),
+            "empty queue roots should match"
         );
     }
 

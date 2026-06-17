@@ -2545,11 +2545,17 @@ async fn process_execution_requests<
     consts: &ProtocolConsts,
 ) {
     if is_penultimate_block_of_epoch(state.get_epocher(), new_height) {
+        // pop deposits without rebuilding the deposit subtree per pop, then
+        // rebuild once after the loop. front removal shifts every remaining
+        // item, so a per pop rebuild is o(cap * backlog) inside this
+        // consensus-critical block.
+        let mut drained_any_deposit = false;
         for _ in 0..state.get_max_deposits_per_epoch() as usize {
             // Break on empty queue so an oversized max_deposits_per_epoch
             // cannot spin the consensus-critical penultimate block in a
             // long-running no-op loop.
-            if let Some(request) = state.pop_deposit() {
+            if let Some(request) = state.pop_deposit_deferred() {
+                drained_any_deposit = true;
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
 
                 // Account should always exist (created early in parse_execution_requests)
@@ -2680,6 +2686,14 @@ async fn process_execution_requests<
             } else {
                 break;
             }
+        }
+
+        // rebuild the deposit subtree once for the whole drained batch. the
+        // per pop rebuild was deferred above, so the subtree is stale until
+        // here; nothing between the drain and the end of block root capture
+        // reads it.
+        if drained_any_deposit {
+            state.rebuild_deposit_tree();
         }
 
         // Stage stake-bound force-removals for the upcoming epoch boundary.
