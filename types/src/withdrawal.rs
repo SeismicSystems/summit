@@ -400,6 +400,46 @@ impl Read for WithdrawalQueue {
             schedule.insert(epoch, pubkeys);
         }
 
+        // Cross-validate the map and schedule: they are redundant and must
+        // agree. The SSZ root commits only schedule-reachable entries (see
+        // ssz_state_tree::rebuild_withdrawals), so a decoded queue whose map and
+        // schedule disagree could carry live withdrawal state (map queries,
+        // merges) that escapes the root and its proofs. Require every scheduled
+        // pubkey to exist in the map under the same epoch, scheduled exactly
+        // once, and every map entry to be scheduled.
+        let mut scheduled = std::collections::BTreeSet::new();
+        for (epoch, pubkeys) in &schedule {
+            for pubkey in pubkeys {
+                match withdrawals.get(pubkey) {
+                    None => {
+                        return Err(Error::Invalid(
+                            "WithdrawalQueue",
+                            "scheduled pubkey absent from withdrawal map",
+                        ));
+                    }
+                    Some(w) if w.epoch != *epoch => {
+                        return Err(Error::Invalid(
+                            "WithdrawalQueue",
+                            "scheduled epoch disagrees with withdrawal map entry",
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                if !scheduled.insert(*pubkey) {
+                    return Err(Error::Invalid(
+                        "WithdrawalQueue",
+                        "pubkey scheduled more than once",
+                    ));
+                }
+            }
+        }
+        if scheduled.len() != withdrawals.len() {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "withdrawal map entry missing from schedule",
+            ));
+        }
+
         Ok(Self {
             withdrawals,
             schedule,
@@ -436,6 +476,105 @@ mod tests {
         // Test Read
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();
         assert_eq!(decoded, withdrawal);
+    }
+
+    fn pending(tag: u8, epoch: u64) -> PendingWithdrawal {
+        PendingWithdrawal {
+            inner: Withdrawal {
+                index: tag as u64,
+                validator_index: tag as u64,
+                address: Address::from([tag; 20]),
+                amount: 1,
+            },
+            pubkey: [tag; 32],
+            balance_deduction: 0,
+            epoch,
+        }
+    }
+
+    fn encode_queue(queue: &WithdrawalQueue) -> BytesMut {
+        let mut buf = BytesMut::new();
+        queue.write(&mut buf);
+        buf
+    }
+
+    // The withdrawals map and the per-epoch schedule are redundant and must
+    // agree. read_cfg currently decodes them independently with no
+    // cross-validation, so a crafted checkpoint can carry a queue whose map and
+    // schedule disagree. The SSZ root only commits schedule-reachable entries,
+    // so such disagreement lets live withdrawal state escape the root/proofs.
+    // These assert decode rejects the inconsistent forms (and accepts a
+    // consistent one). RED until read_cfg cross-validates.
+
+    #[test]
+    fn decode_accepts_consistent_queue() {
+        let mut withdrawals = BTreeMap::new();
+        withdrawals.insert([1u8; 32], pending(1, 5));
+        let mut schedule = BTreeMap::new();
+        schedule.insert(5u64, VecDeque::from(vec![[1u8; 32]]));
+        let queue = WithdrawalQueue {
+            withdrawals,
+            schedule,
+            next_index: 1,
+        };
+        let buf = encode_queue(&queue);
+        assert!(
+            WithdrawalQueue::read(&mut buf.as_ref()).is_ok(),
+            "a map/schedule-consistent queue must decode"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_unscheduled_map_entry() {
+        // pubkey in the map but in no schedule list: omitted from the SSZ root.
+        let mut withdrawals = BTreeMap::new();
+        withdrawals.insert([1u8; 32], pending(1, 5));
+        let queue = WithdrawalQueue {
+            withdrawals,
+            schedule: BTreeMap::new(),
+            next_index: 1,
+        };
+        let buf = encode_queue(&queue);
+        assert!(
+            WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
+            "a map entry absent from the schedule must be rejected at decode"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_scheduled_pubkey_absent_from_map() {
+        let mut schedule = BTreeMap::new();
+        schedule.insert(5u64, VecDeque::from(vec![[1u8; 32]]));
+        let queue = WithdrawalQueue {
+            withdrawals: BTreeMap::new(),
+            schedule,
+            next_index: 1,
+        };
+        let buf = encode_queue(&queue);
+        assert!(
+            WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
+            "a scheduled pubkey absent from the map must be rejected at decode"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_schedule_epoch_mismatch() {
+        // pubkey scheduled under epoch 6 but its map entry says epoch 5: the
+        // root commits the map epoch, not the schedule key.
+        let mut withdrawals = BTreeMap::new();
+        withdrawals.insert([1u8; 32], pending(1, 5));
+        let mut schedule = BTreeMap::new();
+        schedule.insert(6u64, VecDeque::from(vec![[1u8; 32]]));
+        let queue = WithdrawalQueue {
+            withdrawals,
+            schedule,
+            next_index: 1,
+        };
+        let buf = encode_queue(&queue);
+        assert!(
+            WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
+            "a schedule epoch disagreeing with the map entry must be rejected at decode"
+        );
     }
 
     #[test]
