@@ -108,7 +108,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
         let withdrawal_epoch =
             (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
         let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
-        let stop_height = withdrawal_height + 1;
+        let stop_height = withdrawal_height + 2;
 
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests_deposit_1);
@@ -117,7 +117,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
-            .with_stop_at(41)
+            .with_stop_at(stop_height)
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
@@ -190,9 +190,6 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
         }
 
         let withdrawals = engine_client_network.get_withdrawals();
-        let withdrawal_epoch =
-            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing grouped withdrawal entry");
@@ -320,7 +317,10 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // the account doesn't exist yet.
         let deposit_block_height = 5;
         let withdrawal_block_height = 11;
-        let stop_height = withdrawal_block_height + DEFAULT_BLOCKS_PER_EPOCH + 1;
+        let withdrawal_epoch =
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let stop_height = withdrawal_height + 2;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -328,7 +328,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
-            .with_stop_at(41) // we stop at 41 because of the epoch+1 hold period before executing withdrawls
+            .with_stop_at(stop_height) // stop after the epoch+1 hold period on withdrawals
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
@@ -430,9 +430,6 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // Make sure that test_withdrawal2 was ignored, only test_withdraw1 should be submitted
         // to the execution layer.
         assert_eq!(withdrawals.len(), 1);
-        let withdrawal_epoch =
-            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");

@@ -916,15 +916,9 @@ impl<
         }
 
         let new_height = block.height();
+        let current_epoch = self.canonical_state.get_epoch();
         self.height_notify_finalized_up_to(new_height, block_digest);
-        ack_tx.acknowledge();
-        info!(
-            new_height,
-            epoch = self.canonical_state.get_epoch(),
-            "executed block"
-        );
 
-        let new_height = block.height();
         let mut epoch_change = false; // Store finalizes checkpoint to database
         if is_last_block_of_epoch(self.canonical_state.get_epocher(), new_height) {
             // The syncer will always send the last block of an epoch together with
@@ -1040,6 +1034,13 @@ impl<
                 .set_epoch_genesis_hash(block.digest().0);
             self.canonical_state.reset_pending_active_validator_exits();
 
+            // Clear transition deltas before persisting the next-epoch consensus state.
+            self.canonical_state
+                .remove_added_validators_for_epoch(next_epoch);
+            if self.canonical_state.has_removed_validators() {
+                self.canonical_state.clear_removed_validators();
+            }
+
             let active_count = self.canonical_state.get_active_validators().len();
             let joining_count = self
                 .canonical_state
@@ -1080,13 +1081,7 @@ impl<
                 counter!("finalizer_epochs_completed_total").increment(1);
             }
 
-            // Clear the added and removed validators
-            let current_epoch = self.canonical_state.get_epoch();
-            self.canonical_state
-                .remove_added_validators_for_epoch(current_epoch);
-            if self.canonical_state.has_removed_validators() {
-                self.canonical_state.clear_removed_validators();
-            }
+            ack_tx.acknowledge();
 
             // Create the peer sets for the next epoch's P2P network.
             //
@@ -1147,7 +1142,14 @@ impl<
                 }))
                 .await;
             epoch_change = true;
+        } else {
+            // Every block needs to be ack'ed.
+            // On the last block of an epoch we send the ack before updating the oracle and
+            // reporting to the orchestrator, because those calls might be blocking.
+            ack_tx.acknowledge();
         }
+
+        info!(new_height, epoch = current_epoch, "executed block");
 
         if epoch_change {
             // Shut down the Simplex engine for the old epoch
