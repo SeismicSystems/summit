@@ -756,6 +756,157 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
     });
 }
 
+/// A commit failure on the last block of an epoch must NOT ack the syncer and
+/// must NOT durably advance the epoch.
+///
+/// The finalizer acks the syncer only after the epoch-boundary consensus state
+/// is persisted (#270/#325). If the EL forkchoice commit fails on the boundary
+/// block, the finalizer returns an error before persisting or acking: the
+/// syncer's `Exact` waiter must resolve `Err` (withheld ack, so the block is
+/// re-delivered later) and the node must trigger a graceful shutdown. A restart
+/// from the same DB must still load the pre-boundary epoch, proving the
+/// transition was not half-committed.
+#[test]
+fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
+    let cfg = deterministic::Config::default().with_seed(59);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x59u8; 32];
+        let db_prefix = "test_epoch_commit_failure_withholds_ack".to_string();
+        let local_node_key = ed25519::PrivateKey::from_seed(1);
+
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        let page_cache = CacheRef::from_pooler(
+            &context,
+            std::num::NonZero::new(4096).unwrap(),
+            NZUsize!(100),
+        );
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let cancellation_token = CancellationToken::new();
+
+        // Shared engine client so the test can flip commit_hash to failing only
+        // after the non-boundary blocks have been acked. The clone handed to the
+        // finalizer shares the failure flag.
+        let engine_client = MockEngineClient::new();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: db_prefix.clone(),
+            engine_client: engine_client.clone(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: page_cache.clone(),
+            genesis_hash,
+            initial_state: initial_state.clone(),
+            protocol_version: 1,
+            node_public_key: local_node_key.public_key(),
+            cancellation_token: cancellation_token.clone(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(50)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+
+        // Non-boundary blocks 1..=3 commit cleanly and must be acked.
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 59000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, ack_waiter) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            ack_waiter.await.expect("non-boundary block must be acked");
+        }
+
+        // Fail the forkchoice commit for the epoch-boundary block.
+        engine_client.fail_commit_hash();
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+        let boundary = create_test_block_with_epoch(parent_digest, 4, 5, 59004, 0);
+        let boundary_digest = boundary.digest();
+        let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
+        let (ack, ack_waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
+            .await;
+
+        // Ack must be WITHHELD: the finalizer errors on the failed commit before
+        // acknowledging, so the Exact waiter resolves Err (sender dropped).
+        assert!(
+            ack_waiter.await.is_err(),
+            "epoch-boundary ack must be withheld when the commit fails"
+        );
+
+        // The finalizer must trigger a graceful shutdown.
+        context.sleep(Duration::from_millis(50)).await;
+        assert!(
+            cancellation_token.is_cancelled(),
+            "finalizer must shut down after a fatal commit failure"
+        );
+
+        drop(mailbox);
+        handle.abort();
+        context.sleep(Duration::from_millis(50)).await;
+
+        // Restart from the same DB: the epoch must NOT have durably advanced.
+        let (restarted, reloaded_state, _mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer_restart"),
+                FinalizerConfig {
+                    mailbox_size: 100,
+                    db_prefix,
+                    engine_client: MockEngineClient::new(),
+                    oracle: MockNetworkOracle,
+                    protocol_consts: ProtocolConsts {
+                        validator_num_warm_up_epochs: 2,
+                        validator_withdrawal_num_epochs: 2,
+                    },
+                    page_cache,
+                    genesis_hash,
+                    initial_state,
+                    protocol_version: 1,
+                    node_public_key: local_node_key.public_key(),
+                    cancellation_token: CancellationToken::new(),
+                    drain_interval: Duration::from_millis(100),
+                    buffered_blocks_warn_threshold: 100,
+                    pending_notarized_max: 1000,
+                    namespace: Vec::new(),
+                    _variant_marker: PhantomData,
+                },
+            )
+            .await;
+        drop(restarted);
+
+        assert_eq!(
+            reloaded_state.get_epoch(),
+            0,
+            "epoch must not durably advance when the boundary commit fails before the ack"
+        );
+
+        context.auditor().state()
+    });
+}
+
 /// An active validator's full exit on the last block of an epoch must
 /// dominate a concurrent `MaximumStake` reduction at the same boundary:
 /// the buffered exit replays on the first block of the next epoch and the

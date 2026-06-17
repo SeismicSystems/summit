@@ -27,7 +27,7 @@ use alloy_rpc_types_engine::{
 use tracing::{error, warn};
 
 use crate::Block;
-use alloy_transport::TransportError;
+use alloy_transport::{TransportError, TransportErrorKind};
 use alloy_transport_ipc::IpcConnect;
 use std::future::Future;
 
@@ -43,6 +43,15 @@ use std::future::Future;
 /// signal.
 #[derive(Debug)]
 pub struct EngineClientError(pub TransportError);
+
+impl EngineClientError {
+    /// Construct a custom, non-retryable engine-client error from a message.
+    /// Primarily for tests that simulate an execution-client failure (e.g. a
+    /// failed forkchoice commit at an epoch boundary).
+    pub fn custom(msg: &str) -> Self {
+        EngineClientError(TransportErrorKind::custom_str(msg))
+    }
+}
 
 impl std::fmt::Display for EngineClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -15,10 +15,10 @@ use commonware_math::algebra::Random;
 use commonware_parallel::Sequential;
 use commonware_utils::ordered::{BiMap, Map};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use summit_types::network_oracle::NetworkOracle;
-use summit_types::{Block, Digest, EngineClient, PublicKey};
+use summit_types::{Block, Digest, EngineClient, EngineClientError, PublicKey};
 
 pub type MultisigScheme = bls12381_multisig::Scheme<ed25519::PublicKey, MinPk>;
 
@@ -88,6 +88,7 @@ pub struct MockEngineClient {
     check_payload_overrides: Arc<Mutex<VecDeque<PayloadStatus>>>,
     commit_hash_overrides: Arc<Mutex<VecDeque<ForkchoiceUpdated>>>,
     check_payload_calls: Arc<AtomicU64>,
+    commit_hash_fails: Arc<AtomicBool>,
 }
 
 impl MockEngineClient {
@@ -96,7 +97,16 @@ impl MockEngineClient {
             check_payload_overrides: Arc::new(Mutex::new(VecDeque::new())),
             commit_hash_overrides: Arc::new(Mutex::new(VecDeque::new())),
             check_payload_calls: Arc::new(AtomicU64::new(0)),
+            commit_hash_fails: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Make every subsequent `commit_hash` call return a non-retryable error,
+    /// simulating a failed forkchoice commit. Used to drive the finalizer's
+    /// fatal-shutdown path at an epoch boundary.
+    #[allow(unused)]
+    pub fn fail_commit_hash(&self) {
+        self.commit_hash_fails.store(true, Ordering::SeqCst);
     }
 
     /// Number of times `check_payload` has been invoked. Used to detect whether a
@@ -205,6 +215,9 @@ impl EngineClient for MockEngineClient {
         &mut self,
         _fork_choice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdated, summit_types::EngineClientError> {
+        if self.commit_hash_fails.load(Ordering::SeqCst) {
+            return Err(EngineClientError::custom("injected commit_hash failure"));
+        }
         if let Some(override_response) = self.commit_hash_overrides.lock().unwrap().pop_front() {
             return Ok(override_response);
         }
