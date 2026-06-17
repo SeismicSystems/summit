@@ -216,7 +216,13 @@ where
                 // multiple peers claiming to be ahead, each call adds them to the target set,
                 // giving us more peers to try fetching from.
                 let boundary_height = self.epocher.last(our_epoch).expect("epoch should exist");
-                self.syncer_mailbox.hint_finalized(boundary_height, NonEmptyVec::new(from)).await;
+                // Non-blocking: this advisory catch-up hint must not park the
+                // orchestrator loop on a full syncer mailbox, or epoch Enter/Exit
+                // (processed by the arm below) would wait behind it. Dropping the
+                // hint under syncer backpressure is fine: the ahead peer keeps
+                // re-advertising the later epoch and the finalization also arrives
+                // through the normal flow.
+                self.syncer_mailbox.try_hint_finalized(boundary_height, NonEmptyVec::new(from));
             },
             transition = self.mailbox.next() => {
                 let Some(transition) = transition else {
