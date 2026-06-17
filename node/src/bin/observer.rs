@@ -189,8 +189,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None, None).await.unwrap();
+                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                            // a coordinated shutdown (graceful stop or committee exit) returns
+                            // ok; a genuine core task failure returns err and must fail the
+                            // scenario instead of being masked as a clean node exit.
+                            if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                                eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                                std::process::exit(1);
+                            }
                         });
 
                         let stop_fut = stop_rx.recv().fuse();
@@ -296,10 +302,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(|ctx| async move {
-                        run_node_local(ctx, observer_flags, None, None)
+                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        // the observer is a required participant: a genuine core task failure
+                        // (err) must fail the scenario rather than be masked as a clean exit.
+                        if let Err(e) = run_node_local(ctx, observer_flags, None, None)
                             .await
-                            .unwrap();
+                            .unwrap()
+                        {
+                            eprintln!("observer core task failed: {e:?}; failing scenario");
+                            std::process::exit(1);
+                        }
                     });
 
                     let stop_fut = observer_stop_rx.recv().fuse();

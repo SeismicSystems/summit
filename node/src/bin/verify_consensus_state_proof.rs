@@ -146,8 +146,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .with_catch_panics(true);
                     let executor = cw_tokio::Runner::new(cfg);
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None, None).await.unwrap();
+                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                            // a coordinated shutdown (graceful stop or committee exit) returns
+                            // ok; a genuine core task failure returns err and must fail the
+                            // scenario instead of being masked as a clean node exit.
+                            if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                                eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                                std::process::exit(1);
+                            }
                         });
                         let stop_fut = stop_rx.recv().fuse();
                         pin_mut!(stop_fut);

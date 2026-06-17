@@ -18,6 +18,7 @@ use std::{
 use alloy_node_bindings::Reth;
 use clap::Parser;
 use commonware_runtime::{Metrics as _, Runner as _, Spawner as _, tokio};
+use futures::future::try_join_all;
 use summit::args::{RunFlags, run_node_local};
 
 #[derive(Parser, Debug)]
@@ -163,8 +164,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // for reader in read_threads {
             //     reader.join().unwrap();
             // }
-            if let Err(e) = futures::future::try_join_all(consensus_handles).await {
-                tracing::error!("Failed: {:?}", e);
+            match try_join_all(consensus_handles).await {
+                Ok(results) => {
+                    // each node now returns its supervise outcome; surface any core task
+                    // failure instead of dropping it on the floor.
+                    for (idx, result) in results.into_iter().enumerate() {
+                        if let Err(e) = result {
+                            tracing::error!(node = idx, ?e, "node core task failed");
+                        }
+                    }
+                }
+                Err(e) => tracing::error!("Failed: {:?}", e),
             }
 
             // Due to how alloy node_bindings work we have to do this to prevent the reth_instances from being dropped and shutdown by the compiler
