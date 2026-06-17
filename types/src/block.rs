@@ -249,16 +249,29 @@ impl Read for Block {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        let len: u32 = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
-        if len as usize > buf.remaining() {
+        let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+        if len > buf.remaining() {
             return Err(Error::Invalid("Block", "improper encoded length"));
         }
 
-        let mut payload = vec![0u8; len as usize];
-        buf.try_copy_to_slice(&mut payload)
-            .map_err(|_| Error::EndOfBuffer)?;
-        ssz::Decode::from_ssz_bytes(&payload)
-            .map_err(|_| Error::Invalid("Block", "Unable to decode bytes for block"))
+        // Decode SSZ directly from the buffer's contiguous chunk to avoid
+        // copying the (up to message-size) payload into a temporary Vec first.
+        // `chunk()` returns the whole remaining slice for the contiguous buffers
+        // used on the decode paths (`&[u8]`/`Bytes`); for a non-contiguous
+        // buffer it may be shorter than `len`, in which case we fall back to a
+        // single contiguous copy.
+        if buf.chunk().len() >= len {
+            let block = ssz::Decode::from_ssz_bytes(&buf.chunk()[..len])
+                .map_err(|_| Error::Invalid("Block", "Unable to decode bytes for block"))?;
+            buf.advance(len);
+            Ok(block)
+        } else {
+            let mut payload = vec![0u8; len];
+            buf.try_copy_to_slice(&mut payload)
+                .map_err(|_| Error::EndOfBuffer)?;
+            ssz::Decode::from_ssz_bytes(&payload)
+                .map_err(|_| Error::Invalid("Block", "Unable to decode bytes for block"))
+        }
     }
 }
 
