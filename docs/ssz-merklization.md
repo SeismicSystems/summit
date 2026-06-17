@@ -405,6 +405,21 @@ The state root appears on-chain in EL block `el_block_number + 1`.
 
 Takes a list of key strings and returns the state root, EL block number, and one result for each key. Each result echoes the requested key and contains either an `SszProof` or an error for a key that is absent or out of range.
 
+> **Binding for by-pubkey field proofs.** A bare `SszProof` for a single field
+> (`validator_field:`/`withdrawal_field:`) proves only that *some* positional
+> leaf exists under the root — it does **not** prove the field belongs to the
+> requested pubkey, since the pubkey→position mapping happens server-side. A
+> malicious provider or intermediary could answer a by-pubkey request with the
+> same field from a *different* item under the same root. For these requests the
+> result therefore also carries a `key_proof`: a companion `SszProof` of the
+> item's key (pubkey) leaf. A trustless consumer **must** verify both, check
+> that `key_proof.leaf` equals the requested pubkey, and check that the two
+> leaves resolve to the same item (their generalized indices agree once the low
+> `log2(fields_per_item)` field-selector bits are dropped — 3 bits for
+> withdrawals, 4 for validator accounts). See `KeyedFieldProof::verify` in
+> `types/src/ssz_state_tree.rs`. The `key_proof` field is absent for scalar,
+> whole-item, and index-addressed proofs.
+
 ```json
 // Request
 {"jsonrpc":"2.0","method":"getStateProof","params":[["epoch","validator:0xABCD...","deposit:999999"]],"id":1}
@@ -422,6 +437,12 @@ Takes a list of key strings and returns the state root, EL block number, and one
     {
       "key": "validator:0xABCD...",
       "proof": { "gindex": 1408, "leaf": "0x...", "branch": ["0x...", ...] },
+      "error": null
+    },
+    {
+      "key": "validator_field:0xABCD...:balance",
+      "proof": { "gindex": 22528, "leaf": "0x...", "branch": ["0x...", ...] },
+      "key_proof": { "gindex": 22536, "leaf": "0xABCD...", "branch": ["0x...", ...] },
       "error": null
     },
     {
@@ -465,7 +486,7 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | Key Format | Example | Proves |
 |------------|---------|--------|
 | `validator:<pubkey>` | `validator:0xABCD...` | Whole account |
-| `validator_field:<pubkey>:<field>` | `validator_field:0xABCD...:balance` | Single field |
+| `validator_field:<pubkey>:<field>` | `validator_field:0xABCD...:balance` | Single field (response includes a `key_proof` binding — see above) |
 
 Validator field names: `consensus_pubkey`, `withdrawal_credentials`, `balance`, `status`, `has_pending_deposit`, `has_pending_withdrawal`, `joining_epoch`, `last_deposit_index`.
 
@@ -483,7 +504,7 @@ Deposit field names: `node_pubkey`, `consensus_pubkey`, `withdrawal_credentials`
 | Key Format | Example | Proves |
 |------------|---------|--------|
 | `withdrawal:<pubkey>` | `withdrawal:0xABCD...` | Whole withdrawal |
-| `withdrawal_field:<pubkey>:<field>` | `withdrawal_field:0xABCD...:amount` | Single field |
+| `withdrawal_field:<pubkey>:<field>` | `withdrawal_field:0xABCD...:amount` | Single field (response includes a `key_proof` binding — see above) |
 
 Withdrawal field names: `index`, `validator_index`, `address`, `amount`, `pubkey`, `balance_deduction`, `epoch`.
 

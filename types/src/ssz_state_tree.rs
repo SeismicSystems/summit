@@ -1156,6 +1156,24 @@ impl SszStateTree {
         })
     }
 
+    /// Generate a field-level proof for a validator identified by node pubkey,
+    /// bound to that pubkey via a companion proof of the item's node-pubkey leaf.
+    ///
+    /// Unlike [`Self::generate_validator_field_proof`], the returned
+    /// [`KeyedFieldProof`] lets a trustless consumer confirm the field belongs
+    /// to the requested validator rather than to some other account under the
+    /// same root. Verify with `proof.verify(root, pubkey, VALIDATOR_FIELDS_PER_ACCOUNT)`.
+    pub fn generate_validator_keyed_field_proof(
+        &self,
+        pubkey: &[u8; 32],
+        field_index: usize,
+        keys: &[[u8; 32]],
+    ) -> Option<KeyedFieldProof> {
+        let field = self.generate_validator_field_proof(pubkey, field_index, keys)?;
+        let key = self.generate_validator_field_proof(pubkey, VALIDATOR_FIELD_NODE_PUBKEY, keys)?;
+        Some(KeyedFieldProof { field, key })
+    }
+
     /// Build a proof for the whole validator at positional `slot`.
     ///
     /// Returns (gindex, node_value, branch) where the node is the
@@ -1347,6 +1365,25 @@ impl SszStateTree {
     ) -> Option<SszProof> {
         let &(epoch_slot, item_slot) = self.withdrawal_pubkey_index.get(pubkey)?;
         self.generate_withdrawal_field_proof(epoch_slot, item_slot, field_index)
+    }
+
+    /// Generate a field-level proof for a withdrawal identified by pubkey,
+    /// bound to that pubkey via a companion proof of the item's pubkey leaf.
+    ///
+    /// Unlike [`Self::generate_withdrawal_field_proof_by_key`], the returned
+    /// [`KeyedFieldProof`] lets a trustless consumer confirm the field belongs
+    /// to the requested pubkey rather than to some other withdrawal under the
+    /// same root. Verify with `proof.verify(root, pubkey, WITHDRAWAL_FIELDS_PER_ITEM)`.
+    pub fn generate_withdrawal_keyed_field_proof_by_key(
+        &self,
+        pubkey: &[u8; 32],
+        field_index: usize,
+    ) -> Option<KeyedFieldProof> {
+        let &(epoch_slot, item_slot) = self.withdrawal_pubkey_index.get(pubkey)?;
+        let field = self.generate_withdrawal_field_proof(epoch_slot, item_slot, field_index)?;
+        let key =
+            self.generate_withdrawal_field_proof(epoch_slot, item_slot, WITHDRAWAL_FIELD_PUBKEY)?;
+        Some(KeyedFieldProof { field, key })
     }
 
     /// Internal helper: produce (gindex, node_value, branch) for a whole-withdrawal proof.
@@ -1685,6 +1722,76 @@ impl SszProof {
     pub fn verify(&self, state_root: &[u8; 32]) -> bool {
         SszTree::verify_proof_gindex(state_root, self.gindex, &self.leaf, &self.branch)
     }
+}
+
+/// A field-level proof bound to the collection item it belongs to.
+///
+/// A bare [`SszProof`] for a single field authenticates only that *some*
+/// positional leaf exists under the root — it does not prove the field belongs
+/// to the requested key (pubkey). For by-pubkey field proofs
+/// (`withdrawal_field:`/`validator_field:`) the selector is resolved to a
+/// position *server-side*, so a malicious provider could answer with the same
+/// field from a *different* item under the same root and the branch would still
+/// verify. `KeyedFieldProof` closes that gap by carrying a second proof of the
+/// item's key leaf; [`KeyedFieldProof::verify`] checks both leaves authenticate
+/// against the root, that the key leaf equals the requested key, and that the
+/// field and key leaves belong to the *same* collection item.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyedFieldProof {
+    /// Proof of the requested field leaf.
+    pub field: SszProof,
+    /// Proof of the item's key (pubkey) leaf, binding `field` to the request.
+    pub key: SszProof,
+}
+
+impl KeyedFieldProof {
+    /// Verify that `field` is bound to `expected_key` under `state_root`.
+    ///
+    /// `fields_per_item` is the number of leaves per collection item (a power of
+    /// two: [`WITHDRAWAL_FIELDS_PER_ITEM`] for withdrawals,
+    /// [`VALIDATOR_FIELDS_PER_ACCOUNT`] for validator accounts). Returns `true`
+    /// only when all of the following hold:
+    /// 1. both `field` and `key` authenticate against `state_root`,
+    /// 2. the key leaf equals `hash_tree_root(expected_key)` (for a 32-byte key
+    ///    this is the key itself), and
+    /// 3. `field` and `key` resolve to the same item — i.e. their generalized
+    ///    indices agree once the low `log2(fields_per_item)` field-selector bits
+    ///    are dropped.
+    pub fn verify(
+        &self,
+        state_root: &[u8; 32],
+        expected_key: &[u8; 32],
+        fields_per_item: usize,
+    ) -> bool {
+        if !fields_per_item.is_power_of_two() {
+            return false;
+        }
+        if !self.field.verify(state_root) || !self.key.verify(state_root) {
+            return false;
+        }
+        if self.key.leaf != expected_key.hash_tree_root() {
+            return false;
+        }
+        // The bottom `log2(fields_per_item)` bits of a field gindex are the
+        // field selector within the item; shifting them off yields the item's
+        // subtree-root gindex. Equal item roots ⟺ same item.
+        let shift = fields_per_item.ilog2();
+        (self.field.gindex >> shift) == (self.key.gindex >> shift)
+    }
+}
+
+/// A single entry in a `GenerateStateProof` response.
+///
+/// `key` is `Some` only for by-pubkey field proofs, where it carries the item's
+/// key-leaf proof so the consumer can bind the field to the requested pubkey via
+/// [`KeyedFieldProof::verify`]. For scalar, whole-item, and index-addressed
+/// proofs it is `None` and `field` stands alone.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StateProofEntry {
+    /// Proof of the requested leaf (field, scalar, or whole-item root).
+    pub field: SszProof,
+    /// For by-pubkey field requests, proof of the item's key leaf.
+    pub key: Option<SszProof>,
 }
 
 #[cfg(test)]
@@ -2524,6 +2631,84 @@ mod tests {
             field_proof.branch.len(),
             item_proof.branch.len() + 3,
             "field branch should be 3 longer than item branch"
+        );
+    }
+
+    #[test]
+    fn withdrawal_keyed_field_proof_binds_to_requested_pubkey() {
+        let pk1 = [1u8; 32];
+        let pk2 = [2u8; 32];
+        let mut queue = WithdrawalQueue::default();
+        // Two withdrawals in the same epoch with DIFFERENT amounts.
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([0x11; 20]),
+                amount: 1_000_000_000,
+            },
+            pubkey: pk1,
+            balance_deduction: 1_000_000_000,
+            epoch: 1,
+        });
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 1,
+                validator_index: 1,
+                address: Address::from([0x22; 20]),
+                amount: 2_000_000_000,
+            },
+            pubkey: pk2,
+            balance_deduction: 2_000_000_000,
+            epoch: 1,
+        });
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_withdrawals(&queue);
+        tree.set_epoch(5);
+        let root = tree.root();
+
+        // The honest keyed proof for pk1's amount binds to pk1.
+        let keyed1 = tree
+            .generate_withdrawal_keyed_field_proof_by_key(&pk1, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        assert!(
+            keyed1.verify(&root, &pk1, WITHDRAWAL_FIELDS_PER_ITEM),
+            "honest keyed proof should bind to its own pubkey"
+        );
+        assert_eq!(keyed1.field.leaf, 1_000_000_000u64.hash_tree_root());
+
+        // It must NOT verify against a different requested pubkey.
+        assert!(
+            !keyed1.verify(&root, &pk2, WITHDRAWAL_FIELDS_PER_ITEM),
+            "keyed proof must not verify against a different pubkey"
+        );
+
+        // Substitution attack: a malicious provider answers a by-pk1 request
+        // with pk2's amount field. The bare positional field proof still
+        // verifies against the root (this is the vulnerability), ...
+        let pk2_amount = tree
+            .generate_withdrawal_field_proof_by_key(&pk2, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        assert!(
+            pk2_amount.verify(&root),
+            "pk2's positional amount proof verifies against the root unaided"
+        );
+        assert_eq!(pk2_amount.leaf, 2_000_000_000u64.hash_tree_root());
+
+        // ... but pairing it with any key proof cannot bind it to pk1: the only
+        // key leaf equal to pk1 lives in pk1's item, whose gindex differs from
+        // pk2's field gindex, so the same-item check fails.
+        let pk1_key = tree
+            .generate_withdrawal_field_proof_by_key(&pk1, WITHDRAWAL_FIELD_PUBKEY)
+            .unwrap();
+        let forged = KeyedFieldProof {
+            field: pk2_amount,
+            key: pk1_key,
+        };
+        assert!(
+            !forged.verify(&root, &pk1, WITHDRAWAL_FIELDS_PER_ITEM),
+            "substituted field from a different withdrawal must not bind to pk1"
         );
     }
 

@@ -241,6 +241,7 @@ fn test_generate_state_proof_preserves_batch_cardinality_for_missing_keys() {
             proofs[0]
                 .as_ref()
                 .expect("first response slot should contain the epoch proof")
+                .field
                 .verify(&root),
             "first response slot should contain the epoch proof"
         );
@@ -252,6 +253,7 @@ fn test_generate_state_proof_preserves_batch_cardinality_for_missing_keys() {
             proofs[2]
                 .as_ref()
                 .expect("third response slot should contain the latest_height proof")
+                .field
                 .verify(&root),
             "third response slot should contain the latest_height proof"
         );
