@@ -1041,6 +1041,16 @@ impl<
                 self.canonical_state.clear_removed_validators();
             }
 
+            // Re-capture the state/proof root AFTER the epoch-transition mutations
+            // and delta cleanup, and BEFORE persisting. execute_block captured the
+            // root before these boundary side effects ran, so its snapshot is stale
+            // here. Capturing now makes both the first block of the new epoch (via
+            // aux-data parent_beacon_block_root) and the durable consensus state
+            // committed just below carry the post-transition root, so a node that
+            // restarts at the boundary agrees with peers on the advertised root.
+            self.canonical_state
+                .capture_state_root(block.payload.payload_inner.payload_inner.block_number);
+
             let active_count = self.canonical_state.get_active_validators().len();
             let joining_count = self
                 .canonical_state
@@ -2170,8 +2180,8 @@ async fn execute_block<
     // hashes, the state root must not depend on processing order.
     state.set_forkchoice_safe_and_finalized(state.get_forkchoice().head_block_hash);
 
-    // Freeze the trie root so that subsequent finalization mutations
-    // (epoch transitions, forkchoice updates) don't alter the captured value.
+    // Freeze the trie root for the next block. Epoch-boundary finalization
+    // re-captures after applying transition mutations.
     let el_block_number = block.payload.payload_inner.payload_inner.block_number;
     state.capture_state_root(el_block_number);
 

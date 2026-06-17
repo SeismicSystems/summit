@@ -74,9 +74,9 @@ pub struct ConsensusState {
 
     // Withdrawal proof lookup is handled by the pubkey index stored in SszStateTree itself.
     // The frozen proof_tree contains the withdrawal_pubkey_index from capture time.
-    /// Snapshot of `ssz_tree.root()` captured after block execution.
-    /// Not serialized — set via `capture_state_root()` in the finalizer after `execute_block`.
-    /// Survives finalization mutations (which change the live tree but not this field).
+    /// Snapshot of `ssz_tree.root()` captured for the next block's parent root.
+    /// Not serialized — set via `capture_state_root()` after block execution, and
+    /// re-captured after epoch-boundary finalization mutations.
     pub(crate) state_root: [u8; 32],
 
     /// The EL (Reth) block number at the time `capture_state_root()` was called.
@@ -649,8 +649,9 @@ impl ConsensusState {
     }
 
     /// Snapshot the current tree root and freeze a proof-able copy.
-    /// Called after `execute_block` so that subsequent finalization mutations
-    /// don't alter the captured value or the proof tree.
+    /// Called after `execute_block`, and again after epoch-boundary finalization
+    /// mutations, so the captured value matches the root exposed to the next
+    /// block as `parent_beacon_block_root`.
     ///
     /// `el_block_number` is the Reth block number from the execution payload
     /// that was just processed. The state root will appear on-chain in EL

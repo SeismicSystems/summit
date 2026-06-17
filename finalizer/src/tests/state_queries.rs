@@ -8,6 +8,7 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
 };
 use commonware_consensus::Reporter;
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
@@ -23,8 +24,10 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
+use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
 use summit_types::ssz_tree_key::SszStateKey;
+use summit_types::utils::is_penultimate_block_of_epoch;
 use summit_types::{Block, Digest};
 use tokio_util::sync::CancellationToken;
 
@@ -133,6 +136,42 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
     );
     state.set_validator_accounts(validator_accounts);
     state
+}
+
+fn mirror_empty_block_execution_for_root(state: &mut ConsensusState, block: &Block) {
+    state.set_forkchoice_head(block.eth_block_hash().into());
+    state.set_latest_height(block.height());
+    state.set_view(block.view());
+    state.set_head_digest(block.digest());
+
+    if is_penultimate_block_of_epoch(state.get_epocher(), block.height()) {
+        state.set_pending_checkpoint(Some(Checkpoint::new(state)));
+    }
+
+    state.set_forkchoice_safe_and_finalized(state.get_forkchoice().head_block_hash);
+    state.capture_state_root(block.payload.payload_inner.payload_inner.block_number);
+}
+
+fn mirror_epoch_boundary_finalization_for_root(state: &mut ConsensusState, block: &Block) {
+    let _stake_changed = state.apply_protocol_parameter_changes();
+    let _checkpoint = state.take_pending_checkpoint();
+
+    let next_epoch = state.get_epoch() + 1;
+    state.set_epoch(next_epoch);
+    state.get_epocher().advance_epoch(Epoch::new(next_epoch));
+    state.set_epoch_genesis_hash(block.digest().0);
+    state.reset_pending_active_validator_exits();
+
+    state.remove_added_validators_for_epoch(next_epoch);
+    if state.has_removed_validators() {
+        state.clear_removed_validators();
+    }
+
+    // Mirror the finalizer's post-cleanup re-capture. capture_state_root rebinds
+    // the dynamic-epoch-schedule leaf (the epocher just advanced) before freezing
+    // the root, so comparing get_state_root() against a raw ssz_tree().root()
+    // would diverge on that leaf.
+    state.capture_state_root(block.payload.payload_inner.payload_inner.block_number);
 }
 
 #[test]
@@ -328,6 +367,265 @@ fn test_get_latest_epoch() {
             mailbox.get_latest_epoch().await,
             1,
             "Should be epoch 1 after block 4 (last of epoch 0)"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_first_post_epoch_boundary_aux_data_uses_post_transition_state_root() {
+    // The first block after an epoch boundary must advertise the state root after
+    // the finalized boundary block's epoch-transition mutations have been applied.
+    let cfg = deterministic::Config::default().with_seed(56);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x56u8; 32];
+        let epoch_length = NonZeroU64::new(5).unwrap();
+        let initial_state = create_test_initial_state(genesis_hash, epoch_length);
+        let mut expected_state = initial_state.clone();
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_post_boundary_aux_root".to_string(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 0);
+            parent_digest = block.digest();
+            mirror_empty_block_execution_for_root(&mut expected_state, &block);
+
+            let (ack, _) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            context.sleep(Duration::from_millis(50)).await;
+        }
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+
+        let boundary_block = create_test_block_with_epoch(parent_digest, 4, 5, 13004, 0);
+        let boundary_digest = boundary_block.digest();
+        mirror_empty_block_execution_for_root(&mut expected_state, &boundary_block);
+        let pre_transition_root = expected_state.get_state_root();
+        mirror_epoch_boundary_finalization_for_root(&mut expected_state, &boundary_block);
+        let expected_post_transition_root = expected_state.get_state_root();
+
+        assert_ne!(
+            pre_transition_root, expected_post_transition_root,
+            "test setup must produce a root-changing epoch transition"
+        );
+
+        let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock(
+                (boundary_block, Some(finalization)),
+                ack,
+            ))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            mailbox.get_latest_epoch().await,
+            1,
+            "boundary block should advance the canonical epoch"
+        );
+
+        let aux_data = mailbox
+            .get_aux_data(5, boundary_digest)
+            .await
+            .await
+            .unwrap()
+            .expect("first post-boundary block should receive aux data");
+
+        assert_eq!(
+            aux_data.epoch, 1,
+            "aux data should be for the first block of the new epoch"
+        );
+        assert_eq!(
+            aux_data.state_root, expected_post_transition_root,
+            "first post-boundary aux data must use the post-transition consensus state root"
+        );
+
+        context.auditor().state()
+    });
+}
+
+#[test]
+fn test_epoch_boundary_post_transition_root_survives_restart() {
+    // The re-capture of the post-transition root must happen BEFORE the boundary
+    // consensus state is persisted, so a node that restarts at the epoch boundary
+    // reloads the same post-transition root it advertised live. If the persist ran
+    // before the re-capture, the durable root would be the stale pre-transition
+    // snapshot and a restarted node would disagree with peers on the first
+    // post-boundary block's parent_beacon_block_root.
+    let cfg = deterministic::Config::default().with_seed(60);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x60u8; 32];
+        let db_prefix = "test_recapture_root_survives_restart".to_string();
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        let page_cache = CacheRef::from_pooler(
+            &context,
+            std::num::NonZero::new(4096).unwrap(),
+            NZUsize!(100),
+        );
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: db_prefix.clone(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: page_cache.clone(),
+            genesis_hash,
+            initial_state: initial_state.clone(),
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 60000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, _) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            context.sleep(Duration::from_millis(50)).await;
+        }
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+        let boundary = create_test_block_with_epoch(parent_digest, 4, 5, 60004, 0);
+        let boundary_digest = boundary.digest();
+        let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Live post-transition root advertised to the first block of the new epoch.
+        let live_post_transition_root = mailbox
+            .get_aux_data(5, boundary_digest)
+            .await
+            .await
+            .unwrap()
+            .expect("first post-boundary block should receive aux data")
+            .state_root;
+
+        drop(mailbox);
+        handle.abort();
+        context.sleep(Duration::from_millis(50)).await;
+
+        // Restart from the same DB. The reloaded consensus state must expose the
+        // same post-transition root, proving it was persisted post re-capture.
+        let (restarted, reloaded_state, _mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer_restart"),
+                FinalizerConfig {
+                    mailbox_size: 100,
+                    db_prefix,
+                    engine_client: MockEngineClient::new(),
+                    oracle: MockNetworkOracle,
+                    protocol_consts: ProtocolConsts {
+                        validator_num_warm_up_epochs: 2,
+                        validator_withdrawal_num_epochs: 2,
+                    },
+                    page_cache,
+                    genesis_hash,
+                    initial_state,
+                    protocol_version: 1,
+                    node_public_key: node_key.public_key(),
+                    cancellation_token: CancellationToken::new(),
+                    drain_interval: Duration::from_millis(100),
+                    buffered_blocks_warn_threshold: 100,
+                    pending_notarized_max: 1000,
+                    namespace: Vec::new(),
+                    _variant_marker: PhantomData,
+                },
+            )
+            .await;
+        drop(restarted);
+
+        assert_eq!(
+            reloaded_state.get_epoch(),
+            1,
+            "restarted finalizer must load the persisted next-epoch state"
+        );
+        assert_eq!(
+            reloaded_state.get_state_root(),
+            live_post_transition_root,
+            "persisted post-transition root must match the live root advertised at the boundary"
         );
 
         context.auditor().state()
