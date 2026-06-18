@@ -115,7 +115,7 @@ pub fn create_test_finalizer_mailbox(
                 ConsensusStateRequest::GetWithdrawal(_) => {
                     let _ = response.send(ConsensusStateResponse::Withdrawal(None));
                 }
-                ConsensusStateRequest::GenerateStateProof(keys) => {
+                ConsensusStateRequest::GenerateStateProof(keys, _permit) => {
                     // Honor the one-result-per-requested-key contract (#260/#267):
                     // return a positional slot per key so the server's length guard
                     // and keyed-alignment logic are exercised faithfully.
@@ -182,10 +182,15 @@ pub fn create_gated_proof_mailbox() -> (
     let handle = tokio::spawn(async move {
         while let Some((request, response)) = rx.next().await {
             match request {
-                ConsensusStateRequest::GenerateStateProof(keys) => {
+                ConsensusStateRequest::GenerateStateProof(keys, permit) => {
                     let received = received_task.clone();
                     let release = release.clone();
                     tokio::spawn(async move {
+                        // Hold the concurrency permit inside this spawned task,
+                        // exactly as the finalizer does, so it is dropped only
+                        // when the (gated) proof work completes. Capturing it
+                        // here is what models the real permit lifetime.
+                        let _permit = permit;
                         received.fetch_add(1, Ordering::SeqCst);
                         let _ = release.await;
                         let _ = response.send(ConsensusStateResponse::StateProof {

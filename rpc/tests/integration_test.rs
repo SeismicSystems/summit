@@ -195,6 +195,118 @@ async fn test_get_state_proof_concurrency_cap_rejects_excess() {
     handle.stop().unwrap();
 }
 
+// The concurrency permit must be released when the proof task finishes, not
+// when the RPC handler future is dropped. Otherwise a caller could connect,
+// wait for the proof task to be spawned, disconnect to free the slot while the
+// detached proof work keeps running, and repeat to pile up real work under a
+// slot count that reads as idle. This drives the handler future directly,
+// cancels it after the proof task is spawned, and asserts the slot stays held
+// until the gated proof task completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_state_proof_permit_outlives_cancelled_request() {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use summit_rpc::{MAX_CONCURRENT_STATE_PROOFS, SummitProofApiServer, SummitRpcServer};
+
+    // Gated mock holds every proof task open, including the permit handed to it,
+    // until we release.
+    let (mailbox, received, release_tx, _mock) = create_gated_proof_mailbox();
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let server = SummitRpcServer::new(
+        key_store_path,
+        mailbox,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT",
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let cap = MAX_CONCURRENT_STATE_PROOFS;
+
+    // Keep cap - 1 proof requests in flight, held open by the gated mock.
+    let mut held = Vec::new();
+    for _ in 0..(cap - 1) {
+        let server = server.clone();
+        held.push(tokio::spawn(async move {
+            let _ = server.get_state_proof(vec!["epoch".to_string()]).await;
+        }));
+    }
+
+    // Start the cap-th request; it acquires the last slot and hands its permit
+    // to the (gated) proof task.
+    let cancel = {
+        let server = server.clone();
+        tokio::spawn(async move {
+            let _ = server.get_state_proof(vec!["epoch".to_string()]).await;
+        })
+    };
+
+    // Wait until every request has reached the mock, so all cap slots are
+    // acquired and all permits are now owned by the mock's detached tasks.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while received.load(Ordering::SeqCst) < cap {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "proof tasks were never spawned"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+
+    // Cancel the cap-th request's handler future (the client-disconnect path).
+    cancel.abort();
+    let _ = cancel.await;
+
+    // The slot must still be held: it belongs to the cancelled request's proof
+    // task, which is still gated. A fresh request is rejected as busy and
+    // returns immediately. If cancellation had leaked the slot back, the fresh
+    // request would instead be accepted and block on the gated mock until the
+    // timeout fires.
+    let fresh = tokio::time::timeout(
+        Duration::from_secs(2),
+        server.get_state_proof(vec!["epoch".to_string()]),
+    )
+    .await;
+    match fresh {
+        Ok(Err(obj)) => assert_eq!(
+            obj.code(),
+            3007,
+            "cancelled request must keep holding its slot until the proof task completes"
+        ),
+        Ok(Ok(_)) => {
+            panic!("fresh request was accepted: a cancelled request freed its slot early")
+        }
+        Err(_) => panic!(
+            "fresh request blocked on the gated mock: the cancelled request's slot was freed while its proof task is still running"
+        ),
+    }
+
+    // Release every gated task; permits drop as the tasks complete, freeing
+    // slots.
+    let _ = release_tx.send(());
+    for h in held {
+        let _ = h.await;
+    }
+
+    // A fresh request now succeeds, proving the permits were released when the
+    // proof tasks finished rather than lost.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match server.get_state_proof(vec!["epoch".to_string()]).await {
+            Ok(_) => break,
+            Err(obj) => {
+                assert_eq!(obj.code(), 3007, "unexpected error while draining slots");
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "slots were never freed after the proof tasks completed"
+                );
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_get_latest_height() {
     use summit_rpc::SummitApiClient;

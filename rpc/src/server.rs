@@ -505,9 +505,8 @@ impl SummitProofApiServer for SummitRpcServer {
         // Bound concurrent proof generation. The per-request key/cost limits cap
         // each request, but without this a remote caller could still flood the
         // node with accepted requests and pile up off-loop proof tasks on the
-        // shared pool. Acquire a slot or reject (retryable) — never queue — so
-        // task count and memory stay bounded under load. The RAII guard releases
-        // the slot on every exit path, including the await being cancelled.
+        // shared pool. Acquire a slot or reject (retryable), never queue, so
+        // task count and memory stay bounded under load.
         if self
             .in_flight_state_proofs
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
@@ -520,11 +519,21 @@ impl SummitProofApiServer for SummitRpcServer {
             }
             .into());
         }
-        let _slot = StateProofSlot(Arc::clone(&self.in_flight_state_proofs));
+        // Hand the slot guard to the proof task rather than holding it on this
+        // handler future. Acquisition stays here so a flood is rejected at
+        // admission, but ownership travels through the query channel into the
+        // finalizer's detached proof task, which drops it only once generation
+        // finishes. That keeps the in-flight count tied to real proof work: if
+        // the client disconnects (or this future is cancelled) after the task
+        // is spawned, the slot must not be freed while the work is still
+        // running.
+        let slot = StateProofSlot(Arc::clone(&self.in_flight_state_proofs));
 
         let requested_len = keys.len();
-        let (root, el_block_number, proofs) =
-            self.state_query.generate_state_proof(parsed_keys).await;
+        let (root, el_block_number, proofs) = self
+            .state_query
+            .generate_state_proof(parsed_keys, Box::new(slot))
+            .await;
         // Preserve one-result-per-requested-key alignment (#260/#267): the
         // off-loop generator returns a positional `Vec<Option<SszProof>>`, so a
         // missing key must surface as an error slot, never be dropped.

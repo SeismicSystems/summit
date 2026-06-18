@@ -33,7 +33,14 @@ pub enum ConsensusStateRequest {
     GetDepositCount,
     GetWithdrawal([u8; 32]),
     GetStateRoot,
-    GenerateStateProof(Vec<SszStateKey>),
+    /// Generate positional proofs for the requested keys against the frozen
+    /// proof snapshot. The second field is an opaque concurrency permit owned
+    /// by the caller (the rpc layer's in-flight-proof slot guard, boxed so this
+    /// crate stays free of any rpc dependency). The finalizer moves it into the
+    /// spawned, detached proof task and drops it only once proof generation
+    /// finishes, so the permit's lifetime tracks real work rather than the
+    /// caller's rpc future. None for internal callers that do not rate-limit.
+    GenerateStateProof(Vec<SszStateKey>, Option<Box<dyn Send + 'static>>),
 }
 
 pub enum ConsensusStateResponse<S: Scheme> {
@@ -406,12 +413,19 @@ impl<S: Scheme> ConsensusStateQuery<S> {
         (root, el_block_number)
     }
 
+    /// `permit` is an opaque concurrency guard (boxed by the RPC layer) that
+    /// travels with the request so the finalizer can drop it when the spawned
+    /// proof task finishes, instead of when this future is dropped.
+    /// Permit is an opaque concurrency guard (boxed by the rpc layer) that
+    /// travels with the request so the finalizer can drop it when the spawned
+    /// proof task finishes, instead of when this future is dropped.
     pub async fn generate_state_proof(
         &self,
         keys: Vec<SszStateKey>,
+        permit: Box<dyn Send + 'static>,
     ) -> ([u8; 32], u64, Vec<Option<SszProof>>) {
         let (tx, rx) = oneshot::channel();
-        let req = ConsensusStateRequest::GenerateStateProof(keys);
+        let req = ConsensusStateRequest::GenerateStateProof(keys, Some(permit));
         let _ = self.sender.clone().send((req, tx)).await;
 
         let res = rx

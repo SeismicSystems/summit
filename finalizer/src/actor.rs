@@ -1910,7 +1910,7 @@ impl<
                     el_block_number,
                 });
             }
-            ConsensusStateRequest::GenerateStateProof(keys) => {
+            ConsensusStateRequest::GenerateStateProof(keys, permit) => {
                 let proof_tree = self.canonical_state.proof_tree_snapshot();
                 let validator_keys = self.canonical_state.proof_validator_keys_snapshot();
                 let root = self.canonical_state.get_state_root();
@@ -1929,6 +1929,18 @@ impl<
                             el_block_number,
                             proofs,
                         });
+                        // Release the rpc concurrency permit (if any) only now
+                        // that the proof work has actually finished. The permit
+                        // must be consumed inside this detached task because
+                        // moving it here is what ties the in-flight-proof count
+                        // to real work. If it instead dropped on the rpc handler
+                        // future, a caller could connect, wait for the spawn,
+                        // disconnect, and repeat to pile up proof tasks under a
+                        // slot count that reads as idle. The explicit drop also
+                        // forces the move closure to capture it rather than
+                        // dropping it on the finalizer loop when the match arm
+                        // ends.
+                        drop(permit);
                     });
             }
         }
