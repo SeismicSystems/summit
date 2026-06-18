@@ -46,23 +46,23 @@ const DEPOSIT_DOMAIN_TAG: &[u8] = b"summit-deposit-v1";
 const CHAIN_DOMAIN_TAG: &[u8] = b"summit-chain-v1";
 
 /// Domain for live peer authentication and BLS consensus signatures, bound to
-/// the immutable identity of this chain deployment: the protocol version, the
-/// EL genesis hash, AND the configured `namespace`.
+/// the immutable identity of this chain deployment: the protocol version and
+/// the genesis config digest (see [`crate::genesis::Genesis::config_digest`]).
 ///
-/// The configured `namespace` alone is mutable operator input, so deriving the
-/// live P2P and consensus domains from it directly lets a separate deployment
-/// that reuses the same namespace and validator keys authenticate peers and
-/// verify consensus certificates across networks. Folding the genesis hash and
-/// protocol version into the domain ties both to immutable chain identity, so a
-/// handshake or certificate from one deployment cannot verify against another.
-pub fn chain_domain(genesis_hash: [u8; 32], namespace: &[u8]) -> [u8; 32] {
-    let mut domain_data = Vec::with_capacity(CHAIN_DOMAIN_TAG.len() + 4 + 32 + 4 + namespace.len());
+/// The config digest folds in the EL genesis hash, the configured `namespace`,
+/// the genesis validator set, and every consensus/economic parameter fixed at
+/// launch. Any of those is mutable operator input, so deriving the live P2P and
+/// consensus domains from them directly lets a separate deployment that reuses
+/// the same configuration authenticate peers and verify consensus certificates
+/// across networks. Folding the config digest and protocol version into the
+/// domain ties both to immutable chain identity, so a handshake or certificate
+/// from one deployment cannot verify against another that differs in any
+/// identity-bearing genesis field.
+pub fn chain_domain(config_digest: [u8; 32]) -> [u8; 32] {
+    let mut domain_data = Vec::with_capacity(CHAIN_DOMAIN_TAG.len() + 4 + 32);
     domain_data.extend_from_slice(CHAIN_DOMAIN_TAG);
     domain_data.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
-    domain_data.extend_from_slice(&genesis_hash);
-    // Length-prefix the variable-length namespace so the domain is unambiguous.
-    domain_data.extend_from_slice(&(namespace.len() as u32).to_le_bytes());
-    domain_data.extend_from_slice(namespace);
+    domain_data.extend_from_slice(&config_digest);
     Sha256::hash(&domain_data).0
 }
 
@@ -108,31 +108,18 @@ mod chain_domain_tests {
 
     #[test]
     fn chain_domain_is_deterministic() {
-        let g = [7u8; 32];
-        assert_eq!(chain_domain(g, NS), chain_domain(g, NS));
+        let d = [7u8; 32];
+        assert_eq!(chain_domain(d), chain_domain(d));
     }
 
     #[test]
-    fn chain_domain_separates_genesis_hash() {
-        // Same namespace and validator keys, different chain: a peer handshake
-        // or consensus certificate from one deployment must not verify against
-        // the other, so the domains must differ.
-        assert_ne!(chain_domain([1u8; 32], NS), chain_domain([2u8; 32], NS));
-    }
-
-    #[test]
-    fn chain_domain_separates_namespace() {
-        let g = [7u8; 32];
-        assert_ne!(chain_domain(g, b"network-a"), chain_domain(g, b"network-b"));
-    }
-
-    #[test]
-    fn chain_domain_namespace_is_unambiguous() {
-        // Length-prefixing prevents a boundary shift between two namespaces from
-        // colliding on the same domain.
-        let g = [7u8; 32];
-        assert_ne!(chain_domain(g, b"ab"), chain_domain(g, b"a"));
-        assert_ne!(chain_domain(g, b"aab"), chain_domain(g, b"aa"));
+    fn chain_domain_separates_config_digest() {
+        // Different chain identity (genesis config digest) => different domain,
+        // so a peer handshake or consensus certificate from one deployment must
+        // not verify against the other. Per-field separation (genesis hash,
+        // namespace, params, validators) is covered by the `config_digest` tests
+        // in `genesis.rs`.
+        assert_ne!(chain_domain([1u8; 32]), chain_domain([2u8; 32]));
     }
 
     #[test]
@@ -140,7 +127,7 @@ mod chain_domain_tests {
         // The live consensus/p2p domain and the deposit-authorization domain are
         // separate trust contexts even for identical chain inputs.
         let g = [7u8; 32];
-        assert_ne!(chain_domain(g, NS), deposit_signature_domain(g, NS).0);
+        assert_ne!(chain_domain(g), deposit_signature_domain(g, NS).0);
     }
 
     #[test]
@@ -150,18 +137,17 @@ mod chain_domain_tests {
         use commonware_math::algebra::Random;
         use rand_core::OsRng;
 
-        // One validator node key and one namespace, deployed on two chains that
-        // differ only in their genesis hash.
         let key = PrivateKey::random(&mut OsRng);
         let pk = key.public_key();
         let msg = b"peer-handshake";
 
-        let domain_a = chain_domain([1u8; 32], NS);
-        let domain_b = chain_domain([2u8; 32], NS);
+        // Two chains with distinct genesis config digests.
+        let domain_a = chain_domain([1u8; 32]);
+        let domain_b = chain_domain([2u8; 32]);
 
         // A signature scoped to chain A's live domain authenticates on chain A,
-        // but cannot be replayed against chain B even with the same key and
-        // namespace, because the live domain carries the genesis hash.
+        // but cannot be replayed against chain B, because the live domain carries
+        // the chain's config digest.
         let sig = key.sign(domain_a.as_slice(), msg);
         assert!(pk.verify(domain_a.as_slice(), msg, &sig));
         assert!(!pk.verify(domain_b.as_slice(), msg, &sig));

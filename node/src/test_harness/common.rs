@@ -682,6 +682,10 @@ where
         oracle,
         partition_prefix,
         genesis_hash,
+        // Tests have no full Genesis here; all harness nodes share `genesis_hash`,
+        // so use it as the config digest to keep their derived chain domain
+        // consistent.
+        config_digest: genesis_hash,
         namespace,
         key_store,
         participants,

@@ -327,7 +327,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
     // domain, which is bound to immutable chain identity. The verifier must
     // reconstruct that same domain (see `chain_domain`) rather than the raw
     // configured namespace, or the aggregate signatures will not verify.
-    let namespace = crate::chain_domain(genesis_hash.0, genesis.namespace.as_bytes()).to_vec();
+    let namespace = crate::chain_domain(genesis.config_digest()).to_vec();
 
     // Build the participant set as Vec<(ed25519::PublicKey, MinPk::Public)>
     // so we can mutate it across epochs
@@ -1425,10 +1425,13 @@ mod tests {
         participants.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         let signers: BiMap<ed25519::PublicKey, <MinPk as Variant>::Public> =
             participants.into_iter().try_collect().unwrap();
+        // Certificates must be signed over the same chain-bound consensus domain
+        // that `verify_checkpoint_chain` reconstructs, not the raw namespace.
+        let signing_domain = crate::chain_domain(genesis.config_digest());
         let schemes: Vec<_> = group_privates
             .into_iter()
             .filter_map(|private| {
-                MultisigScheme::signer(namespace.as_bytes(), signers.clone(), private)
+                MultisigScheme::signer(signing_domain.as_slice(), signers.clone(), private)
             })
             .collect();
 

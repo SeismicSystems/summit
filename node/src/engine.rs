@@ -144,13 +144,13 @@ where
             .clone()
             .unwrap_or_else(|| cfg.key_store.node_key.public_key());
 
-        // Live consensus + p2p domain, bound to immutable chain identity (EL
-        // genesis hash + protocol version) so consensus certificates and peer
-        // handshakes cannot verify across deployments that merely reuse the same
-        // namespace and validator keys. The finalizer keeps the raw namespace
-        // because deposit_signature_domain folds in the genesis hash itself.
-        let consensus_domain =
-            summit_types::chain_domain(cfg.genesis_hash, cfg.namespace.as_bytes()).to_vec();
+        // Live consensus + p2p domain, bound to immutable chain identity (the
+        // genesis config digest + protocol version) so consensus certificates
+        // and peer handshakes cannot verify across deployments that merely reuse
+        // the same namespace and validator keys. The finalizer keeps the raw
+        // namespace because deposit_signature_domain folds in the genesis hash
+        // itself.
+        let consensus_domain = summit_types::chain_domain(cfg.config_digest).to_vec();
 
         let page_cache = CacheRef::from_pooler(
             &context,

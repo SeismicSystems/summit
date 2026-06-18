@@ -541,8 +541,7 @@ async fn run_node_inner(
     // Bind the live p2p authentication domain to immutable chain identity so a
     // peer from a different deployment that reuses this namespace and the same
     // node keys cannot authenticate against us.
-    let p2p_domain =
-        summit_types::chain_domain(genesis.genesis_hash(), genesis.namespace.as_bytes());
+    let p2p_domain = summit_types::chain_domain(genesis.config_digest());
     let namespace = p2p_domain.as_slice();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
@@ -706,8 +705,7 @@ async fn run_node_local_inner(
     // Bind the live p2p authentication domain to immutable chain identity so a
     // peer from a different deployment that reuses this namespace and the same
     // node keys cannot authenticate against us.
-    let p2p_domain =
-        summit_types::chain_domain(genesis.genesis_hash(), genesis.namespace.as_bytes());
+    let p2p_domain = summit_types::chain_domain(genesis.config_digest());
     let namespace = p2p_domain.as_slice();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
