@@ -976,6 +976,12 @@ fn get_initial_state(
             };
             state.set_account(pubkey_bytes, account);
         }
+        // ConsensusState::new froze the proof snapshot over an empty validator
+        // set before these genesis accounts were inserted, and set_account only
+        // touches the live tree. Re-freeze so get_state_root / proof_tree commit
+        // to the genesis committee from the very first block, rather than staying
+        // stale until the first execute_block capture_state_root.
+        state.rebuild_ssz_tree();
         state
     })
 }
