@@ -2083,4 +2083,72 @@ mod tests {
              mutated away from the signed certificate payload, got {result:?}"
         );
     }
+
+    // Regression for raw header-epoch replay: the header digest commits to the
+    // `epoch` field (it hashes the full SSZ encoding), so reusing a genuine
+    // certificate under a header whose decoded epoch was mutated must fail the
+    // payload-digest binding. Without epoch in the digest, the unsigned decoded
+    // epoch could be replayed into a different slot while the certificate stayed
+    // valid.
+    #[test]
+    fn test_checkpoint_verifier_rejects_header_epoch_mutation() {
+        use crate::header::{FinalizedHeader, FinalizedHeaderError, Header};
+
+        let (genesis, checkpoint, _tampered_checkpoint, honest) =
+            checkpoint_verification_fixture(0, 1, Vec::new(), false);
+
+        // Sanity: the honest finalized header verifies against the honest checkpoint.
+        super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
+            .expect("fixture checkpoint should verify before tampering");
+
+        // Build a header identical to the honest one EXCEPT `epoch`, which is
+        // bumped to a different slot. Reuse the ORIGINAL finalization: its
+        // certificate still signs the honest header digest, so the BLS signature
+        // remains valid — only the unsigned-looking decoded epoch was mutated.
+        let h = honest.header().clone();
+        let tampered_header = Header::new(
+            h.parent(),
+            h.height(),
+            h.timestamp(),
+            h.epoch() + 1, // <-- mutated away from the signed epoch
+            h.view(),
+            h.payload_hash(),
+            h.execution_request_hash(),
+            h.checkpoint_hash(),
+            h.prev_epoch_header_hash(),
+            h.added_validators().to_vec(),
+            h.removed_validators(),
+            h.parent_beacon_block_root(),
+        );
+
+        // (1) The digest commits to epoch, so the safe constructor rejects the
+        // mutated-epoch header against the original certificate payload outright.
+        // This holds independently of the verifier's epoch-contiguity check.
+        let err = FinalizedHeader::new(
+            tampered_header.clone(),
+            honest.finalization().clone(),
+            honest.participant_count(),
+        )
+        .expect_err("FinalizedHeader::new must reject a mutated-epoch header/payload");
+        assert_eq!(err, FinalizedHeaderError::PayloadDigestMismatch);
+
+        // (2) Even if a caller bypasses the safe constructor, the verifier
+        // re-derives the digest from the header's fields (including epoch) and
+        // rejects the replay before applying any validator deltas.
+        let smuggled = FinalizedHeader::new_unchecked(
+            tampered_header,
+            honest.finalization().clone(),
+            honest.participant_count(),
+        );
+        let result =
+            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&smuggled), &checkpoint);
+        assert!(
+            matches!(
+                result,
+                Err(super::CheckpointVerificationError::PayloadDigestMismatch { epoch: 0 })
+            ),
+            "verifier must reject a finalized header whose epoch was mutated away \
+             from the signed certificate payload, got {result:?}"
+        );
+    }
 }
