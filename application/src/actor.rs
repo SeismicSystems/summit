@@ -161,11 +161,22 @@ impl<
                                                     "proposed block"
                                                 );
 
-                                                // send block to syncer for caching and broadcasting
-                                                syncer.proposed(round, block).await;
-
-                                                // send digest to consensus
+                                                // Return the digest to consensus immediately. The
+                                                // block is already built, so caching and broadcasting
+                                                // via the syncer is auxiliary work that must not sit on
+                                                // the proposal response path or block the application
+                                                // loop behind a full or slow syncer mailbox.
+                                                // It runs off the loop with guaranteed (not lossy)
+                                                // delivery so the block is still reliably cached and
+                                                // broadcast.
                                                 let _ = response.send(digest);
+
+                                                self.context.with_label("proposed").spawn({
+                                                    let mut syncer = syncer.clone();
+                                                    move |_| async move {
+                                                        syncer.proposed(round, block).await;
+                                                    }
+                                                });
                                             },
                                             Err(e) => warn!("Failed to create a block for round {round}: {e}")
                                         }
@@ -204,9 +215,9 @@ impl<
                             }
 
                             match plan {
-                                // Our own proposal was already cached and broadcast
-                                // to all peers via syncer.proposed() at propose time,
-                                // before the digest was returned to consensus.
+                                // Our own proposal was already handed to syncer.proposed()
+                                // at propose time (dispatched off the loop right after the
+                                // digest was returned), which caches and broadcasts it.
                                 Plan::Propose => {
                                     debug!(?payload, "{rand_id} Broadcast(Propose): already broadcast at propose time");
                                 }
@@ -431,11 +442,17 @@ impl<
 
                                                 let now_millis = context.current().epoch_millis();
                                                 if handle_verify(round, &block, parent, signed_parent_view, &epocher, &aux_data, now_millis) {
-                                                    // persist valid block
-                                                    syncer.verified(round, block).await;
-
-                                                    // respond
+                                                    // Respond to consensus first. The vote is decided,
+                                                    // so persisting and broadcasting the valid block via
+                                                    // the syncer is auxiliary work that must not sit on
+                                                    // the vote response path behind a full or slow
+                                                    // syncer mailbox. This task already runs off the
+                                                    // application loop, so awaiting the send after
+                                                    // responding blocks nothing consensus critical.
                                                     let _ = response.send(true);
+
+                                                    // persist valid block off the vote response path
+                                                    syncer.verified(round, block).await;
                                                 } else {
                                                     info!("Unsuccessful vote for round {round} because the block is invalid");
                                                     let _ = response.send(false);
