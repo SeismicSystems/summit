@@ -1404,7 +1404,8 @@ impl Read for ConsensusState {
             let inner = ConsensusState::decode(bytes.as_slice())?;
             state.proof_tree = inner.proof_tree.clone();
             state.state_root = state.proof_tree.root();
-            state.proof_validator_keys = inner.validator_accounts.keys().copied().collect();
+            state.proof_validator_keys =
+                Arc::new(inner.validator_accounts.keys().copied().collect());
         }
 
         Ok(state)

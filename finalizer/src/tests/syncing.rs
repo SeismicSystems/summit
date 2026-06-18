@@ -1045,7 +1045,7 @@ fn test_duplicate_finalized_delivery_is_idempotent() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,

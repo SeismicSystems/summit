@@ -208,11 +208,7 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_finalized_header_digest(&self, epoch: u64) -> RpcResult<FinalizedHeaderDigestRes> {
-        let maybe_header = self
-            .finalizer_mailbox
-            .clone()
-            .get_finalized_header(epoch)
-            .await;
+        let maybe_header = self.state_query.clone().get_finalized_header(epoch).await;
 
         let Some(header) = maybe_header else {
             return Err(RpcError::FinalizedHeaderNotFound.into());

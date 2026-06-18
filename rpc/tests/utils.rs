@@ -1,5 +1,5 @@
 use alloy_primitives::Address;
-use commonware_codec::Encode as _;
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_cryptography::{bls12381, ed25519};
 use commonware_math::algebra::Random;
 use futures::{FutureExt as _, StreamExt, channel::oneshot};
@@ -27,6 +27,7 @@ pub struct MockFinalizerState {
     pub latest_epoch: u64,
     pub checkpoints: HashMap<u64, Option<summit_types::checkpoint::Checkpoint>>,
     pub latest_checkpoint: Option<(Option<summit_types::checkpoint::Checkpoint>, u64)>,
+    pub finalized_headers: HashMap<u64, Option<summit_types::FinalizedHeader<TestScheme>>>,
     pub validator_balances: HashMap<summit_types::PublicKey, Option<u64>>,
     pub validator_accounts: HashMap<summit_types::PublicKey, Option<ValidatorAccount>>,
     pub minimum_stake: u64,
@@ -40,6 +41,7 @@ impl Default for MockFinalizerState {
             latest_epoch: 0,
             checkpoints: HashMap::new(),
             latest_checkpoint: Some((None, 0)),
+            finalized_headers: HashMap::new(),
             validator_balances: HashMap::new(),
             validator_accounts: HashMap::new(),
             minimum_stake: 32_000_000_000, // 32 ETH in gwei
@@ -91,7 +93,10 @@ pub fn create_test_finalizer_mailbox(
                     let account = state.validator_accounts.get(&public_key).cloned().flatten();
                     let _ = response.send(ConsensusStateResponse::ValidatorAccount(account));
                 }
-                ConsensusStateRequest::GetFinalizedHeader(_) => unimplemented!(),
+                ConsensusStateRequest::GetFinalizedHeader(epoch) => {
+                    let header = state.finalized_headers.get(&epoch).cloned().flatten();
+                    let _ = response.send(ConsensusStateResponse::FinalizedHeader(header));
+                }
                 ConsensusStateRequest::GetMinimumStake => {
                     let _ =
                         response.send(ConsensusStateResponse::MinimumStake(state.minimum_stake));
@@ -226,4 +231,61 @@ pub fn create_test_keystore() -> anyhow::Result<tempfile::TempDir> {
     fs::write(consensus_key_path, encoded_consensus_key)?;
 
     Ok(temp_dir)
+}
+
+/// Builds a payload-bound `FinalizedHeader` for the given epoch so tests can
+/// exercise finalized-header query paths without a live consensus run.
+pub fn create_test_finalized_header(epoch: u64) -> summit_types::FinalizedHeader<TestScheme> {
+    use commonware_consensus::simplex::types::{Finalization, Proposal};
+    use commonware_consensus::types::{Epoch, Round, View};
+    use commonware_cryptography::bls12381::{
+        certificate::multisig::Certificate as BlsCertificate,
+        primitives::{
+            group::Private,
+            ops::{aggregate::Signature, sign_message},
+            variant::MinPk,
+        },
+    };
+    use commonware_utils::Participant;
+
+    let header = summit_types::Header::new(
+        [1u8; 32].into(),
+        epoch * 10 + 9,
+        1234567890 + epoch,
+        epoch,
+        1,
+        [2u8; 32].into(),
+        [3u8; 32].into(),
+        [4u8; 32].into(),
+        [5u8; 32].into(),
+        Vec::new(),
+        Vec::new(),
+        [0u8; 32],
+    );
+
+    let proposal = Proposal {
+        round: Round::new(Epoch::new(header.epoch()), View::new(header.view())),
+        parent: View::new(header.height()),
+        payload: header.get_digest(),
+    };
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let private = Private::random(&mut rng);
+    let g2_signature = sign_message::<MinPk>(&private, b"", b"test message");
+    let encoded = g2_signature.encode();
+    let signature = Signature::<MinPk>::decode(encoded).expect("valid signature");
+
+    let finalized = Finalization {
+        proposal,
+        certificate: BlsCertificate::<MinPk> {
+            signers: commonware_cryptography::certificate::Signers::from(
+                3,
+                [0, 1, 2].map(Participant::new),
+            ),
+            signature: signature.into(),
+        },
+    };
+
+    summit_types::FinalizedHeader::new(header, finalized, 3)
+        .expect("test finalized header should be payload-bound")
 }

@@ -266,7 +266,7 @@ fn test_fork_aux_data_does_not_finalize_unfinalized_fork_head() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
