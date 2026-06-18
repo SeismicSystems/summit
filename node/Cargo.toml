@@ -154,6 +154,10 @@ prom = [
   "procfs",
   "libc",
   "summit-types/prom",
+  "summit-finalizer/prom",
+  "summit-syncer/prom",
+  "summit-orchestrator/prom",
+  "summit-application/prom",
 ]
 tokio-console = ["console-subscriber"]
 jemalloc = ["dep:tikv-jemalloc-ctl"]

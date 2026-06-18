@@ -22,8 +22,14 @@ use commonware_utils::{NZU16, NZUsize, vec::NonEmptyVec};
 use futures::{StreamExt, channel::mpsc};
 use governor::clock::Clock as GClock;
 use rand_core::CryptoRngCore;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
+
+use crate::committee_filter::{ActiveCommittees, CommitteeFilteredReceiver};
 use tracing::info;
 
 /// Configuration for the orchestrator.
@@ -163,6 +169,22 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
+        // Consensus-channel ingress membership filter: drop messages from senders
+        // not in the target epoch's committee before they can occupy a bounded
+        // mux subchannel and starve honest validator traffic. The committee map
+        // is maintained from the Enter/Exit transitions below. Messages for
+        // not-yet-entered epochs pass through, preserving the pending-channel
+        // backup / hint_finalized catch-up path. See `committee_filter`.
+        // Drops are counted via the `consensus_ingress_rejected{channel}` metric
+        // (prom feature) and logged at trace level inside the filter.
+        let committees: ActiveCommittees = Arc::new(RwLock::new(BTreeMap::new()));
+        let pending_receiver =
+            CommitteeFilteredReceiver::new(pending_receiver, committees.clone(), "pending");
+        let recovered_receiver =
+            CommitteeFilteredReceiver::new(recovered_receiver, committees.clone(), "recovered");
+        let resolver_receiver =
+            CommitteeFilteredReceiver::new(resolver_receiver, committees.clone(), "resolver");
+
         // Start muxers for each physical channel used by consensus
         let (mux, mut pending_mux, mut pending_backup) = Muxer::builder(
             self.context.with_label("pending_mux"),
@@ -243,6 +265,20 @@ where
                         let num_validators = transition.validator_keys.len();
                         assert!(self.scheme_provider.register(transition.epoch, scheme.clone()));
 
+                        // Record this epoch's committee so the consensus-ingress
+                        // filter admits only these node keys onto the epoch's
+                        // subchannels. Inserted before the subchannel is
+                        // registered in `enter_epoch`, so there is no window in
+                        // which a non-committee sender is admitted.
+                        committees.write().expect("committees lock poisoned").insert(
+                            transition.epoch,
+                            transition
+                                .validator_keys
+                                .iter()
+                                .map(|(node_key, _)| node_key.clone())
+                                .collect(),
+                        );
+
                         // Enter the new epoch.
                         let engine = self
                             .enter_epoch(
@@ -271,6 +307,12 @@ where
 
                         // Unregister the signing scheme for the epoch.
                         assert!(self.scheme_provider.unregister(&epoch));
+
+                        // Drop the epoch's committee from the ingress filter.
+                        committees
+                            .write()
+                            .expect("committees lock poisoned")
+                            .remove(&epoch);
 
                         info!(epoch = epoch.get(), "exited epoch");
                     }

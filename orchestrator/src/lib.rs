@@ -3,5 +3,7 @@
 mod actor;
 pub use actor::{Actor, Config};
 
+mod committee_filter;
+
 mod ingress;
 pub use ingress::{Mailbox, Message};
