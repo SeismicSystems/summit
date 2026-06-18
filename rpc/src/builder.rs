@@ -36,7 +36,12 @@ impl RpcServerBuilder {
     pub fn new(port: u16) -> Self {
         Self {
             addr: SocketAddr::from(([0, 0, 0, 0], port)),
-            config: ServerConfigBuilder::new(),
+            // http-only: Summit's RPC is request/response (no subscriptions), so
+            // websockets are not needed. jsonrpsee enables websockets with pings
+            // disabled by default, and an idle upgraded connection holds its
+            // max_connections permit until the client closes; disabling websocket
+            // upgrades removes that idle-permit-exhaustion vector entirely.
+            config: ServerConfigBuilder::new().http_only(),
             cors_domains: None,
         }
     }
@@ -47,7 +52,9 @@ impl RpcServerBuilder {
     pub fn new_localhost(port: u16) -> Self {
         Self {
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
-            config: ServerConfigBuilder::new(),
+            // http-only: see `new`. websockets are unused, so disabling upgrades
+            // closes the idle-connection permit-exhaustion vector.
+            config: ServerConfigBuilder::new().http_only(),
             cors_domains: None,
         }
     }
