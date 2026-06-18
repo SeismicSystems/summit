@@ -20,7 +20,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tracing::error;
+use tracing::{error, warn};
 
 /// An identifier for a block request.
 pub enum Identifier<D: Digest> {
@@ -262,6 +262,30 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
             .is_err()
         {
             error!("failed to send hint finalized message to actor: receiver dropped");
+        }
+    }
+
+    /// Non-blocking variant of [`hint_finalized`](Self::hint_finalized).
+    ///
+    /// The hint is advisory catch-up input, so callers running a control loop
+    /// that must stay responsive (the orchestrator processes epoch Enter/Exit on
+    /// the same loop) must not park on a full syncer mailbox. When the mailbox is
+    /// full we drop the hint instead of awaiting capacity: the peer re-advertises
+    /// the later epoch and the finalization also arrives through the normal flow,
+    /// so dropping under backpressure only delays catch up, it does not lose
+    /// correctness.
+    pub fn try_hint_finalized(&mut self, height: Height, targets: NonEmptyVec<S::PublicKey>) {
+        match self
+            .sender
+            .try_send(Message::HintFinalized { height, targets })
+        {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!("syncer mailbox full, dropping advisory finalized hint");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                error!("failed to send hint finalized message to actor: receiver dropped");
+            }
         }
     }
 
@@ -514,5 +538,48 @@ impl<S: Scheme<B::Digest>, B: Block> Stream for AncestorStream<S, B> {
                 Poll::Ready(Some(block))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mocks::block::Block as MockBlock;
+    use commonware_consensus::simplex::scheme::ed25519 as ed_scheme;
+    use commonware_cryptography::{Signer, ed25519, sha256};
+    use commonware_math::algebra::Random;
+    use rand::{SeedableRng, rngs::StdRng};
+
+    type TestScheme = ed_scheme::Scheme;
+    type TestBlock = MockBlock<sha256::Digest>;
+
+    // The orchestrator drives try_hint_finalized on the
+    // same loop that processes epoch Enter/Exit, so it must never block on a
+    // full syncer mailbox. A full mailbox must drop the advisory hint and return
+    // synchronously rather than awaiting capacity. try_send/try_recv are
+    // non-async, so a hang here would itself be the regression.
+    #[test]
+    fn try_hint_finalized_drops_when_mailbox_full() {
+        // capacity-1 mailbox: a single queued message saturates it.
+        let (tx, mut rx) = mpsc::channel::<Message<TestScheme, TestBlock>>(1);
+        let mut mailbox = Mailbox::<TestScheme, TestBlock>::new(tx);
+
+        let target = ed25519::PrivateKey::random(&mut StdRng::seed_from_u64(0)).public_key();
+
+        // first hint takes the only slot.
+        mailbox.try_hint_finalized(Height::new(1), NonEmptyVec::new(target.clone()));
+        // second hint hits a full mailbox: must return (not block) and drop.
+        mailbox.try_hint_finalized(Height::new(2), NonEmptyVec::new(target));
+
+        // exactly the first hint is enqueued; the second was dropped.
+        match rx.try_recv() {
+            Ok(Message::HintFinalized { height, .. }) => assert_eq!(height, Height::new(1)),
+            Ok(_) => panic!("expected a HintFinalized message"),
+            Err(_) => panic!("first hint should have been enqueued"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "second hint should have been dropped on the full mailbox"
+        );
     }
 }
