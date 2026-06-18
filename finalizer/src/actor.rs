@@ -789,6 +789,37 @@ impl<
             live_epocher.replace_with(fork_state.consensus_state.get_epocher());
             self.canonical_state = fork_state.consensus_state.clone_with_epocher(live_epocher);
         } else {
+            // Catch-up finalized block: it was not notarized before finalization,
+            // so it never passed the notarized path's parent check. The syncer
+            // delivers finalized blocks by height + certificate without verifying
+            // parent linkage, so a validly-certified block whose parent is not the
+            // canonical finalized head (cross-deployment cert replay, a corrupted
+            // or foreign archive) would otherwise execute onto canonical state and
+            // advance the node onto an impossible history. It must extend the head.
+            let head_digest = self.canonical_state.get_head_digest();
+            if block.parent() != head_digest {
+                error!(
+                    target: "critical",
+                    height,
+                    ?block_digest,
+                    parent = ?block.parent(),
+                    canonical_head = ?head_digest,
+                    "finalized block does not extend the canonical head; refusing to execute"
+                );
+                #[cfg(feature = "prom")]
+                counter!(
+                    "critical_errors_total",
+                    "reason" => "finalized_wrong_parent",
+                    "severity" => "critical"
+                )
+                .increment(1);
+                return Err(anyhow!(
+                    "finalized block at height {height} parent {:?} does not extend canonical head {:?}",
+                    block.parent(),
+                    head_digest
+                ));
+            }
+
             // Block was not notarized before finalization (catch-up or missed notarization)
             // Execute it now on canonical state
             debug!(
