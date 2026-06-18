@@ -185,6 +185,10 @@ pub enum CheckpointVerificationError {
     /// checkpoint's `latest_height` is exactly one below the terminal (last-block)
     /// header, its `head_digest` is that header's parent, and its epoch matches.
     CheckpointStatePositionMismatch(String),
+    /// The decoded checkpoint's pending validator-transition queues
+    /// (`added_validators` for the next epoch, `removed_validators`) do not match
+    /// the validator deltas committed by the verified terminal finalized header.
+    CheckpointTransitionQueueMismatch(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -262,6 +266,12 @@ impl fmt::Display for CheckpointVerificationError {
                 write!(
                     f,
                     "checkpoint state position not bound to terminal header: {reason}"
+                )
+            }
+            Self::CheckpointTransitionQueueMismatch(reason) => {
+                write!(
+                    f,
+                    "checkpoint transition queues not bound to terminal header: {reason}"
                 )
             }
         }
@@ -548,6 +558,54 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
             )),
         );
     }
+
+    // Step 5: Bind the pending validator-transition queues to the terminal
+    // header's committed deltas. The last block of an epoch writes the state's
+    // next-epoch additions (`get_added_validators(epoch + 1)`) and current
+    // removals (`get_removed_validators()`) into its header (see
+    // finalizer/src/actor.rs), so an honest checkpoint must reproduce exactly
+    // those deltas. Without this an otherwise-verified checkpoint could carry
+    // pending add/remove queues that change the next committee after import.
+    let next_epoch = checkpoint_state.get_epoch() + 1;
+
+    let mut checkpoint_added = checkpoint_state
+        .get_added_validators(next_epoch)
+        .cloned()
+        .unwrap_or_default();
+    let mut header_added = terminal.added_validators().to_vec();
+    checkpoint_added.sort_by(|a, b| a.node_key.cmp(&b.node_key));
+    header_added.sort_by(|a, b| a.node_key.cmp(&b.node_key));
+    if checkpoint_added != header_added {
+        return Err(
+            CheckpointVerificationError::CheckpointTransitionQueueMismatch(format!(
+                "decoded added_validators for epoch {next_epoch} ({} entries) do not match the \
+                 terminal header's committed additions ({} entries)",
+                checkpoint_added.len(),
+                header_added.len(),
+            )),
+        );
+    }
+
+    let mut checkpoint_removed = checkpoint_state.get_removed_validators().clone();
+    let mut header_removed = terminal.removed_validators();
+    checkpoint_removed.sort();
+    header_removed.sort();
+    if checkpoint_removed != header_removed {
+        return Err(
+            CheckpointVerificationError::CheckpointTransitionQueueMismatch(format!(
+                "decoded removed_validators ({} entries) do not match the terminal header's \
+                 committed removals ({} entries)",
+                checkpoint_removed.len(),
+                header_removed.len(),
+            )),
+        );
+    }
+
+    // NOTE: pending additions for epochs beyond `next_epoch` (possible when the
+    // validator warm-up spans more than one epoch) are committed by finalized
+    // headers AFTER this terminal header, which a chain ending at this epoch
+    // cannot authenticate; they are bound only once the next epoch's boundary
+    // header is verified.
 
     Ok(())
 }
@@ -1280,6 +1338,11 @@ mod tests {
     fn checkpoint_verification_fixture(
         state_latest_height: u64,
         terminal_header_height: u64,
+        // Pending removed-validator queue injected into the decoded checkpoint
+        // state. The terminal header below always commits an empty removed set,
+        // so a non-empty value here makes the checkpoint's transition queue
+        // diverge from the header's committed deltas.
+        checkpoint_removed_validators: Vec<ed25519::PublicKey>,
     ) -> (
         Genesis,
         Checkpoint,
@@ -1385,6 +1448,7 @@ mod tests {
         // non-zero `state_latest_height` makes the decoded checkpoint position
         // disagree with the terminal header it is bound to.
         state.set_latest_height(state_latest_height);
+        state.removed_validators = checkpoint_removed_validators;
         let checkpoint = Checkpoint::new(&state);
 
         // A distinct checkpoint the attacker would like the chain to authenticate.
@@ -1449,7 +1513,8 @@ mod tests {
     #[test]
     fn test_checkpoint_verifier_binds_state_position_to_terminal_header() {
         // Honest: decoded state at penultimate height 5, terminal header at 6.
-        let (genesis, checkpoint, _tampered, honest) = checkpoint_verification_fixture(5, 6);
+        let (genesis, checkpoint, _tampered, honest) =
+            checkpoint_verification_fixture(5, 6, Vec::new());
         super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
             .expect("a position-consistent checkpoint must verify");
 
@@ -1457,7 +1522,8 @@ mod tests {
         // claims height 9, so latest_height + 1 (6) != 9. The bytes are still validly
         // committed by the terminal header and the validator set checks out, yet the
         // position binding must reject it.
-        let (genesis, checkpoint, _tampered, mismatched) = checkpoint_verification_fixture(5, 9);
+        let (genesis, checkpoint, _tampered, mismatched) =
+            checkpoint_verification_fixture(5, 9, Vec::new());
         let result = super::verify_checkpoint_chain(
             &genesis,
             std::slice::from_ref(&mismatched),
@@ -1473,6 +1539,44 @@ mod tests {
         );
     }
 
+    // Binds the decoded checkpoint's pending validator-transition queues to the
+    // terminal header's committed deltas. The terminal header authenticates the
+    // checkpoint bytes (sha256) and active membership, but without this an
+    // attacker whose terminal header signs the checkpoint can ship pending
+    // add/remove queues that diverge from the header's committed deltas, changing
+    // the next committee after import.
+    #[test]
+    fn test_checkpoint_verifier_binds_transition_queues_to_terminal_header() {
+        use commonware_cryptography::Signer;
+
+        // Honest: empty queues, and the terminal header commits empty deltas.
+        let (genesis, checkpoint, _tampered, honest) =
+            checkpoint_verification_fixture(5, 6, Vec::new());
+        super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
+            .expect("a checkpoint whose queues match the terminal header must verify");
+
+        // Divergent: the decoded checkpoint carries a pending removed-validator
+        // queue, but the terminal header commits an empty removed set. The bytes
+        // are still validly committed (so the hash and membership checks pass),
+        // yet the transition-queue binding must reject it.
+        let rogue = ed25519::PrivateKey::from_seed(99).public_key();
+        let (genesis, checkpoint, _tampered, mismatched) =
+            checkpoint_verification_fixture(5, 6, vec![rogue]);
+        let result = super::verify_checkpoint_chain(
+            &genesis,
+            std::slice::from_ref(&mismatched),
+            &checkpoint,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(super::CheckpointVerificationError::CheckpointTransitionQueueMismatch(_))
+            ),
+            "verifier must reject a checkpoint whose pending transition queues are not bound \
+             to the terminal finalized header's committed deltas, got {result:?}"
+        );
+    }
+
     // Closes the typed-API trust-boundary gap: a finalized header carries header
     // fields (e.g. `checkpoint_hash`) and a certificate that signs a digest. The
     // fields must be bound to the signed digest, otherwise an attacker can pair a
@@ -1483,7 +1587,7 @@ mod tests {
         use crate::header::{FinalizedHeader, FinalizedHeaderError, Header};
 
         let (genesis, checkpoint, tampered_checkpoint, honest) =
-            checkpoint_verification_fixture(0, 1);
+            checkpoint_verification_fixture(0, 1, Vec::new());
 
         // Sanity: the honest finalized header verifies against the honest checkpoint.
         super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
