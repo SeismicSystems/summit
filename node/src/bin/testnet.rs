@@ -203,6 +203,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         checkpoint_or_default: false,
         weak_subjectivity_epoch: None,
         weak_subjectivity_header_digest: None,
+        unsafe_skip_checkpoint_verification: false,
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,

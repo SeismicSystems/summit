@@ -181,6 +181,17 @@ pub struct RunFlags {
     )]
     pub weak_subjectivity_header_digest: Option<String>,
 
+    /// Import a checkpoint WITHOUT verifying it against a finalized-header chain.
+    ///
+    /// UNSAFE: the imported consensus state is trusted entirely from the supplied
+    /// checkpoint artifact. By default, checkpoint startup requires a checkpoint
+    /// directory containing finalized_headers/ together with
+    /// --weak-subjectivity-epoch and --weak-subjectivity-header-digest. Set this
+    /// flag to bypass that requirement (e.g. to import a standalone checkpoint
+    /// file). Only use it when the checkpoint source is fully trusted.
+    #[arg(long, requires = "checkpoint_path")]
+    pub unsafe_skip_checkpoint_verification: bool,
+
     /// IP address for this node (optional, will use genesis if not provided)
     #[arg(long)]
     pub ip: Option<String>,
@@ -408,7 +419,7 @@ async fn run_node_inner(
     context: tokio::Context,
     flags: RunFlags,
     key_store: KeyStore<PrivateKey>,
-    loaded: LoadedCheckpoint<MultisigScheme>,
+    mut loaded: LoadedCheckpoint<MultisigScheme>,
 ) {
     let context = context.with_label("summit_cw");
 
@@ -438,6 +449,9 @@ async fn run_node_inner(
 
     // Verify checkpoint if finalized headers chain was provided
     let weak_subjectivity = weak_subjectivity_from_flags(&flags);
+    // The signature-verified chain terminal, used below to bind the optional
+    // last_block / finalized_header artifacts to the verified history.
+    let mut verified_terminal_header: Option<FinalizedHeader<MultisigScheme>> = None;
     if let (Some(raw_checkpoint), Some(headers_chain)) =
         (&loaded.raw_checkpoint, &loaded.finalized_headers_chain)
     {
@@ -457,13 +471,57 @@ async fn run_node_inner(
             weak_subjectivity_epoch = weak_subjectivity.epoch,
             "checkpoint verified successfully"
         );
-    } else if loaded.raw_checkpoint.is_some() {
-        if weak_subjectivity.is_some() {
-            panic!(
-                "weak-subjectivity checkpoint verification requires a checkpoint directory with finalized_headers/"
+
+        // Bind the optional last_block / finalized_header artifacts to the
+        // verified chain. The chain terminal is a signature-verified
+        // FinalizedHeader whose finalization commits to the terminal block's
+        // digest. Require any supplied last_block to be exactly that block (so a
+        // directory cannot pair a verified checkpoint with an unrelated block),
+        // and hand the verified terminal to the syncer as the finalization to
+        // complete the checkpoint, rather than the separately-loaded, unverified
+        // top-level finalized_header artifact.
+        let terminal = headers_chain
+            .last()
+            .expect("verified finalized-header chain is non-empty");
+        if let Some(last_block) = &loaded.last_block {
+            let committed = terminal.finalization().proposal.payload;
+            assert!(
+                last_block.digest() == committed,
+                "checkpoint last_block does not match the verified terminal header's \
+                 finalized block (last_block {:?}, verified terminal {:?})",
+                last_block.digest(),
+                committed,
             );
         }
-        warn!("checkpoint loaded without finalized headers chain - skipping verification");
+        verified_terminal_header = Some(terminal.clone());
+    } else if loaded.raw_checkpoint.is_some() {
+        // A checkpoint was supplied but there is no finalized-headers chain to
+        // verify it against. Refuse by default; only skip verification when the
+        // operator explicitly opts in via --unsafe-skip-checkpoint-verification.
+        if !flags.unsafe_skip_checkpoint_verification {
+            panic!(
+                "refusing to import an unverified checkpoint: supply a checkpoint directory \
+                 with finalized_headers/ plus --weak-subjectivity-epoch and \
+                 --weak-subjectivity-header-digest, or pass \
+                 --unsafe-skip-checkpoint-verification to import without verification (NOT recommended)"
+            );
+        }
+        if weak_subjectivity.is_some() {
+            warn!(
+                "--weak-subjectivity-* ignored: no finalized_headers chain present and \
+                 --unsafe-skip-checkpoint-verification was set; skipping verification"
+            );
+        }
+        warn!(
+            "UNSAFE: checkpoint imported without verification \
+             (--unsafe-skip-checkpoint-verification)"
+        );
+    }
+
+    // On the verified path, complete the checkpoint from the signature-verified
+    // chain terminal rather than the unverified top-level finalized_header file.
+    if let Some(terminal) = verified_terminal_header {
+        loaded.finalized_header = Some(terminal);
     }
 
     let initial_state = get_initial_state(&genesis, &committee, loaded.consensus_state);
