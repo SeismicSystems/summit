@@ -795,17 +795,36 @@ fn handle_verify<ES: Epocher>(
     }
     // Bind the signed Commonware parent view to the fetched parent block's
     // decoded view so the certificate's ancestry and the Summit header chain
-    // agree. Two cases are exempt:
-    //   - the same-digest boundary re-proposal handled above (already returned),
-    //     where the terminal block is re-certified at a later view;
-    //   - the first block of an epoch, which carries a signed parent view of 0
-    //     (the `parent.0 == 0` sentinel) while its parent is the genesis block or
-    //     the previous epoch's terminal block, in a different view space.
-    // In both cases the parent is still bound by digest (`block.parent()` below).
-    if signed_parent_view > 0 && parent.view() != signed_parent_view {
+    // agree. The same-digest boundary re-proposal handled above (already
+    // returned) is exempt, since the terminal block is re-certified at a later
+    // view than its decoded view.
+    //
+    // The signed parent view of 0 (the `parent.0 == 0` sentinel) is only
+    // legitimate when the child actually opens an epoch: its parent is either
+    // the genesis block or the previous epoch's terminal block, which lives in
+    // a different view space. We must not let the sentinel blanket-skip the
+    // binding, or a mid-epoch proposal could set parent view 0 to bypass it
+    // entirely. Epochs are contiguous height ranges of length >= 1 (`DynamicEpocher`
+    // rejects zero-length segments), so an epoch opener's parent always sits in
+    // the immediately preceding epoch. We compare against `round.epoch()` (the
+    // trusted consensus value) rather than `block.epoch()` (an attacker-controlled
+    // header field only validated against the round below).
+    if signed_parent_view == 0 {
+        let opens_epoch = parent.height() == 0 || parent.epoch() + 1 == round.epoch().get();
+        if !opens_epoch {
+            warn!(
+                parent_epoch = parent.epoch(),
+                round_epoch = round.epoch().get(),
+                "signed parent view 0 on a block that does not open an epoch"
+            );
+            return false;
+        }
+    } else if parent.epoch() != round.epoch().get() || parent.view() != signed_parent_view {
         warn!(
             signed_parent_view,
             parent_view = parent.view(),
+            parent_epoch = parent.epoch(),
+            round_epoch = round.epoch().get(),
             "parent view mismatch: signed proposal parent view does not match the fetched parent block"
         );
         return false;
@@ -1359,13 +1378,62 @@ mod tests {
     }
 
     /// The first block of an epoch carries a signed parent view of 0 (the
-    /// `parent.0 == 0` sentinel) while its parent (genesis, or the previous
-    /// epoch's terminal block) has a non-zero decoded view. The parent-view
-    /// binding must be skipped in that case, or every epoch's opening block
-    /// would be rejected.
+    /// `parent.0 == 0` sentinel) while its parent (the previous epoch's terminal
+    /// block) has a non-zero decoded view in a different view space. The
+    /// parent-view binding must be skipped in that case, or every epoch's
+    /// opening block would be rejected.
+    ///
+    /// The parent here is epoch 0's terminal block (height `EPOCH_LENGTH - 1`)
+    /// and the child opens epoch 1 (height `EPOCH_LENGTH`), so the parent's
+    /// epoch is exactly one less than the round epoch — the defining shape of an
+    /// epoch opener.
     #[test]
-    fn accepts_zero_signed_parent_view_for_first_block() {
-        let parent_height = 3; // non-zero decoded parent view (3)
+    fn accepts_zero_signed_parent_view_for_epoch_opener() {
+        let parent_height = EPOCH_LENGTH - 1; // epoch 0 terminal, decoded view 9
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+        // Epoch 1's opener: a fresh Simplex instance restarts views at 1.
+        let block = make_block_with_eth_parent(
+            parent.digest(),
+            parent.eth_block_hash(),
+            EPOCH_LENGTH,
+            1,
+            1,
+            EPOCH_LENGTH * 12,
+        );
+        let aux_data = make_aux_data(1);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        // Sentinel parent view 0 must bypass the binding despite parent.view() == 9,
+        // because the parent's epoch (0) is exactly one less than the round epoch (1).
+        assert!(
+            handle_verify(
+                round,
+                &block,
+                parent,
+                0,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
+            "a signed parent view of 0 on a genuine epoch opener must bypass the \
+             parent-view binding"
+        );
+    }
+
+    /// Regression for the #313 bypass: the signed-parent-view-0 sentinel must not
+    /// blanket-skip the binding. A mid-epoch block (parent and child in the same
+    /// epoch) whose proposer sets the signed parent view to 0 must be rejected —
+    /// otherwise the sentinel becomes a universal escape hatch around the
+    /// parent-view check.
+    #[test]
+    fn rejects_zero_signed_parent_view_mid_epoch() {
+        let parent_height = 3; // mid-epoch 0, decoded view 3
         let parent = make_block(
             [0u8; 32].into(),
             parent_height,
@@ -1384,9 +1452,10 @@ mod tests {
         let aux_data = make_aux_data(0);
 
         let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
-        // Sentinel parent view 0 must bypass the binding despite parent.view() == 3.
+        // The child stays inside epoch 0 (parent.epoch + 1 != round.epoch), so a
+        // signed parent view of 0 is not a legitimate epoch-opener sentinel.
         assert!(
-            handle_verify(
+            !handle_verify(
                 round,
                 &block,
                 parent,
@@ -1395,8 +1464,7 @@ mod tests {
                 &aux_data,
                 u64::MAX / 4
             ),
-            "a signed parent view of 0 (first block of an epoch) must bypass the \
-             parent-view binding"
+            "a signed parent view of 0 on a mid-epoch block must be rejected"
         );
     }
 }
