@@ -1394,6 +1394,7 @@ mod tests {
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
             minimum_validator_count: 1,
+            invalid_deposit_tax: 0,
         };
 
         let mut state = ConsensusState::new(
@@ -1407,6 +1408,7 @@ mod tests {
             16,
             0,
             1,
+            0,
         );
         state.set_validator_accounts(validator_accounts);
         let checkpoint = Checkpoint::new(&state);

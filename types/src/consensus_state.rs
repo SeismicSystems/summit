@@ -3313,6 +3313,7 @@ mod tests {
             16,
             0,
             0,
+            0,
         );
 
         // mirror node/src/args.rs genesis materialization.

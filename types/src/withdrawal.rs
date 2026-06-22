@@ -700,46 +700,6 @@ impl Read for WithdrawalQueue {
             ));
         }
 
-        // Cross-validate the map and schedule: they are redundant and must
-        // agree. The SSZ root commits only schedule-reachable entries (see
-        // ssz_state_tree::rebuild_withdrawals), so a decoded queue whose map and
-        // schedule disagree could carry live withdrawal state (map queries,
-        // merges) that escapes the root and its proofs. Require every scheduled
-        // pubkey to exist in the map under the same epoch, scheduled exactly
-        // once, and every map entry to be scheduled.
-        let mut scheduled = std::collections::BTreeSet::new();
-        for (epoch, pubkeys) in &schedule {
-            for pubkey in pubkeys {
-                match withdrawals.get(pubkey) {
-                    None => {
-                        return Err(Error::Invalid(
-                            "WithdrawalQueue",
-                            "scheduled pubkey absent from withdrawal map",
-                        ));
-                    }
-                    Some(w) if w.epoch != *epoch => {
-                        return Err(Error::Invalid(
-                            "WithdrawalQueue",
-                            "scheduled epoch disagrees with withdrawal map entry",
-                        ));
-                    }
-                    Some(_) => {}
-                }
-                if !scheduled.insert(*pubkey) {
-                    return Err(Error::Invalid(
-                        "WithdrawalQueue",
-                        "pubkey scheduled more than once",
-                    ));
-                }
-            }
-        }
-        if scheduled.len() != withdrawals.len() {
-            return Err(Error::Invalid(
-                "WithdrawalQueue",
-                "withdrawal map entry missing from schedule",
-            ));
-        }
-
         Ok(Self {
             withdrawals,
             validator_schedule,
@@ -791,6 +751,7 @@ mod tests {
             pubkey: [tag; 32],
             balance_deduction: 0,
             epoch,
+            kind: WithdrawalKind::Validator,
         }
     }
 
@@ -816,8 +777,11 @@ mod tests {
         schedule.insert(5u64, VecDeque::from(vec![[1u8; 32]]));
         let queue = WithdrawalQueue {
             withdrawals,
-            schedule,
-            next_index: 1,
+            validator_schedule: schedule,
+            refund_schedule: BTreeMap::new(),
+            // next_index must exceed every pending withdrawal index (pending(1)
+            // has inner.index == 1), or decode rejects the queue.
+            next_index: 2,
         };
         let buf = encode_queue(&queue);
         assert!(
@@ -833,7 +797,8 @@ mod tests {
         withdrawals.insert([1u8; 32], pending(1, 5));
         let queue = WithdrawalQueue {
             withdrawals,
-            schedule: BTreeMap::new(),
+            validator_schedule: BTreeMap::new(),
+            refund_schedule: BTreeMap::new(),
             next_index: 1,
         };
         let buf = encode_queue(&queue);
@@ -849,7 +814,8 @@ mod tests {
         schedule.insert(5u64, VecDeque::from(vec![[1u8; 32]]));
         let queue = WithdrawalQueue {
             withdrawals: BTreeMap::new(),
-            schedule,
+            validator_schedule: schedule,
+            refund_schedule: BTreeMap::new(),
             next_index: 1,
         };
         let buf = encode_queue(&queue);
@@ -869,7 +835,8 @@ mod tests {
         schedule.insert(6u64, VecDeque::from(vec![[1u8; 32]]));
         let queue = WithdrawalQueue {
             withdrawals,
-            schedule,
+            validator_schedule: schedule,
+            refund_schedule: BTreeMap::new(),
             next_index: 1,
         };
         let buf = encode_queue(&queue);
