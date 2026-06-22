@@ -348,6 +348,10 @@ impl<
                             debug!("{rand_id} application: Handling message Verify for round {} (epoch {}, view {}), parent view: {}",
                                 round, round.epoch(), round.view(), parent.0);
 
+                            // The parent view signed into the proposal context, captured
+                            // before `parent` is shadowed by the fetched parent block below.
+                            let signed_parent_view = parent.0.get();
+
                             // Subscribe to blocks (will wait for them if not available)
                             let parent_request = if parent.1 == self.genesis_hash.into() {
                                 Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
@@ -426,7 +430,7 @@ impl<
                                                 }
 
                                                 let now_millis = context.current().epoch_millis();
-                                                if handle_verify(round, &block, parent, &epocher, &aux_data, now_millis) {
+                                                if handle_verify(round, &block, parent, signed_parent_view, &epocher, &aux_data, now_millis) {
                                                     // persist valid block
                                                     syncer.verified(round, block).await;
 
@@ -766,6 +770,9 @@ fn handle_verify<ES: Epocher>(
     round: Round,
     block: &Block,
     parent: Block,
+    // The parent view signed into the Commonware proposal context
+    // (`context.parent.0`), bound below to the fetched parent block's decoded view.
+    signed_parent_view: u64,
     epocher: &ES,
     aux_data: &BlockAuxData,
     now_millis: u64,
@@ -785,6 +792,42 @@ fn handle_verify<ES: Epocher>(
         .get();
     if parent.digest() == block.digest() {
         return block.height() == last_in_epoch;
+    }
+    // Bind the signed Commonware parent view to the fetched parent block's
+    // decoded view so the certificate's ancestry and the Summit header chain
+    // agree. The same-digest boundary re-proposal handled above (already
+    // returned) is exempt, since the terminal block is re-certified at a later
+    // view than its decoded view.
+    //
+    // The signed parent view of 0 (the `parent.0 == 0` sentinel) is only
+    // legitimate when the child actually opens an epoch: its parent is either
+    // the genesis block or the previous epoch's terminal block, which lives in
+    // a different view space. We must not let the sentinel blanket-skip the
+    // binding, or a mid-epoch proposal could set parent view 0 to bypass it
+    // entirely. Epochs are contiguous height ranges of length >= 1 (`DynamicEpocher`
+    // rejects zero-length segments), so an epoch opener's parent always sits in
+    // the immediately preceding epoch. We compare against `round.epoch()` (the
+    // trusted consensus value) rather than `block.epoch()` (an attacker-controlled
+    // header field only validated against the round below).
+    if signed_parent_view == 0 {
+        let opens_epoch = parent.height() == 0 || parent.epoch() + 1 == round.epoch().get();
+        if !opens_epoch {
+            warn!(
+                parent_epoch = parent.epoch(),
+                round_epoch = round.epoch().get(),
+                "signed parent view 0 on a block that does not open an epoch"
+            );
+            return false;
+        }
+    } else if parent.epoch() != round.epoch().get() || parent.view() != signed_parent_view {
+        warn!(
+            signed_parent_view,
+            parent_view = parent.view(),
+            parent_epoch = parent.epoch(),
+            round_epoch = round.epoch().get(),
+            "parent view mismatch: signed proposal parent view does not match the fetched parent block"
+        );
+        return false;
     }
     if block.height() > last_in_epoch {
         warn!(
@@ -1078,8 +1121,17 @@ mod tests {
         let aux_data = make_aux_data(0);
 
         let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
         assert!(
-            handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
             "re-proposal of the epoch-terminal block must be accepted"
         );
     }
@@ -1114,8 +1166,17 @@ mod tests {
         let aux_data = make_aux_data(0);
 
         let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
         assert!(
-            !handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            !handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
             "non-reproposal child whose parent is the epoch-terminal block \
              must be rejected"
         );
@@ -1145,9 +1206,265 @@ mod tests {
         let aux_data = make_aux_data(0);
 
         let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
         assert!(
-            handle_verify(round, &block, parent, &epocher(), &aux_data, u64::MAX / 4),
+            handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
             "ordinary child inside the parent's epoch must be accepted"
+        );
+    }
+
+    /// Parent-view binding: the parent view signed into the Commonware proposal
+    /// context must match the decoded view of the fetched parent block. An
+    /// ordinary child whose signed parent view disagrees with the parent block's
+    /// own view must be rejected.
+    #[test]
+    fn rejects_parent_view_mismatch() {
+        let parent_height = 3; // mid-epoch 0, decoded parent view == 3
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+        let block = make_block_with_eth_parent(
+            parent.digest(),
+            parent.eth_block_hash(),
+            parent_height + 1,
+            0,
+            parent_height + 1,
+            (parent_height + 1) * 12,
+        );
+        let aux_data = make_aux_data(0);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        // Signed parent view (7) disagrees with the parent block's decoded view (3).
+        let mismatched_parent_view = parent.view() + 1;
+        assert!(
+            !handle_verify(
+                round,
+                &block,
+                parent,
+                mismatched_parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
+            "child whose signed parent view disagrees with the parent block's \
+             decoded view must be rejected"
+        );
+    }
+
+    /// Sanity companion to `rejects_parent_view_mismatch`: a matching signed
+    /// parent view must still be accepted (the binding check must not
+    /// over-reject honest proposals).
+    #[test]
+    fn accepts_matching_parent_view() {
+        let parent_height = 3;
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+        let block = make_block_with_eth_parent(
+            parent.digest(),
+            parent.eth_block_hash(),
+            parent_height + 1,
+            0,
+            parent_height + 1,
+            (parent_height + 1) * 12,
+        );
+        let aux_data = make_aux_data(0);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
+        assert!(
+            handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
+            "child whose signed parent view matches the parent block must be accepted"
+        );
+    }
+
+    /// The child block's own view must match the proposal round view; a block
+    /// whose decoded view disagrees with its certifying round is rejected.
+    #[test]
+    fn rejects_child_view_mismatch() {
+        let parent_height = 3;
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+        // Child decoded view (4) but certified at round view 5.
+        let block = make_block_with_eth_parent(
+            parent.digest(),
+            parent.eth_block_hash(),
+            parent_height + 1,
+            0,
+            parent_height + 1,
+            (parent_height + 1) * 12,
+        );
+        let aux_data = make_aux_data(0);
+
+        let parent_view = parent.view();
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view() + 1));
+        assert!(
+            !handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
+            "child whose decoded view disagrees with the proposal round must be rejected"
+        );
+    }
+
+    /// The same-digest boundary re-proposal is the one legitimate case where the
+    /// parent block's decoded view need not equal the signed parent view (the
+    /// terminal block can be re-certified at a later view). The re-proposal
+    /// carve-out must keep accepting it even when the signed parent view differs,
+    /// so the parent-view binding check must not break epoch boundaries.
+    #[test]
+    fn accepts_reproposal_despite_parent_view_mismatch() {
+        let last_height = EPOCH_LENGTH - 1; // block 9, decoded view 9
+        let parent = make_block(
+            [0u8; 32].into(),
+            last_height,
+            0,
+            last_height,
+            last_height * 12,
+        );
+        let block = parent.clone();
+        let aux_data = make_aux_data(0);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        // Terminal block re-certified at a later view than its decoded view (9).
+        let later_parent_view = parent.view() + 3;
+        assert!(
+            handle_verify(
+                round,
+                &block,
+                parent,
+                later_parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
+            "same-digest boundary re-proposal must be accepted even when the \
+             signed parent view differs from the block's decoded view"
+        );
+    }
+
+    /// The first block of an epoch carries a signed parent view of 0 (the
+    /// `parent.0 == 0` sentinel) while its parent (the previous epoch's terminal
+    /// block) has a non-zero decoded view in a different view space. The
+    /// parent-view binding must be skipped in that case, or every epoch's
+    /// opening block would be rejected.
+    ///
+    /// The parent here is epoch 0's terminal block (height `EPOCH_LENGTH - 1`)
+    /// and the child opens epoch 1 (height `EPOCH_LENGTH`), so the parent's
+    /// epoch is exactly one less than the round epoch — the defining shape of an
+    /// epoch opener.
+    #[test]
+    fn accepts_zero_signed_parent_view_for_epoch_opener() {
+        let parent_height = EPOCH_LENGTH - 1; // epoch 0 terminal, decoded view 9
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+        // Epoch 1's opener: a fresh Simplex instance restarts views at 1.
+        let block = make_block_with_eth_parent(
+            parent.digest(),
+            parent.eth_block_hash(),
+            EPOCH_LENGTH,
+            1,
+            1,
+            EPOCH_LENGTH * 12,
+        );
+        let aux_data = make_aux_data(1);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        // Sentinel parent view 0 must bypass the binding despite parent.view() == 9,
+        // because the parent's epoch (0) is exactly one less than the round epoch (1).
+        assert!(
+            handle_verify(
+                round,
+                &block,
+                parent,
+                0,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
+            "a signed parent view of 0 on a genuine epoch opener must bypass the \
+             parent-view binding"
+        );
+    }
+
+    /// Regression for the #313 bypass: the signed-parent-view-0 sentinel must not
+    /// blanket-skip the binding. A mid-epoch block (parent and child in the same
+    /// epoch) whose proposer sets the signed parent view to 0 must be rejected —
+    /// otherwise the sentinel becomes a universal escape hatch around the
+    /// parent-view check.
+    #[test]
+    fn rejects_zero_signed_parent_view_mid_epoch() {
+        let parent_height = 3; // mid-epoch 0, decoded view 3
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+        let block = make_block_with_eth_parent(
+            parent.digest(),
+            parent.eth_block_hash(),
+            parent_height + 1,
+            0,
+            parent_height + 1,
+            (parent_height + 1) * 12,
+        );
+        let aux_data = make_aux_data(0);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        // The child stays inside epoch 0 (parent.epoch + 1 != round.epoch), so a
+        // signed parent view of 0 is not a legitimate epoch-opener sentinel.
+        assert!(
+            !handle_verify(
+                round,
+                &block,
+                parent,
+                0,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4
+            ),
+            "a signed parent view of 0 on a mid-epoch block must be rejected"
         );
     }
 }
