@@ -910,6 +910,42 @@ impl<
             return Ok(HandleOutcome::Applied);
         }
 
+        // Release enforced block/certificate binding, run before any state change.
+        //
+        // The syncer pairs the finalized block and its finalization by height from
+        // two independently keyed immutable archives (and the block archive
+        // silently keeps a stale entry on a duplicate index). If that pairing is
+        // ever inconsistent, we fail stop before executing the block, committing
+        // forkchoice, notifying the finalized height, or acking, never after, so a
+        // misbound pair can poison neither execution client canonical state nor the
+        // exported finalized header and checkpoint material. The normal syncer path
+        // now prevents this from reaching us; this is the last resort backstop.
+        //
+        // A block at an epoch boundary always carries a finalization; we
+        // defensively bind any finalization that reaches another path too.
+        if let Some(finalization) = &finalization
+            && block_digest != finalization.proposal.payload
+        {
+            error!(
+                target: "critical",
+                height,
+                header = ?block_digest,
+                certified = ?finalization.proposal.payload,
+                "finalized block does not match its finalization certificate; \
+                 refusing to execute or store a misbound finalized block"
+            );
+            #[cfg(feature = "prom")]
+            counter!(
+                "critical_errors_total",
+                "reason" => "finalized_certificate_mismatch",
+                "severity" => "critical"
+            )
+            .increment(1);
+            return Err(anyhow!(
+                "finalized block/certificate digest mismatch at height {height}"
+            ));
+        }
+
         // Simplex guarantees the finalized chain is linear, so the
         // next finalized block must extend our canonical head. A mismatch means a
         // consensus safety violation (>=1/3 Byzantine finalizing a block conflicting
@@ -941,6 +977,7 @@ impl<
                 block.parent()
             ));
         }
+
 
         // Try to find the fork state for this block (if it was notarized before finalization)
         if let Some(fork_state) = self
@@ -1193,31 +1230,13 @@ impl<
             // the finalization.
             let finalization = finalization
                 .expect("finalization is always included for the last block of an epoch");
-            // Release-enforced binding: never construct a finalized header from a
-            // block whose digest the certificate does not finalize. The syncer
-            // pairs the block and certificate by height from two independently
-            // keyed archives; a mismatch here means an upstream archive
-            // inconsistency, and exporting it would poison finalized-header and
-            // checkpoint material. Fail-stop instead of trusting it.
-            if block.header.get_digest() != finalization.proposal.payload {
-                error!(
-                    target: "critical",
-                    height = new_height,
-                    header = ?block.header.get_digest(),
-                    certified = ?finalization.proposal.payload,
-                    "epoch-boundary block header does not match its finalization \
-                     certificate; refusing to store a misbound finalized header"
-                );
-                return Err(anyhow!(
-                    "finalized block/certificate digest mismatch at height {new_height}"
-                ));
-            }
             // Get participant count from the certificate signers
             let participant_count = finalization.certificate.signers.len();
 
             // Store the finalized block header in the database. The binding
-            // between the block header and this finalization was just verified
-            // above, so construct directly.
+            // between the block header and this finalization was already verified
+            // at the top of this function, before any state change, so construct
+            // directly.
             let finalized_header = FinalizedHeader::new_unchecked(
                 block.header.clone(),
                 finalization,

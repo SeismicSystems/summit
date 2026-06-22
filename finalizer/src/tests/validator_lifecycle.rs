@@ -534,10 +534,16 @@ fn test_finalizer_rejects_block_certificate_digest_mismatch() {
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
 
+        // Probe the execution layer through a clone of the engine client. Each
+        // executed block triggers one check_payload call, so the call count tells
+        // us whether the mismatched block was applied.
+        let engine_client = MockEngineClient::new();
+        let engine_probe = engine_client.clone();
+
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
             mailbox_size: 100,
             db_prefix: "test_digest_mismatch".to_string(),
-            engine_client: MockEngineClient::new(),
+            engine_client,
             oracle: MockNetworkOracle,
             protocol_consts: ProtocolConsts {
                 validator_num_warm_up_epochs: 2,
@@ -557,10 +563,11 @@ fn test_finalizer_rejects_block_certificate_digest_mismatch() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -590,10 +597,16 @@ fn test_finalizer_rejects_block_certificate_digest_mismatch() {
             !token_clone.is_cancelled(),
             "token must not be cancelled before the epoch boundary"
         );
+        // Blocks 1, 2 and 3 each executed once.
+        let executions_before = engine_probe.check_payload_call_count();
+        assert_eq!(
+            executions_before, 3,
+            "the three good blocks must have executed"
+        );
 
         // Block 4 is the last block of epoch 0 and carries a finalization. Pair it
-        // with a certificate that genuinely signs a DIFFERENT digest (as a stale
-        // archived block paired with a fresh finalization by height would).
+        // with a certificate that genuinely signs a different digest, as a stale
+        // archived block paired with a fresh finalization by height would.
         let block4 = create_test_block_with_epoch(parent_digest, 4, 5, 13004, 0);
         let other_block = create_test_block_with_epoch(parent_digest, 4, 5, 99_999, 0);
         let wrong_digest = other_block.digest();
@@ -612,6 +625,13 @@ fn test_finalizer_rejects_block_certificate_digest_mismatch() {
             token_clone.is_cancelled(),
             "finalizer must fail-stop on a block/certificate digest mismatch at the \
              epoch boundary instead of storing a misbound finalized header"
+        );
+        // The binding is checked before execution, so the mismatched block must
+        // never have been applied to the execution layer.
+        assert_eq!(
+            engine_probe.check_payload_call_count(),
+            executions_before,
+            "the mismatched block must not have been executed"
         );
 
         context.auditor().state()
