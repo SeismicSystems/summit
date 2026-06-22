@@ -877,7 +877,10 @@ where
     // self-exclusion, broadcast attribution, finalizer self-lookup), and the
     // RPC server reports it instead of the keystore identity and disables
     // keystore-signing methods. It is the public key of the live P2P signer,
-    // passed in by the caller so the two are derived once and cannot drift.
+    // which the caller derives under the chain bound domain
+    // chain_domain(config_digest) and passes in, so the reported key, the live
+    // P2P identity, and the validators' authorized observer set are all derived
+    // once under the same domain and cannot drift.
     let observer_node_key = observer_network_key.as_ref().map(|pk| pk.to_string());
 
     let mut config = EngineConfig::get_engine_config(

@@ -392,9 +392,12 @@ pub struct Finalizer<
     oracle: O,
     node_public_key: PublicKey,
 
-    /// Chain namespace (genesis), mixed into observer child-key derivation for
-    /// domain separation across deployments.
-    namespace: Vec<u8>,
+    /// Chain bound domain (`chain_domain(config_digest)`) used to derive the
+    /// authorized observer child keys. Must match the domain the live P2P
+    /// observer signer is derived with (see node startup), or observers will
+    /// not be authenticated. Distinct from the raw deposit namespace, which is
+    /// already folded into `deposit_signature_domain`.
+    observer_domain: Vec<u8>,
     validator_exit: bool,
     cancellation_token: CancellationToken,
     _signer_marker: PhantomData<S>,
@@ -511,7 +514,7 @@ impl<
                     &cfg.namespace,
                 ),
                 node_public_key: cfg.node_public_key,
-                namespace: cfg.namespace,
+                observer_domain: cfg.observer_domain,
                 validator_exit: false,
                 cancellation_token: cfg.cancellation_token,
                 _signer_marker: PhantomData,
@@ -547,7 +550,7 @@ impl<
             .collect();
         let observer_keys = derive_observer_keys(
             &network_keys,
-            &self.namespace,
+            &self.observer_domain,
             self.canonical_state.get_observers_per_validator(),
         );
         self.oracle
@@ -1346,7 +1349,7 @@ impl<
                 .collect();
             let observer_keys = derive_observer_keys(
                 &active_or_joining_node_keys,
-                &self.namespace,
+                &self.observer_domain,
                 self.canonical_state.get_observers_per_validator(),
             );
             let secondary_keys: Vec<_> =

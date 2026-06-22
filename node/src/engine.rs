@@ -186,6 +186,10 @@ where
                 page_cache: page_cache.clone(),
                 genesis_hash: cfg.genesis_hash,
                 namespace: cfg.namespace.as_bytes().to_vec(),
+                // Observer child keys are derived and authorized under the same
+                // chain bound domain the live P2P observer signer uses, not the
+                // raw namespace (which stays for the deposit signature domain).
+                observer_domain: consensus_domain.clone(),
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
                 node_public_key: node_public_key.clone(),

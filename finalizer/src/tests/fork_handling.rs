@@ -168,6 +168,7 @@ fn test_orphaned_block_processed_when_parent_arrives() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -263,6 +264,7 @@ fn test_fork_aux_data_does_not_finalize_unfinalized_fork_head() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -371,6 +373,7 @@ fn test_losing_height_waiter_resolves_false_on_conflicting_finalization() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -460,6 +463,7 @@ fn test_competing_digest_waiter_stays_pending_until_finalization() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -550,6 +554,7 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -640,6 +645,7 @@ fn test_multiple_forks_tracked() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -726,6 +732,7 @@ fn test_dead_fork_block_discarded() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -828,6 +835,7 @@ fn test_fork_states_pruned_after_finalization() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -949,6 +957,7 @@ fn test_orphaned_blocks_pruned_after_finalization() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1062,6 +1071,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1171,6 +1181,7 @@ fn test_competing_fork_pruned_on_finalization() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 

@@ -228,6 +228,7 @@ fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epo
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -320,6 +321,7 @@ fn test_validator_exit_triggers_cancellation() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -450,6 +452,7 @@ fn test_finalizer_rejects_finalized_block_with_wrong_parent() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -586,6 +589,7 @@ fn test_joining_validator_peer_tier_follows_activation() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -735,6 +739,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -798,6 +803,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
                     buffered_blocks_warn_threshold: 100,
                     pending_notarized_max: 1000,
                     namespace: Vec::new(),
+                    observer_domain: Vec::new(),
                     _variant_marker: PhantomData,
                 },
             )
@@ -911,6 +917,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -992,6 +999,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
                     buffered_blocks_warn_threshold: 100,
                     pending_notarized_max: 1000,
                     namespace: Vec::new(),
+                    observer_domain: Vec::new(),
                     _variant_marker: PhantomData,
                 },
             )
@@ -1059,6 +1067,7 @@ fn last_block_exit_dominates_concurrent_max_stake_reduction() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1271,6 +1280,7 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 

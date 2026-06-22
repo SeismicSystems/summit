@@ -71,18 +71,29 @@ fn test_observer_reaches_end_height() {
         let master_priv_key = validator_key_stores[0].node_key.clone();
         let master_consensus_key = validator_key_stores[0].consensus_key.clone();
         let master_pub_key = master_priv_key.public_key();
-        // Must match the namespace the nodes run with (below), so the derived observer
-        // identity matches the finalizer's authorized observer set (#335).
-        let observer_namespace = b"_SUMMIT";
+        // Observer keys are derived under the chain bound domain
+        // chain_domain(config_digest), the same domain the finalizer authorizes
+        // observers under (#335). The harness uses genesis_hash as the
+        // config_digest (see get_default_engine_config), so derive against
+        // chain_domain(genesis_hash) to match the validators' authorized set.
+        let observer_config_digest: [u8; 32] = from_hex_formatted(common::GENESIS_HASH)
+            .expect("genesis hash hex")
+            .try_into()
+            .expect("genesis hash len");
+        let observer_domain = summit_types::chain_domain(observer_config_digest);
         let observer_signer = ExtPrivateKey::derive_child_signer(
             &master_priv_key,
-            observer_namespace,
+            observer_domain.as_slice(),
             observer_index,
         );
         let observer_pubkey = observer_signer.public_key();
         assert_eq!(
             observer_pubkey,
-            derive_child_public(master_pub_key.clone(), observer_namespace, observer_index),
+            derive_child_public(
+                master_pub_key.clone(),
+                observer_domain.as_slice(),
+                observer_index
+            ),
             "signer and public-only derivation must agree"
         );
 
@@ -257,11 +268,21 @@ fn test_observer_backfills_from_parent_validator() {
             consensus_key: validator_key_stores[0].consensus_key.clone(),
         };
         let parent_pubkey = parent_key_store.node_key.public_key();
-        // Must match the namespace the nodes run with so the derived observer
-        // identity matches the engine's namespace-bound child key (#335).
-        let observer_namespace = b"_SUMMIT";
-        let observer_pubkey =
-            derive_child_public(parent_pubkey.clone(), observer_namespace, observer_index);
+        // Observer keys are derived under the chain bound domain
+        // chain_domain(config_digest), the same domain the finalizer authorizes
+        // observers under (#335). The harness uses genesis_hash as the
+        // config_digest (see get_default_engine_config), so derive against
+        // chain_domain(genesis_hash) to match the validators' authorized set.
+        let observer_config_digest: [u8; 32] = from_hex_formatted(common::GENESIS_HASH)
+            .expect("genesis hash hex")
+            .try_into()
+            .expect("genesis hash len");
+        let observer_domain = summit_types::chain_domain(observer_config_digest);
+        let observer_pubkey = derive_child_public(
+            parent_pubkey.clone(),
+            observer_domain.as_slice(),
+            observer_index,
+        );
 
         // Register all nodes, but link the observer ONLY to its parent.
         let mut all_pubkeys = validator_pubkeys.clone();
