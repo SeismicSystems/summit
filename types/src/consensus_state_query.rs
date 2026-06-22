@@ -416,9 +416,6 @@ impl<S: Scheme> ConsensusStateQuery<S> {
     /// `permit` is an opaque concurrency guard (boxed by the RPC layer) that
     /// travels with the request so the finalizer can drop it when the spawned
     /// proof task finishes, instead of when this future is dropped.
-    /// Permit is an opaque concurrency guard (boxed by the rpc layer) that
-    /// travels with the request so the finalizer can drop it when the spawned
-    /// proof task finishes, instead of when this future is dropped.
     pub async fn generate_state_proof(
         &self,
         keys: Vec<SszStateKey>,
