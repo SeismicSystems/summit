@@ -508,7 +508,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // we reject the proof unless it binds to the requested pubkey.
             println!("\nTEST E: by-pubkey field proof is bound to the requested pubkey");
 
-            use summit_types::ssz_state_tree::{KeyedFieldProof, VALIDATOR_FIELDS_PER_ACCOUNT};
+            use summit_types::ssz_state_tree::{
+                KeyedFieldProof, VALIDATOR_FIELD_NODE_PUBKEY, VALIDATOR_FIELDS_PER_ACCOUNT,
+            };
 
             let key_proof = balance_proof_resp.results[0]
                 .key_proof
@@ -554,7 +556,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 keyed.verify(
                     &balance_proof_resp.root,
                     &requested_pubkey,
-                    VALIDATOR_FIELDS_PER_ACCOUNT
+                    VALIDATOR_FIELDS_PER_ACCOUNT,
+                    VALIDATOR_FIELD_NODE_PUBKEY
                 ),
                 "balance field proof is not bound to the requested validator pubkey"
             );
@@ -567,7 +570,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 !keyed.verify(
                     &balance_proof_resp.root,
                     &other_pubkey,
-                    VALIDATOR_FIELDS_PER_ACCOUNT
+                    VALIDATOR_FIELDS_PER_ACCOUNT,
+                    VALIDATOR_FIELD_NODE_PUBKEY
                 ),
                 "balance field proof wrongly verified against a different pubkey"
             );

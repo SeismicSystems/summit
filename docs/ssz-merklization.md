@@ -413,10 +413,13 @@ Takes a list of key strings and returns the state root, EL block number, and one
 > same field from a *different* item under the same root. For these requests the
 > result therefore also carries a `key_proof`: a companion `SszProof` of the
 > item's key (pubkey) leaf. A trustless consumer **must** verify both, check
-> that `key_proof.leaf` equals the requested pubkey, and check that the two
-> leaves resolve to the same item (their generalized indices agree once the low
-> `log2(fields_per_item)` field-selector bits are dropped — 3 bits for
-> withdrawals, 4 for validator accounts). See `KeyedFieldProof::verify` in
+> that `key_proof.leaf` equals the requested pubkey, check that `key_proof`
+> addresses the canonical pubkey field within its item (its field-selector bits
+> equal the pubkey field index, so the binding cannot rest on some other field
+> that merely hashes to the key), and check that the two leaves resolve to the
+> same item (their generalized indices agree once the low `log2(fields_per_item)`
+> field-selector bits are dropped — 3 bits for withdrawals, 4 for validator
+> accounts). See `KeyedFieldProof::verify` in
 > `types/src/ssz_state_tree.rs`. The `key_proof` field is absent for scalar,
 > whole-item, and index-addressed proofs.
 

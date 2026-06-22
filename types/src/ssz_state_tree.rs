@@ -1162,7 +1162,8 @@ impl SszStateTree {
     /// Unlike [`Self::generate_validator_field_proof`], the returned
     /// [`KeyedFieldProof`] lets a trustless consumer confirm the field belongs
     /// to the requested validator rather than to some other account under the
-    /// same root. Verify with `proof.verify(root, pubkey, VALIDATOR_FIELDS_PER_ACCOUNT)`.
+    /// same root. Verify with
+    /// `proof.verify(root, pubkey, VALIDATOR_FIELDS_PER_ACCOUNT, VALIDATOR_FIELD_NODE_PUBKEY)`.
     pub fn generate_validator_keyed_field_proof(
         &self,
         pubkey: &[u8; 32],
@@ -1373,7 +1374,8 @@ impl SszStateTree {
     /// Unlike [`Self::generate_withdrawal_field_proof_by_key`], the returned
     /// [`KeyedFieldProof`] lets a trustless consumer confirm the field belongs
     /// to the requested pubkey rather than to some other withdrawal under the
-    /// same root. Verify with `proof.verify(root, pubkey, WITHDRAWAL_FIELDS_PER_ITEM)`.
+    /// same root. Verify with
+    /// `proof.verify(root, pubkey, WITHDRAWAL_FIELDS_PER_ITEM, WITHDRAWAL_FIELD_PUBKEY)`.
     pub fn generate_withdrawal_keyed_field_proof_by_key(
         &self,
         pubkey: &[u8; 32],
@@ -1734,8 +1736,10 @@ impl SszProof {
 /// field from a *different* item under the same root and the branch would still
 /// verify. `KeyedFieldProof` closes that gap by carrying a second proof of the
 /// item's key leaf; [`KeyedFieldProof::verify`] checks both leaves authenticate
-/// against the root, that the key leaf equals the requested key, and that the
-/// field and key leaves belong to the *same* collection item.
+/// against the root, that the key leaf equals the requested key, that the key
+/// proof addresses the canonical key field within its item (not just any field
+/// that happens to hash to the key), and that the field and key leaves belong to
+/// the *same* collection item.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyedFieldProof {
     /// Proof of the requested field leaf.
@@ -1749,12 +1753,18 @@ impl KeyedFieldProof {
     ///
     /// `fields_per_item` is the number of leaves per collection item (a power of
     /// two: [`WITHDRAWAL_FIELDS_PER_ITEM`] for withdrawals,
-    /// [`VALIDATOR_FIELDS_PER_ACCOUNT`] for validator accounts). Returns `true`
+    /// [`VALIDATOR_FIELDS_PER_ACCOUNT`] for validator accounts). `key_field_index`
+    /// is the canonical key-field selector within an item
+    /// ([`WITHDRAWAL_FIELD_PUBKEY`] for withdrawals,
+    /// [`VALIDATOR_FIELD_NODE_PUBKEY`] for validator accounts). Returns `true`
     /// only when all of the following hold:
     /// 1. both `field` and `key` authenticate against `state_root`,
     /// 2. the key leaf equals `hash_tree_root(expected_key)` (for a 32-byte key
-    ///    this is the key itself), and
-    /// 3. `field` and `key` resolve to the same item — i.e. their generalized
+    ///    this is the key itself),
+    /// 3. the key proof addresses the canonical key field within its item (its
+    ///    field-selector bits equal `key_field_index`), so the binding cannot
+    ///    rest on some other field that merely happens to hash to the key, and
+    /// 4. `field` and `key` resolve to the same item — i.e. their generalized
     ///    indices agree once the low `log2(fields_per_item)` field-selector bits
     ///    are dropped.
     pub fn verify(
@@ -1762,6 +1772,7 @@ impl KeyedFieldProof {
         state_root: &[u8; 32],
         expected_key: &[u8; 32],
         fields_per_item: usize,
+        key_field_index: usize,
     ) -> bool {
         if !fields_per_item.is_power_of_two() {
             return false;
@@ -1772,9 +1783,14 @@ impl KeyedFieldProof {
         if self.key.leaf != expected_key.hash_tree_root() {
             return false;
         }
-        // The bottom `log2(fields_per_item)` bits of a field gindex are the
-        // field selector within the item; shifting them off yields the item's
-        // subtree-root gindex. Equal item roots ⟺ same item.
+        // The bottom `log2(fields_per_item)` bits of a gindex are the field
+        // selector within the item. Require the key proof to address the
+        // canonical key field, not just any field whose leaf equals the key.
+        if (self.key.gindex & (fields_per_item as u64 - 1)) != key_field_index as u64 {
+            return false;
+        }
+        // Shifting those selector bits off yields the item's subtree-root
+        // gindex. Equal item roots ⟺ same item.
         let shift = fields_per_item.ilog2();
         (self.field.gindex >> shift) == (self.key.gindex >> shift)
     }
@@ -2673,14 +2689,24 @@ mod tests {
             .generate_withdrawal_keyed_field_proof_by_key(&pk1, WITHDRAWAL_FIELD_AMOUNT)
             .unwrap();
         assert!(
-            keyed1.verify(&root, &pk1, WITHDRAWAL_FIELDS_PER_ITEM),
+            keyed1.verify(
+                &root,
+                &pk1,
+                WITHDRAWAL_FIELDS_PER_ITEM,
+                WITHDRAWAL_FIELD_PUBKEY
+            ),
             "honest keyed proof should bind to its own pubkey"
         );
         assert_eq!(keyed1.field.leaf, 1_000_000_000u64.hash_tree_root());
 
         // It must NOT verify against a different requested pubkey.
         assert!(
-            !keyed1.verify(&root, &pk2, WITHDRAWAL_FIELDS_PER_ITEM),
+            !keyed1.verify(
+                &root,
+                &pk2,
+                WITHDRAWAL_FIELDS_PER_ITEM,
+                WITHDRAWAL_FIELD_PUBKEY
+            ),
             "keyed proof must not verify against a different pubkey"
         );
 
@@ -2707,8 +2733,37 @@ mod tests {
             key: pk1_key,
         };
         assert!(
-            !forged.verify(&root, &pk1, WITHDRAWAL_FIELDS_PER_ITEM),
+            !forged.verify(
+                &root,
+                &pk1,
+                WITHDRAWAL_FIELDS_PER_ITEM,
+                WITHDRAWAL_FIELD_PUBKEY
+            ),
             "substituted field from a different withdrawal must not bind to pk1"
+        );
+
+        // Canonical-selector hardening: a `key` proof addressing a NON-pubkey
+        // field must be rejected even when its leaf equals the requested key and
+        // it sits in the same item as `field`. Use pk1's amount field as the
+        // stand-in key and request a key equal to that field's leaf: the leaf
+        // and same-item checks both pass, so only the selector check rejects it.
+        let pk1_amount = tree
+            .generate_withdrawal_field_proof_by_key(&pk1, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        let amount_leaf: [u8; 32] = 1_000_000_000u64.hash_tree_root();
+        assert_eq!(pk1_amount.leaf, amount_leaf);
+        let mis_selected = KeyedFieldProof {
+            field: pk1_amount.clone(),
+            key: pk1_amount,
+        };
+        assert!(
+            !mis_selected.verify(
+                &root,
+                &amount_leaf,
+                WITHDRAWAL_FIELDS_PER_ITEM,
+                WITHDRAWAL_FIELD_PUBKEY
+            ),
+            "a key proof addressing a non-pubkey field must be rejected by the selector check"
         );
     }
 
