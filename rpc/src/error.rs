@@ -13,6 +13,17 @@ pub enum RpcError {
     InvalidGenesis(String),
     IoError(String),
     InvalidKey(String),
+    StateProofKeyLimit {
+        max: usize,
+        actual: usize,
+    },
+    StateProofCostLimit {
+        max: usize,
+        actual: usize,
+    },
+    StateProofBusy {
+        max: usize,
+    },
     Internal(String),
     DisabledInObserverMode,
     #[cfg(feature = "permissioned")]
@@ -58,6 +69,23 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::InvalidKey(msg) => {
                 ErrorObjectOwned::owned(3002, "Invalid key descriptor", Some(msg))
             }
+            RpcError::StateProofKeyLimit { max, actual } => ErrorObjectOwned::owned(
+                3005,
+                "State proof key limit exceeded",
+                Some(format!("requested {actual} keys, maximum is {max}")),
+            ),
+            RpcError::StateProofCostLimit { max, actual } => ErrorObjectOwned::owned(
+                3006,
+                "State proof cost limit exceeded",
+                Some(format!("requested cost {actual}, maximum is {max}")),
+            ),
+            RpcError::StateProofBusy { max } => ErrorObjectOwned::owned(
+                3007,
+                "State proof generation at capacity",
+                Some(format!(
+                    "at the limit of {max} concurrent state proof requests; retry shortly"
+                )),
+            ),
             RpcError::Internal(msg) => ErrorObjectOwned::owned(5000, "Internal error", Some(msg)),
             RpcError::DisabledInObserverMode => ErrorObjectOwned::owned(
                 4003,

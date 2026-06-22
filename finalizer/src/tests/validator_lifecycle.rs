@@ -231,7 +231,7 @@ fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epo
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, _mailbox) =
+        let (finalizer, _state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -323,7 +323,7 @@ fn test_validator_exit_triggers_cancellation() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -453,7 +453,7 @@ fn test_finalizer_rejects_finalized_block_with_wrong_parent() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -589,7 +589,7 @@ fn test_joining_validator_peer_tier_follows_activation() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) = Finalizer::<
+        let (finalizer, _state, mut mailbox, _state_query) = Finalizer::<
             _,
             MockEngineClient,
             RecordingNetworkOracle,
@@ -738,7 +738,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -776,7 +776,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
         handle.abort();
         context.sleep(Duration::from_millis(50)).await;
 
-        let (restarted, reloaded_state, _mailbox) =
+        let (restarted, reloaded_state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer_restart"),
                 FinalizerConfig {
@@ -914,7 +914,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -970,7 +970,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
         context.sleep(Duration::from_millis(50)).await;
 
         // Restart from the same DB: the epoch must NOT have durably advanced.
-        let (restarted, reloaded_state, _mailbox) =
+        let (restarted, reloaded_state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer_restart"),
                 FinalizerConfig {
@@ -1062,7 +1062,7 @@ fn last_block_exit_dominates_concurrent_max_stake_reduction() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -1274,7 +1274,7 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
             _variant_marker: PhantomData,
         };
 
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, RecordingOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,

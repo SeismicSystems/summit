@@ -10,14 +10,14 @@ use summit_rpc::{
     start_rpc_server_with_handle,
 };
 use utils::{
-    MockFinalizerState, create_test_finalized_header, create_test_finalizer_mailbox,
-    create_test_keystore,
+    MockFinalizerState, create_gated_proof_mailbox, create_test_finalized_header,
+    create_test_finalizer_mailbox, create_test_keystore,
 };
 
 const TEST_GENESIS_HASH: [u8; 32] = [7u8; 32];
 
-/// Derive the observer child transport key for the keystore's node key, the
-/// same way `--observer <index>` derives the live P2P signer.
+/// Derives the observer child public key (hex) the way the node does in
+/// observer mode, so tests can assert the RPC reports it as the live identity.
 fn derive_observer_node_key(key_store_path: &str, index: u32) -> String {
     use commonware_cryptography::Signer as _;
     use summit_types::{KeyPaths, ext_private_key::ExtPrivateKey};
@@ -61,14 +61,9 @@ async fn test_health_endpoint() {
 }
 
 #[tokio::test]
-async fn test_websocket_upgrades_are_rejected() {
-    // The RPC server is http-only: Summit's API is request/response (no
-    // subscriptions). Disabling websocket upgrades closes the idle-connection
-    // permit-exhaustion vector (jsonrpsee enables websockets with pings off by
-    // default, so idle upgraded connections would hold their max_connections
-    // permit indefinitely). HTTP must still work; websocket connects must fail.
-    use jsonrpsee::ws_client::WsClientBuilder;
-    use summit_rpc::SummitApiClient;
+async fn test_get_state_proof_rejects_too_many_keys() {
+    use jsonrpsee::core::client::Error as ClientError;
+    use summit_rpc::SummitProofApiClient;
 
     let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
     let temp_dir = create_test_keystore().unwrap();
@@ -86,22 +81,245 @@ async fn test_websocket_upgrades_are_rejected() {
     .await
     .unwrap();
 
-    // HTTP still works.
-    let http = HttpClientBuilder::default()
-        .build(format!("http://{addr}"))
-        .unwrap();
-    assert_eq!(http.health().await.unwrap(), "Ok");
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
 
-    // Websocket upgrade is refused, so idle WS connections cannot be opened.
-    let ws = WsClientBuilder::default()
-        .build(format!("ws://{addr}"))
-        .await;
-    assert!(
-        ws.is_err(),
-        "websocket upgrade must be rejected when the server is http-only"
+    let keys = vec!["epoch".to_string(); 129];
+    let err = client.get_state_proof(keys).await.unwrap_err();
+
+    match err {
+        ClientError::Call(obj) => assert_eq!(obj.code(), 3005),
+        other => panic!("expected 3005 StateProofKeyLimit, got {other:?}"),
+    }
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_get_state_proof_rejects_excessive_cost() {
+    use jsonrpsee::core::client::Error as ClientError;
+    use summit_rpc::SummitProofApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
+
+    let validator_key = format!("validator_field:0x{}:balance", "01".repeat(32));
+    let keys = vec![validator_key; 65];
+    let err = client.get_state_proof(keys).await.unwrap_err();
+
+    match err {
+        ClientError::Call(obj) => assert_eq!(obj.code(), 3006),
+        other => panic!("expected 3006 StateProofCostLimit, got {other:?}"),
+    }
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_state_proof_concurrency_cap_rejects_excess() {
+    use futures::StreamExt as _;
+    use jsonrpsee::core::client::Error as ClientError;
+    use summit_rpc::{MAX_CONCURRENT_STATE_PROOFS, SummitProofApiClient};
+
+    // Gated mock: holds every proof generation open until we release, so we can
+    // pin `cap` requests in flight simultaneously and observe the cap engaging.
+    let (mailbox, _received, release_tx, _mock) = create_gated_proof_mailbox();
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let url = format!("http://{}", addr);
+    let cap = MAX_CONCURRENT_STATE_PROOFS;
+    let extra = 5;
+
+    // Fire cap + extra concurrent proof requests (one cheap scalar key each, well
+    // within the per-request limits). The gated mock never responds until we
+    // release, so the first `cap` hold their concurrency slots and the remaining
+    // `extra` must be rejected with the busy error (3007). No slot is freed before
+    // release, so the split is deterministic.
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    for _ in 0..(cap + extra) {
+        let client = HttpClientBuilder::default().build(&url).unwrap();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let res = client.get_state_proof(vec!["epoch".to_string()]).await;
+            let _ = tx.unbounded_send(res);
+        });
+    }
+    drop(tx);
+
+    let mut busy = 0usize;
+    let mut accepted = 0usize;
+    let mut release_tx = Some(release_tx);
+    while let Some(res) = rx.next().await {
+        match res {
+            Ok(_) => accepted += 1,
+            Err(ClientError::Call(obj)) => {
+                assert_eq!(
+                    obj.code(),
+                    3007,
+                    "over-cap request must be rejected as busy"
+                );
+                busy += 1;
+            }
+            Err(other) => panic!("unexpected client error: {other:?}"),
+        }
+        // Once every over-cap request has been rejected, the `cap` accepted ones
+        // are confirmed holding their slots in flight; release them to complete.
+        if busy == extra {
+            if let Some(tx) = release_tx.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    assert_eq!(busy, extra, "exactly the over-cap requests are rejected");
+    assert_eq!(
+        accepted, cap,
+        "exactly the cap is accepted concurrently before release"
     );
 
     handle.stop().unwrap();
+}
+
+// The concurrency permit must be released when the proof task finishes, not
+// when the RPC handler future is dropped. Otherwise a caller could connect,
+// wait for the proof task to be spawned, disconnect to free the slot while the
+// detached proof work keeps running, and repeat to pile up real work under a
+// slot count that reads as idle. This drives the handler future directly,
+// cancels it after the proof task is spawned, and asserts the slot stays held
+// until the gated proof task completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_state_proof_permit_outlives_cancelled_request() {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use summit_rpc::{MAX_CONCURRENT_STATE_PROOFS, SummitProofApiServer, SummitRpcServer};
+
+    // Gated mock holds every proof task open, including the permit handed to it,
+    // until we release.
+    let (mailbox, received, release_tx, _mock) = create_gated_proof_mailbox();
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let server = SummitRpcServer::new(
+        key_store_path,
+        mailbox,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT",
+        None,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let cap = MAX_CONCURRENT_STATE_PROOFS;
+
+    // Keep cap - 1 proof requests in flight, held open by the gated mock.
+    let mut held = Vec::new();
+    for _ in 0..(cap - 1) {
+        let server = server.clone();
+        held.push(tokio::spawn(async move {
+            let _ = server.get_state_proof(vec!["epoch".to_string()]).await;
+        }));
+    }
+
+    // Start the cap-th request; it acquires the last slot and hands its permit
+    // to the (gated) proof task.
+    let cancel = {
+        let server = server.clone();
+        tokio::spawn(async move {
+            let _ = server.get_state_proof(vec!["epoch".to_string()]).await;
+        })
+    };
+
+    // Wait until every request has reached the mock, so all cap slots are
+    // acquired and all permits are now owned by the mock's detached tasks.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while received.load(Ordering::SeqCst) < cap {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "proof tasks were never spawned"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+
+    // Cancel the cap-th request's handler future (the client-disconnect path).
+    cancel.abort();
+    let _ = cancel.await;
+
+    // The slot must still be held: it belongs to the cancelled request's proof
+    // task, which is still gated. A fresh request is rejected as busy and
+    // returns immediately. If cancellation had leaked the slot back, the fresh
+    // request would instead be accepted and block on the gated mock until the
+    // timeout fires.
+    let fresh = tokio::time::timeout(
+        Duration::from_secs(2),
+        server.get_state_proof(vec!["epoch".to_string()]),
+    )
+    .await;
+    match fresh {
+        Ok(Err(obj)) => assert_eq!(
+            obj.code(),
+            3007,
+            "cancelled request must keep holding its slot until the proof task completes"
+        ),
+        Ok(Ok(_)) => {
+            panic!("fresh request was accepted: a cancelled request freed its slot early")
+        }
+        Err(_) => panic!(
+            "fresh request blocked on the gated mock: the cancelled request's slot was freed while its proof task is still running"
+        ),
+    }
+
+    // Release every gated task; permits drop as the tasks complete, freeing
+    // slots.
+    let _ = release_tx.send(());
+    for h in held {
+        let _ = h.await;
+    }
+
+    // A fresh request now succeeds, proving the permits were released when the
+    // proof tasks finished rather than lost.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match server.get_state_proof(vec!["epoch".to_string()]).await {
+            Ok(_) => break,
+            Err(obj) => {
+                assert_eq!(obj.code(), 3007, "unexpected error while draining slots");
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "slots were never freed after the proof tasks completed"
+                );
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -168,43 +386,6 @@ async fn test_get_latest_epoch() {
     let response = client.get_latest_epoch().await;
     assert!(response.is_ok());
     assert_eq!(response.unwrap(), 10);
-
-    handle.stop().unwrap();
-}
-
-#[tokio::test]
-async fn test_get_finalized_header_digest() {
-    use summit_rpc::SummitApiClient;
-
-    let epoch = 3;
-    let finalized_header = create_test_finalized_header(epoch);
-    let expected_digest = finalized_header.header().get_digest().0;
-    let state = MockFinalizerState {
-        finalized_headers: [(epoch, Some(finalized_header))].into(),
-        ..Default::default()
-    };
-    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(state);
-    let temp_dir = create_test_keystore().unwrap();
-    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
-
-    let (handle, addr) = start_rpc_server_with_handle(
-        mailbox,
-        key_store_path,
-        TEST_GENESIS_HASH,
-        b"_SUMMIT".to_vec(),
-        0,
-        #[cfg(feature = "permissioned")]
-        Arc::new(AtomicBool::new(false)),
-    )
-    .await
-    .unwrap();
-
-    let url = format!("http://{}", addr);
-    let client = HttpClientBuilder::default().build(&url).unwrap();
-
-    let response = client.get_finalized_header_digest(epoch).await.unwrap();
-    assert_eq!(response.epoch, epoch);
-    assert_eq!(response.digest, expected_digest);
 
     handle.stop().unwrap();
 }
@@ -340,55 +521,6 @@ withdrawal_credentials = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
     );
 
     handle.stop().unwrap();
-}
-
-/// send_genesis must validate before installing: malformed or empty content is
-/// rejected, the target path is left untouched (no partial/garbage file that
-/// startup would treat as provisioned), and no temp file is left behind.
-#[tokio::test]
-async fn test_send_genesis_rejects_invalid_content() {
-    use summit_rpc::SummitGenesisApiClient;
-
-    for bad_content in [
-        "",
-        "this is not valid toml",
-        "eth_genesis_hash = \"0xdead\"\n",
-    ] {
-        let temp_dir = create_test_keystore().unwrap();
-        let key_store_path = temp_dir.path().to_str().unwrap().to_string();
-
-        let genesis_dir = tempfile::tempdir().unwrap();
-        let genesis_path = genesis_dir.path().join("genesis.toml");
-        let genesis_path_str = genesis_path.to_str().unwrap().to_string();
-
-        let path_sender = PathSender::new(genesis_path_str, None);
-        let (handle, addr) =
-            start_rpc_server_for_genesis_with_handle(path_sender, key_store_path, 0)
-                .await
-                .unwrap();
-
-        let url = format!("http://{}", addr);
-        let client = HttpClientBuilder::default().build(&url).unwrap();
-
-        let response = client.send_genesis(bad_content.to_string()).await;
-        assert!(
-            response.is_err(),
-            "sendGenesis should reject invalid content: {bad_content:?}"
-        );
-
-        // The target path must not exist — nothing partial/garbage installed.
-        assert!(
-            !genesis_path.exists(),
-            "target genesis path must not be created on invalid content: {bad_content:?}"
-        );
-        // No staging temp file left behind.
-        assert!(
-            !genesis_dir.path().join("genesis.toml.tmp").exists(),
-            "temp genesis file must be cleaned up on invalid content: {bad_content:?}"
-        );
-
-        handle.stop().unwrap();
-    }
 }
 
 /// The genesis provisioning RPC installs the chain's authoritative identity
@@ -674,10 +806,140 @@ async fn test_get_deposit_signature_not_on_public_listener() {
     handles.admin_handle.stop().unwrap();
 }
 
-/// An observer node's live P2P identity is a child key derived from the
-/// master node key; signing a deposit would bind the master validator
-/// identity from a process that doesn't represent it. `getDepositSignature`
-/// must therefore be rejected in observer mode, even on the admin listener.
+#[tokio::test]
+async fn test_websocket_upgrades_are_rejected() {
+    // The RPC server is http-only: Summit's API is request/response (no
+    // subscriptions). Disabling websocket upgrades closes the idle-connection
+    // permit-exhaustion vector (jsonrpsee enables websockets with pings off by
+    // default, so idle upgraded connections would hold their max_connections
+    // permit indefinitely). HTTP must still work; websocket connects must fail.
+    use jsonrpsee::ws_client::WsClientBuilder;
+    use summit_rpc::SummitApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    // HTTP still works.
+    let http = HttpClientBuilder::default()
+        .build(format!("http://{addr}"))
+        .unwrap();
+    assert_eq!(http.health().await.unwrap(), "Ok");
+
+    // Websocket upgrade is refused, so idle WS connections cannot be opened.
+    let ws = WsClientBuilder::default()
+        .build(format!("ws://{addr}"))
+        .await;
+    assert!(
+        ws.is_err(),
+        "websocket upgrade must be rejected when the server is http-only"
+    );
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_get_finalized_header_digest() {
+    use summit_rpc::SummitApiClient;
+
+    let epoch = 3;
+    let finalized_header = create_test_finalized_header(epoch);
+    let expected_digest = finalized_header.header().get_digest().0;
+    let state = MockFinalizerState {
+        finalized_headers: [(epoch, Some(finalized_header))].into(),
+        ..Default::default()
+    };
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(state);
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let url = format!("http://{}", addr);
+    let client = HttpClientBuilder::default().build(&url).unwrap();
+
+    let response = client.get_finalized_header_digest(epoch).await.unwrap();
+    assert_eq!(response.epoch, epoch);
+    assert_eq!(response.digest, expected_digest);
+
+    handle.stop().unwrap();
+}
+
+/// send_genesis must validate before installing: malformed or empty content is
+/// rejected, the target path is left untouched (no partial/garbage file that
+/// startup would treat as provisioned), and no temp file is left behind.
+#[tokio::test]
+async fn test_send_genesis_rejects_invalid_content() {
+    use summit_rpc::SummitGenesisApiClient;
+
+    for bad_content in [
+        "",
+        "this is not valid toml",
+        "eth_genesis_hash = \"0xdead\"\n",
+    ] {
+        let temp_dir = create_test_keystore().unwrap();
+        let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+        let genesis_dir = tempfile::tempdir().unwrap();
+        let genesis_path = genesis_dir.path().join("genesis.toml");
+        let genesis_path_str = genesis_path.to_str().unwrap().to_string();
+
+        let path_sender = PathSender::new(genesis_path_str, None);
+        let (handle, addr) =
+            start_rpc_server_for_genesis_with_handle(path_sender, key_store_path, 0)
+                .await
+                .unwrap();
+
+        let url = format!("http://{}", addr);
+        let client = HttpClientBuilder::default().build(&url).unwrap();
+
+        let response = client.send_genesis(bad_content.to_string()).await;
+        assert!(
+            response.is_err(),
+            "sendGenesis should reject invalid content: {bad_content:?}"
+        );
+
+        // The target path must not exist — nothing partial/garbage installed.
+        assert!(
+            !genesis_path.exists(),
+            "target genesis path must not be created on invalid content: {bad_content:?}"
+        );
+        // No staging temp file left behind.
+        assert!(
+            !genesis_dir.path().join("genesis.toml.tmp").exists(),
+            "temp genesis file must be cleaned up on invalid content: {bad_content:?}"
+        );
+
+        handle.stop().unwrap();
+    }
+}
+
+/// In observer mode `getDepositSignature` must be rejected even on the admin
+/// listener: the observer runs a derived child key, not the master node key,
+/// so signing a deposit would bind the master validator identity from a
+/// process that doesn't represent it.
 #[tokio::test]
 async fn test_get_deposit_signature_disabled_in_observer_mode() {
     use jsonrpsee::core::ClientError;

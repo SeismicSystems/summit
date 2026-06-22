@@ -536,6 +536,7 @@ mod tests {
     use ssz::{Decode, Encode};
     use std::collections::{BTreeMap, VecDeque};
     use std::num::NonZeroU64;
+    use std::sync::Arc;
 
     fn parse_public_key(public_key: &str) -> ed25519::PublicKey {
         ed25519::PublicKey::decode(
@@ -577,9 +578,9 @@ mod tests {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
+            proof_tree: Arc::new(SszStateTree::default()),
             state_root: [0u8; 32],
-            proof_validator_keys: Vec::new(),
+            proof_validator_keys: Arc::new(Vec::new()),
 
             proof_el_block_number: 0,
             captured_bytes: None,
@@ -709,9 +710,9 @@ mod tests {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
+            proof_tree: Arc::new(SszStateTree::default()),
             state_root: [0u8; 32],
-            proof_validator_keys: Vec::new(),
+            proof_validator_keys: Arc::new(Vec::new()),
 
             proof_el_block_number: 0,
             captured_bytes: None,
@@ -765,9 +766,9 @@ mod tests {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
+            proof_tree: Arc::new(SszStateTree::default()),
             state_root: [0u8; 32],
-            proof_validator_keys: Vec::new(),
+            proof_validator_keys: Arc::new(Vec::new()),
 
             proof_el_block_number: 0,
             captured_bytes: None,
@@ -904,9 +905,9 @@ mod tests {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
+            proof_tree: Arc::new(SszStateTree::default()),
             state_root: [0u8; 32],
-            proof_validator_keys: Vec::new(),
+            proof_validator_keys: Arc::new(Vec::new()),
 
             proof_el_block_number: 0,
             captured_bytes: None,
@@ -965,9 +966,9 @@ mod tests {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
+            proof_tree: Arc::new(SszStateTree::default()),
             state_root: [0u8; 32],
-            proof_validator_keys: Vec::new(),
+            proof_validator_keys: Arc::new(Vec::new()),
 
             proof_el_block_number: 0,
             captured_bytes: None,
@@ -1031,9 +1032,9 @@ mod tests {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
+            proof_tree: Arc::new(SszStateTree::default()),
             state_root: [0u8; 32],
-            proof_validator_keys: Vec::new(),
+            proof_validator_keys: Arc::new(Vec::new()),
 
             proof_el_block_number: 0,
             captured_bytes: None,
@@ -1093,9 +1094,9 @@ mod tests {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
+            proof_tree: Arc::new(SszStateTree::default()),
             state_root: [0u8; 32],
-            proof_validator_keys: Vec::new(),
+            proof_validator_keys: Arc::new(Vec::new()),
 
             proof_el_block_number: 0,
             captured_bytes: None,
@@ -1252,9 +1253,9 @@ mod tests {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
+            proof_tree: Arc::new(SszStateTree::default()),
             state_root: [0u8; 32],
-            proof_validator_keys: Vec::new(),
+            proof_validator_keys: Arc::new(Vec::new()),
 
             proof_el_block_number: 0,
             captured_bytes: None,

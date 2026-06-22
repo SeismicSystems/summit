@@ -18,6 +18,7 @@ use commonware_cryptography::{bls12381, sha256};
 use metrics::histogram;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 const INVALID_STAKE_INTERVAL: &str =
     "validator_minimum_stake must be less than or equal to validator_maximum_stake";
@@ -66,11 +67,11 @@ pub struct ConsensusState {
     /// Frozen snapshot of `ssz_tree` at `capture_state_root()` time.
     /// Proofs are generated from this tree so they verify against the on-chain root.
     /// Not serialized — rebuilt alongside `ssz_tree`.
-    pub(crate) proof_tree: SszStateTree,
+    pub(crate) proof_tree: Arc<SszStateTree>,
 
     /// Frozen snapshot of validator pubkeys (sorted) at `capture_state_root()` time.
     /// Needed for positional index lookups when generating validator proofs.
-    pub(crate) proof_validator_keys: Vec<[u8; 32]>,
+    pub(crate) proof_validator_keys: Arc<Vec<[u8; 32]>>,
 
     // Withdrawal proof lookup is handled by the pubkey index stored in SszStateTree itself.
     // The frozen proof_tree contains the withdrawal_pubkey_index from capture time.
@@ -129,8 +130,8 @@ impl Default for ConsensusState {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
-            proof_validator_keys: Vec::new(),
+            proof_tree: Arc::new(SszStateTree::default()),
+            proof_validator_keys: Arc::new(Vec::new()),
             captured_bytes: None,
 
             state_root: [0u8; 32],
@@ -230,8 +231,8 @@ impl ConsensusState {
             pending_active_validator_exits: 0,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
-            proof_validator_keys: Vec::new(),
+            proof_tree: Arc::new(SszStateTree::default()),
+            proof_validator_keys: Arc::new(Vec::new()),
             captured_bytes: None,
 
             state_root: [0u8; 32],
@@ -682,8 +683,8 @@ impl ConsensusState {
             .set_dynamic_epoch_schedule(&self.epocher.encode());
 
         self.state_root = self.ssz_tree.root();
-        self.proof_tree = self.ssz_tree.clone();
-        self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
+        self.proof_tree = Arc::new(self.ssz_tree.clone());
+        self.proof_validator_keys = Arc::new(self.validator_accounts.keys().copied().collect());
         self.proof_el_block_number = el_block_number;
 
         // Snapshot the entire state so a restart can rebuild `proof_tree`
@@ -702,13 +703,23 @@ impl ConsensusState {
     /// Returns the frozen tree snapshot for proof generation.
     /// Proofs from this tree verify against the on-chain `parent_beacon_block_root`.
     pub fn proof_tree(&self) -> &SszStateTree {
-        &self.proof_tree
+        self.proof_tree.as_ref()
+    }
+
+    /// Returns a shareable frozen proof tree snapshot.
+    pub fn proof_tree_snapshot(&self) -> Arc<SszStateTree> {
+        Arc::clone(&self.proof_tree)
     }
 
     /// Returns the frozen validator pubkeys (sorted) for proof generation.
     /// Needed for positional index lookups when generating validator proofs.
     pub fn proof_validator_keys(&self) -> &[[u8; 32]] {
-        &self.proof_validator_keys
+        self.proof_validator_keys.as_slice()
+    }
+
+    /// Returns a shareable frozen validator-key snapshot for proof generation.
+    pub fn proof_validator_keys_snapshot(&self) -> Arc<Vec<[u8; 32]>> {
+        Arc::clone(&self.proof_validator_keys)
     }
 
     /// Returns the EL block number at the time the proof tree was captured.
@@ -1078,8 +1089,8 @@ impl ConsensusState {
         // these from the capture time snapshot afterwards, so this is only the
         // baseline for construction, bulk reset, and capture less restarts.
         self.state_root = self.ssz_tree.root();
-        self.proof_tree = self.ssz_tree.clone();
-        self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
+        self.proof_tree = Arc::new(self.ssz_tree.clone());
+        self.proof_validator_keys = Arc::new(self.validator_accounts.keys().copied().collect());
 
         #[cfg(feature = "prom")]
         histogram!("ssz_rebuild_tree_micros").record(start.elapsed().as_micros() as f64);
@@ -1372,8 +1383,8 @@ impl Read for ConsensusState {
             pending_active_validator_exits,
             epocher,
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
-            proof_validator_keys: Vec::new(),
+            proof_tree: Arc::new(SszStateTree::default()),
+            proof_validator_keys: Arc::new(Vec::new()),
             captured_bytes: captured_bytes.clone(),
 
             state_root: [0u8; 32],
@@ -1393,7 +1404,8 @@ impl Read for ConsensusState {
             let inner = ConsensusState::decode(bytes.as_slice())?;
             state.proof_tree = inner.proof_tree.clone();
             state.state_root = state.proof_tree.root();
-            state.proof_validator_keys = inner.validator_accounts.keys().copied().collect();
+            state.proof_validator_keys =
+                Arc::new(inner.validator_accounts.keys().copied().collect());
         }
 
         Ok(state)

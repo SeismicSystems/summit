@@ -478,7 +478,7 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         Vec<Option<summit_types::ssz_state_tree::SszProof>>,
     ) {
         let (response, rx) = oneshot::channel();
-        let request = ConsensusStateRequest::GenerateStateProof(keys);
+        let request = ConsensusStateRequest::GenerateStateProof(keys, None);
         let _ = self
             .sender
             .clone()
