@@ -934,17 +934,13 @@ impl ConsensusState {
         self.withdrawal_queue.get_for_epoch(epoch)
     }
 
-    pub fn get_withdrawals_for_epoch_with_limits(
+    pub fn get_withdrawals_for_epoch_with_total_cap(
         &self,
         epoch: u64,
-        max_validator_withdrawals: usize,
-        max_refund_withdrawals: usize,
+        max_total: usize,
     ) -> Vec<&PendingWithdrawal> {
-        self.withdrawal_queue.get_for_epoch_with_limits(
-            epoch,
-            max_validator_withdrawals,
-            max_refund_withdrawals,
-        )
+        self.withdrawal_queue
+            .get_for_epoch_with_total_cap(epoch, max_total)
     }
 
     /// Get the number of pending withdrawals for a specific epoch

@@ -382,21 +382,27 @@ impl WithdrawalQueue {
         withdrawals
     }
 
-    pub fn get_for_epoch_with_limits(
+    /// Select up to `max_total` withdrawals for the epoch under a single total
+    /// cap, with validator exits taking strict priority over deposit refunds:
+    /// validator exits fill the budget first, then refunds use only the
+    /// remaining capacity. This keeps one per-epoch terminal-block bound while
+    /// guaranteeing refunds can never displace validator exits (the #226
+    /// starvation guard). Refunds that do not fit roll to a later epoch.
+    pub fn get_for_epoch_with_total_cap(
         &self,
         epoch: u64,
-        max_validator_withdrawals: usize,
-        max_refund_withdrawals: usize,
+        max_total: usize,
     ) -> Vec<&PendingWithdrawal> {
         let mut withdrawals: Vec<_> = self
             .get_for_epoch_by_kind(epoch, WithdrawalKind::Validator)
             .into_iter()
-            .take(max_validator_withdrawals)
+            .take(max_total)
             .collect();
+        let remaining = max_total - withdrawals.len();
         withdrawals.extend(
             self.get_for_epoch_by_kind(epoch, WithdrawalKind::DepositRefund)
                 .into_iter()
-                .take(max_refund_withdrawals),
+                .take(remaining),
         );
         withdrawals
     }
@@ -1285,13 +1291,21 @@ mod tests {
         assert_eq!(epoch5[1].kind, WithdrawalKind::DepositRefund);
         assert_eq!(epoch5[1].pubkey, [0xFE; 32]);
 
-        let validator_only = queue.get_for_epoch_with_limits(5, 1, 0);
-        assert_eq!(validator_only.len(), 1);
-        assert_eq!(validator_only[0].kind, WithdrawalKind::Validator);
+        // Total cap with validator priority: a cap of 1, with both a validator
+        // exit and a refund pending, must yield the validator exit only — the
+        // refund is displaced, not given its own slot.
+        let capped = queue.get_for_epoch_with_total_cap(5, 1);
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].kind, WithdrawalKind::Validator);
 
-        let refund_only = queue.get_for_epoch_with_limits(5, 0, 1);
-        assert_eq!(refund_only.len(), 1);
-        assert_eq!(refund_only[0].kind, WithdrawalKind::DepositRefund);
+        // A cap of 0 yields nothing.
+        assert!(queue.get_for_epoch_with_total_cap(5, 0).is_empty());
+
+        // A cap that admits both keeps validator-first ordering.
+        let both = queue.get_for_epoch_with_total_cap(5, 2);
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].kind, WithdrawalKind::Validator);
+        assert_eq!(both[1].kind, WithdrawalKind::DepositRefund);
     }
 
     #[test]

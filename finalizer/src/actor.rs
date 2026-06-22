@@ -2032,16 +2032,14 @@ impl<
                     self.genesis_hash.into()
                 };
 
-            // Validator withdrawals and deposit-refund withdrawals use separate
-            // budgets. Refunds do not consume validator-exit capacity.
+            // `max_withdrawals_per_epoch` is a single total cap on the terminal
+            // block's withdrawals. Validator exits take strict priority and fill
+            // the budget first; deposit refunds use only the remaining capacity,
+            // so refunds can neither starve exits (#226) nor inflate the cap.
             let current_epoch = state.get_epoch();
             let max_withdrawals = state.get_max_withdrawals_per_epoch() as usize;
             let ready_withdrawals: Vec<_> = state
-                .get_withdrawals_for_epoch_with_limits(
-                    current_epoch,
-                    max_withdrawals,
-                    max_withdrawals,
-                )
+                .get_withdrawals_for_epoch_with_total_cap(current_epoch, max_withdrawals)
                 .into_iter()
                 .cloned()
                 .collect();
