@@ -16,11 +16,11 @@ The changes were made to accommodate every consensus node having 2 keys to parti
    {
      "jsonrpc": "2.0",
      "method": "getDepositSignature",
-     "params": [32000000000, "0x0000000000000000000000000000000000000000"],
+     "params": [32000000000, "0xYourWithdrawalAddressHere"],
      "id": 1
    }
    ```
-   The `amount` should be the staking amount and `address` should be the Ethereum address you want to be able to withdraw to.
+   The `amount` should be the staking amount and `address` should be the Ethereum address you want to be able to withdraw to. **Replace the `address` placeholder with an address you actually control** — withdrawals and exits are only honored from the exact address bound at deposit time, so a stake deposited against an address you cannot sign for is permanently unrecoverable.
 3. Send a signed transaction to the deposit contract with the calldata from the previous step, along with a value equal to the amount being staked (contract address: `0x00000000219ab540356cBB839Cbe05303d7705Fa`, same as Ethereum).
 4. Download the latest checkpoint and load it into the node.
 5. Keep your node running and it will start participating in the next epoch.
