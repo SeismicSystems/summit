@@ -223,9 +223,18 @@ impl<
                                 }
                                 // Push the certified block to voters consensus has
                                 // identified as missing it (ForwardingPolicy::SilentVoters).
+                                // Dispatch off the loop: syncer.forward enqueues into the
+                                // bounded syncer mailbox, so awaiting it here would let a
+                                // full or slow syncer block the application loop from
+                                // dequeuing later Propose/Verify/Certify messages.
                                 Plan::Forward { round, peers } => {
                                     debug!(?round, n_peers = peers.len(), "{rand_id} Broadcast(Forward): forwarding to silent voters");
-                                    syncer.forward(round, payload, peers).await;
+                                    self.context.with_label("forward").spawn({
+                                        let syncer = syncer.clone();
+                                        move |_| async move {
+                                            syncer.forward(round, payload, peers).await;
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -245,13 +254,16 @@ impl<
                             debug!("{rand_id} application: Handling message Certify for round {} (epoch {}, view {})",
                                 round, round.epoch(), round.view());
 
-                            let block_request = syncer.subscribe(Some(round), payload).await;
-
                             self.context.with_label("certify").spawn({
+                                let mut syncer = syncer.clone();
                                 let mut finalizer_clone = finalizer.clone();
                                 let mut engine_client = self.engine_client.clone();
                                 let genesis_hash = self.genesis_hash;
                                 move |context| async move {
+                                    // Subscribe inside the task: the enqueue goes into the
+                                    // bounded syncer mailbox, so doing it on the application
+                                    // loop would let a full syncer block later messages.
+                                    let block_request = syncer.subscribe(Some(round), payload).await;
                                     let work = async {
                                         let Ok(block) = block_request.await else {
                                             warn!(?round, "certify: failed to receive block from syncer");
@@ -360,34 +372,34 @@ impl<
                                 round, round.epoch(), round.view(), parent.0);
 
                             // The parent view signed into the proposal context, captured
-                            // before `parent` is shadowed by the fetched parent block below.
+                            // before `parent` is moved into the verify task below (the task's
+                            // `move` closure copies this Copy `u64` for `handle_verify`).
                             let signed_parent_view = parent.0.get();
 
-                            // Subscribe to blocks (will wait for them if not available)
-                            let parent_request = if parent.1 == self.genesis_hash.into() {
-                                Either::Left(future::ready(Ok(Block::genesis(self.genesis_hash))))
-                            } else {
-                                let parent_round = if parent.0.get() == 0 {
-                                    // Parent view is 0, which means that this is the first block of the epoch
-                                    None
-                                } else {
-                                    Some(Round::new(round.epoch(), parent.0))
-                                };
-                                Either::Right(
-                                    syncer
-                                        .subscribe(parent_round, parent.1)
-                                        .await,
-                                )
-                            };
-                            let block_request = syncer.subscribe(Some(round), payload).await;
-
-                            // Wait for the blocks to be available or the request to be canceled in a separate task (to
-                            // continue processing other messages)
+                            // Subscribe and wait for the blocks in a separate task so a full
+                            // or slow syncer mailbox cannot block the application loop from
+                            // dequeuing later consensus messages. The subscribe enqueues go
+                            // into the bounded syncer mailbox, so they run off-loop too.
+                            let genesis_hash = self.genesis_hash;
                             self.context.with_label("verify").spawn({
                                 let mut syncer = syncer.clone();
                                 let mut finalizer_clone = finalizer.clone();
                                 let epocher = self.epocher.clone();
                                 move |context| async move {
+                                    // Subscribe to blocks (will wait for them if not available)
+                                    let parent_request = if parent.1 == genesis_hash.into() {
+                                        Either::Left(future::ready(Ok(Block::genesis(genesis_hash))))
+                                    } else {
+                                        let parent_round = if parent.0.get() == 0 {
+                                            // Parent view is 0, which means that this is the first block of the epoch
+                                            None
+                                        } else {
+                                            Some(Round::new(round.epoch(), parent.0))
+                                        };
+                                        Either::Right(syncer.subscribe(parent_round, parent.1).await)
+                                    };
+                                    let block_request = syncer.subscribe(Some(round), payload).await;
+
                                     let requester = try_join(parent_request, block_request);
                                     select! {
                                         result = requester => {
