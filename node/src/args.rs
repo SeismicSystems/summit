@@ -420,7 +420,7 @@ mod genesis_path_tests {
 /// (signature verification, process exit) of the live startup path — mirrors the
 /// [`GenesisPathState`] pattern above.
 #[derive(Debug, PartialEq, Eq)]
-enum CheckpointStartupDecision {
+pub(crate) enum CheckpointStartupDecision {
     /// No checkpoint supplied; start from genesis (or the local DB).
     NoCheckpoint,
     /// A checkpoint and a finalized-headers chain are present; verify the
@@ -442,7 +442,7 @@ enum CheckpointStartupDecision {
 /// through the checkpoint-hash binding, so the decoded consensus state cannot be
 /// tampered with. A bare checkpoint with no chain is refused unless the operator
 /// explicitly waives verification.
-fn classify_checkpoint_startup(
+pub(crate) fn classify_checkpoint_startup(
     has_checkpoint: bool,
     has_headers_chain: bool,
     unsafe_skip_verification: bool,
@@ -460,7 +460,7 @@ fn classify_checkpoint_startup(
 /// independent files, so a checkpoint directory could otherwise pair a verified
 /// checkpoint with an unrelated block. Returns `Err` with a descriptive message
 /// on mismatch; `Ok` when the block matches or none was supplied.
-fn check_last_block_binding(
+pub(crate) fn check_last_block_binding(
     last_block_digest: Option<Digest>,
     committed_digest: Digest,
 ) -> Result<(), String> {
@@ -470,74 +470,6 @@ fn check_last_block_binding(
              finalized block (last_block {d:?}, verified terminal {committed_digest:?})"
         )),
         _ => Ok(()),
-    }
-}
-
-#[cfg(test)]
-mod checkpoint_startup_tests {
-    use super::*;
-
-    #[test]
-    fn no_checkpoint_starts_from_genesis() {
-        assert_eq!(
-            classify_checkpoint_startup(false, false, false),
-            CheckpointStartupDecision::NoCheckpoint
-        );
-        // Headers/unsafe flags are irrelevant when no checkpoint is supplied.
-        assert_eq!(
-            classify_checkpoint_startup(false, true, true),
-            CheckpointStartupDecision::NoCheckpoint
-        );
-    }
-
-    #[test]
-    fn checkpoint_with_headers_chain_is_verified() {
-        assert_eq!(
-            classify_checkpoint_startup(true, true, false),
-            CheckpointStartupDecision::Verify
-        );
-        // The unsafe flag must not downgrade the verified path when a chain is
-        // present — verification still runs.
-        assert_eq!(
-            classify_checkpoint_startup(true, true, true),
-            CheckpointStartupDecision::Verify
-        );
-    }
-
-    #[test]
-    fn standalone_checkpoint_is_refused_by_default() {
-        // Regression for #214: a checkpoint with no finalized-headers chain must
-        // be refused rather than silently imported unverified.
-        assert_eq!(
-            classify_checkpoint_startup(true, false, false),
-            CheckpointStartupDecision::RefuseUnverified
-        );
-    }
-
-    #[test]
-    fn standalone_checkpoint_allowed_only_with_unsafe_flag() {
-        assert_eq!(
-            classify_checkpoint_startup(true, false, true),
-            CheckpointStartupDecision::SkipUnsafe
-        );
-    }
-
-    #[test]
-    fn last_block_binding_accepts_matching_or_absent() {
-        let committed: Digest = [7u8; 32].into();
-        // No last_block supplied: nothing to bind.
-        assert!(check_last_block_binding(None, committed).is_ok());
-        // last_block matches the verified terminal's finalized block.
-        assert!(check_last_block_binding(Some(committed), committed).is_ok());
-    }
-
-    #[test]
-    fn last_block_binding_rejects_mismatch() {
-        // A directory pairing a verified checkpoint with an unrelated last_block
-        // must be rejected.
-        let committed: Digest = [7u8; 32].into();
-        let unrelated: Digest = [9u8; 32].into();
-        assert!(check_last_block_binding(Some(unrelated), committed).is_err());
     }
 }
 
@@ -1294,15 +1226,15 @@ async fn get_node_ip(
     }
 }
 
-struct LoadedCheckpoint<S: Scheme> {
-    consensus_state: Option<ConsensusState>,
-    last_block: Option<Block>,
-    finalized_header: Option<FinalizedHeader<S>>,
-    raw_checkpoint: Option<Checkpoint>,
-    finalized_headers_chain: Option<Vec<FinalizedHeader<S>>>,
+pub(crate) struct LoadedCheckpoint<S: Scheme> {
+    pub(crate) consensus_state: Option<ConsensusState>,
+    pub(crate) last_block: Option<Block>,
+    pub(crate) finalized_header: Option<FinalizedHeader<S>>,
+    pub(crate) raw_checkpoint: Option<Checkpoint>,
+    pub(crate) finalized_headers_chain: Option<Vec<FinalizedHeader<S>>>,
 }
 
-fn read_checkpoint<S: Scheme>(
+pub(crate) fn read_checkpoint<S: Scheme>(
     checkpoint_path: &String,
     checkpoint_or_default: bool,
 ) -> LoadedCheckpoint<S>
