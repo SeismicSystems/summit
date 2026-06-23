@@ -160,6 +160,10 @@ fn mirror_epoch_boundary_finalization_for_root(state: &mut ConsensusState, block
     state.set_epoch(next_epoch);
     state.get_epocher().advance_epoch(Epoch::new(next_epoch));
     state.set_epoch_genesis_hash(block.digest().0);
+    // Mirror the finalizer's epoch-boundary view reset (#391): views are
+    // epoch-local, so the new epoch starts at view 0. `view` is a root-bound
+    // leaf, so omitting this diverges the post-transition state root.
+    state.set_view(0);
     state.reset_pending_active_validator_exits();
 
     state.remove_added_validators_for_epoch(next_epoch);
@@ -422,7 +426,7 @@ fn test_epoch_boundary_resets_persisted_view() {
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -497,7 +501,7 @@ fn test_epoch_boundary_resets_persisted_view() {
             namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
-        let (_finalizer2, reloaded_state, _mailbox2) =
+        let (_finalizer2, reloaded_state, _mailbox2, _state_query2) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer_reloaded"),
                 reload_cfg,
