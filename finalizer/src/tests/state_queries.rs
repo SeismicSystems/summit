@@ -422,7 +422,7 @@ fn test_epoch_boundary_resets_persisted_view() {
 
         let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
-        let (finalizer, _state, mut mailbox) =
+        let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer"),
                 finalizer_cfg,
@@ -497,7 +497,7 @@ fn test_epoch_boundary_resets_persisted_view() {
             namespace: Vec::new(),
             _variant_marker: PhantomData,
         };
-        let (_finalizer2, reloaded_state, _mailbox2) =
+        let (_finalizer2, reloaded_state, _mailbox2, _state_query2) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
                 context.with_label("finalizer_reloaded"),
                 reload_cfg,
