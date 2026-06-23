@@ -160,6 +160,10 @@ fn mirror_epoch_boundary_finalization_for_root(state: &mut ConsensusState, block
     state.set_epoch(next_epoch);
     state.get_epocher().advance_epoch(Epoch::new(next_epoch));
     state.set_epoch_genesis_hash(block.digest().0);
+    // Mirror the finalizer's epoch-boundary view reset (#391): views are
+    // epoch-local, so the new epoch starts at view 0. `view` is a root-bound
+    // leaf, so omitting this diverges the post-transition state root.
+    state.set_view(0);
     state.reset_pending_active_validator_exits();
 
     state.remove_added_validators_for_epoch(next_epoch);
