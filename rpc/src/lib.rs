@@ -31,10 +31,17 @@ use tokio_util::sync::CancellationToken;
 
 pub const DEFAULT_RPC_BODY_LIMIT_BYTES: u32 = 50 * 1024 * 1024;
 
+/// Default per-request timeout, in seconds. Bounds how long a single HTTP
+/// request may hold a connection permit (jsonrpsee acquires the permit before
+/// reading the body and has no body read deadline of its own).
+pub const DEFAULT_RPC_REQUEST_TIMEOUT_SECS: u64 = 30;
+
 #[derive(Debug, Clone, Copy)]
 pub struct RpcBodyLimits {
     pub max_request_body_size: u32,
     pub max_response_body_size: u32,
+    /// Per-request timeout (accept through body read and method dispatch).
+    pub request_timeout: std::time::Duration,
 }
 
 impl Default for RpcBodyLimits {
@@ -42,6 +49,7 @@ impl Default for RpcBodyLimits {
         Self {
             max_request_body_size: DEFAULT_RPC_BODY_LIMIT_BYTES,
             max_response_body_size: DEFAULT_RPC_BODY_LIMIT_BYTES,
+            request_timeout: std::time::Duration::from_secs(DEFAULT_RPC_REQUEST_TIMEOUT_SECS),
         }
     }
 }
@@ -78,6 +86,7 @@ pub async fn start_rpc_server(
         .with_max_connections(1000)
         .with_max_request_body_size(body_limits.max_request_body_size)
         .with_max_response_body_size(body_limits.max_response_body_size)
+        .with_request_timeout(body_limits.request_timeout)
         .with_cors(Some("*".to_string()))
         .build()
         .await?;
@@ -93,6 +102,7 @@ pub async fn start_rpc_server(
         .with_max_connections(1000)
         .with_max_request_body_size(body_limits.max_request_body_size)
         .with_max_response_body_size(body_limits.max_response_body_size)
+        .with_request_timeout(body_limits.request_timeout)
         .build()
         .await?;
 
@@ -240,6 +250,7 @@ pub async fn start_rpc_server_for_genesis(
     let server = builder::RpcServerBuilder::new_localhost(port)
         .with_max_request_body_size(body_limits.max_request_body_size)
         .with_max_response_body_size(body_limits.max_response_body_size)
+        .with_request_timeout(body_limits.request_timeout)
         .build()
         .await?;
     let addr = server.local_addr()?;
