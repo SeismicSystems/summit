@@ -373,6 +373,153 @@ fn test_get_latest_epoch() {
     });
 }
 
+/// Regression: after finalizing an epoch-terminal block at a view greater than 1
+/// and transitioning to the next epoch, the persisted consensus view (which seeds
+/// the syncer's round floor on restart) must be reset to the new epoch's genesis
+/// view (0), not carried over as the previous epoch's terminal view. Otherwise a
+/// restarted node seeds the floor at (next_epoch, terminal_view) and treats the
+/// new epoch's early rounds as past work, dropping their block subscriptions.
+///
+/// The test finalizes through an epoch boundary (terminal block at view 5), then
+/// restarts the finalizer from the same database and asserts the reloaded state's
+/// view is 0. `get_epoch() == 1` also confirms the reload actually read the
+/// persisted post-boundary state.
+#[test]
+fn test_epoch_boundary_resets_persisted_view() {
+    let cfg = deterministic::Config::default().with_seed(77);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x77u8; 32];
+        let db_prefix = "test_epoch_boundary_view_reset".to_string();
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let cancel = CancellationToken::new();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: db_prefix.clone(),
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state: create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap()),
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: cancel.clone(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+        let (finalizer, _state, mut mailbox) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Finalize blocks 1..3 (epoch 0), then the terminal block 4 at view 5 with
+        // a finalization certificate, which transitions to epoch 1.
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 20000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, _) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            context.sleep(Duration::from_millis(50)).await;
+        }
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+        // Terminal block of epoch 0 at view 5 (> 1).
+        let block4 = create_test_block_with_epoch(parent_digest, 4, 5, 20004, 0);
+        let block4_digest = block4.digest();
+        let finalization4 = make_finalization(block4_digest, 4, 3, &schemes, quorum);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
+            .await;
+        context.sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            mailbox.get_latest_epoch().await,
+            1,
+            "should have transitioned to epoch 1"
+        );
+
+        // Restart: stop the running finalizer via its cancellation token so its
+        // run loop breaks and drops the state journal, then re-create it from the
+        // same db_prefix to reload the persisted state. The mailbox is kept alive
+        // (not dropped) so the run loop exits on cancellation rather than panicking
+        // on a closed mailbox.
+        cancel.cancel();
+        context.sleep(Duration::from_millis(200)).await;
+
+        let reload_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix,
+            engine_client: MockEngineClient::new(),
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state: create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap()),
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: CancellationToken::new(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+        let (_finalizer2, reloaded_state, _mailbox2) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer_reloaded"),
+                reload_cfg,
+            )
+            .await;
+
+        assert_eq!(
+            reloaded_state.get_epoch(),
+            1,
+            "reload should have read the persisted post-boundary state (epoch 1)"
+        );
+        assert_eq!(
+            reloaded_state.get_view(),
+            0,
+            "persisted view must reset to the new epoch's genesis view (0), not the \
+             terminal block's view (5)"
+        );
+
+        context.auditor().state()
+    });
+}
+
 #[test]
 fn test_first_post_epoch_boundary_aux_data_uses_post_transition_state_root() {
     // The first block after an epoch boundary must advertise the state root after

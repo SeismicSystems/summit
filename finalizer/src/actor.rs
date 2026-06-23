@@ -1224,6 +1224,9 @@ impl<
             // Increment epoch
             let next_epoch = self.canonical_state.get_epoch() + 1;
             self.canonical_state.set_epoch(next_epoch);
+            // Commonware views are epoch-local: the new epoch starts voting at
+            // view 1 (view 0 is the epoch genesis).
+            self.canonical_state.set_view(0);
             self.canonical_state
                 .get_epocher()
                 .advance_epoch(Epoch::new(next_epoch));
