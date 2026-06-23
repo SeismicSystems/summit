@@ -50,7 +50,7 @@ use summit_types::{
     account::{ValidatorAccount, ValidatorStatus},
     bls12381,
 };
-use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
+use summit_types::{Digest, Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use summit_types::{consensus_state::ConsensusState, scheme::MultisigScheme};
 use tracing::{Level, error, info, warn};
 
@@ -415,6 +415,132 @@ mod genesis_path_tests {
     }
 }
 
+/// How checkpoint startup should treat the supplied artifacts. Extracted as a
+/// pure decision so the policy can be unit-tested without the side effects
+/// (signature verification, process exit) of the live startup path — mirrors the
+/// [`GenesisPathState`] pattern above.
+#[derive(Debug, PartialEq, Eq)]
+enum CheckpointStartupDecision {
+    /// No checkpoint supplied; start from genesis (or the local DB).
+    NoCheckpoint,
+    /// A checkpoint and a finalized-headers chain are present; verify the
+    /// checkpoint against the chain before installing it.
+    Verify,
+    /// A checkpoint was supplied without a finalized-headers chain and the
+    /// operator opted into importing it unverified.
+    SkipUnsafe,
+    /// A checkpoint was supplied without a finalized-headers chain and
+    /// verification was not waived; refuse to start.
+    RefuseUnverified,
+}
+
+/// Decide how to treat checkpoint artifacts at startup.
+///
+/// Requiring a finalized-headers chain by default is what closes the
+/// unauthenticated-import hole (#214): once the chain is present, the
+/// signature-verified terminal header authenticates every byte of the checkpoint
+/// through the checkpoint-hash binding, so the decoded consensus state cannot be
+/// tampered with. A bare checkpoint with no chain is refused unless the operator
+/// explicitly waives verification.
+fn classify_checkpoint_startup(
+    has_checkpoint: bool,
+    has_headers_chain: bool,
+    unsafe_skip_verification: bool,
+) -> CheckpointStartupDecision {
+    match (has_checkpoint, has_headers_chain) {
+        (false, _) => CheckpointStartupDecision::NoCheckpoint,
+        (true, true) => CheckpointStartupDecision::Verify,
+        (true, false) if unsafe_skip_verification => CheckpointStartupDecision::SkipUnsafe,
+        (true, false) => CheckpointStartupDecision::RefuseUnverified,
+    }
+}
+
+/// Bind a supplied `last_block` to the verified chain terminal's finalized block
+/// digest. `last_block` and the finalized-headers chain are loaded from
+/// independent files, so a checkpoint directory could otherwise pair a verified
+/// checkpoint with an unrelated block. Returns `Err` with a descriptive message
+/// on mismatch; `Ok` when the block matches or none was supplied.
+fn check_last_block_binding(
+    last_block_digest: Option<Digest>,
+    committed_digest: Digest,
+) -> Result<(), String> {
+    match last_block_digest {
+        Some(d) if d != committed_digest => Err(format!(
+            "checkpoint last_block does not match the verified terminal header's \
+             finalized block (last_block {d:?}, verified terminal {committed_digest:?})"
+        )),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_startup_tests {
+    use super::*;
+
+    #[test]
+    fn no_checkpoint_starts_from_genesis() {
+        assert_eq!(
+            classify_checkpoint_startup(false, false, false),
+            CheckpointStartupDecision::NoCheckpoint
+        );
+        // Headers/unsafe flags are irrelevant when no checkpoint is supplied.
+        assert_eq!(
+            classify_checkpoint_startup(false, true, true),
+            CheckpointStartupDecision::NoCheckpoint
+        );
+    }
+
+    #[test]
+    fn checkpoint_with_headers_chain_is_verified() {
+        assert_eq!(
+            classify_checkpoint_startup(true, true, false),
+            CheckpointStartupDecision::Verify
+        );
+        // The unsafe flag must not downgrade the verified path when a chain is
+        // present — verification still runs.
+        assert_eq!(
+            classify_checkpoint_startup(true, true, true),
+            CheckpointStartupDecision::Verify
+        );
+    }
+
+    #[test]
+    fn standalone_checkpoint_is_refused_by_default() {
+        // Regression for #214: a checkpoint with no finalized-headers chain must
+        // be refused rather than silently imported unverified.
+        assert_eq!(
+            classify_checkpoint_startup(true, false, false),
+            CheckpointStartupDecision::RefuseUnverified
+        );
+    }
+
+    #[test]
+    fn standalone_checkpoint_allowed_only_with_unsafe_flag() {
+        assert_eq!(
+            classify_checkpoint_startup(true, false, true),
+            CheckpointStartupDecision::SkipUnsafe
+        );
+    }
+
+    #[test]
+    fn last_block_binding_accepts_matching_or_absent() {
+        let committed: Digest = [7u8; 32].into();
+        // No last_block supplied: nothing to bind.
+        assert!(check_last_block_binding(None, committed).is_ok());
+        // last_block matches the verified terminal's finalized block.
+        assert!(check_last_block_binding(Some(committed), committed).is_ok());
+    }
+
+    #[test]
+    fn last_block_binding_rejects_mismatch() {
+        // A directory pairing a verified checkpoint with an unrelated last_block
+        // must be rejected.
+        let committed: Digest = [7u8; 32].into();
+        let unrelated: Digest = [9u8; 32].into();
+        assert!(check_last_block_binding(Some(unrelated), committed).is_err());
+    }
+}
+
 async fn run_node_inner(
     context: tokio::Context,
     flags: RunFlags,
@@ -447,75 +573,89 @@ async fn run_node_inner(
         "loaded genesis configuration"
     );
 
-    // Verify checkpoint if finalized headers chain was provided
+    // Decide how to treat the supplied checkpoint artifacts. By default a
+    // checkpoint MUST be verified against a finalized-headers chain; see
+    // classify_checkpoint_startup.
     let weak_subjectivity = weak_subjectivity_from_flags(&flags);
-    // The signature-verified chain terminal, used below to bind the optional
-    // last_block / finalized_header artifacts to the verified history.
+    // The signature-verified chain terminal, used below to complete the
+    // checkpoint from the verified history rather than an unverified file.
     let mut verified_terminal_header: Option<FinalizedHeader<MultisigScheme>> = None;
-    if let (Some(raw_checkpoint), Some(headers_chain)) =
-        (&loaded.raw_checkpoint, &loaded.finalized_headers_chain)
-    {
-        let weak_subjectivity = weak_subjectivity.as_ref().expect(
-            "checkpoint verification requires --weak-subjectivity-epoch and \
-             --weak-subjectivity-header-digest when finalized_headers/ is present",
-        );
-        checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
-            &genesis,
-            headers_chain,
-            raw_checkpoint,
-            Some(weak_subjectivity),
-        )
-        .expect("checkpoint verification failed");
-        info!(
-            epochs_verified = headers_chain.len(),
-            weak_subjectivity_epoch = weak_subjectivity.epoch,
-            "checkpoint verified successfully"
-        );
-
-        // Bind the optional last_block / finalized_header artifacts to the
-        // verified chain. The chain terminal is a signature-verified
-        // FinalizedHeader whose finalization commits to the terminal block's
-        // digest. Require any supplied last_block to be exactly that block (so a
-        // directory cannot pair a verified checkpoint with an unrelated block),
-        // and hand the verified terminal to the syncer as the finalization to
-        // complete the checkpoint, rather than the separately-loaded, unverified
-        // top-level finalized_header artifact.
-        let terminal = headers_chain
-            .last()
-            .expect("verified finalized-header chain is non-empty");
-        if let Some(last_block) = &loaded.last_block {
-            let committed = terminal.finalization().proposal.payload;
-            assert!(
-                last_block.digest() == committed,
-                "checkpoint last_block does not match the verified terminal header's \
-                 finalized block (last_block {:?}, verified terminal {:?})",
-                last_block.digest(),
-                committed,
+    match classify_checkpoint_startup(
+        loaded.raw_checkpoint.is_some(),
+        loaded.finalized_headers_chain.is_some(),
+        flags.unsafe_skip_checkpoint_verification,
+    ) {
+        CheckpointStartupDecision::NoCheckpoint => {}
+        CheckpointStartupDecision::Verify => {
+            let raw_checkpoint = loaded
+                .raw_checkpoint
+                .as_ref()
+                .expect("raw_checkpoint present on the verify path");
+            let headers_chain = loaded
+                .finalized_headers_chain
+                .as_ref()
+                .expect("finalized-headers chain present on the verify path");
+            let weak_subjectivity = weak_subjectivity.as_ref().expect(
+                "checkpoint verification requires --weak-subjectivity-epoch and \
+                 --weak-subjectivity-header-digest when finalized_headers/ is present",
             );
+            checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+                &genesis,
+                headers_chain,
+                raw_checkpoint,
+                Some(weak_subjectivity),
+            )
+            .expect("checkpoint verification failed");
+            info!(
+                epochs_verified = headers_chain.len(),
+                weak_subjectivity_epoch = weak_subjectivity.epoch,
+                "checkpoint verified successfully"
+            );
+
+            // Bind the optional last_block artifact to the verified chain. The
+            // chain terminal is a signature-verified FinalizedHeader whose
+            // finalization commits to the terminal block's digest; a supplied
+            // last_block must be exactly that block (so a directory cannot pair a
+            // verified checkpoint with an unrelated block). Then hand the verified
+            // terminal to the syncer as the finalization, rather than the
+            // separately-loaded, unverified top-level finalized_header artifact.
+            let terminal = headers_chain
+                .last()
+                .expect("verified finalized-header chain is non-empty");
+            if let Err(e) = check_last_block_binding(
+                loaded.last_block.as_ref().map(|b| b.digest()),
+                terminal.finalization().proposal.payload,
+            ) {
+                error!("{e}; refusing to start");
+                std::process::exit(1);
+            }
+            verified_terminal_header = Some(terminal.clone());
         }
-        verified_terminal_header = Some(terminal.clone());
-    } else if loaded.raw_checkpoint.is_some() {
-        // A checkpoint was supplied but there is no finalized-headers chain to
-        // verify it against. Refuse by default; only skip verification when the
-        // operator explicitly opts in via --unsafe-skip-checkpoint-verification.
-        if !flags.unsafe_skip_checkpoint_verification {
-            panic!(
+        CheckpointStartupDecision::RefuseUnverified => {
+            // A checkpoint was supplied with no finalized-headers chain to verify
+            // it against. Refuse (matching the genesis path's error+exit rather
+            // than crash-looping on a panic); the operator must supply a verifiable
+            // checkpoint or explicitly waive verification.
+            error!(
                 "refusing to import an unverified checkpoint: supply a checkpoint directory \
                  with finalized_headers/ plus --weak-subjectivity-epoch and \
                  --weak-subjectivity-header-digest, or pass \
                  --unsafe-skip-checkpoint-verification to import without verification (NOT recommended)"
             );
+            std::process::exit(1);
         }
-        if weak_subjectivity.is_some() {
+        CheckpointStartupDecision::SkipUnsafe => {
+            if weak_subjectivity.is_some() {
+                warn!(
+                    "--weak-subjectivity-* ignored: no finalized_headers chain present and \
+                     --unsafe-skip-checkpoint-verification was set; skipping verification"
+                );
+            }
             warn!(
-                "--weak-subjectivity-* ignored: no finalized_headers chain present and \
-                 --unsafe-skip-checkpoint-verification was set; skipping verification"
+                "UNSAFE: checkpoint imported without verification \
+                 (--unsafe-skip-checkpoint-verification)"
             );
         }
-        warn!(
-            "UNSAFE: checkpoint imported without verification \
-             (--unsafe-skip-checkpoint-verification)"
-        );
     }
 
     // On the verified path, complete the checkpoint from the signature-verified

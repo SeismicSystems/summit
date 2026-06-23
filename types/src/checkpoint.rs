@@ -533,12 +533,18 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
         }
     }
 
-    // Step 4: Bind the decoded state position to the terminal finalized header.
-    // The verified terminal header (`last_header`) authenticates the exact
-    // checkpoint bytes (Step 2), but their decoded *position* is otherwise free.
+    // Step 4: Consistency check on the decoded state position.
+    //
+    // Step 2 already authenticates the exact checkpoint bytes against the signed
+    // terminal header, so the decoded fields are not attacker-malleable on this
+    // path. What Step 2 cannot guarantee is that those signed bytes are
+    // *internally consistent* with the header's own position fields — a buggy (or
+    // colluding) checkpoint creator could sign a state whose position does not
+    // match the header it is committed under. This step catches that.
+    //
     // The checkpoint is created at the penultimate block of an epoch and the
     // terminal header is the last block of that epoch (see finalizer/src/actor.rs),
-    // so for an honest checkpoint: `latest_height` is one below the terminal
+    // so for a well-formed checkpoint: `latest_height` is one below the terminal
     // header's height, `head_digest` is the terminal header's parent, and the
     // epoch matches. Reject any checkpoint whose decoded position does not.
     let terminal = last_header.header();
