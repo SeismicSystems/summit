@@ -138,6 +138,37 @@ impl MockEngineClient {
             });
         }
     }
+
+    /// Queue VALID responses for commit_hash. Useful to satisfy the startup
+    /// forkchoice update before queuing a SYNCING/INVALID response for a block.
+    #[allow(unused)]
+    pub fn queue_commit_hash_valid(&self, count: usize) {
+        let mut overrides = self.commit_hash_overrides.lock().unwrap();
+        for _ in 0..count {
+            overrides.push_back(ForkchoiceUpdated {
+                payload_status: PayloadStatus::new(PayloadStatusEnum::Valid, None),
+                payload_id: None,
+            });
+        }
+    }
+
+    /// Queue INVALID responses for commit_hash. After these are consumed,
+    /// commit_hash falls back to returning VALID.
+    #[allow(unused)]
+    pub fn queue_commit_hash_invalid(&self, count: usize) {
+        let mut overrides = self.commit_hash_overrides.lock().unwrap();
+        for _ in 0..count {
+            overrides.push_back(ForkchoiceUpdated {
+                payload_status: PayloadStatus::new(
+                    PayloadStatusEnum::Invalid {
+                        validation_error: "mock invalid forkchoice".to_string(),
+                    },
+                    None,
+                ),
+                payload_id: None,
+            });
+        }
+    }
 }
 
 impl Default for MockEngineClient {
