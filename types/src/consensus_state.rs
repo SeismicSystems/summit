@@ -1453,6 +1453,13 @@ impl Read for ConsensusState {
         let has_captured = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? != 0;
         let captured_bytes = if has_captured {
             let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            // `len` is an attacker-controlled u32; reject it against the actual
+            // remaining bytes before allocating, so a malformed blob with a huge
+            // captured length fails cheaply instead of pre-allocating `len`
+            // bytes (mirrors the pending_execution_requests guard above).
+            if len > buf.remaining() {
+                return Err(Error::EndOfBuffer);
+            }
             let mut bytes = vec![0u8; len];
             buf.try_copy_to_slice(&mut bytes)
                 .map_err(|_| Error::EndOfBuffer)?;
@@ -1696,6 +1703,25 @@ mod tests {
         // bytes error rather than EndOfBuffer; either way decode must fail
         // cheaply rather than pre-allocate ~4 billion slots.
         let result = ConsensusState::read(&mut buf.as_ref());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_huge_captured_bytes_len_does_not_preallocate() {
+        // Regression guard for the captured-snapshot trailer: `captured_bytes`
+        // is a length-prefixed Vec<u8>, so a malformed blob with
+        // has_captured = true and a huge length must be rejected against the
+        // remaining bytes before the `vec![0u8; len]` allocation, not after.
+        let mut encoded = ConsensusState::default().encode().to_vec();
+        // A default state has captured_bytes = None, so the encoding ends with
+        // the has_captured presence flag (0). Flip it to 1 and append a u32
+        // length claiming ~4 GiB with no captured body following.
+        let last = encoded.len() - 1;
+        encoded[last] = 1;
+        encoded.extend_from_slice(&u32::MAX.to_be_bytes());
+
+        // Decode must bail cheaply on EndOfBuffer rather than pre-allocate ~4 GiB.
+        let result = ConsensusState::read(&mut encoded.as_slice());
         assert!(result.is_err());
     }
 
