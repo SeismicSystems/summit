@@ -6,6 +6,7 @@ use crate::header::FinalizedHeader;
 use crate::scheme::MultisigScheme;
 use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Write};
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_cryptography::{Hasher, Sha256, ed25519};
 use commonware_parallel::Sequential;
@@ -576,6 +577,39 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
                 hex(terminal.parent().as_ref())
             )),
         );
+    }
+
+    // Step 5: The embedded DynamicEpocher must actually cover the decoded
+    // position. The epocher drives epoch-boundary classification (which heights
+    // are first/penultimate/last of an epoch), so a schedule that does not
+    // contain the decoded `epoch`/`latest_height` would make the node
+    // misclassify future boundaries. Like Step 4 this is an internal-consistency
+    // check the checkpoint-hash binding cannot provide: it authenticates the
+    // epocher bytes but not that they agree with the rest of the state.
+    let decoded_epoch = checkpoint_state.get_epoch();
+    let decoded_height = checkpoint_state.get_latest_height();
+    match checkpoint_state
+        .get_epocher()
+        .epoch_bounds(Epoch::new(decoded_epoch))
+    {
+        None => {
+            return Err(
+                CheckpointVerificationError::CheckpointStatePositionMismatch(format!(
+                    "embedded epocher does not cover decoded epoch {decoded_epoch}"
+                )),
+            );
+        }
+        Some((start, end)) => {
+            let (start, end) = (start.get(), end.get());
+            if decoded_height < start || decoded_height > end {
+                return Err(
+                    CheckpointVerificationError::CheckpointStatePositionMismatch(format!(
+                        "decoded latest_height {decoded_height} is outside the epocher bounds \
+                         [{start}, {end}] for decoded epoch {decoded_epoch}"
+                    )),
+                );
+            }
+        }
     }
 
     Ok(())
@@ -1361,24 +1395,16 @@ mod tests {
         );
     }
 
-    // Builds a single-epoch checkpoint chain: a genesis validator set, a matching
-    // checkpoint, a *different* ("attacker-controlled") checkpoint, and an honest
-    // finalized header whose certificate genuinely signs the honest header digest
-    // and whose `checkpoint_hash` commits to the honest checkpoint.
-    // Builds a checkpoint whose decoded state sits at `state_latest_height` and a
-    // terminal finalized header at `terminal_header_height` that validly signs it.
-    // An honest checkpoint sets `terminal_header_height == state_latest_height + 1`
-    // (checkpoint at the penultimate block, terminal header at the last block);
-    // passing any other terminal height produces a position-inconsistent checkpoint.
-    fn checkpoint_verification_fixture(
-        state_latest_height: u64,
-        terminal_header_height: u64,
-    ) -> (
-        Genesis,
-        Checkpoint,
-        Checkpoint,
-        FinalizedHeader<MultisigScheme>,
-    ) {
+    // Builds a single-epoch checkpoint plus a terminal finalized header whose
+    // certificate genuinely signs the header digest and whose `checkpoint_hash`
+    // commits to that checkpoint. `apply` mutates the decoded state before the
+    // checkpoint is sealed, so a test can introduce a position inconsistency that
+    // is nonetheless validly committed by the terminal header; `header_height`
+    // sets the terminal header's height.
+    fn build_checkpoint_and_header(
+        apply: impl FnOnce(&mut ConsensusState),
+        header_height: u64,
+    ) -> (Genesis, Checkpoint, FinalizedHeader<MultisigScheme>) {
         use crate::account::{ValidatorAccount, ValidatorStatus};
         use crate::genesis::GenesisValidator;
         use crate::header::Header;
@@ -1476,22 +1502,15 @@ mod tests {
             0,
         );
         state.set_validator_accounts(validator_accounts);
-        // The terminal header below is always built at height 0; passing a
-        // non-zero `state_latest_height` makes the decoded checkpoint position
-        // disagree with the terminal header it is bound to.
-        state.set_latest_height(state_latest_height);
+        // Let the test introduce any decoded-state inconsistency before the
+        // checkpoint is sealed; the header below still commits to the result.
+        apply(&mut state);
         let checkpoint = Checkpoint::new(&state);
 
-        // A distinct checkpoint the attacker would like the chain to authenticate.
-        let mut tampered_state = state.clone();
-        tampered_state.set_latest_height(1);
-        let tampered_checkpoint = Checkpoint::new(&tampered_state);
-        assert_ne!(checkpoint.digest, tampered_checkpoint.digest);
-
-        // Honest header commits to the honest checkpoint.
+        // Honest header commits to the (possibly mutated) checkpoint.
         let header = Header::new(
             [0u8; 32].into(),
-            terminal_header_height,
+            header_height,
             0,
             0,
             0,
@@ -1534,6 +1553,31 @@ mod tests {
         let finalized_header = FinalizedHeader::new(header, finalization, schemes.len())
             .expect("honest header is bound to its certificate");
 
+        (genesis, checkpoint, finalized_header)
+    }
+
+    // Convenience wrapper over `build_checkpoint_and_header`: a checkpoint whose
+    // decoded state sits at `state_latest_height`, a terminal header at
+    // `terminal_header_height`, and a *distinct* ("attacker-controlled")
+    // checkpoint at latest_height 1. An honest checkpoint sets
+    // `terminal_header_height == state_latest_height + 1` (checkpoint at the
+    // penultimate block, terminal header at the last block).
+    fn checkpoint_verification_fixture(
+        state_latest_height: u64,
+        terminal_header_height: u64,
+    ) -> (
+        Genesis,
+        Checkpoint,
+        Checkpoint,
+        FinalizedHeader<MultisigScheme>,
+    ) {
+        let (genesis, checkpoint, finalized_header) = build_checkpoint_and_header(
+            |s| s.set_latest_height(state_latest_height),
+            terminal_header_height,
+        );
+        let (_, tampered_checkpoint, _) =
+            build_checkpoint_and_header(|s| s.set_latest_height(1), terminal_header_height);
+        assert_ne!(checkpoint.digest, tampered_checkpoint.digest);
         (genesis, checkpoint, tampered_checkpoint, finalized_header)
     }
 
@@ -1568,6 +1612,92 @@ mod tests {
             ),
             "verifier must reject a checkpoint whose decoded state position is not bound \
              to the terminal finalized header, got {result:?}"
+        );
+    }
+
+    // #215: the verifier must reject a checkpoint whose decoded position or epoch
+    // schedule is inconsistent with the verified terminal header — across every
+    // position field, not just latest_height. Each case pairs a validly committed
+    // (sha256-bound), validly certified terminal header with a decoded state that
+    // disagrees on one field.
+    #[test]
+    fn test_checkpoint_verifier_rejects_inconsistent_decoded_position() {
+        use super::CheckpointVerificationError::CheckpointStatePositionMismatch;
+
+        // Decoded epoch disagrees with the terminal header epoch (0).
+        let (genesis, checkpoint, header) = build_checkpoint_and_header(
+            |s| {
+                s.set_latest_height(5);
+                s.set_epoch(1);
+            },
+            6,
+        );
+        let result =
+            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&header), &checkpoint);
+        assert!(
+            matches!(result, Err(CheckpointStatePositionMismatch(_))),
+            "decoded epoch mismatch must be rejected, got {result:?}"
+        );
+
+        // Decoded head_digest is not the terminal header's parent ([0u8; 32]).
+        let (genesis, checkpoint, header) = build_checkpoint_and_header(
+            |s| {
+                s.set_latest_height(5);
+                s.set_head_digest([9u8; 32].into());
+            },
+            6,
+        );
+        let result =
+            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&header), &checkpoint);
+        assert!(
+            matches!(result, Err(CheckpointStatePositionMismatch(_))),
+            "decoded head_digest mismatch must be rejected, got {result:?}"
+        );
+
+        // Decoded latest_height (50) lies outside the embedded epocher's bounds
+        // for the decoded epoch (epoch 0 of a 10-block schedule), so the epocher
+        // does not cover the position. The terminal header at 51 keeps the
+        // latest_height/terminal-height check satisfied so the epocher coverage
+        // check (Step 5) is what fires.
+        let (genesis, checkpoint, _t, header) = checkpoint_verification_fixture(50, 51);
+        let result =
+            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&header), &checkpoint);
+        assert!(
+            matches!(result, Err(CheckpointStatePositionMismatch(_))),
+            "decoded position outside the epocher bounds must be rejected, got {result:?}"
+        );
+    }
+
+    // #215: fields with no independent representation in the terminal header
+    // (forkchoice, epoch_genesis_hash, the epocher segments) cannot be bound to
+    // header fields — they are protected solely by the checkpoint-hash binding.
+    // Mutating forkchoice changes the checkpoint bytes, so the honest terminal
+    // header no longer commits them and verification fails at the hash check.
+    #[test]
+    fn test_checkpoint_verifier_rejects_forkchoice_mutation_via_hash_binding() {
+        // Honest checkpoint + terminal header at the matching penultimate position.
+        let (genesis, _honest_ckpt, header) =
+            build_checkpoint_and_header(|s| s.set_latest_height(5), 6);
+        // A checkpoint at the same position but with a different forkchoice — same
+        // height/epoch/head_digest, different bytes, hence a different digest.
+        let (_g, forkchoice_mutated, _h) = build_checkpoint_and_header(
+            |s| {
+                s.set_latest_height(5);
+                s.set_forkchoice_head(alloy_primitives::B256::repeat_byte(7));
+            },
+            6,
+        );
+        let result = super::verify_checkpoint_chain(
+            &genesis,
+            std::slice::from_ref(&header),
+            &forkchoice_mutated,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(super::CheckpointVerificationError::CheckpointHashMismatch)
+            ),
+            "a forkchoice-mutated checkpoint must fail the hash binding, got {result:?}"
         );
     }
 
