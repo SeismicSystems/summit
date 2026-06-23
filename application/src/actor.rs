@@ -924,6 +924,7 @@ fn execution_requests_ascending(requests: &[impl AsRef<[u8]>]) -> bool {
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_verify<ES: Epocher>(
     round: Round,
     block: &Block,
