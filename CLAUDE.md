@@ -253,4 +253,12 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 | `prom` feature fails to build                       | Pulls `reth-metrics` from `SeismicSystems/seismic-reth` git — needs network access                                            |
 | `procfs` compile error on macOS with `prom` feature | `procfs` is Linux-only, gated behind `cfg(target_os = "linux")` — build `prom` on Linux or use `--features jemalloc` on macOS |
 | `e2e` binaries not found                            | Build with `cargo build --features e2e`                                                                                       |
-| `bench` binaries not found                          | Build with `cargo build --features bench`                                                                                     |
+| `bench` binaries not found                          | Build with `cargo build --features bench`           
+|
+
+# Workflow
+1. Ask, don't assume. If something is unclear, ask before writing a single line. Never make silent assumptions about intent, architecture, or requirements.
+2. Simplest solution first. Always implement the simplest thing that could work. Do not add abstractions or flexibility that weren't explicitly requested.
+3. Don't touch unrelated code. If a file or function is not directly part of the current task, do not modify it, even if you think it could be improved.
+4. Flag uncertainty explicitly. If you are not confident about an approach or technical detail, say so before proceeding. Confidence without certainty causes more damage than admitting a gap.
+5. I'm always open to ideas on better ways to do things. Please don't hesitate to suggest a better way, or one that has long lasting impact over a tactical change. (as a few examples)
