@@ -251,6 +251,7 @@ fn queue_deposit_refund(
 #[derive(Clone, Debug)]
 struct ForkState {
     block_digest: Digest,
+    parent_digest: Digest,
     consensus_state: ConsensusState,
 }
 
@@ -358,6 +359,12 @@ pub struct Finalizer<
 
     // Fork states (notarized but not yet finalized)
     fork_states: BTreeMap<u64, BTreeMap<Digest, ForkState>>,
+
+    // Tombstones for fork states that were executed before a conflicting
+    // ancestor finalized. Later NotifyAtHeight calls for these digests should
+    // fail immediately instead of being stored as waiters for a block that can
+    // no longer become canonical-compatible.
+    dead_fork_digests: HashSet<(u64, Digest)>,
 
     // Orphaned notarized blocks that arrived before their parent
     orphaned_blocks: BTreeMap<u64, HashMap<Digest, Vec<Block>>>,
@@ -496,6 +503,7 @@ impl<
                 db,
                 canonical_state: state,
                 fork_states: BTreeMap::new(),
+                dead_fork_digests: HashSet::new(),
                 orphaned_blocks: BTreeMap::new(),
                 pending_finalized: VecDeque::new(),
                 pending_notarized: VecDeque::new(),
@@ -743,7 +751,9 @@ impl<
                             } else {
                                 // If the block was already executed on one of the forks,
                                 // we send the notification immediately, otherwise we store the request
-                                if self.fork_states.get(&height)
+                                if self.dead_fork_digests.contains(&(height, block_digest)) {
+                                    let _ = response.send(false);
+                                } else if self.fork_states.get(&height)
                                         .map(|forks| forks.contains_key(&block_digest))
                                         .unwrap_or(false) {
                                     let _ = response.send(true);
@@ -895,6 +905,38 @@ impl<
             );
             ack_tx.acknowledge();
             return Ok(HandleOutcome::Applied);
+        }
+
+        // Simplex guarantees the finalized chain is linear, so the
+        // next finalized block must extend our canonical head. A mismatch means a
+        // consensus safety violation (>=1/3 Byzantine finalizing a block conflicting
+        // with an already-finalized ancestor) or local divergence. Halt rather than
+        // execute a non-canonical block onto canonical state.
+        let canonical_height = self.canonical_state.get_latest_height();
+        let canonical_head = self.canonical_state.get_head_digest();
+
+        if height != canonical_height + 1 || block.parent() != canonical_head {
+            error!(
+                target: "critical",
+                height,
+                ?block_digest,
+                block_parent = ?block.parent(),
+                ?canonical_head,
+                canonical_height,
+                "finalized block does not extend canonical head; refusing to apply"
+            );
+            #[cfg(feature = "prom")]
+            counter!(
+                "critical_errors_total",
+                "reason" => "finalized_block_non_canonical",
+                "severity" => "critical"
+            )
+            .increment(1);
+            return Err(anyhow!(
+                "finalized block at height {height} (digest {block_digest:?}) has parent {:?} \
+                 but canonical head is {canonical_head:?}; consensus safety violation or divergence",
+                block.parent()
+            ));
         }
 
         // Try to find the fork state for this block (if it was notarized before finalization)
@@ -1101,6 +1143,9 @@ impl<
         // Prune fork states at or below finalized height
         let total_forks = self.fork_states.len();
         self.fork_states.retain(|&h, _| h > height);
+        self.prune_fork_states_not_descending_from(height, block_digest);
+        self.dead_fork_digests
+            .retain(|(dead_height, _)| *dead_height > height);
         let remaining_forks = self.fork_states.len();
         let num_pruned_forks = total_forks - remaining_forks;
         if num_pruned_forks > 0 {
@@ -1452,6 +1497,14 @@ impl<
                 );
                 continue;
             }
+            if self.dead_fork_digests.contains(&(height, block_digest)) {
+                debug!(
+                    height,
+                    ?block_digest,
+                    "ignoring notarized block on dead fork"
+                );
+                continue;
+            }
             if self
                 .fork_states
                 .get(&height)
@@ -1608,6 +1661,7 @@ impl<
                 block_digest,
                 ForkState {
                     block_digest,
+                    parent_digest,
                     consensus_state: fork_state.clone(),
                 },
             );
@@ -1739,7 +1793,53 @@ impl<
         }
     }
 
+    fn prune_fork_states_not_descending_from(&mut self, height: u64, block_digest: Digest) {
+        let heights: Vec<u64> = self
+            .fork_states
+            .range((height + 1)..)
+            .map(|(&height, _)| height)
+            .collect();
+        let mut live_parents = HashSet::from([block_digest]);
+        let mut empty_heights = Vec::new();
+        let mut dead_forks = Vec::new();
+
+        for fork_height in heights {
+            let Some(forks) = self.fork_states.get_mut(&fork_height) else {
+                continue;
+            };
+
+            forks.retain(|&fork_digest, fork_state| {
+                let descends_from_canonical = live_parents.contains(&fork_state.parent_digest);
+                if !descends_from_canonical {
+                    dead_forks.push((fork_height, fork_digest));
+                }
+                descends_from_canonical
+            });
+            live_parents = forks.keys().copied().collect();
+
+            if forks.is_empty() {
+                empty_heights.push(fork_height);
+            }
+        }
+
+        for fork_height in empty_heights {
+            self.fork_states.remove(&fork_height);
+        }
+        for (fork_height, fork_digest) in dead_forks {
+            self.dead_fork_digests.insert((fork_height, fork_digest));
+            if let Some(senders) = self
+                .pending_height_notifys
+                .remove(&(fork_height, fork_digest))
+            {
+                for sender in senders {
+                    let _ = sender.send(false);
+                }
+            }
+        }
+    }
+
     fn height_notify_executed(&mut self, height: u64, block_digest: Digest) {
+        // Notify only waiters for this specific (height, digest) pair
         if let Some(senders) = self.pending_height_notifys.remove(&(height, block_digest)) {
             for sender in senders {
                 let _ = sender.send(true); // Ignore if receiver dropped
