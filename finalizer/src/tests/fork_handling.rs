@@ -974,6 +974,7 @@ fn test_losing_fork_descendant_rejected_after_conflicting_ancestor_finalizes() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1101,6 +1102,7 @@ fn test_finalized_dead_fork_descendant_out_of_sequence_halts() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
