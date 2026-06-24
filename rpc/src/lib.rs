@@ -36,12 +36,19 @@ pub const DEFAULT_RPC_BODY_LIMIT_BYTES: u32 = 50 * 1024 * 1024;
 /// reading the body and has no body read deadline of its own).
 pub const DEFAULT_RPC_REQUEST_TIMEOUT_SECS: u64 = 30;
 
+/// Default maximum number of calls in a single JSON-RPC batch. jsonrpsee
+/// defaults to unlimited; this bounds batch fan-out (`0` would disable
+/// batching).
+pub const DEFAULT_RPC_MAX_BATCH_SIZE: u32 = 50;
+
 #[derive(Debug, Clone, Copy)]
 pub struct RpcBodyLimits {
     pub max_request_body_size: u32,
     pub max_response_body_size: u32,
     /// Per-request timeout (accept through body read and method dispatch).
     pub request_timeout: std::time::Duration,
+    /// Maximum calls per JSON-RPC batch (`0` disables batching).
+    pub max_batch_size: u32,
 }
 
 impl Default for RpcBodyLimits {
@@ -50,6 +57,7 @@ impl Default for RpcBodyLimits {
             max_request_body_size: DEFAULT_RPC_BODY_LIMIT_BYTES,
             max_response_body_size: DEFAULT_RPC_BODY_LIMIT_BYTES,
             request_timeout: std::time::Duration::from_secs(DEFAULT_RPC_REQUEST_TIMEOUT_SECS),
+            max_batch_size: DEFAULT_RPC_MAX_BATCH_SIZE,
         }
     }
 }
@@ -87,6 +95,7 @@ pub async fn start_rpc_server(
         .with_max_request_body_size(body_limits.max_request_body_size)
         .with_max_response_body_size(body_limits.max_response_body_size)
         .with_request_timeout(body_limits.request_timeout)
+        .with_batch_limit(body_limits.max_batch_size)
         .with_cors(Some("*".to_string()))
         .build()
         .await?;
@@ -103,6 +112,7 @@ pub async fn start_rpc_server(
         .with_max_request_body_size(body_limits.max_request_body_size)
         .with_max_response_body_size(body_limits.max_response_body_size)
         .with_request_timeout(body_limits.request_timeout)
+        .with_batch_limit(body_limits.max_batch_size)
         .build()
         .await?;
 
@@ -137,6 +147,31 @@ pub async fn start_rpc_server_with_handle(
     port: u16,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
+    start_rpc_server_with_handle_and_batch_limit(
+        state_query,
+        key_store_path,
+        genesis_hash,
+        namespace,
+        port,
+        DEFAULT_RPC_MAX_BATCH_SIZE,
+        #[cfg(feature = "permissioned")]
+        paused,
+    )
+    .await
+}
+
+/// Like [`start_rpc_server_with_handle`] but with an explicit JSON-RPC batch
+/// limit, so tests can exercise a custom `--rpc-max-batch-size` value (and `0`,
+/// which disables batching entirely).
+pub async fn start_rpc_server_with_handle_and_batch_limit(
+    state_query: ConsensusStateQuery<MultisigScheme>,
+    key_store_path: String,
+    genesis_hash: [u8; 32],
+    namespace: Vec<u8>,
+    port: u16,
+    max_batch_size: u32,
+    #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+) -> anyhow::Result<(ServerHandle, SocketAddr)> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
         state_query,
@@ -158,6 +193,7 @@ pub async fn start_rpc_server_with_handle(
         .with_max_connections(1000)
         .with_max_request_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
         .with_max_response_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
+        .with_batch_limit(max_batch_size)
         .with_cors(Some("*".to_string()))
         .build()
         .await?;
@@ -251,6 +287,7 @@ pub async fn start_rpc_server_for_genesis(
         .with_max_request_body_size(body_limits.max_request_body_size)
         .with_max_response_body_size(body_limits.max_response_body_size)
         .with_request_timeout(body_limits.request_timeout)
+        .with_batch_limit(body_limits.max_batch_size)
         .build()
         .await?;
     let addr = server.local_addr()?;

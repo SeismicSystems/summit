@@ -677,6 +677,7 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         rpc_max_request_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
         rpc_max_response_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
         rpc_request_timeout_secs: summit_rpc::DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
+        rpc_max_batch_size: summit_rpc::DEFAULT_RPC_MAX_BATCH_SIZE,
         worker_threads: Some(2),
         log_level: "debug".into(),
         db_prefix: format!("{node}"),

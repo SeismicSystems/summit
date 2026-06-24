@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use summit_rpc::{
     PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_pair_with_handle,
-    start_rpc_server_with_handle,
+    start_rpc_server_with_handle, start_rpc_server_with_handle_and_batch_limit,
 };
 use utils::{
     MockFinalizerState, create_gated_proof_mailbox, create_test_finalized_header,
@@ -320,6 +320,164 @@ async fn test_get_state_proof_permit_outlives_cancelled_request() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn test_oversized_batch_is_rejected() {
+    // The server caps JSON-RPC batch size (default DEFAULT_RPC_MAX_BATCH_SIZE).
+    // jsonrpsee defaults to unlimited, which lets one request fan out into very
+    // many expensive calls; a batch over the limit must be rejected, while a
+    // batch within the limit still works.
+    use jsonrpsee::core::client::ClientT;
+    use jsonrpsee::core::params::BatchRequestBuilder;
+    use summit_rpc::DEFAULT_RPC_MAX_BATCH_SIZE;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let client = HttpClientBuilder::default()
+        .build(format!("http://{addr}"))
+        .unwrap();
+
+    // Within the limit: succeeds.
+    let mut ok_batch = BatchRequestBuilder::new();
+    for _ in 0..10 {
+        ok_batch.insert("health", jsonrpsee::rpc_params![]).unwrap();
+    }
+    assert!(
+        client.batch_request::<String>(ok_batch).await.is_ok(),
+        "a batch within the limit must be served"
+    );
+
+    // Over the limit: rejected.
+    let mut big_batch = BatchRequestBuilder::new();
+    for _ in 0..(DEFAULT_RPC_MAX_BATCH_SIZE as usize + 1) {
+        big_batch
+            .insert("health", jsonrpsee::rpc_params![])
+            .unwrap();
+    }
+    assert!(
+        client.batch_request::<String>(big_batch).await.is_err(),
+        "a batch exceeding the configured limit must be rejected"
+    );
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_batch_disabled_rejects_all_batches() {
+    // max_batch_size = 0 disables batching entirely: even a single-call batch is
+    // rejected, while plain (non-batch) requests still work.
+    use jsonrpsee::core::client::ClientT;
+    use jsonrpsee::core::params::BatchRequestBuilder;
+    use summit_rpc::SummitApiClient;
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle_and_batch_limit(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0, // port
+        0, // max_batch_size = 0 -> batching disabled
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let client = HttpClientBuilder::default()
+        .build(format!("http://{addr}"))
+        .unwrap();
+
+    // A plain (non-batch) request is still served.
+    assert!(
+        client.health().await.is_ok(),
+        "non-batch requests must still work when batching is disabled"
+    );
+
+    // Even a single-call batch is rejected.
+    let mut batch = BatchRequestBuilder::new();
+    batch.insert("health", jsonrpsee::rpc_params![]).unwrap();
+    assert!(
+        ClientT::batch_request::<String>(&client, batch)
+            .await
+            .is_err(),
+        "any batch must be rejected when max_batch_size = 0"
+    );
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_custom_batch_limit_is_honored() {
+    // A non-default configured limit is honored independently of
+    // DEFAULT_RPC_MAX_BATCH_SIZE: a batch at the limit is served, one over it
+    // is rejected.
+    use jsonrpsee::core::client::ClientT;
+    use jsonrpsee::core::params::BatchRequestBuilder;
+
+    let limit: u32 = 3;
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle_and_batch_limit(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0, // port
+        limit,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+
+    let client = HttpClientBuilder::default()
+        .build(format!("http://{addr}"))
+        .unwrap();
+
+    // Exactly at the limit: served.
+    let mut at_limit = BatchRequestBuilder::new();
+    for _ in 0..limit {
+        at_limit.insert("health", jsonrpsee::rpc_params![]).unwrap();
+    }
+    assert!(
+        client.batch_request::<String>(at_limit).await.is_ok(),
+        "a batch at the configured limit must be served"
+    );
+
+    // One over the limit: rejected.
+    let mut over_limit = BatchRequestBuilder::new();
+    for _ in 0..(limit + 1) {
+        over_limit
+            .insert("health", jsonrpsee::rpc_params![])
+            .unwrap();
+    }
+    assert!(
+        client.batch_request::<String>(over_limit).await.is_err(),
+        "a batch exceeding the configured limit must be rejected"
+    );
+
+    handle.stop().unwrap();
 }
 
 #[tokio::test]
