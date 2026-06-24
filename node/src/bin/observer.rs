@@ -383,14 +383,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 from_hex_formatted(&master_key_hex).expect("invalid hex in master node key");
             let master_priv_key = PrivateKey::decode(&master_key_bytes[..])
                 .expect("failed to decode master private key");
-            // Observer child keys are namespace-separated (#335); use the same genesis
-            // namespace the validators authorize against so this matches their derived set.
-            let observer_namespace = Genesis::load_from_file(&e2e_genesis_path_str)
-                .expect("failed to load genesis for observer namespace")
-                .namespace;
+            // Observer child keys are separated by domain (#335) under the chain
+            // bound domain chain_domain(config_digest). That is the same domain the
+            // live P2P observer signer and the validators' authorized observer set
+            // use, so this matches their derived set (not the raw genesis namespace).
+            let observer_genesis = Genesis::load_from_file(&e2e_genesis_path_str)
+                .expect("failed to load genesis for observer domain");
+            let observer_domain = summit_types::chain_domain(observer_genesis.config_digest());
             let observer_pubkey = derive_child_public(
                 master_priv_key.public_key(),
-                observer_namespace.as_bytes(),
+                observer_domain.as_slice(),
                 OBSERVER_DERIVE_IDX,
             );
 

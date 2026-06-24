@@ -26,6 +26,10 @@ pub struct FinalizerConfig<C: EngineClient, O: NetworkOracle<PublicKey>, V: Vari
     /// alongside the genesis hash so deposit authorizations are bound to this
     /// specific deployment (not just the EL genesis).
     pub namespace: Vec<u8>,
+    /// The chain bound domain (`chain_domain(config_digest)`) used to derive the
+    /// authorized observer child keys. Must match the domain the live P2P
+    /// observer signer is derived with, or observers will not be authenticated.
+    pub observer_domain: Vec<u8>,
     /// Optional initial state to initialize the finalizer with
     pub initial_state: ConsensusState,
     /// Protocol version for the consensus protocol

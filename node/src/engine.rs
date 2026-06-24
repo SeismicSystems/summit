@@ -144,6 +144,14 @@ where
             .clone()
             .unwrap_or_else(|| cfg.key_store.node_key.public_key());
 
+        // Live consensus + p2p domain, bound to immutable chain identity (the
+        // genesis config digest + protocol version) so consensus certificates
+        // and peer handshakes cannot verify across deployments that merely reuse
+        // the same namespace and validator keys. The finalizer keeps the raw
+        // namespace because deposit_signature_domain folds in the genesis hash
+        // itself.
+        let consensus_domain = summit_types::chain_domain(cfg.config_digest).to_vec();
+
         let page_cache = CacheRef::from_pooler(
             &context,
             NonZero::new(BUFFER_POOL_PAGE_SIZE).unwrap(),
@@ -151,12 +159,12 @@ where
         );
 
         let scheme_provider = if cfg.force_verifier_only {
-            SummitSchemeProvider::verifier_only(cfg.namespace.as_bytes().to_vec())
+            SummitSchemeProvider::verifier_only(consensus_domain.clone())
         } else {
             let encoded = cfg.key_store.consensus_key.encode();
             let private_scalar = group::Private::decode(&mut encoded.as_ref())
                 .expect("failed to extract scalar from private key");
-            SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec())
+            SummitSchemeProvider::new(private_scalar, consensus_domain.clone())
         };
 
         let cancellation_token = CancellationToken::new();
@@ -178,6 +186,10 @@ where
                 page_cache: page_cache.clone(),
                 genesis_hash: cfg.genesis_hash,
                 namespace: cfg.namespace.as_bytes().to_vec(),
+                // Observer child keys are derived and authorized under the same
+                // chain bound domain the live P2P observer signer uses, not the
+                // raw namespace (which stays for the deposit signature domain).
+                observer_domain: consensus_domain.clone(),
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
                 node_public_key: node_public_key.clone(),
@@ -304,7 +316,7 @@ where
             partition_prefix: cfg.partition_prefix.clone(),
             mailbox_size: cfg.mailbox_size,
             view_retention_timeout: ViewDelta::new(cfg.activity_timeout),
-            namespace: cfg.namespace.as_bytes().to_vec(),
+            namespace: consensus_domain.clone(),
             prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
             page_cache: page_cache.clone(),
             replay_buffer: REPLAY_BUFFER,
@@ -332,7 +344,7 @@ where
                 application: application_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 syncer_mailbox: syncer_mailbox.clone(),
-                namespace: cfg.namespace.as_bytes().to_vec(),
+                namespace: consensus_domain.clone(),
                 muxer_size: cfg.mailbox_size,
                 mailbox_size: cfg.mailbox_size,
                 epocher: epocher.clone(),

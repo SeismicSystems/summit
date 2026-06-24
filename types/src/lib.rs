@@ -43,6 +43,28 @@ pub type Activity = CActivity<Signature, Digest>;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const DEPOSIT_DOMAIN_TAG: &[u8] = b"summit-deposit-v1";
+const CHAIN_DOMAIN_TAG: &[u8] = b"summit-chain-v1";
+
+/// Domain for live peer authentication and BLS consensus signatures, bound to
+/// the immutable identity of this chain deployment: the protocol version and
+/// the genesis config digest (see [`crate::genesis::Genesis::config_digest`]).
+///
+/// The config digest folds in the EL genesis hash, the configured `namespace`,
+/// the genesis validator set, and every consensus/economic parameter fixed at
+/// launch. Any of those is mutable operator input, so deriving the live P2P and
+/// consensus domains from them directly lets a separate deployment that reuses
+/// the same configuration authenticate peers and verify consensus certificates
+/// across networks. Folding the config digest and protocol version into the
+/// domain ties both to immutable chain identity, so a handshake or certificate
+/// from one deployment cannot verify against another that differs in any
+/// identity-bearing genesis field.
+pub fn chain_domain(config_digest: [u8; 32]) -> [u8; 32] {
+    let mut domain_data = Vec::with_capacity(CHAIN_DOMAIN_TAG.len() + 4 + 32);
+    domain_data.extend_from_slice(CHAIN_DOMAIN_TAG);
+    domain_data.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    domain_data.extend_from_slice(&config_digest);
+    Sha256::hash(&domain_data).0
+}
 
 /// Domain for deposit-authorization signatures, bound to the full Summit
 /// deployment boundary: the EL genesis hash AND the Summit `namespace`.
@@ -77,3 +99,57 @@ pub use commonware_cryptography::bls12381;
 pub type PublicKey = commonware_cryptography::ed25519::PublicKey;
 pub type PrivateKey = commonware_cryptography::ed25519::PrivateKey;
 pub type Signature = commonware_cryptography::ed25519::Signature;
+
+#[cfg(test)]
+mod chain_domain_tests {
+    use super::{chain_domain, deposit_signature_domain};
+
+    const NS: &[u8] = b"_SUMMIT";
+
+    #[test]
+    fn chain_domain_is_deterministic() {
+        let d = [7u8; 32];
+        assert_eq!(chain_domain(d), chain_domain(d));
+    }
+
+    #[test]
+    fn chain_domain_separates_config_digest() {
+        // Different chain identity (genesis config digest) => different domain,
+        // so a peer handshake or consensus certificate from one deployment must
+        // not verify against the other. Per-field separation (genesis hash,
+        // namespace, params, validators) is covered by the `config_digest` tests
+        // in `genesis.rs`.
+        assert_ne!(chain_domain([1u8; 32]), chain_domain([2u8; 32]));
+    }
+
+    #[test]
+    fn chain_domain_is_distinct_from_deposit_domain() {
+        // The live consensus/p2p domain and the deposit-authorization domain are
+        // separate trust contexts even for identical chain inputs.
+        let g = [7u8; 32];
+        assert_ne!(chain_domain(g), deposit_signature_domain(g, NS).0);
+    }
+
+    #[test]
+    fn chain_domain_blocks_cross_deployment_signature_replay() {
+        use crate::PrivateKey;
+        use commonware_cryptography::{Signer, Verifier};
+        use commonware_math::algebra::Random;
+        use rand_core::OsRng;
+
+        let key = PrivateKey::random(&mut OsRng);
+        let pk = key.public_key();
+        let msg = b"peer-handshake";
+
+        // Two chains with distinct genesis config digests.
+        let domain_a = chain_domain([1u8; 32]);
+        let domain_b = chain_domain([2u8; 32]);
+
+        // A signature scoped to chain A's live domain authenticates on chain A,
+        // but cannot be replayed against chain B, because the live domain carries
+        // the chain's config digest.
+        let sig = key.sign(domain_a.as_slice(), msg);
+        assert!(pk.verify(domain_a.as_slice(), msg, &sig));
+        assert!(!pk.verify(domain_b.as_slice(), msg, &sig));
+    }
+}

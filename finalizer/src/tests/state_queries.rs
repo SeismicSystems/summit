@@ -215,6 +215,7 @@ fn test_generate_state_proof_preserves_batch_cardinality_for_missing_keys() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -309,6 +310,7 @@ fn test_get_latest_epoch() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -423,6 +425,7 @@ fn test_epoch_boundary_resets_persisted_view() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -501,6 +504,7 @@ fn test_epoch_boundary_resets_persisted_view() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
         let (_finalizer2, reloaded_state, _mailbox2, _state_query2) =
@@ -567,6 +571,7 @@ fn test_first_post_epoch_boundary_aux_data_uses_post_transition_state_root() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -690,6 +695,7 @@ fn test_epoch_boundary_post_transition_root_survives_restart() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -764,6 +770,7 @@ fn test_epoch_boundary_post_transition_root_survives_restart() {
                     buffered_blocks_warn_threshold: 100,
                     pending_notarized_max: 1000,
                     namespace: Vec::new(),
+                    observer_domain: Vec::new(),
                     _variant_marker: PhantomData,
                 },
             )
@@ -828,6 +835,7 @@ fn test_get_epoch_genesis_hash() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -929,6 +937,7 @@ fn test_get_epoch_genesis_hash_for_past_epoch() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1051,6 +1060,7 @@ fn test_get_epoch_genesis_hash_for_future_epoch() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1115,6 +1125,7 @@ fn test_get_aux_data_from_canonical_chain() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1190,6 +1201,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 

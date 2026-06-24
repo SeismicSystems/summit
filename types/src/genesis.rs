@@ -7,15 +7,18 @@ use alloy_primitives::Address;
 use anyhow::Context;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::bls12381;
+use commonware_cryptography::{Hasher as _, Sha256};
 use commonware_utils::{from_hex, from_hex_formatted};
 use serde::{Deserialize, Serialize};
+use ssz::Encode as _;
 use std::net::SocketAddr;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ssz_derive::Encode)]
 pub struct Genesis {
     /// List of all validators at genesis block
     pub validators: Vec<GenesisValidator>,
     /// The hash of the genesis file used for the EVM client
+    #[ssz(with = "ssz_string")]
     pub eth_genesis_hash: String,
     /// Amount of time to wait for a leader to propose a payload
     /// in a view.
@@ -41,6 +44,7 @@ pub struct Genesis {
     /// this may include additional metadata, data from the codec, and/or cryptographic signatures.
     pub max_message_size_bytes: u64,
     /// Prefix for all signed messages to prevent replay attacks.
+    #[ssz(with = "ssz_string")]
     pub namespace: String,
     /// Minimum validator stake in gwei
     pub validator_minimum_stake: u64,
@@ -54,6 +58,7 @@ pub struct Genesis {
     pub allowed_timestamp_future_ms: u64,
     /// Address that receives treasury funds. Defaults to the zero address.
     #[serde(default = "default_treasury_address")]
+    #[ssz(with = "ssz_string")]
     pub treasury_address: String,
     /// Maximum number of validators that can join per epoch via deposits.
     #[serde(default = "default_max_deposits_per_epoch")]
@@ -93,11 +98,16 @@ fn default_minimum_validator_count() -> u64 {
     DEFAULT_MINIMUM_VALIDATOR_COUNT
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ssz_derive::Encode)]
 pub struct GenesisValidator {
+    #[ssz(with = "ssz_string")]
     pub node_public_key: String,
+    #[ssz(with = "ssz_string")]
     pub consensus_public_key: String,
+    /// Network topology, not consensus identity: excluded from `config_digest`.
+    #[ssz(skip_serializing)]
     pub ip_address: String,
+    #[ssz(with = "ssz_string")]
     pub withdrawal_credentials: String,
 }
 
@@ -141,7 +151,62 @@ impl TryFrom<&GenesisValidator> for Validator {
     }
 }
 
+/// Domain tag for [`Genesis::config_digest`], separating it from any other
+/// SHA-256 use over genesis bytes.
+const GENESIS_CONFIG_DOMAIN_TAG: &[u8] = b"summit-genesis-config-v1";
+
+/// `#[ssz(with = "ssz_string")]` codec that lets `ssz_derive` encode a `String`
+/// field as an SSZ `List[uint8]` (its raw UTF-8 bytes). Only the `encode` side
+/// is provided because `Genesis` derives `ssz::Encode` solely to feed
+/// [`Genesis::config_digest`]; it is never SSZ-decoded.
+mod ssz_string {
+    pub mod encode {
+        pub fn is_ssz_fixed_len() -> bool {
+            false
+        }
+        pub fn ssz_fixed_len() -> usize {
+            ssz::BYTES_PER_LENGTH_OFFSET
+        }
+        pub fn ssz_bytes_len(value: &str) -> usize {
+            value.len()
+        }
+        pub fn ssz_append(value: &String, buf: &mut Vec<u8>) {
+            buf.extend_from_slice(value.as_bytes());
+        }
+    }
+}
+
 impl Genesis {
+    /// The EL genesis hash as raw bytes, the immutable identity of this chain
+    /// deployment. Panics if `eth_genesis_hash` is not a 32-byte hex string;
+    /// genesis files are operator-provided and validated at load time.
+    pub fn genesis_hash(&self) -> [u8; 32] {
+        from_hex_formatted(&self.eth_genesis_hash)
+            .map(|bytes| bytes.try_into())
+            .expect("bad eth_genesis_hash")
+            .expect("bad eth_genesis_hash")
+    }
+
+    /// Deterministic digest over the immutable Summit genesis configuration that
+    /// defines this chain's identity: the EL genesis hash, namespace, every
+    /// consensus/economic parameter fixed at launch, and the genesis validator
+    /// set (node key, consensus key, withdrawal credentials). Used to derive the
+    /// live P2P and consensus [`chain_domain`](crate::chain_domain), so two
+    /// deployments that differ in ANY of these fields derive distinct domains
+    /// and cannot cross-authenticate peers or cross-verify consensus
+    /// certificates.
+    ///
+    /// The bytes come from the `ssz::Encode` derive on `Genesis` (canonical,
+    /// spec-stable, and complete — a new field is automatically included unless
+    /// explicitly `#[ssz(skip_serializing)]`'d). Per-validator `ip_address` is
+    /// skipped: it is network topology, not consensus identity.
+    pub fn config_digest(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(GENESIS_CONFIG_DOMAIN_TAG);
+        hasher.update(&self.as_ssz_bytes());
+        hasher.finalize().0
+    }
+
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let file_string = std::fs::read_to_string(path)?;
         let genesis: Genesis = toml::from_str(&file_string)?;
@@ -478,5 +543,127 @@ mod tests {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.minimum_validator_count = 0;
         assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn config_digest_is_deterministic() {
+        let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        assert_eq!(genesis.config_digest(), genesis.config_digest());
+    }
+
+    /// Every identity-bearing genesis field must change the digest, so two
+    /// deployments that differ in any of them derive distinct chain domains.
+    #[test]
+    fn config_digest_separates_every_identity_field() {
+        let base = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        let digest = base.config_digest();
+
+        let cases: Vec<(&str, Box<dyn Fn(&mut Genesis)>)> = vec![
+            (
+                "eth_genesis_hash",
+                Box::new(|g| g.eth_genesis_hash = format!("0x{}", "11".repeat(32))),
+            ),
+            (
+                "namespace",
+                Box::new(|g| g.namespace = "different-ns".into()),
+            ),
+            ("leader_timeout_ms", Box::new(|g| g.leader_timeout_ms += 1)),
+            (
+                "notarization_timeout_ms",
+                Box::new(|g| g.notarization_timeout_ms += 1),
+            ),
+            (
+                "nullify_timeout_ms",
+                Box::new(|g| g.nullify_timeout_ms += 1),
+            ),
+            (
+                "activity_timeout_views",
+                Box::new(|g| g.activity_timeout_views += 1),
+            ),
+            (
+                "skip_timeout_views",
+                Box::new(|g| g.skip_timeout_views += 1),
+            ),
+            (
+                "max_message_size_bytes",
+                Box::new(|g| g.max_message_size_bytes += 1),
+            ),
+            (
+                "validator_minimum_stake",
+                Box::new(|g| g.validator_minimum_stake += 1),
+            ),
+            (
+                "validator_maximum_stake",
+                Box::new(|g| g.validator_maximum_stake += 1),
+            ),
+            ("blocks_per_epoch", Box::new(|g| g.blocks_per_epoch += 1)),
+            (
+                "allowed_timestamp_future_ms",
+                Box::new(|g| g.allowed_timestamp_future_ms += 1),
+            ),
+            (
+                "treasury_address",
+                Box::new(|g| g.treasury_address = format!("0x{}", "22".repeat(20))),
+            ),
+            (
+                "max_deposits_per_epoch",
+                Box::new(|g| g.max_deposits_per_epoch += 1),
+            ),
+            (
+                "max_withdrawals_per_epoch",
+                Box::new(|g| g.max_withdrawals_per_epoch += 1),
+            ),
+            (
+                "observers_per_validator",
+                Box::new(|g| g.observers_per_validator += 1),
+            ),
+            (
+                "minimum_validator_count",
+                Box::new(|g| g.minimum_validator_count += 1),
+            ),
+            (
+                "validator consensus key",
+                Box::new(|g| {
+                    g.validators[0].consensus_public_key = format!("0x{}", "33".repeat(48))
+                }),
+            ),
+            (
+                "validator node key",
+                Box::new(|g| g.validators[0].node_public_key = format!("0x{}", "44".repeat(32))),
+            ),
+            (
+                "validator withdrawal credentials",
+                Box::new(|g| {
+                    g.validators[0].withdrawal_credentials = format!("0x{}", "55".repeat(20))
+                }),
+            ),
+            (
+                "validator set size",
+                Box::new(|g| {
+                    g.validators.pop();
+                }),
+            ),
+        ];
+
+        for (label, mutate) in cases {
+            let mut g = base.clone();
+            mutate(&mut g);
+            assert_ne!(
+                g.config_digest(),
+                digest,
+                "config_digest must change when `{label}` changes"
+            );
+        }
+    }
+
+    /// A validator's `ip_address` is network topology, not consensus identity,
+    /// so it is excluded from the digest: changing it must NOT change identity.
+    #[test]
+    fn config_digest_excludes_ip_address() {
+        let base = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        let digest = base.config_digest();
+        let mut g = base.clone();
+        g.validators[0].ip_address = "127.0.0.1:65000".into();
+        assert_eq!(g.config_digest(), digest);
     }
 }

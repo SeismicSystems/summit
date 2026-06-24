@@ -200,6 +200,7 @@ fn test_initial_startup_sync_waits_for_valid() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -273,6 +274,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -347,6 +349,7 @@ fn test_execute_block_retries_on_syncing() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -436,6 +439,7 @@ fn test_notarized_block_retries_on_syncing() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -517,6 +521,7 @@ fn test_checkpoint_startup_full_flow() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -638,6 +643,7 @@ fn test_finalizer_mailbox_responsive_under_persistent_syncing() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -760,6 +766,7 @@ fn test_finalizer_mailbox_responsive_during_startup_syncing() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -845,6 +852,7 @@ fn test_finalizer_shuts_down_when_pending_notarized_cap_is_reached() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 2,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -948,6 +956,7 @@ fn test_finalizer_finalized_buffer_drains_in_order() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1043,6 +1052,7 @@ fn test_duplicate_finalized_delivery_is_idempotent() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1147,6 +1157,7 @@ fn test_finalized_commit_hash_syncing_buffers_and_retries() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1228,6 +1239,7 @@ fn test_finalized_commit_hash_invalid_shuts_down() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1298,6 +1310,7 @@ fn test_notarized_commit_hash_invalid_discards_fork() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1386,6 +1399,7 @@ fn test_finalized_reuse_path_commits_finalized_forkchoice_and_shuts_down_on_inva
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 
@@ -1473,6 +1487,7 @@ fn test_finalized_reuse_path_buffers_on_syncing() {
             buffered_blocks_warn_threshold: 100,
             pending_notarized_max: 1000,
             namespace: Vec::new(),
+            observer_domain: Vec::new(),
             _variant_marker: PhantomData,
         };
 

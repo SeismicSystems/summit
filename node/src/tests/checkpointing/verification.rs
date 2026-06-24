@@ -156,7 +156,7 @@ fn test_checkpoint_verification_fixed_committee() {
             let uid = format!("validator_{public_key}");
 
             let engine_client = engine_client_network.create_client(uid.clone());
-            let config = get_default_engine_config(
+            let mut config = get_default_engine_config(
                 engine_client,
                 SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
@@ -166,6 +166,11 @@ fn test_checkpoint_verification_fixed_committee() {
                 validators.clone(),
                 initial_state.clone(),
             );
+            // The harness builds the engine config from genesis_hash + namespace,
+            // but these tests verify the produced checkpoint against the full
+            // `genesis`. Align the engine's chain-bound consensus domain with the
+            // verifier by deriving it from the same genesis config digest.
+            config.config_digest = genesis.config_digest();
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
@@ -551,7 +556,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             let uid = format!("validator_{public_key}");
 
             let engine_client = engine_client_network.create_client(uid.clone());
-            let config = get_default_engine_config(
+            let mut config = get_default_engine_config(
                 engine_client,
                 SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
@@ -561,6 +566,11 @@ fn test_checkpoint_verification_dynamic_committee() {
                 validators.clone(),
                 initial_state.clone(),
             );
+            // The harness builds the engine config from genesis_hash + namespace,
+            // but these tests verify the produced checkpoint against the full
+            // `genesis`. Align the engine's chain-bound consensus domain with the
+            // verifier by deriving it from the same genesis config digest.
+            config.config_digest = genesis.config_digest();
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
