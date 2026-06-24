@@ -978,7 +978,6 @@ impl<
             ));
         }
 
-
         // Try to find the fork state for this block (if it was notarized before finalization)
         if let Some(fork_state) = self
             .fork_states
