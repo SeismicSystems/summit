@@ -49,6 +49,7 @@ impl RpcServerBuilder {
             // disabled by default, and an idle upgraded connection holds its
             // max_connections permit until the client closes; disabling websocket
             // upgrades removes that idle-permit-exhaustion vector entirely.
+            // The batch config caps calls per JSON-RPC batch (see `with_batch_limit`).
             config: ServerConfigBuilder::new()
                 .http_only()
                 .set_batch_request_config(default_batch_config()),
@@ -65,6 +66,7 @@ impl RpcServerBuilder {
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
             // http-only: see `new`. websockets are unused, so disabling upgrades
             // closes the idle-connection permit-exhaustion vector.
+            // The batch config caps calls per JSON-RPC batch (see `with_batch_limit`).
             config: ServerConfigBuilder::new()
                 .http_only()
                 .set_batch_request_config(default_batch_config()),
