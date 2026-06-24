@@ -704,6 +704,7 @@ where
         checkpoint_finalized_header: None,
         blocks_per_epoch: DEFAULT_BLOCKS_PER_EPOCH,
         force_verifier_only: false,
+        observer_network_key: None,
     }
 }
 

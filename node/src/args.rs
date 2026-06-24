@@ -537,6 +537,10 @@ async fn run_node_inner(
 
     let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
         let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, namespace, index);
+        // The observer's network identity is exactly this P2P signer's public
+        // key; capture it here so the engine and resolver reuse the same derived
+        // key rather than deriving it a second time (which could drift).
+        let observer_network_key = Some(signer.public_key());
         let mut p2p_cfg = authenticated::discovery::Config::recommended(
             signer,
             namespace,
@@ -557,6 +561,7 @@ async fn run_node_inner(
             initial_state,
             loaded.last_block,
             loaded.finalized_header,
+            observer_network_key,
         )
         .await
     } else {
@@ -581,6 +586,7 @@ async fn run_node_inner(
             initial_state,
             loaded.last_block,
             loaded.finalized_header,
+            None,
         )
         .await
     };
@@ -691,6 +697,10 @@ async fn run_node_local_inner(
 
     let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
         let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, namespace, index);
+        // The observer's network identity is exactly this P2P signer's public
+        // key; capture it here so the engine and resolver reuse the same derived
+        // key rather than deriving it a second time (which could drift).
+        let observer_network_key = Some(signer.public_key());
         let mut p2p_cfg = authenticated::discovery::Config::local(
             signer,
             namespace,
@@ -711,6 +721,7 @@ async fn run_node_local_inner(
             initial_state,
             checkpoint_parent_block,
             None,
+            observer_network_key,
         )
         .await
     } else {
@@ -734,6 +745,7 @@ async fn run_node_local_inner(
             &genesis,
             initial_state,
             checkpoint_parent_block,
+            None,
             None,
         )
         .await
@@ -835,6 +847,7 @@ async fn start_network_and_engine<S, EC>(
     initial_state: ConsensusState,
     checkpoint_last_block: Option<Block>,
     checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
+    observer_network_key: Option<PublicKey>,
 ) -> (Handle<anyhow::Result<()>>, Handle<()>, Handle<()>)
 where
     S: Signer<PublicKey = PublicKey>,
@@ -845,14 +858,13 @@ where
 
     let oracle = DiscoveryOracle::new(oracle);
 
-    // In observer mode the live P2P identity is this derived child key, not
-    // the master node key; the RPC server reports it instead of the keystore
-    // identity and disables keystore-signing methods.
-    let observer_node_key = flags.observer.map(|index| {
-        ExtPrivateKey::derive_child_signer(&key_store.node_key, genesis.namespace.as_bytes(), index)
-            .public_key()
-            .to_string()
-    });
+    // In observer mode the node's identity is this derived child key, not the
+    // master node key: the engine identifies itself by it (resolver
+    // self-exclusion, broadcast attribution, finalizer self-lookup), and the
+    // RPC server reports it instead of the keystore identity and disables
+    // keystore-signing methods. It is the public key of the live P2P signer,
+    // passed in by the caller so the two are derived once and cannot drift.
+    let observer_node_key = observer_network_key.as_ref().map(|pk| pk.to_string());
 
     let mut config = EngineConfig::get_engine_config(
         engine_client,
@@ -868,6 +880,7 @@ where
     )
     .unwrap();
     config.force_verifier_only = flags.observer.is_some();
+    config.observer_network_key = observer_network_key;
 
     let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
     let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
