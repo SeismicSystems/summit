@@ -1,7 +1,7 @@
 use crate::account::ValidatorAccount;
 use crate::checkpoint::Checkpoint;
 use crate::execution_request::DepositRequest;
-use crate::ssz_state_tree::SszProof;
+use crate::ssz_state_tree::StateProofEntry;
 use crate::ssz_tree_key::SszStateKey;
 use crate::withdrawal::PendingWithdrawal;
 use crate::{Block, FinalizedHeader, PublicKey};
@@ -71,7 +71,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     StateProof {
         root: [u8; 32],
         el_block_number: u64,
-        proofs: Vec<Option<SszProof>>,
+        proofs: Vec<Option<StateProofEntry>>,
     },
 }
 
@@ -420,7 +420,7 @@ impl<S: Scheme> ConsensusStateQuery<S> {
         &self,
         keys: Vec<SszStateKey>,
         permit: Box<dyn Send + 'static>,
-    ) -> ([u8; 32], u64, Vec<Option<SszProof>>) {
+    ) -> ([u8; 32], u64, Vec<Option<StateProofEntry>>) {
         let (tx, rx) = oneshot::channel();
         let req = ConsensusStateRequest::GenerateStateProof(keys, Some(permit));
         let _ = self.sender.clone().send((req, tx)).await;

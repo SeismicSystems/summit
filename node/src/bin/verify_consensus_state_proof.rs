@@ -500,6 +500,84 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // ---------------------------------------------------------------
+            // TEST E: A by-pubkey field proof MUST bind to the requested pubkey
+            // ---------------------------------------------------------------
+            // A bare positional field proof only shows the leaf exists under the
+            // root, not that it belongs to the requested validator. The response
+            // must carry a companion `key_proof` of the item's node-pubkey leaf;
+            // we reject the proof unless it binds to the requested pubkey.
+            println!("\nTEST E: by-pubkey field proof is bound to the requested pubkey");
+
+            use summit_types::ssz_state_tree::{
+                KeyedFieldProof, VALIDATOR_FIELD_NODE_PUBKEY, VALIDATOR_FIELDS_PER_ACCOUNT,
+            };
+
+            let key_proof = balance_proof_resp.results[0]
+                .key_proof
+                .as_ref()
+                .expect("by-pubkey field proof returned no key_proof binding");
+
+            // Verify the key-leaf proof on-chain against the same root.
+            {
+                let calldata = encode_verify(
+                    bal_timestamp,
+                    key_proof.gindex,
+                    &key_proof.leaf,
+                    &key_proof.branch,
+                    verify_selector,
+                );
+                let call_tx = TransactionRequest::default()
+                    .with_to(verifier_address)
+                    .with_input(Bytes::from(calldata));
+                let result = provider
+                    .call(call_tx)
+                    .await
+                    .expect("verify (key_proof) call failed");
+                let returned_root: [u8; 32] = result[..32]
+                    .try_into()
+                    .expect("verify response not 32 bytes");
+                assert_eq!(
+                    returned_root, balance_proof_resp.root,
+                    "verify returned wrong root for key_proof"
+                );
+            }
+
+            // Reconstruct the requested pubkey and require the full binding:
+            // both leaves authenticate under the root, the key leaf equals the
+            // requested pubkey, and field+key resolve to the same account.
+            let mut requested_pubkey = [0u8; 32];
+            alloy::hex::decode_to_slice(VALIDATOR0_PUBKEY_HEX, &mut requested_pubkey)
+                .expect("VALIDATOR0_PUBKEY_HEX is not 32 bytes");
+            let keyed = KeyedFieldProof {
+                field: bp.clone(),
+                key: key_proof.clone(),
+            };
+            assert!(
+                keyed.verify(
+                    &balance_proof_resp.root,
+                    &requested_pubkey,
+                    VALIDATOR_FIELDS_PER_ACCOUNT,
+                    VALIDATOR_FIELD_NODE_PUBKEY
+                ),
+                "balance field proof is not bound to the requested validator pubkey"
+            );
+            println!("  binding OK: balance field is bound to the requested validator");
+
+            // Negative: the same field proof must NOT verify as a different pubkey.
+            let mut other_pubkey = requested_pubkey;
+            other_pubkey[0] ^= 0xff;
+            assert!(
+                !keyed.verify(
+                    &balance_proof_resp.root,
+                    &other_pubkey,
+                    VALIDATOR_FIELDS_PER_ACCOUNT,
+                    VALIDATOR_FIELD_NODE_PUBKEY
+                ),
+                "balance field proof wrongly verified against a different pubkey"
+            );
+            println!("  binding rejects substituted pubkey as expected");
+
+            // ---------------------------------------------------------------
             // Done
             // ---------------------------------------------------------------
             println!("\nAll tests passed!");

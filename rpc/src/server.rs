@@ -544,11 +544,20 @@ impl SummitProofApiServer for SummitRpcServer {
         let results = keys
             .into_iter()
             .zip(proofs)
-            .map(|(key, proof)| {
-                let error = proof
+            .map(|(key, entry)| {
+                let error = entry
                     .is_none()
                     .then(|| "key is absent or out of range".to_string());
-                StateProofResult { key, proof, error }
+                let (proof, key_proof) = match entry {
+                    Some(e) => (Some(e.field), e.key),
+                    None => (None, None),
+                };
+                StateProofResult {
+                    key,
+                    proof,
+                    key_proof,
+                    error,
+                }
             })
             .collect();
 

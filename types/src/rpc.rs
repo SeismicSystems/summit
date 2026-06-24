@@ -82,6 +82,14 @@ pub struct StateProofResponse {
 pub struct StateProofResult {
     pub key: String,
     pub proof: Option<crate::ssz_state_tree::SszProof>,
+    /// For by-pubkey field requests (`withdrawal_field:`/`validator_field:`),
+    /// a companion proof of the item's key (pubkey) leaf. A trustless consumer
+    /// MUST verify this alongside `proof` (see
+    /// [`crate::ssz_state_tree::KeyedFieldProof::verify`]) to confirm the field
+    /// belongs to the requested pubkey rather than to some other item under the
+    /// same root. `None` for scalar, whole-item, and index-addressed proofs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_proof: Option<crate::ssz_state_tree::SszProof>,
     pub error: Option<String>,
 }
 

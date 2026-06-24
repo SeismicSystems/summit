@@ -42,7 +42,7 @@ use summit_types::ext_private_key::derive_observer_keys;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::protocol_params::ProtocolParam;
 use summit_types::scheme::EpochTransition;
-use summit_types::ssz_state_tree::{SszProof, SszStateTree};
+use summit_types::ssz_state_tree::{SszStateTree, StateProofEntry};
 use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::utils::{
     is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
@@ -69,40 +69,62 @@ type StateQueryMessage<V> = (
 /// the i-th result corresponds to the i-th key, and a key that resolves to no
 /// proof (missing collection entry, etc.) yields `None` rather than being
 /// dropped. Callers rely on this one-result-per-key invariant — see #260/#267 —
-/// so this must stay a `map` (not `filter_map`) into `Vec<Option<SszProof>>`.
+/// so this must stay a `map` (not `filter_map`) into `Vec<Option<StateProofEntry>>`.
+///
+/// By-pubkey field requests (`ValidatorField`/`WithdrawalField`) return a keyed
+/// entry carrying the item's key-leaf proof in `key`, so a consumer can bind the
+/// field to the requested pubkey (see `KeyedFieldProof`). All other requests
+/// carry a single proof in `field` with `key: None`.
 fn generate_state_proofs(
     proof_tree: &SszStateTree,
     validator_keys: &[[u8; 32]],
     keys: &[SszStateKey],
-) -> Vec<Option<SszProof>> {
+) -> Vec<Option<StateProofEntry>> {
     keys.iter()
         .map(|key| match key {
-            SszStateKey::Scalar(leaf_index) => Some(proof_tree.generate_scalar_proof(*leaf_index)),
-            SszStateKey::Validator(pubkey) => {
-                proof_tree.generate_validator_proof(pubkey, validator_keys)
-            }
-            SszStateKey::ValidatorField(pubkey, field_index) => {
-                proof_tree.generate_validator_field_proof(pubkey, *field_index, validator_keys)
-            }
-            SszStateKey::Deposit(index) => proof_tree.generate_deposit_proof(*index),
-            SszStateKey::DepositField(index, field_index) => {
-                proof_tree.generate_deposit_field_proof(*index, *field_index)
-            }
-            SszStateKey::Withdrawal(pubkey) => proof_tree.generate_withdrawal_proof_by_key(pubkey),
-            SszStateKey::WithdrawalField(pubkey, field_index) => {
-                proof_tree.generate_withdrawal_field_proof_by_key(pubkey, *field_index)
-            }
-            SszStateKey::ProtocolParam(index) => proof_tree.generate_protocol_param_proof(*index),
-            SszStateKey::ProtocolParamField(index, field_index) => {
-                proof_tree.generate_protocol_param_field_proof(*index, *field_index)
-            }
-            SszStateKey::AddedValidator(index) => proof_tree.generate_added_validator_proof(*index),
-            SszStateKey::AddedValidatorField(index, field_index) => {
-                proof_tree.generate_added_validator_field_proof(*index, *field_index)
-            }
-            SszStateKey::RemovedValidator(index) => {
-                proof_tree.generate_removed_validator_proof(*index)
-            }
+            SszStateKey::Scalar(leaf_index) => Some(StateProofEntry {
+                field: proof_tree.generate_scalar_proof(*leaf_index),
+                key: None,
+            }),
+            SszStateKey::Validator(pubkey) => proof_tree
+                .generate_validator_proof(pubkey, validator_keys)
+                .map(|field| StateProofEntry { field, key: None }),
+            SszStateKey::ValidatorField(pubkey, field_index) => proof_tree
+                .generate_validator_keyed_field_proof(pubkey, *field_index, validator_keys)
+                .map(|kp| StateProofEntry {
+                    field: kp.field,
+                    key: Some(kp.key),
+                }),
+            SszStateKey::Deposit(index) => proof_tree
+                .generate_deposit_proof(*index)
+                .map(|field| StateProofEntry { field, key: None }),
+            SszStateKey::DepositField(index, field_index) => proof_tree
+                .generate_deposit_field_proof(*index, *field_index)
+                .map(|field| StateProofEntry { field, key: None }),
+            SszStateKey::Withdrawal(pubkey) => proof_tree
+                .generate_withdrawal_proof_by_key(pubkey)
+                .map(|field| StateProofEntry { field, key: None }),
+            SszStateKey::WithdrawalField(pubkey, field_index) => proof_tree
+                .generate_withdrawal_keyed_field_proof_by_key(pubkey, *field_index)
+                .map(|kp| StateProofEntry {
+                    field: kp.field,
+                    key: Some(kp.key),
+                }),
+            SszStateKey::ProtocolParam(index) => proof_tree
+                .generate_protocol_param_proof(*index)
+                .map(|field| StateProofEntry { field, key: None }),
+            SszStateKey::ProtocolParamField(index, field_index) => proof_tree
+                .generate_protocol_param_field_proof(*index, *field_index)
+                .map(|field| StateProofEntry { field, key: None }),
+            SszStateKey::AddedValidator(index) => proof_tree
+                .generate_added_validator_proof(*index)
+                .map(|field| StateProofEntry { field, key: None }),
+            SszStateKey::AddedValidatorField(index, field_index) => proof_tree
+                .generate_added_validator_field_proof(*index, *field_index)
+                .map(|field| StateProofEntry { field, key: None }),
+            SszStateKey::RemovedValidator(index) => proof_tree
+                .generate_removed_validator_proof(*index)
+                .map(|field| StateProofEntry { field, key: None }),
         })
         .collect()
 }
