@@ -233,7 +233,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // The withdrawn validator (last node) is expected to leave the
+                                // committee and shut down cleanly; any other node's handle
+                                // completing here means a required participant went down
+                                // unexpectedly (e.g. a panic), so fail the scenario.
+                                if x == NUM_NODES - 1 {
+                                    println!("Node {} (withdrawn) handle completed as expected", x);
+                                } else {
+                                    eprintln!(
+                                        "Node {} handle completed unexpectedly; failing scenario",
+                                        x
+                                    );
+                                    std::process::exit(1);
+                                }
                             }
                         }
                     });
@@ -560,7 +572,11 @@ address = "{}"
                             node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                         }
                         _ = node_handle.fuse() => {
-                            println!("Node {} handle completed", x);
+                            // The new syncing node is a required participant; its handle
+                            // completing without a stop signal means it went down
+                            // unexpectedly, so fail the scenario.
+                            eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                            std::process::exit(1);
                         }
                     }
                 });

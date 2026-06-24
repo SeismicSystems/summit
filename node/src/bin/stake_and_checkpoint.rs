@@ -218,7 +218,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every node here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
@@ -553,7 +557,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                         }
                         _ = node_handle.fuse() => {
-                            println!("Node {} handle completed", x);
+                            // The checkpoint-restart node is a required participant; its
+                            // handle completing without a stop signal means it went down
+                            // unexpectedly, so fail the scenario.
+                            eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                            std::process::exit(1);
                         }
                     }
                 });
@@ -588,8 +596,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             loop {
                 let mut all_ready = true;
-                //for idx in 0..num_nodes {
-                // Skip node0
+                // node0 is intentionally stopped for checkpoint copying, so it is
+                // excluded from this progress check; its expected clean shutdown is
+                // asserted by the thread join below (a join failure fails the
+                // scenario), and the checkpoint-restart participant is asserted to
+                // sync above. Every other required node must reach the target height.
                 for idx in 1..num_nodes {
                     let rpc_port = get_node_flags(idx as usize, &e2e_genesis_path_str).rpc_port;
                     match get_latest_height(rpc_port).await {
@@ -629,12 +640,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Join all node threads outside of async context to avoid runtime drop issues
     println!("Waiting for all nodes to shut down...");
 
-    // Join the stopped node0 first if it exists
+    // Join the stopped node0 first if it exists. A thread join failure means the
+    // node panicked or was killed: that is a required participant going down
+    // unexpectedly, so fail the scenario instead of logging and continuing.
     if let Some(node0) = node_runtimes.1 {
         println!("Joining node0 thread...");
         match node0.thread.join() {
             Ok(_) => println!("Node0 thread joined successfully"),
-            Err(e) => println!("Node0 thread join failed: {:?}", e),
+            Err(e) => {
+                eprintln!("Node0 thread join failed: {:?}", e);
+                std::process::exit(1);
+            }
         }
     }
 
@@ -643,7 +659,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Waiting for node index {} to join...", idx);
         match node_runtime.thread.join() {
             Ok(_) => println!("Node index {} thread joined successfully", idx),
-            Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
+            Err(e) => {
+                eprintln!("Node index {} thread join failed: {:?}", idx, e);
+                std::process::exit(1);
+            }
         }
     }
 

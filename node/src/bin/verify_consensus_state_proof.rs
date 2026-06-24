@@ -163,7 +163,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every node here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
@@ -527,7 +531,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Waiting for node {idx} to join...");
         match node_runtime.thread.join() {
             Ok(_) => println!("Node {idx} thread joined successfully"),
-            Err(e) => println!("Node {idx} thread join failed: {e:?}"),
+            // A join failure means the node panicked or was killed: a required
+            // participant going down unexpectedly, so fail the scenario.
+            Err(e) => {
+                eprintln!("Node {idx} thread join failed: {e:?}");
+                std::process::exit(1);
+            }
         }
     }
 

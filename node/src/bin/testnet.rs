@@ -166,15 +166,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // }
             match try_join_all(consensus_handles).await {
                 Ok(results) => {
-                    // each node now returns its supervise outcome; surface any core task
-                    // failure instead of dropping it on the floor.
+                    // Each node returns its supervise outcome; a core task failure means
+                    // a node went down, so fail the process instead of only logging it.
                     for (idx, result) in results.into_iter().enumerate() {
                         if let Err(e) = result {
                             tracing::error!(node = idx, ?e, "node core task failed");
+                            std::process::exit(1);
                         }
                     }
                 }
-                Err(e) => tracing::error!("Failed: {:?}", e),
+                // A node handle panicked or was cancelled: surface it as a failure.
+                Err(e) => {
+                    tracing::error!("node task panicked or was cancelled: {:?}", e);
+                    std::process::exit(1);
+                }
             }
 
             // Due to how alloy node_bindings work we have to do this to prevent the reth_instances from being dropped and shutdown by the compiler

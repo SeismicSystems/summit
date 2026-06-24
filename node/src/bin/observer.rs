@@ -207,7 +207,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every validator here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
@@ -322,7 +326,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                         }
                         _ = node_handle.fuse() => {
-                            println!("Observer handle completed");
+                            // The observer is a required participant; its handle completing
+                            // without a stop signal means it went down unexpectedly, so
+                            // fail the scenario.
+                            eprintln!("Observer handle completed unexpectedly; failing scenario");
+                            std::process::exit(1);
                         }
                     }
                 });
@@ -487,7 +495,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Waiting for node index {} to join...", idx);
         match node_runtime.thread.join() {
             Ok(_) => println!("Node index {} thread joined successfully", idx),
-            Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
+            // A join failure means the node panicked or was killed: a required
+            // participant going down unexpectedly, so fail the scenario.
+            Err(e) => {
+                eprintln!("Node index {} thread join failed: {:?}", idx, e);
+                std::process::exit(1);
+            }
         }
     }
 
