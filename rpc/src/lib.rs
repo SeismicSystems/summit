@@ -147,6 +147,31 @@ pub async fn start_rpc_server_with_handle(
     port: u16,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
+    start_rpc_server_with_handle_and_batch_limit(
+        state_query,
+        key_store_path,
+        genesis_hash,
+        namespace,
+        port,
+        DEFAULT_RPC_MAX_BATCH_SIZE,
+        #[cfg(feature = "permissioned")]
+        paused,
+    )
+    .await
+}
+
+/// Like [`start_rpc_server_with_handle`] but with an explicit JSON-RPC batch
+/// limit, so tests can exercise a custom `--rpc-max-batch-size` value (and `0`,
+/// which disables batching entirely).
+pub async fn start_rpc_server_with_handle_and_batch_limit(
+    state_query: ConsensusStateQuery<MultisigScheme>,
+    key_store_path: String,
+    genesis_hash: [u8; 32],
+    namespace: Vec<u8>,
+    port: u16,
+    max_batch_size: u32,
+    #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+) -> anyhow::Result<(ServerHandle, SocketAddr)> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
         state_query,
@@ -168,6 +193,7 @@ pub async fn start_rpc_server_with_handle(
         .with_max_connections(1000)
         .with_max_request_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
         .with_max_response_body_size(DEFAULT_RPC_BODY_LIMIT_BYTES)
+        .with_batch_limit(max_batch_size)
         .with_cors(Some("*".to_string()))
         .build()
         .await?;
