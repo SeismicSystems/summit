@@ -507,6 +507,137 @@ fn test_finalizer_rejects_finalized_block_with_wrong_parent() {
     });
 }
 
+/// At an epoch boundary, the finalizer must refuse to construct a finalized
+/// header from a block whose digest the certificate does not finalize.
+///
+/// The syncer pairs the finalized block and its finalization by height from two
+/// independently keyed immutable archives (and the block archive silently keeps
+/// a stale entry on a duplicate index). If that pairing is ever inconsistent, a
+/// release build must NOT export a header bound to a wrong-digest certificate —
+/// it must fail-stop (cancel the cancellation token) instead of trusting it.
+#[test]
+fn test_finalizer_rejects_block_certificate_digest_mismatch() {
+    let cfg = deterministic::Config::default().with_seed(56);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x56u8; 32];
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let node_pubkey = node_key.public_key();
+
+        // Clean state: the node stays in the validator set, so the only thing
+        // that can cancel the token is the digest-binding guard.
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let cancellation_token = CancellationToken::new();
+        let token_clone = cancellation_token.clone();
+
+        // Probe the execution layer through a clone of the engine client. Each
+        // executed block triggers one check_payload call, so the call count tells
+        // us whether the mismatched block was applied.
+        let engine_client = MockEngineClient::new();
+        let engine_probe = engine_client.clone();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_digest_mismatch".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_pubkey,
+            cancellation_token,
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            observer_domain: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+
+        // Finalize blocks 1-3 (epoch 0, epoch_length = 5) — no boundary yet.
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, _) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            context.sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !token_clone.is_cancelled(),
+            "token must not be cancelled before the epoch boundary"
+        );
+        // Blocks 1, 2 and 3 each executed once.
+        let executions_before = engine_probe.check_payload_call_count();
+        assert_eq!(
+            executions_before, 3,
+            "the three good blocks must have executed"
+        );
+
+        // Block 4 is the last block of epoch 0 and carries a finalization. Pair it
+        // with a certificate that genuinely signs a different digest, as a stale
+        // archived block paired with a fresh finalization by height would.
+        let block4 = create_test_block_with_epoch(parent_digest, 4, 5, 13004, 0);
+        let other_block = create_test_block_with_epoch(parent_digest, 4, 5, 99_999, 0);
+        let wrong_digest = other_block.digest();
+        assert_ne!(block4.digest(), wrong_digest);
+        let mismatched_finalization = make_finalization(wrong_digest, 4, 3, &schemes, quorum);
+        let (ack, _) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock(
+                (block4, Some(mismatched_finalization)),
+                ack,
+            ))
+            .await;
+        context.sleep(Duration::from_millis(150)).await;
+
+        assert!(
+            token_clone.is_cancelled(),
+            "finalizer must fail-stop on a block/certificate digest mismatch at the \
+             epoch boundary instead of storing a misbound finalized header"
+        );
+        // The binding is checked before execution, so the mismatched block must
+        // never have been applied to the execution layer.
+        assert_eq!(
+            engine_probe.check_payload_call_count(),
+            executions_before,
+            "the mismatched block must not have been executed"
+        );
+
+        context.auditor().state()
+    });
+}
+
 /// A deposited validator's P2P peer tier must follow its lifecycle.
 ///
 /// The backfill resolver draws its fetch sources from the PRIMARY peer set, so
