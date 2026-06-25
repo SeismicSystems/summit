@@ -54,6 +54,15 @@ fn select_proposal_timestamp(now_millis: u64, min_child_timestamp: u64) -> u64 {
     now_millis.max(min_child_timestamp)
 }
 
+/// Whether the wait required to bring the monotonic child timestamp into the
+/// verifier future window exceeds the leader window. When true the block could
+/// not be notarized before the leader rotates anyway, so the proposal should be
+/// abandoned rather than waited out (which would also tie up the application
+/// actor, delaying verify/certify handling).
+fn proposal_wait_exceeds_leader_window(wait: Duration, leader_timeout: Duration) -> bool {
+    wait > leader_timeout
+}
+
 pub struct Actor<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
@@ -69,6 +78,7 @@ pub struct Actor<
     genesis_hash: [u8; 32],
     epocher: ES,
     cancellation_token: CancellationToken,
+    leader_timeout: Duration,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
     _scheme_marker: PhantomData<S>,
@@ -100,6 +110,7 @@ impl<
                 genesis_hash,
                 epocher: cfg.epocher,
                 cancellation_token: cfg.cancellation_token,
+                leader_timeout: cfg.leader_timeout,
                 #[cfg(feature = "permissioned")]
                 paused: cfg.paused,
                 _scheme_marker: PhantomData,
@@ -670,6 +681,28 @@ impl<
             .timestamp()
             .checked_add(1)
             .ok_or_else(|| anyhow!("parent timestamp overflow"))?;
+
+        // If the wait needed to bring `min_child_timestamp` into the verifier
+        // future window exceeds the leader window, abandon the proposal now. The
+        // block could not be notarized before the leader rotates, and sleeping
+        // that long inside the actor loop would also delay verify/certify
+        // handling. This abandons proposal creation only; it never bypasses the
+        // timestamp wait below — when we do proceed, we still build only once
+        // `parent.timestamp() + 1` is inside the verifier future window.
+        let initial_wait = proposal_timestamp_wait(
+            self.context.current().epoch_millis(),
+            min_child_timestamp,
+            aux_data.allowed_timestamp_future_ms,
+        );
+        if proposal_wait_exceeds_leader_window(initial_wait, self.leader_timeout) {
+            return Err(anyhow!(
+                "proposal timestamp wait {}ms exceeds leader timeout {}ms for round {round}; \
+                 abandoning proposal",
+                initial_wait.as_millis(),
+                self.leader_timeout.as_millis()
+            ));
+        }
+
         let current = loop {
             // Do not ask the engine to build a payload until the timestamp we
             // must use to be greater than the parent is also acceptable to peers.
@@ -1733,5 +1766,35 @@ mod tests {
             select_proposal_timestamp(now_millis, min_child_timestamp),
             now_millis
         );
+    }
+
+    #[test]
+    fn proposal_aborts_when_wait_exceeds_leader_window() {
+        // Parent timestamp so far ahead that the wait to enter the verifier
+        // window is longer than the leader window: the proposal must be abandoned.
+        let now_millis = 1_000_000;
+        let allowed_timestamp_future_ms = 1_000;
+        let leader_timeout = Duration::from_millis(2_000);
+        let min_child_timestamp = now_millis + allowed_timestamp_future_ms + 5_000;
+
+        let wait =
+            proposal_timestamp_wait(now_millis, min_child_timestamp, allowed_timestamp_future_ms);
+        assert_eq!(wait, Duration::from_millis(5_000));
+        assert!(proposal_wait_exceeds_leader_window(wait, leader_timeout));
+    }
+
+    #[test]
+    fn proposal_does_not_abort_when_wait_within_leader_window() {
+        // The required wait is inside the leader window, so the proposal proceeds
+        // (and waits) rather than aborting.
+        let now_millis = 1_000_000;
+        let allowed_timestamp_future_ms = 1_000;
+        let leader_timeout = Duration::from_millis(2_000);
+        let min_child_timestamp = now_millis + allowed_timestamp_future_ms + 1;
+
+        let wait =
+            proposal_timestamp_wait(now_millis, min_child_timestamp, allowed_timestamp_future_ms);
+        assert_eq!(wait, Duration::from_millis(1));
+        assert!(!proposal_wait_exceeds_leader_window(wait, leader_timeout));
     }
 }

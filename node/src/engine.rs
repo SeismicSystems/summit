@@ -214,6 +214,7 @@ where
                 genesis_hash: cfg.genesis_hash,
                 epocher: epocher.clone(),
                 cancellation_token: cancellation_token.clone(),
+                leader_timeout: cfg.leader_timeout,
                 #[cfg(feature = "permissioned")]
                 paused: paused.clone(),
             },
