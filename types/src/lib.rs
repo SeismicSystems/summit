@@ -44,6 +44,7 @@ pub type Activity = CActivity<Signature, Digest>;
 pub const PROTOCOL_VERSION: u32 = 1;
 const DEPOSIT_DOMAIN_TAG: &[u8] = b"summit-deposit-v1";
 const CHAIN_DOMAIN_TAG: &[u8] = b"summit-chain-v1";
+const PAUSE_DOMAIN_TAG: &[u8] = b"summit-pause-v1";
 
 /// Domain for live peer authentication and BLS consensus signatures, bound to
 /// the immutable identity of this chain deployment: the protocol version and
@@ -66,18 +67,36 @@ pub fn chain_domain(config_digest: [u8; 32]) -> [u8; 32] {
     Sha256::hash(&domain_data).0
 }
 
-/// Domain for deposit-authorization signatures, bound to the full Summit
-/// deployment boundary: the EL genesis hash AND the Summit `namespace`.
-pub fn deposit_signature_domain(genesis_hash: [u8; 32], namespace: &[u8]) -> Digest {
-    let mut domain_data =
-        Vec::with_capacity(DEPOSIT_DOMAIN_TAG.len() + 4 + 32 + 4 + namespace.len());
-    domain_data.extend_from_slice(DEPOSIT_DOMAIN_TAG);
+/// Folds a purpose tag, protocol version, EL genesis hash, and (length-prefixed)
+/// Summit `namespace` into a single domain digest. The genesis hash + namespace
+/// pin a signature to one deployment; the tag separates signing purposes so a
+/// signature minted for one domain can never be reinterpreted under another.
+fn signature_domain(tag: &[u8], genesis_hash: [u8; 32], namespace: &[u8]) -> Digest {
+    let mut domain_data = Vec::with_capacity(tag.len() + 4 + 32 + 4 + namespace.len());
+    domain_data.extend_from_slice(tag);
     domain_data.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
     domain_data.extend_from_slice(&genesis_hash);
     // Length-prefix the variable-length namespace so the domain is unambiguous.
     domain_data.extend_from_slice(&(namespace.len() as u32).to_le_bytes());
     domain_data.extend_from_slice(namespace);
     Sha256::hash(&domain_data)
+}
+
+/// Domain for deposit-authorization signatures, bound to the full Summit
+/// deployment boundary: the EL genesis hash AND the Summit `namespace`.
+pub fn deposit_signature_domain(genesis_hash: [u8; 32], namespace: &[u8]) -> Digest {
+    signature_domain(DEPOSIT_DOMAIN_TAG, genesis_hash, namespace)
+}
+
+/// Domain for consensus-pause RPC authorization signatures, bound to the full
+/// Summit deployment boundary: the EL genesis hash AND the Summit `namespace`.
+///
+/// Binding the deployment scope means a pause/unpause signature minted for one
+/// network cannot be replayed against another that happens to trust the same
+/// admin key. The distinct tag also prevents a deposit signature from being
+/// reinterpreted as a pause authorization (and vice versa).
+pub fn pause_signature_domain(genesis_hash: [u8; 32], namespace: &[u8]) -> Digest {
+    signature_domain(PAUSE_DOMAIN_TAG, genesis_hash, namespace)
 }
 
 /// Auxiliary data needed for block construction
