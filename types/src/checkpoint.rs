@@ -533,7 +533,7 @@ mod tests {
     use crate::header::FinalizedHeader;
     use crate::scheme::MultisigScheme;
     use crate::ssz_state_tree::SszStateTree;
-    use crate::withdrawal::WithdrawalQueue;
+    use crate::withdrawal::{WithdrawalKind, WithdrawalQueue};
     use alloy_primitives::Address;
     use commonware_codec::DecodeExt;
     use commonware_cryptography::{Signer, bls12381, ed25519, sha256};
@@ -580,6 +580,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -647,6 +648,7 @@ mod tests {
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
             epoch: 5,
+            kind: WithdrawalKind::Validator,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -712,6 +714,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -768,6 +771,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -842,6 +846,7 @@ mod tests {
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
             epoch: 5,
+            kind: WithdrawalKind::Validator,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -907,6 +912,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -968,6 +974,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1034,6 +1041,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1096,6 +1104,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1205,6 +1214,7 @@ mod tests {
             pubkey: [5u8; 32],
             balance_deduction: 8_000_000_000,
             epoch: 5,
+            kind: WithdrawalKind::Validator,
         };
 
         let consensus_key1 = bls12381::PrivateKey::from_seed(1);
@@ -1255,6 +1265,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1383,6 +1394,7 @@ mod tests {
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
             minimum_validator_count: 1,
+            invalid_deposit_tax: 0,
         };
 
         let mut state = ConsensusState::new(
@@ -1396,6 +1408,7 @@ mod tests {
             16,
             0,
             1,
+            0,
         );
         state.set_validator_accounts(validator_accounts);
         let checkpoint = Checkpoint::new(&state);

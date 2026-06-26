@@ -55,8 +55,8 @@ epoch.
 | User-initiated | Set balance to 0, set flag | Clear flag, remove account if balance is 0 |
 | Below min stake | Set balance to 0, set flag | Clear flag, remove account if balance is 0 |
 | Above max stake | Subtract excess from balance, set flag | Clear flag |
-| Failed deposit refund | Create refund withdrawal (or merge into existing) | No account changes |
-| Top-up exceeds range | Create refund withdrawal (or merge into existing) | No account changes |
+| Failed deposit refund | Create refund withdrawal (or merge into an existing refund for the same validator) | No account changes |
+| Top-up exceeds range | Create refund withdrawal (or merge into an existing refund for the same validator) | No account changes |
 | New deposit invalid | Create refund withdrawal, remove account | No account changes |
 
 ### User-Initiated Withdrawal
@@ -74,7 +74,18 @@ When `validator_min_stake` or `validator_max_stake` parameters change:
 
 Refund withdrawals have `balance_deduction = 0` because the deposited funds were never credited to the account. These do not set `has_pending_withdrawal` and do not block future operations.
 
-If the validator already has a pending withdrawal (e.g., a user-initiated exit), the refund is merged into it: the refund amount is added to the existing withdrawal's `amount`, while `balance_deduction` remains unchanged (the refund portion contributes 0). This produces a single withdrawal covering both the original balance and the refunded deposit.
+Refund withdrawals and validator exits are tracked in separate schedules and are never merged across kinds: a refund is only ever merged with an **existing refund** for the same validator (adding to its `amount`, with `balance_deduction` unchanged since the refund portion contributes 0). A refund is never folded into a user-initiated or stake-bound exit. In the normal flow these never collide on the same validator anyway, because a validator cannot submit a deposit while a withdrawal is pending (and vice versa).
+
+### Invalid Deposit Tax
+
+When an invalid deposit is refunded, a portion of the refund is retained by the network as a tax. The `invalid_deposit_tax` protocol parameter is a percentage in `[0, 100]` (configurable in genesis and adjustable via `ProtocolParam::InvalidDepositTax`). The refund is split as:
+
+```
+tax    = amount * invalid_deposit_tax / 100   (integer division)
+refund = amount - tax
+```
+
+The `refund` portion is sent to the depositor's withdrawal credentials, and the `tax` portion is sent to the treasury address (keyed by a synthetic `0xFD`-prefixed key derived from the treasury address and deposit index, so it does not collide with a real validator). Either withdrawal is only created when its amount is greater than zero, so a tax of `0` produces a single full refund and a tax of `100` produces only the treasury withdrawal. Both are refund withdrawals (`balance_deduction = 0`) since the deposit was never credited to a balance.
 
 ### Invalid Withdrawal Credentials
 
@@ -90,9 +101,9 @@ The `WithdrawalQueue` stores at most one pending withdrawal per validator (keyed
 - `amount`: the total withdrawal amount (included in the block as an EIP-4895 withdrawal)
 - `balance_deduction`: the amount that was moved out of the validator's `balance` when the withdrawal was created. This is used by the RPC `getValidatorBalance` endpoint to include pending withdrawal funds in the reported balance.
 
-When a new withdrawal is pushed for a validator that already has a pending entry, the amounts and balance deductions are merged into the existing entry, keeping the original scheduled epoch. This ensures that refund withdrawals (which bypass the `has_pending_withdrawal` guard) do not create duplicate queue entries.
+Each pending withdrawal carries a `kind` (validator exit or deposit refund). When a new withdrawal is pushed for a validator that already has a pending entry **of the same kind**, the amounts and balance deductions are merged into the existing entry, keeping the original scheduled epoch. This ensures that refund withdrawals (which bypass the `has_pending_withdrawal` guard) do not create duplicate queue entries. Pushing a withdrawal whose kind differs from the existing entry is rejected (the no-deposit-while-withdrawing invariant means this does not arise in the normal flow).
 
-User-initiated withdrawals are still limited to one at a time via the `has_pending_withdrawal` flag on the account. The merging behavior only applies to system-initiated withdrawals (deposit refunds, stake bounds enforcement) that target a validator with an existing pending withdrawal.
+User-initiated withdrawals are still limited to one at a time via the `has_pending_withdrawal` flag on the account. The merging behavior only applies to system-initiated withdrawals (deposit refunds, stake bounds enforcement) that target a validator with an existing pending withdrawal of the same kind.
 
 ## Withdrawal Deferral at Epoch Boundaries
 
@@ -109,9 +120,11 @@ The `max_deposits_per_epoch` protocol parameter (range: 0–256) limits how many
 
 ### Withdrawal Cap
 
-The `max_withdrawals_per_epoch` protocol parameter (range: 1–256) limits how many withdrawals can be included in the last block of each epoch. If more withdrawals are scheduled for an epoch than the cap allows, only the first `max_withdrawals_per_epoch` withdrawals (in queue order) are included. The remaining overflow withdrawals are rescheduled to the next epoch, placed at the **front** of that epoch's queue so they have priority over withdrawals originally scheduled for that epoch.
+The `max_withdrawals_per_epoch` protocol parameter (range: 1–256) is a single **total** cap on how many withdrawals can be included in the last block of each epoch, covering both validator exits and deposit-refund withdrawals.
 
-This means a withdrawal may be delayed beyond its originally scheduled epoch if the cap is consistently exceeded. The withdrawal queue guarantees that rescheduled entries maintain their relative ordering and are always processed before newly scheduled entries. The minimum of 1 ensures that withdrawals can never be permanently blocked.
+Validator exits and deposit refunds are tracked in separate schedules, and **validator exits take strict priority** within the cap: exits fill the budget first, then deposit refunds use only the remaining capacity. So if `max_withdrawals_per_epoch = N` and there are `k` validator exits ready for the epoch, up to `min(k, N)` exits are included and refunds fill at most `N - min(k, N)` of the remaining slots. This guarantees a stream of deposit-refund withdrawals can never displace or delay legitimate validator exits.
+
+Withdrawals that do not fit (refunds that lose to exits, or exits beyond the cap) are rescheduled to the next epoch, placed at the **front** of that epoch's schedule so they have priority over withdrawals originally scheduled for that epoch. A withdrawal may therefore be delayed beyond its originally scheduled epoch if the cap is consistently exceeded; rescheduled entries keep their relative ordering and are processed before newly scheduled entries. The minimum of 1 ensures withdrawals can never be permanently blocked.
 
 ## Invariants
 
@@ -124,7 +137,7 @@ This means a withdrawal may be delayed beyond its originally scheduled epoch if 
 - There are two parameters that govern the staking amount: `validator_min_stake` and `validator_max_stake`. The balance of a validator must always be in range `[validator_min_stake, validator_max_stake]`.
 - Any deposit request with resulting balance outside `[validator_min_stake, validator_max_stake]` will be rejected and refunded.
 - A validator can only have one pending deposit request at a time. Subsequent deposit requests will be ignored.
-- A validator can only have one pending withdrawal entry in the queue at a time. User-initiated withdrawal requests are ignored if one is already pending. System-initiated withdrawals (deposit refunds, stake bounds enforcement) are merged into the existing entry.
+- A validator can only have one pending withdrawal entry in the queue at a time. User-initiated withdrawal requests are ignored if one is already pending. System-initiated withdrawals (deposit refunds, stake bounds enforcement) are merged into the existing entry of the same kind.
 - A validator cannot submit a deposit request while a withdrawal request is pending, and vice versa.
 - If a withdrawal request is submitted while a validator is in the onboarding phase, then the onboarding phase is aborted, and the withdrawal request will be processed `VALIDATOR_WITHDRAWAL_NUM_EPOCHS` epochs later.
 - No partial withdrawals. If a withdrawal request with amount `amount < balance` is submitted, the full `balance` will be withdrawn.

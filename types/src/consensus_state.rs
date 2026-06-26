@@ -4,10 +4,11 @@ use crate::dynamic_epocher::DynamicEpocher;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MIN_ALLOWED_TIMESTAMP_FUTURE_MS, ProtocolParam,
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_INVALID_DEPOSIT_TAX, MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+    ProtocolParam,
 };
 use crate::ssz_state_tree::SszStateTree;
-use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
+use crate::withdrawal::{PendingWithdrawal, WithdrawalKind, WithdrawalQueue};
 use crate::{Digest, PublicKey};
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
@@ -58,6 +59,7 @@ pub struct ConsensusState {
     pub(crate) observers_per_validator: u32,
     pub(crate) minimum_validator_count: u64,
     pub(crate) pending_active_validator_exits: u64,
+    pub(crate) invalid_deposit_tax: u64,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -128,6 +130,7 @@ impl Default for ConsensusState {
             observers_per_validator: 0,
             minimum_validator_count: DEFAULT_MINIMUM_VALIDATOR_COUNT,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -173,6 +176,7 @@ impl ConsensusState {
             observers_per_validator: self.observers_per_validator,
             minimum_validator_count: self.minimum_validator_count,
             pending_active_validator_exits: self.pending_active_validator_exits,
+            invalid_deposit_tax: self.invalid_deposit_tax,
             epocher,
             ssz_tree: self.ssz_tree.clone(),
             proof_tree: self.proof_tree.clone(),
@@ -204,6 +208,7 @@ impl ConsensusState {
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
         minimum_validator_count: u64,
+        invalid_deposit_tax: u64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -229,6 +234,7 @@ impl ConsensusState {
             observers_per_validator,
             minimum_validator_count,
             pending_active_validator_exits: 0,
+            invalid_deposit_tax,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -417,6 +423,15 @@ impl ConsensusState {
     pub fn reset_pending_active_validator_exits(&mut self) {
         self.pending_active_validator_exits = 0;
         self.ssz_tree.set_pending_active_validator_exits(0);
+    }
+
+    pub fn get_invalid_deposit_tax(&self) -> u64 {
+        self.invalid_deposit_tax
+    }
+
+    pub fn set_invalid_deposit_tax(&mut self, value: u64) {
+        self.invalid_deposit_tax = value;
+        self.ssz_tree.set_invalid_deposit_tax(value);
     }
 
     pub fn get_treasury_address(&self) -> Address {
@@ -797,13 +812,43 @@ impl ConsensusState {
         withdrawal_epoch: u64,
         balance_deduction: u64,
     ) {
+        self.push_withdrawal_request_with_kind(
+            request,
+            withdrawal_epoch,
+            balance_deduction,
+            WithdrawalKind::Validator,
+        );
+    }
+
+    pub fn push_refund_withdrawal_request(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_epoch: u64,
+        balance_deduction: u64,
+    ) {
+        self.push_withdrawal_request_with_kind(
+            request,
+            withdrawal_epoch,
+            balance_deduction,
+            WithdrawalKind::DepositRefund,
+        );
+    }
+
+    fn push_withdrawal_request_with_kind(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_epoch: u64,
+        balance_deduction: u64,
+        kind: WithdrawalKind,
+    ) {
         #[cfg(feature = "prom")]
         let start = std::time::Instant::now();
 
         let pubkey = request.validator_pubkey;
-        let is_merge = self.withdrawal_queue.get_withdrawal(&pubkey).is_some();
-        self.withdrawal_queue
-            .push_request(request, withdrawal_epoch, balance_deduction);
+        let is_merge = self
+            .withdrawal_queue
+            .push_request_with_kind(request, withdrawal_epoch, balance_deduction, kind)
+            .expect("withdrawal kind must match existing pending withdrawal");
         // push_request() may increment next_index internally — sync the scalar leaf
         self.ssz_tree
             .set_next_withdrawal_index(self.withdrawal_queue.next_index());
@@ -811,6 +856,16 @@ impl ConsensusState {
             // Fields updated in place — just refresh the existing item's leaves
             self.ssz_tree
                 .update_withdrawal(self.withdrawal_queue.get_withdrawal(&pubkey).unwrap());
+        } else if kind == WithdrawalKind::Validator
+            && self
+                .withdrawal_queue
+                .count_for_epoch_by_kind(withdrawal_epoch, WithdrawalKind::DepositRefund)
+                > 0
+        {
+            // Validator withdrawals are ordered before refund withdrawals in the
+            // combined queue view. If refunds are already scheduled for this
+            // epoch, inserting a validator withdrawal is not an append.
+            self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
         } else {
             // New item appended to the epoch
             self.ssz_tree
@@ -826,7 +881,7 @@ impl ConsensusState {
         let start = std::time::Instant::now();
 
         self.withdrawal_queue.push(request.clone());
-        self.ssz_tree.push_withdrawal(&request);
+        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
 
         #[cfg(feature = "prom")]
         histogram!("ssz_push_withdrawal_micros").record(start.elapsed().as_micros() as f64);
@@ -850,6 +905,26 @@ impl ConsensusState {
         Some(w)
     }
 
+    pub fn pop_withdrawal_by_index(
+        &mut self,
+        withdrawal_epoch: u64,
+        index: u64,
+    ) -> Option<PendingWithdrawal> {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        let w = self
+            .withdrawal_queue
+            .pop_by_index(withdrawal_epoch, index)?;
+        self.ssz_tree
+            .pop_withdrawal(withdrawal_epoch, &w.pubkey, &self.withdrawal_queue);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_pop_withdrawal_micros").record(start.elapsed().as_micros() as f64);
+
+        Some(w)
+    }
+
     pub fn get_withdrawal(&self, pubkey: &[u8; 32]) -> Option<&PendingWithdrawal> {
         self.withdrawal_queue.get_withdrawal(pubkey)
     }
@@ -857,6 +932,15 @@ impl ConsensusState {
     /// Get all pending withdrawals for a specific epoch
     pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Vec<&PendingWithdrawal> {
         self.withdrawal_queue.get_for_epoch(epoch)
+    }
+
+    pub fn get_withdrawals_for_epoch_with_total_cap(
+        &self,
+        epoch: u64,
+        max_total: usize,
+    ) -> Vec<&PendingWithdrawal> {
+        self.withdrawal_queue
+            .get_for_epoch_with_total_cap(epoch, max_total)
     }
 
     /// Get the number of pending withdrawals for a specific epoch
@@ -1037,6 +1121,13 @@ impl ConsensusState {
                     self.minimum_validator_count = value;
                     self.ssz_tree.set_minimum_validator_count(value);
                 }
+                ProtocolParam::InvalidDepositTax(value) => {
+                    if value > MAX_INVALID_DEPOSIT_TAX {
+                        continue;
+                    }
+                    self.invalid_deposit_tax = value;
+                    self.ssz_tree.set_invalid_deposit_tax(value);
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
@@ -1080,6 +1171,7 @@ impl ConsensusState {
             &self.epocher.encode(),
             self.minimum_validator_count,
             self.pending_active_validator_exits,
+            self.invalid_deposit_tax,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -1142,6 +1234,7 @@ impl EncodeSize for ConsensusState {
         + 4 // observers_per_validator
         + 8 // minimum_validator_count
         + 8 // pending_active_validator_exits
+        + 8 // invalid_deposit_tax
         + self.epocher.encode_size()
     }
 }
@@ -1339,6 +1432,13 @@ impl Read for ConsensusState {
                 "pending active validator exits exceeds active validator count",
             ));
         }
+        let invalid_deposit_tax = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        if invalid_deposit_tax > MAX_INVALID_DEPOSIT_TAX {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "invalid deposit tax out of bounds",
+            ));
+        }
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
@@ -1381,6 +1481,7 @@ impl Read for ConsensusState {
             observers_per_validator,
             minimum_validator_count,
             pending_active_validator_exits,
+            invalid_deposit_tax,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1502,6 +1603,9 @@ impl Write for ConsensusState {
         // Write pending_active_validator_exits
         buf.put_u64(self.pending_active_validator_exits);
 
+        // Write invalid_deposit_tax
+        buf.put_u64(self.invalid_deposit_tax);
+
         // Write epocher
         self.epocher.write(buf);
 
@@ -1539,7 +1643,7 @@ mod tests {
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
     use crate::ssz_state_tree;
-    use crate::withdrawal::PendingWithdrawal;
+    use crate::withdrawal::{PendingWithdrawal, WithdrawalKind};
 
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
@@ -1597,6 +1701,7 @@ mod tests {
             pubkey: [index as u8; 32],
             balance_deduction: amount,
             epoch,
+            kind: WithdrawalKind::Validator,
         }
     }
 
@@ -1624,6 +1729,10 @@ mod tests {
         assert_eq!(decoded_state.epoch, original_state.epoch);
         assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
+        assert_eq!(
+            decoded_state.invalid_deposit_tax,
+            original_state.invalid_deposit_tax
+        );
         assert_eq!(
             decoded_state.get_next_withdrawal_index(),
             original_state.get_next_withdrawal_index()
@@ -1724,6 +1833,7 @@ mod tests {
             16,
             0,
             0,
+            0,
         );
         state.get_epocher().advance_epoch(Epoch::new(0));
 
@@ -1762,6 +1872,7 @@ mod tests {
             16,
             0,
             DEFAULT_MINIMUM_VALIDATOR_COUNT,
+            0,
         );
 
         original_state.set_epoch(7);
@@ -1775,6 +1886,7 @@ mod tests {
         original_state.set_latest_height(42);
         original_state.set_next_withdrawal_index(5);
         original_state.set_epoch_genesis_hash([42u8; 32]);
+        original_state.set_invalid_deposit_tax(25);
 
         let deposit1 = create_test_deposit_request(1, 32000000000);
         let deposit2 = create_test_deposit_request(2, 16000000000);
@@ -2577,6 +2689,18 @@ mod tests {
         assert!(changed);
         assert_eq!(state.get_minimum_stake(), 40_000_000_000);
         assert_eq!(state.get_maximum_stake(), 80_000_000_000);
+
+        let root_before_tax = state.ssz_tree().root();
+        state.push_protocol_param_change(ProtocolParam::InvalidDepositTax(25));
+        assert_ne!(state.ssz_tree().root(), root_before_tax);
+        let changed = state.apply_protocol_parameter_changes().unwrap();
+        assert!(!changed);
+        assert_eq!(state.get_invalid_deposit_tax(), 25);
+
+        state.push_protocol_param_change(ProtocolParam::InvalidDepositTax(101));
+        let changed = state.apply_protocol_parameter_changes().unwrap();
+        assert!(!changed);
+        assert_eq!(state.get_invalid_deposit_tax(), 25);
     }
 
     #[test]
@@ -2913,6 +3037,7 @@ mod tests {
             16,
             0,
             DEFAULT_MINIMUM_VALIDATOR_COUNT,
+            0,
         );
 
         // Add 4 genesis validators (like the testnet)
@@ -3182,6 +3307,7 @@ mod tests {
             Address::ZERO,
             3,
             16,
+            0,
             0,
             0,
         );

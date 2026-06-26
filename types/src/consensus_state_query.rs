@@ -28,6 +28,7 @@ pub enum ConsensusStateRequest {
     GetMaxWithdrawalsPerEpoch,
     GetObserversPerValidator,
     GetMinimumValidatorCount,
+    GetInvalidDepositTax,
     GetEpochBounds(u64),
     GetDeposit(usize),
     GetDepositCount,
@@ -60,6 +61,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     MaxWithdrawalsPerEpoch(u64),
     ObserversPerValidator(u32),
     MinimumValidatorCount(u64),
+    InvalidDepositTax(u64),
     EpochBounds(Option<(u64, u64)>),
     Deposit(Option<DepositRequest>),
     DepositCount(usize),
@@ -334,6 +336,20 @@ impl<S: Scheme> ConsensusStateQuery<S> {
             .await
             .expect("consensus state query response sender dropped");
         let ConsensusStateResponse::MinimumValidatorCount(value) = res else {
+            unreachable!("request and response variants must match");
+        };
+        value
+    }
+
+    pub async fn get_invalid_deposit_tax(&self) -> u64 {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetInvalidDepositTax;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::InvalidDepositTax(value) = res else {
             unreachable!("request and response variants must match");
         };
         value

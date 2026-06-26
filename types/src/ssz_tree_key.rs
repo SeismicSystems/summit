@@ -82,6 +82,7 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "pending_active_validator_exits" => Ok(SszStateKey::Scalar(
             ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS,
         )),
+        "invalid_deposit_tax" => Ok(SszStateKey::Scalar(ssz_state_tree::INVALID_DEPOSIT_TAX)),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"
@@ -209,6 +210,7 @@ fn parse_withdrawal_field_name(name: &str) -> Result<usize, String> {
         "pubkey" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_PUBKEY),
         "balance_deduction" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION),
         "epoch" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
+        "kind" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_KIND),
         _ => Err(format!("unknown withdrawal field: {name}")),
     }
 }
@@ -269,6 +271,10 @@ mod tests {
         assert_eq!(
             parse_key("pending_active_validator_exits").unwrap(),
             SszStateKey::Scalar(ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS)
+        );
+        assert_eq!(
+            parse_key("invalid_deposit_tax").unwrap(),
+            SszStateKey::Scalar(ssz_state_tree::INVALID_DEPOSIT_TAX)
         );
     }
 
@@ -485,6 +491,7 @@ mod tests {
                 ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION,
             ),
             ("epoch", ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
+            ("kind", ssz_state_tree::WITHDRAWAL_FIELD_KIND),
         ];
         for (name, expected_idx) in fields {
             let key_str = format!("withdrawal_field:0x{pk_hex}:{name}");

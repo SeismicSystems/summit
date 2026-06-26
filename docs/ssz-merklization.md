@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 27 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 27–31 are unused (zero-filled).
+32 leaf slots (depth 5), 28 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 28–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -67,6 +67,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 24 | `dynamic_epoch_schedule` | Scalar (SSZ byte-list root of the encoded `DynamicEpocher`) |
 | 25 | `minimum_validator_count` | Scalar |
 | 26 | `pending_active_validator_exits` | Scalar |
+| 27 | `invalid_deposit_tax` | Scalar |
 
 ### Collection Subtrees
 
@@ -122,7 +123,7 @@ epoch_N_subtree:
   8 leaves per withdrawal (same field layout as below)
 ```
 
-Each withdrawal occupies 8 leaves (7 fields + 1 zero padding):
+Each withdrawal occupies 8 leaves (8 fields):
 
 | Field Index | Field |
 |-------------|-------|
@@ -133,7 +134,7 @@ Each withdrawal occupies 8 leaves (7 fields + 1 zero padding):
 | 4 | `pubkey` |
 | 5 | `balance_deduction` |
 | 6 | `epoch` |
-| 7 | (zero padding) |
+| 7 | `kind` |
 
 A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by validator pubkey.
 
@@ -475,7 +476,7 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | `allowed_timestamp_future_ms` | Allowed timestamp future (ms) |
 | `treasury_address` | Treasury address |
 | `max_deposits_per_epoch` | Max validator deposits per epoch |
-| `max_withdrawals_per_epoch` | Max validator withdrawals per epoch |
+| `max_withdrawals_per_epoch` | Max total withdrawals per epoch (validator exits + deposit refunds) |
 | `observers_per_validator` | Observer keys authorized per validator |
 | `minimum_validator_count` | Minimum active validator count exits must preserve |
 | `pending_active_validator_exits` | Accepted active validator exits pending epoch transition |

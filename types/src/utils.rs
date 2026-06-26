@@ -67,6 +67,52 @@ pub fn parse_withdrawal_credentials(withdrawal_credentials: [u8; 32]) -> Result<
     Ok(Address::from_slice(&withdrawal_credentials[12..32]))
 }
 
+pub fn invalid_deposit_refund_split(amount: u64, invalid_deposit_tax: u64) -> (u64, u64) {
+    let tax = (u128::from(amount) * u128::from(invalid_deposit_tax)) / 100;
+    let tax = tax as u64;
+    (amount.saturating_sub(tax), tax)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::invalid_deposit_refund_split;
+
+    #[test]
+    fn invalid_deposit_refund_split_preserves_original_amount() {
+        let amounts = [
+            0,
+            1,
+            2,
+            3,
+            99,
+            100,
+            101,
+            1_000_000_000,
+            32_000_000_000,
+            u64::MAX,
+        ];
+
+        for amount in amounts {
+            for tax_percent in 0..=100 {
+                let (refund_amount, tax_amount) = invalid_deposit_refund_split(amount, tax_percent);
+                assert_eq!(
+                    refund_amount + tax_amount,
+                    amount,
+                    "amount={amount}, tax_percent={tax_percent}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_deposit_refund_split_handles_boundary_tax_values() {
+        let amount = 32_000_000_000;
+
+        assert_eq!(invalid_deposit_refund_split(amount, 0), (amount, 0));
+        assert_eq!(invalid_deposit_refund_split(amount, 100), (0, amount));
+    }
+}
+
 #[cfg(feature = "bench")]
 pub mod benchmarking {
     use alloy_primitives::B256;

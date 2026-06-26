@@ -45,8 +45,8 @@ use summit_types::scheme::EpochTransition;
 use summit_types::ssz_state_tree::{SszStateTree, StateProofEntry};
 use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::utils::{
-    is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
-    parse_withdrawal_credentials,
+    invalid_deposit_refund_split, is_first_block_of_epoch, is_last_block_of_epoch,
+    is_penultimate_block_of_epoch, parse_withdrawal_credentials,
 };
 use summit_types::{
     AddedValidator, Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature,
@@ -157,6 +157,47 @@ fn invalid_signature_refund_key(withdrawal_address: Address, deposit_index: u64)
     deposit_refund_key(0xFF, withdrawal_address, deposit_index)
 }
 
+fn invalid_deposit_tax_key(treasury_address: Address, deposit_index: u64) -> [u8; 32] {
+    deposit_refund_key(0xFD, treasury_address, deposit_index)
+}
+
+fn push_invalid_deposit_withdrawals(
+    state: &mut ConsensusState,
+    withdrawal_credentials: Address,
+    refund_pubkey: [u8; 32],
+    deposit_index: u64,
+    amount: u64,
+    withdrawal_epoch: u64,
+) {
+    let (refund_amount, tax_amount) =
+        invalid_deposit_refund_split(amount, state.get_invalid_deposit_tax());
+
+    if refund_amount > 0 {
+        state.push_refund_withdrawal_request(
+            WithdrawalRequest {
+                source_address: withdrawal_credentials,
+                validator_pubkey: refund_pubkey,
+                amount: refund_amount,
+            },
+            withdrawal_epoch,
+            0, // deposit was never credited to balance
+        );
+    }
+
+    if tax_amount > 0 {
+        let treasury_address = state.get_treasury_address();
+        state.push_refund_withdrawal_request(
+            WithdrawalRequest {
+                source_address: treasury_address,
+                validator_pubkey: invalid_deposit_tax_key(treasury_address, deposit_index),
+                amount: tax_amount,
+            },
+            withdrawal_epoch,
+            0, // invalid-deposit tax was never credited to a validator balance
+        );
+    }
+}
+
 /// Scan `state.pending_execution_requests` for buffered withdrawal entries
 /// and return the set of validator pubkeys with a deferred full exit
 /// waiting to replay.
@@ -234,16 +275,14 @@ fn queue_deposit_refund(
         }
     };
 
-    let withdrawal_request = WithdrawalRequest {
-        source_address: withdrawal_address,
-        validator_pubkey: refund_pubkey,
-        amount,
-    };
     let withdrawal_epoch = state.get_epoch() + consts.validator_withdrawal_num_epochs;
-    state.push_withdrawal_request(
-        withdrawal_request,
+    push_invalid_deposit_withdrawals(
+        state,
+        withdrawal_address,
+        refund_pubkey,
+        deposit_index,
+        amount,
         withdrawal_epoch,
-        0, // deposit was never credited to balance
     );
 }
 
@@ -1280,8 +1319,8 @@ impl<
             // Build the committee for the next epoch.
             self.validator_exit = self.update_validator_committee(stake_changed);
 
-            // Reschedule any overflow withdrawals that exceeded max_withdrawals_per_epoch
-            // to the next epoch (placed at the front of the queue for priority).
+            // Reschedule any overflow withdrawals that exceeded the per-epoch
+            // total withdrawal cap to the next epoch.
             let current_epoch = self.canonical_state.get_epoch();
             if self
                 .canonical_state
@@ -1993,13 +2032,15 @@ impl<
                     self.genesis_hash.into()
                 };
 
-            // Only submit withdrawals at the end of an epoch, capped by max_withdrawals_per_epoch
+            // `max_withdrawals_per_epoch` is a single total cap on the terminal
+            // block's withdrawals. Validator exits take strict priority and fill
+            // the budget first; deposit refunds use only the remaining capacity,
+            // so refunds can neither starve exits (#226) nor inflate the cap.
             let current_epoch = state.get_epoch();
             let max_withdrawals = state.get_max_withdrawals_per_epoch() as usize;
             let ready_withdrawals: Vec<_> = state
-                .get_withdrawals_for_epoch(current_epoch)
+                .get_withdrawals_for_epoch_with_total_cap(current_epoch, max_withdrawals)
                 .into_iter()
-                .take(max_withdrawals)
                 .cloned()
                 .collect();
             let next_epoch = state.get_epoch() + 1;
@@ -2124,6 +2165,10 @@ impl<
             ConsensusStateRequest::GetMinimumValidatorCount => {
                 let value = self.canonical_state.get_minimum_validator_count();
                 let _ = sender.send(ConsensusStateResponse::MinimumValidatorCount(value));
+            }
+            ConsensusStateRequest::GetInvalidDepositTax => {
+                let value = self.canonical_state.get_invalid_deposit_tax();
+                let _ = sender.send(ConsensusStateResponse::InvalidDepositTax(value));
             }
             ConsensusStateRequest::GetEpochBounds(epoch) => {
                 let bounds = self
@@ -2946,17 +2991,16 @@ async fn process_execution_requests<
                         );
                         let refund_pubkey =
                             refunded_deposit_key(account.withdrawal_credentials, request.index);
-                        let withdrawal_request = WithdrawalRequest {
-                            source_address: account.withdrawal_credentials,
-                            validator_pubkey: refund_pubkey,
-                            amount: request.amount,
-                        };
                         let withdrawal_epoch =
                             state.get_epoch() + consts.validator_withdrawal_num_epochs;
-                        state.push_withdrawal_request(
-                            withdrawal_request,
+
+                        push_invalid_deposit_withdrawals(
+                            state,
+                            account.withdrawal_credentials,
+                            refund_pubkey,
+                            request.index,
+                            request.amount,
                             withdrawal_epoch,
-                            0, // deposit was never credited
                         );
                         // Remove the inactive account since validator won't be joining
                         state.remove_account(&node_pubkey_bytes);
@@ -3029,18 +3073,18 @@ async fn process_execution_requests<
                             state.get_minimum_stake(),
                             state.get_maximum_stake()
                         );
-                        let withdrawal_request = WithdrawalRequest {
-                            source_address: account.withdrawal_credentials,
-                            validator_pubkey: node_pubkey_bytes,
-                            amount: request.amount,
-                        };
+                        let refund_pubkey =
+                            refunded_deposit_key(account.withdrawal_credentials, request.index);
                         let withdrawal_epoch =
                             state.get_epoch() + consts.validator_withdrawal_num_epochs;
 
-                        state.push_withdrawal_request(
-                            withdrawal_request,
+                        push_invalid_deposit_withdrawals(
+                            state,
+                            account.withdrawal_credentials,
+                            refund_pubkey,
+                            request.index,
+                            request.amount,
                             withdrawal_epoch,
-                            0, // top-up deposit was never credited to balance
                         );
                         // Persist the has_pending_deposit = false change
                         state.set_account(node_pubkey_bytes, account);
@@ -3156,7 +3200,7 @@ async fn process_execution_requests<
     }
     for withdrawal in &block.payload.payload_inner.withdrawals {
         let current_epoch = state.get_epoch();
-        let pending_withdrawal = state.pop_withdrawal(current_epoch);
+        let pending_withdrawal = state.pop_withdrawal_by_index(current_epoch, withdrawal.index);
         // these checks should never fail. we have to make sure that these withdrawals are
         // verified when the block is verified. it is too late when the block is committed.
         let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
