@@ -381,9 +381,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Send stop signal and wait for runtime to shut down gracefully
             node0_runtime.stop_tx.send(()).expect("Failed to send stop signal");
             println!("Waiting for node{} runtime to shut down...", source_node);
-            let _ = tokio::task::spawn_blocking(move || {
-                node0_runtime.thread.join().expect("Failed to join node0 thread");
-            }).await;
+            // node0 is intentionally stopped here for checkpoint copying, but its
+            // shutdown must still be clean: a thread join failure means it panicked
+            // or was killed, i.e. a required participant going down unexpectedly.
+            // Treat that as a scenario failure rather than swallowing the join error
+            // (a panic inside spawn_blocking is otherwise captured into the discarded
+            // JoinError and masked).
+            let join_result =
+                tokio::task::spawn_blocking(move || node0_runtime.thread.join()).await;
+            match join_result {
+                Ok(Ok(())) => println!("node{} runtime shut down cleanly", source_node),
+                Ok(Err(e)) => {
+                    eprintln!("node{source_node} thread join failed: {e:?}; failing scenario");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("node{source_node} join task failed: {e:?}; failing scenario");
+                    std::process::exit(1);
+                }
+            }
 
             // Give OS time to release ports (P2P sockets can take time to close)
             println!("Waiting for ports to be released...");

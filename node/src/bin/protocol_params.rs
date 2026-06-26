@@ -196,7 +196,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every node here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
