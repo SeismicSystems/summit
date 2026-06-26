@@ -2977,9 +2977,23 @@ async fn process_execution_requests<
                 drained_any_deposit = true;
                 let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
 
-                // Account should always exist (created early in parse_execution_requests)
+                // The account is normally created early in parse_execution_requests, but a
+                // queued deposit can outlive its account: e.g. a top-up stays queued (low or
+                // zero max_deposits_per_epoch) while the validator is force-removed and its
+                // account deleted, with no replacement deposit yet. Invariant: a queued
+                // deposit must either be processed against its original account lifecycle or
+                // refunded — never silently dropped (which would burn the depositor's
+                // EL-locked funds). With no account to bind, refund it to its own credentials.
                 let Some(mut account) = state.get_account(&node_pubkey_bytes).cloned() else {
-                    warn!("Deposit request has no corresponding account, skipping: {request:?}");
+                    warn!("Deposit request has no corresponding account, refunding: {request:?}");
+                    queue_deposit_refund(
+                        state,
+                        request.withdrawal_credentials,
+                        request.amount,
+                        request.index,
+                        DepositRejectionReason::Refund,
+                        consts,
+                    );
                     continue;
                 };
 
