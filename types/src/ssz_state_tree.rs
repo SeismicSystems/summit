@@ -2687,6 +2687,7 @@ mod tests {
             pubkey: pk1,
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2698,6 +2699,7 @@ mod tests {
             pubkey: pk2,
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
 
         let mut tree = SszStateTree::new();
