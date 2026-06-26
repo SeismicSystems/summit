@@ -1317,6 +1317,181 @@ fn test_process_time_invalid_new_validator_refund_does_not_merge_with_reused_pub
 }
 
 #[test_traced("INFO")]
+fn test_queued_deposit_without_account_is_refunded_not_dropped() {
+    // Regression test for #339: a queued deposit can outlive its account. A top-up
+    // stays queued (low/zero max_deposits_per_epoch) while the validator is
+    // force-removed and its account deleted, with no replacement deposit yet. When
+    // the deposit is finally popped there is no account to bind it to.
+    //
+    // The invariant is that such a deposit must be refunded, not silently dropped
+    // (which would burn the depositor's EL-locked funds). We reproduce the resulting
+    // state directly — a deposit sitting in the queue whose node pubkey has no
+    // account — by pre-loading it into the initial consensus state, then assert the
+    // full amount is refunded to the deposit's own withdrawal address. Without the
+    // fix the no-account branch skips the deposit and no such withdrawal is ever
+    // emitted, so this test fails.
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let stale_deposit_amount = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // The orphaned deposit's refund destination. Its node key is freshly generated
+        // by `create_deposit_request` and is not part of the committee, so no account
+        // exists for it — exactly the state left behind after account deletion.
+        let stale_refund_address = Address::from([0xAA; 20]);
+        let mut stale_withdrawal_credentials = [0u8; 32];
+        stale_withdrawal_credentials[0] = 0x01;
+        stale_withdrawal_credentials[12..32].copy_from_slice(stale_refund_address.as_slice());
+
+        let (stale_deposit, _, _) = common::create_deposit_request(
+            99,
+            stale_deposit_amount,
+            common::get_domain(),
+            None,
+            None,
+            Some(stale_withdrawal_credentials),
+        );
+
+        // The deposit is popped at the first penultimate block (epoch 0), so its refund
+        // is scheduled `VALIDATOR_WITHDRAWAL_NUM_EPOCHS` epochs out.
+        let refund_epoch = VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let refund_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, refund_epoch);
+        let stop_height = refund_height + 1;
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(HashMap::new())
+            .with_stop_at(stop_height)
+            .build();
+
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        // Seed the orphaned deposit directly into the queue (default max_deposits_per_epoch
+        // and invalid_deposit_tax of 0 mean it is popped and refunded in full).
+        initial_state.push_deposit(stale_deposit.clone());
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // The orphaned deposit must be refunded in full to its own withdrawal address.
+        let withdrawals = engine_client_network.get_withdrawals();
+        let refund_withdrawals = withdrawals
+            .get(&refund_height)
+            .expect("missing refund for the account-less queued deposit");
+        assert!(
+            refund_withdrawals.iter().any(|withdrawal| {
+                withdrawal.address == stale_refund_address
+                    && withdrawal.amount == stale_deposit_amount
+            }),
+            "a queued deposit with no account must be refunded in full, not dropped; got withdrawals = {refund_withdrawals:?}"
+        );
+
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+        common::assert_state_root_consensus(&consensus_state_queries).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
 fn test_invalid_deposit_refunds_do_not_delay_validator_exit_withdrawal() {
     // Invalid deposits that are rejected before deposit queue admission should not
     // consume the scarce withdrawal slot ahead of a legitimate validator exit.
