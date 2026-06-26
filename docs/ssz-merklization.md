@@ -476,7 +476,7 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | `allowed_timestamp_future_ms` | Allowed timestamp future (ms) |
 | `treasury_address` | Treasury address |
 | `max_deposits_per_epoch` | Max validator deposits per epoch |
-| `max_withdrawals_per_epoch` | Max validator withdrawals per epoch |
+| `max_withdrawals_per_epoch` | Max total withdrawals per epoch (validator exits + deposit refunds) |
 | `observers_per_validator` | Observer keys authorized per validator |
 | `minimum_validator_count` | Minimum active validator count exits must preserve |
 | `pending_active_validator_exits` | Accepted active validator exits pending epoch transition |

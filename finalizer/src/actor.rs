@@ -1319,8 +1319,8 @@ impl<
             // Build the committee for the next epoch.
             self.validator_exit = self.update_validator_committee(stake_changed);
 
-            // Reschedule any overflow withdrawals that exceeded the per-kind
-            // withdrawal budgets to the next epoch.
+            // Reschedule any overflow withdrawals that exceeded the per-epoch
+            // total withdrawal cap to the next epoch.
             let current_epoch = self.canonical_state.get_epoch();
             if self
                 .canonical_state
