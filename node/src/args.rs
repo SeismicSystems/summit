@@ -746,7 +746,7 @@ pub fn run_node_local(
     flags: RunFlags,
     checkpoint: Option<ConsensusState>,
     checkpoint_parent_block: Option<Block>,
-) -> Handle<()> {
+) -> Handle<anyhow::Result<()>> {
     context.spawn(async move |context| {
         let key_store = expect_key_store(&flags.key_store_path);
         run_node_local_inner(
@@ -756,7 +756,7 @@ pub fn run_node_local(
             checkpoint,
             checkpoint_parent_block,
         )
-        .await;
+        .await
     })
 }
 
@@ -766,7 +766,7 @@ async fn run_node_local_inner(
     key_store: KeyStore<PrivateKey>,
     checkpoint: Option<ConsensusState>,
     checkpoint_parent_block: Option<Block>,
-) {
+) -> anyhow::Result<()> {
     let context = context.with_label("summit_cw");
 
     let genesis = acquire_genesis(&context, &flags).await;
@@ -912,14 +912,19 @@ async fn run_node_local_inner(
         MetricServer::new(config).serve(stop_signal).await.unwrap();
     }
 
-    // Bring the node down as soon as any core task exits, then return so the runtime
-    // tears down cleanly and destructors run. Unlike the production path we do NOT
-    // `process::exit` here: this entrypoint runs inside a caller-managed runtime/thread
+    // bring the node down as soon as any core task exits, then return so the runtime
+    // tears down cleanly and destructors run. unlike the production path we do not
+    // process::exit here: this entrypoint runs inside a caller managed runtime/thread
     // (testnet and the e2e scenario binaries), and an abrupt exit would skip the caller's
-    // shutdown — e.g. orphaning the child Reth processes the scenarios spawn.
-    if let Err(e) = supervise_node_tasks(&context, p2p, engine, rpc_handle).await {
+    // shutdown, e.g. orphaning the child reth processes the scenarios spawn. instead we
+    // propagate the supervise outcome so the caller can decide: a coordinated shutdown
+    // (graceful stop or committee exit) returns ok, while a genuine core task failure
+    // returns err so the caller can fail the scenario instead of masking a dead node.
+    let result = supervise_node_tasks(&context, p2p, engine, rpc_handle).await;
+    if let Err(e) = &result {
         error!(?e, "node core task failed; shutting down node runtime");
     }
+    result
 }
 
 /// Supervise the core node tasks (P2P, consensus engine, RPC): as soon as any of them

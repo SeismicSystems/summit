@@ -189,8 +189,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None, None).await.unwrap();
+                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                            // a coordinated shutdown (graceful stop or committee exit) returns
+                            // ok; a genuine core task failure returns err and must fail the
+                            // scenario instead of being masked as a clean node exit.
+                            if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                                eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                                std::process::exit(1);
+                            }
                         });
 
                         let stop_fut = stop_rx.recv().fuse();
@@ -201,7 +207,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every validator here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
@@ -296,10 +306,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(|ctx| async move {
-                        run_node_local(ctx, observer_flags, None, None)
+                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        // the observer is a required participant: a genuine core task failure
+                        // (err) must fail the scenario rather than be masked as a clean exit.
+                        if let Err(e) = run_node_local(ctx, observer_flags, None, None)
                             .await
-                            .unwrap();
+                            .unwrap()
+                        {
+                            eprintln!("observer core task failed: {e:?}; failing scenario");
+                            std::process::exit(1);
+                        }
                     });
 
                     let stop_fut = observer_stop_rx.recv().fuse();
@@ -310,7 +326,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                         }
                         _ = node_handle.fuse() => {
-                            println!("Observer handle completed");
+                            // The observer is a required participant; its handle completing
+                            // without a stop signal means it went down unexpectedly, so
+                            // fail the scenario.
+                            eprintln!("Observer handle completed unexpectedly; failing scenario");
+                            std::process::exit(1);
                         }
                     }
                 });
@@ -477,7 +497,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Waiting for node index {} to join...", idx);
         match node_runtime.thread.join() {
             Ok(_) => println!("Node index {} thread joined successfully", idx),
-            Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
+            // A join failure means the node panicked or was killed: a required
+            // participant going down unexpectedly, so fail the scenario.
+            Err(e) => {
+                eprintln!("Node index {} thread join failed: {:?}", idx, e);
+                std::process::exit(1);
+            }
         }
     }
 

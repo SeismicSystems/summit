@@ -202,8 +202,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None, None).await.unwrap();
+                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                            // a coordinated shutdown (graceful stop or committee exit) returns
+                            // ok; a genuine core task failure returns err and must fail the
+                            // scenario instead of being masked as a clean node exit.
+                            if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                                eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                                std::process::exit(1);
+                            }
                         });
 
                         // Wait for stop signal or node completion
@@ -215,7 +221,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every node here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
@@ -371,9 +381,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Send stop signal and wait for runtime to shut down gracefully
             node0_runtime.stop_tx.send(()).expect("Failed to send stop signal");
             println!("Waiting for node{} runtime to shut down...", source_node);
-            let _ = tokio::task::spawn_blocking(move || {
-                node0_runtime.thread.join().expect("Failed to join node0 thread");
-            }).await;
+            // node0 is intentionally stopped here for checkpoint copying, but its
+            // shutdown must still be clean: a thread join failure means it panicked
+            // or was killed, i.e. a required participant going down unexpectedly.
+            // Treat that as a scenario failure rather than swallowing the join error
+            // (a panic inside spawn_blocking is otherwise captured into the discarded
+            // JoinError and masked).
+            let join_result =
+                tokio::task::spawn_blocking(move || node0_runtime.thread.join()).await;
+            match join_result {
+                Ok(Ok(())) => println!("node{} runtime shut down cleanly", source_node),
+                Ok(Err(e)) => {
+                    eprintln!("node{source_node} thread join failed: {e:?}; failing scenario");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("node{source_node} join task failed: {e:?}; failing scenario");
+                    std::process::exit(1);
+                }
+            }
 
             // Give OS time to release ports (P2P sockets can take time to close)
             println!("Waiting for ports to be released...");
@@ -430,7 +456,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             //    executor.start(|node_context| async move {
             //        let flags = get_node_flags(source_node);
-            //        let node_handle = node_context.clone().spawn(|ctx| async move {
+            //        let node_handle = node_context.clone().spawn(move |ctx| async move {
             //            run_node_with_runtime(ctx, flags, None).await.unwrap();
             //        });
 
@@ -555,8 +581,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(|ctx| async move {
-                        run_node_local(ctx, flags, Some(checkpoint_state), None).await.unwrap();
+                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        // the checkpoint restarted node is a required participant: a genuine
+                        // core task failure (err) must fail the scenario, not be masked.
+                        if let Err(e) =
+                            run_node_local(ctx, flags, Some(checkpoint_state), None).await.unwrap()
+                        {
+                            eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                            std::process::exit(1);
+                        }
                     });
 
                     // Wait for stop signal or node completion
@@ -568,7 +601,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                         }
                         _ = node_handle.fuse() => {
-                            println!("Node {} handle completed", x);
+                            // The checkpoint-restart node is a required participant; its
+                            // handle completing without a stop signal means it went down
+                            // unexpectedly, so fail the scenario.
+                            eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                            std::process::exit(1);
                         }
                     }
                 });
@@ -583,8 +620,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             loop {
                 let mut all_ready = true;
-                //for idx in 0..num_nodes {
-                // Skip node0
+                // node0 is intentionally stopped for checkpoint copying, so it is
+                // excluded from this progress check; its expected clean shutdown is
+                // asserted by the node0 thread join below (which panics on failure).
+                // Every other required node must reach the target height.
                 for idx in 1..num_nodes {
                     let rpc_port = get_node_flags(idx as usize, &e2e_genesis_path_str).rpc_port;
                     match get_latest_epoch(rpc_port).await {
@@ -623,7 +662,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = tokio::task::spawn_blocking(move || {
                     match node_runtime.thread.join() {
                         Ok(_) => println!("Node index {} thread joined successfully", idx),
-                        Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
+                        // A join failure means the node panicked or was killed: a
+                        // required participant going down unexpectedly, so fail the
+                        // scenario rather than logging and continuing to exit(0).
+                        Err(e) => {
+                            eprintln!("Node index {} thread join failed: {:?}", idx, e);
+                            std::process::exit(1);
+                        }
                     }
                 }).await;
             }

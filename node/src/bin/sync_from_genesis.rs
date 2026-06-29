@@ -214,8 +214,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None, None).await.unwrap();
+                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                            // a coordinated shutdown (graceful stop or committee exit) returns
+                            // ok; a genuine core task failure returns err and must fail the
+                            // scenario instead of being masked as a clean node exit.
+                            if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                                eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                                std::process::exit(1);
+                            }
                         });
 
                         // Wait for stop signal or node completion
@@ -227,7 +233,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // The withdrawn validator (last node) is expected to leave the
+                                // committee and shut down cleanly; any other node's handle
+                                // completing here means a required participant went down
+                                // unexpectedly (e.g. a panic), so fail the scenario.
+                                if x == NUM_NODES - 1 {
+                                    println!("Node {} (withdrawn) handle completed as expected", x);
+                                } else {
+                                    eprintln!(
+                                        "Node {} handle completed unexpectedly; failing scenario",
+                                        x
+                                    );
+                                    std::process::exit(1);
+                                }
                             }
                         }
                     });
@@ -536,9 +554,14 @@ address = "{}"
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(|ctx| async move {
-                        // No checkpoint - sync from genesis
-                        run_node_local(ctx, flags, None, None).await.unwrap();
+                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        // no checkpoint, sync from genesis. a coordinated shutdown (graceful
+                        // stop or committee exit) returns ok; a genuine core task failure
+                        // returns err and must fail the scenario instead of being masked.
+                        if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                            eprintln!("joining node {x} core task failed: {e:?}; failing scenario");
+                            std::process::exit(1);
+                        }
                     });
 
                     let stop_fut = stop_rx.recv().fuse();
@@ -549,7 +572,11 @@ address = "{}"
                             node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                         }
                         _ = node_handle.fuse() => {
-                            println!("Node {} handle completed", x);
+                            // The new syncing node is a required participant; its handle
+                            // completing without a stop signal means it went down
+                            // unexpectedly, so fail the scenario.
+                            eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                            std::process::exit(1);
                         }
                     }
                 });
