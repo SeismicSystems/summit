@@ -90,6 +90,7 @@ fn single_file_import_has_no_chain_and_is_refused() {
         16,
         0,
         1,
+        0,
     );
     let checkpoint = Checkpoint::new(&state);
 
