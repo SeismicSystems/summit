@@ -56,3 +56,7 @@ prom = ["metrics"]
 bench = ["serde_json"]
 e2e = ["libc", "alloy-genesis", "url"]
 bad-blocks = []
+
+[[bench]]
+name = "block_encode_size"
+harness = false

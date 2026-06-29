@@ -687,6 +687,7 @@ where
         // so use it as the config digest to keep their derived chain domain
         // consistent.
         config_digest: genesis_hash,
+        max_message_size_bytes: 100 * 1024 * 1024,
         namespace,
         key_store,
         participants,

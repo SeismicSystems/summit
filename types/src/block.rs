@@ -533,4 +533,123 @@ mod test {
         assert_eq!(actual_encoded.len(), pure_ssz.len() + 4);
         assert_eq!(actual_encoded.len(), encode_len);
     }
+
+    /// Build a block whose encoded size is dominated by `extra_data`, so its
+    /// total size can be tuned close to a target budget.
+    fn block_with_extra_data(extra_len: usize) -> Block {
+        let payload = ExecutionPayloadV3 {
+            payload_inner: ExecutionPayloadV2 {
+                payload_inner: ExecutionPayloadV1 {
+                    base_fee_per_gas: U256::ZERO,
+                    block_number: 1,
+                    block_hash: [0u8; 32].into(),
+                    logs_bloom: Default::default(),
+                    extra_data: AlloyBytes::from(vec![0x11u8; extra_len]),
+                    gas_limit: 0,
+                    gas_used: 0,
+                    timestamp: 1,
+                    fee_recipient: Default::default(),
+                    parent_hash: [0u8; 32].into(),
+                    prev_randao: [0u8; 32].into(),
+                    receipts_root: [0u8; 32].into(),
+                    state_root: [0u8; 32].into(),
+                    transactions: Vec::new(),
+                },
+                withdrawals: vec![],
+            },
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+        };
+        Block::compute_digest(
+            [0u8; 32].into(),
+            1,
+            1,
+            payload,
+            Vec::new(),
+            0,
+            1,
+            None,
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        )
+    }
+
+    /// #252 invariant, checked against the ACTUAL encoded resolver response.
+    ///
+    /// Finalized/notarized backfill is served as a single P2P message:
+    /// `(Finalization, Block).encode()`. Proposed/verified/certified blocks are
+    /// bounded to `max_message_size_bytes / 2` (application::max_block_size_bytes),
+    /// so the other half must always cover the certificate + proposal framing.
+    /// A Simplex certificate is one aggregate BLS signature plus an N-bit signer
+    /// bitmap (~ceil(N/8)), so this holds with wide margin for realistic N.
+    ///
+    /// This pins that as a checked invariant rather than a static size proof: a
+    /// max-budget block paired with a real certificate for a large validator set
+    /// must still fit the cap. It fails loudly if certificate encoding/aggregation
+    /// changes (e.g. per-signer signatures) or N grows past the reserved half.
+    #[test]
+    fn certificate_block_backfill_response_fits_message_cap() {
+        use crate::protocol_params::MAX_MESSAGE_SIZE_BYTES_MIN;
+        use commonware_consensus::simplex::scheme::bls12381_multisig;
+        use commonware_consensus::simplex::types::{Finalization, Proposal};
+        use commonware_consensus::types::{Epoch, Round, View};
+        use commonware_cryptography::bls12381::certificate::multisig::Certificate;
+        use commonware_cryptography::bls12381::primitives::{
+            group::Private,
+            ops::{aggregate::Signature, sign_message},
+            variant::MinPk,
+        };
+        use commonware_cryptography::certificate::Signers;
+        use commonware_math::algebra::Random;
+        use commonware_utils::Participant;
+        use rand::{SeedableRng as _, rngs::StdRng};
+
+        // Tightest configured cap (genesis floor); the block budget mirrors
+        // application's max_block_size_bytes = max_message_size_bytes / 2.
+        let cap = MAX_MESSAGE_SIZE_BYTES_MIN as usize;
+        let block_budget = cap / 2;
+
+        // A generous, realistic validator set: the signer bitmap is ceil(N/8).
+        let n_validators = 10_000usize;
+
+        // Build a valid block just under the block budget (small margin for SSZ
+        // offset overhead), the largest block a proposer could legitimately emit.
+        let base = block_with_extra_data(0).encode_size();
+        let block = block_with_extra_data(block_budget - base - 64);
+        assert!(
+            block.encode_size() < block_budget,
+            "test block ({}) must be a valid sub-budget block (< {block_budget})",
+            block.encode_size()
+        );
+
+        let signature = {
+            let mut rng = StdRng::seed_from_u64(42);
+            let private = Private::random(&mut rng);
+            let g2 = sign_message::<MinPk>(&private, b"", b"backfill-size-test");
+            Signature::<MinPk>::decode(g2.encode()).expect("valid signature")
+        };
+        let proposal = Proposal {
+            round: Round::new(Epoch::new(block.epoch()), View::new(block.view())),
+            parent: View::new(block.height().saturating_sub(1)),
+            payload: block.digest(),
+        };
+        let finalization: Finalization<bls12381_multisig::Scheme<PublicKey, MinPk>, Digest> =
+            Finalization {
+                proposal,
+                certificate: Certificate::<MinPk> {
+                    signers: Signers::from(n_validators, [0, 1, 2].map(Participant::new)),
+                    signature: signature.into(),
+                },
+            };
+
+        // The actual single-message finalized-backfill response the syncer serves.
+        let response_size = (finalization, block).encode_size();
+        assert!(
+            response_size <= cap,
+            "(certificate, block) backfill response ({response_size} bytes) must fit the P2P \
+             message cap ({cap} bytes) for {n_validators} validators",
+        );
+    }
 }
