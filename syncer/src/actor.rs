@@ -448,10 +448,23 @@ where
         // If we have a checkpoint, finalize the last block to complete the checkpoint
         if let Some(checkpoint) = checkpoint {
             let height = checkpoint.last_block.height();
+            let last_block_digest = checkpoint.last_block.digest();
             let finalization = checkpoint.finalized_header.map(|h| h.into_finalization());
+            // Defense in depth: last_block and finalized_header arrive as
+            // independent artifacts. The finalization certifies a specific block
+            // digest, so refuse to complete the checkpoint with a finalization
+            // that certifies a different block than the supplied last_block. The
+            // node startup path already binds these against the verified header
+            // chain; asserting it here keeps the boundary safe for any caller.
+            if let Some(finalization) = finalization.as_ref() {
+                assert!(
+                    finalization.proposal.payload == last_block_digest,
+                    "checkpoint finalization certifies a different block than last_block"
+                );
+            }
             self.store_finalization(
                 height,
-                checkpoint.last_block.digest(),
+                last_block_digest,
                 checkpoint.last_block,
                 finalization,
                 &mut application,
