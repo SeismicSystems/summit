@@ -1188,7 +1188,6 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
-
     // Summit does not currently support blob transactions. Reject any
     // payload that consumed blob gas — if blob support is enabled later,
     // the V4 payload envelope's blob bundle / kzg commitments must also be
@@ -2158,8 +2157,7 @@ mod tests {
         let header_height = parent_height + 1;
         let header_timestamp = header_height * 12;
 
-        let mut payload =
-            empty_payload(header_height, parent.eth_block_hash(), header_timestamp);
+        let mut payload = empty_payload(header_height, parent.eth_block_hash(), header_timestamp);
         payload.payload_inner.payload_inner.prev_randao = [0xAB; 32].into();
 
         let block = Block::compute_digest(
