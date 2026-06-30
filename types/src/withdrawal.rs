@@ -3,7 +3,7 @@ use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, FixedSize, Read, Write};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WithdrawalKind {
@@ -198,45 +198,97 @@ impl Read for PendingWithdrawal {
 
 /// Encapsulates withdrawal data and scheduling.
 ///
-/// Stores at most one withdrawal per validator (keyed by pubkey). If a withdrawal
-/// is pushed for a pubkey that already has one pending, amounts and balance
-/// deductions are merged and the original scheduled epoch is kept.
+/// Two flat queues in processing order: validator-initiated/stake-bound
+/// withdrawals and deposit refunds. Each `PendingWithdrawal` carries its own
+/// earliest-processable `epoch`; the per-epoch cap drains from the front, so the
+/// queues are expected to stay ordered by that epoch.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WithdrawalQueue {
-    /// Map from validator pubkey to their pending withdrawal data.
-    withdrawals: BTreeMap<[u8; 32], PendingWithdrawal>,
-    /// Validator withdrawals ordered by epoch. Each epoch maps to an ordered list of
-    /// validator pubkeys whose withdrawals should be processed in that epoch.
-    validator_schedule: BTreeMap<u64, VecDeque<[u8; 32]>>,
-    /// Deposit-refund withdrawals ordered by epoch.
-    refund_schedule: BTreeMap<u64, VecDeque<[u8; 32]>>,
+    /// Validator-initiated / stake-bound withdrawals, in processing order.
+    withdrawals: VecDeque<PendingWithdrawal>,
+    /// Deposit refunds, in processing order.
+    refunds: VecDeque<PendingWithdrawal>,
     /// The next withdrawal index to assign.
     next_index: u64,
 }
 
 impl WithdrawalQueue {
-    fn schedule(&self, kind: WithdrawalKind) -> &BTreeMap<u64, VecDeque<[u8; 32]>> {
+    pub fn push_withdrawal(&mut self, epoch: u64, request: WithdrawalRequest) {
+        let index = self.next_index;
+        self.next_index += 1;
+        let pending = PendingWithdrawal {
+            inner: Withdrawal {
+                index,
+                validator_index: 0,
+                address: request.source_address,
+                amount: request.amount,
+            },
+            pubkey: request.validator_pubkey,
+            balance_deduction: request.amount,
+            epoch,
+            kind: WithdrawalKind::Validator,
+        };
+        self.withdrawals.push_back(pending);
+    }
+
+    pub fn push_refund(&mut self, epoch: u64, request: WithdrawalRequest) {
+        let index = self.next_index;
+        self.next_index += 1;
+        let pending = PendingWithdrawal {
+            inner: Withdrawal {
+                index,
+                validator_index: 0,
+                address: request.source_address,
+                amount: request.amount,
+            },
+            pubkey: request.validator_pubkey,
+            balance_deduction: request.amount,
+            epoch,
+            kind: WithdrawalKind::DepositRefund,
+        };
+        self.refunds.push_back(pending);
+    }
+
+    /// Peek at the next validator withdrawal without removing it, returning it only
+    /// if it is due (its earliest-processable `epoch <= current_epoch`). Since the
+    /// queue is epoch-ordered, a not-due front means nothing is due.
+    pub fn peek_withdrawal(&self, current_epoch: u64) -> Option<&PendingWithdrawal> {
+        self.withdrawals
+            .front()
+            .filter(|w| w.epoch <= current_epoch)
+    }
+
+    /// Peek at the next deposit refund without removing it, returning it only if it
+    /// is due (its earliest-processable `epoch <= current_epoch`).
+    pub fn peek_refund(&self, current_epoch: u64) -> Option<&PendingWithdrawal> {
+        self.refunds.front().filter(|w| w.epoch <= current_epoch)
+    }
+
+    fn deque(&self, kind: WithdrawalKind) -> &VecDeque<PendingWithdrawal> {
         match kind {
-            WithdrawalKind::Validator => &self.validator_schedule,
-            WithdrawalKind::DepositRefund => &self.refund_schedule,
+            WithdrawalKind::Validator => &self.withdrawals,
+            WithdrawalKind::DepositRefund => &self.refunds,
         }
     }
 
-    fn schedule_mut(&mut self, kind: WithdrawalKind) -> &mut BTreeMap<u64, VecDeque<[u8; 32]>> {
+    fn deque_mut(&mut self, kind: WithdrawalKind) -> &mut VecDeque<PendingWithdrawal> {
         match kind {
-            WithdrawalKind::Validator => &mut self.validator_schedule,
-            WithdrawalKind::DepositRefund => &mut self.refund_schedule,
+            WithdrawalKind::Validator => &mut self.withdrawals,
+            WithdrawalKind::DepositRefund => &mut self.refunds,
         }
     }
 
-    /// Add a withdrawal request. If the pubkey already has a pending withdrawal,
-    /// merges amounts and balance deductions into the existing entry (keeping the
-    /// original scheduled epoch).
+    /// Append a validator withdrawal request to the end of the queue.
     pub fn push_request(&mut self, request: WithdrawalRequest, epoch: u64, balance_deduction: u64) {
         self.push_request_with_kind(request, epoch, balance_deduction, WithdrawalKind::Validator)
-            .expect("validator withdrawal kind must match existing pending withdrawal");
+            .expect("validator withdrawal kind must match queue");
     }
 
+    /// Append a withdrawal request of the given kind to the end of the corresponding
+    /// queue. Entries are never merged — each request is a distinct queue entry.
+    ///
+    /// Returns `Ok(false)` (the historical "merged?" flag, now always false). The
+    /// `Result` is retained for call-site compatibility.
     pub fn push_request_with_kind(
         &mut self,
         request: WithdrawalRequest,
@@ -244,135 +296,96 @@ impl WithdrawalQueue {
         balance_deduction: u64,
         kind: WithdrawalKind,
     ) -> Result<bool, WithdrawalKindMismatch> {
-        let pubkey = request.validator_pubkey;
-
-        if let Some(existing) = self.withdrawals.get_mut(&pubkey) {
-            if existing.kind != kind {
-                return Err(WithdrawalKindMismatch {
-                    existing: existing.kind,
-                    requested: kind,
-                });
-            }
-            existing.inner.amount += request.amount;
-            existing.balance_deduction += balance_deduction;
-            Ok(true)
-        } else {
-            let index = self.next_index;
-            self.next_index += 1;
-
-            let pending = PendingWithdrawal {
-                inner: Withdrawal {
-                    index,
-                    validator_index: 0,
-                    address: request.source_address,
-                    amount: request.amount,
-                },
-                pubkey,
-                balance_deduction,
-                epoch,
-                kind,
-            };
-
-            self.withdrawals.insert(pubkey, pending);
-            self.schedule_mut(kind)
-                .entry(epoch)
-                .or_default()
-                .push_back(pubkey);
-            Ok(false)
-        }
+        let index = self.next_index;
+        self.next_index += 1;
+        let pending = PendingWithdrawal {
+            inner: Withdrawal {
+                index,
+                validator_index: 0,
+                address: request.source_address,
+                amount: request.amount,
+            },
+            pubkey: request.validator_pubkey,
+            balance_deduction,
+            epoch,
+            kind,
+        };
+        self.deque_mut(kind).push_back(pending);
+        Ok(false)
     }
 
     /// Push a pre-built withdrawal directly (for test setup and deserialization).
     pub fn push(&mut self, withdrawal: PendingWithdrawal) {
-        let pubkey = withdrawal.pubkey;
-        let epoch = withdrawal.epoch;
-        let kind = withdrawal.kind;
-        self.withdrawals.insert(pubkey, withdrawal);
-        self.schedule_mut(kind)
-            .entry(epoch)
-            .or_default()
-            .push_back(pubkey);
+        self.deque_mut(withdrawal.kind).push_back(withdrawal);
+    }
+
+    /// The most recently appended entry of the given kind, if any.
+    pub fn back(&self, kind: WithdrawalKind) -> Option<&PendingWithdrawal> {
+        self.deque(kind).back()
+    }
+
+    /// Iterate the full combined sequence `[validator withdrawals ++ deposit
+    /// refunds]` in queue order. This is the order committed to the SSZ tree.
+    pub fn iter_all(&self) -> impl Iterator<Item = &PendingWithdrawal> {
+        self.withdrawals.iter().chain(self.refunds.iter())
     }
 
     fn pop_kind(&mut self, epoch: u64, kind: WithdrawalKind) -> Option<PendingWithdrawal> {
-        let pubkey = {
-            let schedule = self.schedule_mut(kind);
-            let queue = schedule.get_mut(&epoch)?;
-            let pubkey = queue.pop_front()?;
-            if queue.is_empty() {
-                schedule.remove(&epoch);
-            }
-            pubkey
-        };
-
-        self.withdrawals.remove(&pubkey)
+        // Pop the front only if it is due (its earliest-processable epoch has arrived).
+        if self.deque(kind).front().is_some_and(|w| w.epoch <= epoch) {
+            self.deque_mut(kind).pop_front()
+        } else {
+            None
+        }
     }
 
-    /// Pop the next withdrawal for the given epoch, prioritizing validator withdrawals.
+    /// Pop the next due withdrawal for the given epoch, prioritizing validator withdrawals.
     pub fn pop(&mut self, epoch: u64) -> Option<PendingWithdrawal> {
         self.pop_kind(epoch, WithdrawalKind::Validator)
             .or_else(|| self.pop_kind(epoch, WithdrawalKind::DepositRefund))
     }
 
-    pub fn pop_by_index(&mut self, epoch: u64, index: u64) -> Option<PendingWithdrawal> {
-        let pop_from_kind = |queue: &mut Self, kind: WithdrawalKind| {
-            let pubkey = queue
-                .schedule(kind)
-                .get(&epoch)?
-                .iter()
-                .copied()
-                .find(|pubkey| {
-                    queue
-                        .withdrawals
-                        .get(pubkey)
-                        .is_some_and(|pending| pending.inner.index == index)
-                })?;
-
-            let schedule = queue.schedule_mut(kind);
-            let pubkeys = schedule.get_mut(&epoch)?;
-            let position = pubkeys.iter().position(|candidate| candidate == &pubkey)?;
-            pubkeys.remove(position);
-            if pubkeys.is_empty() {
-                schedule.remove(&epoch);
-            }
-
-            queue.withdrawals.remove(&pubkey)
-        };
-
-        if let Some(withdrawal) = pop_from_kind(self, WithdrawalKind::Validator) {
-            return Some(withdrawal);
+    /// Remove and return the withdrawal with the given index, which must be at the
+    /// front of one of the two queues (validator queue first).
+    ///
+    /// This is the commit-time reconciliation path: the EL block replays the
+    /// withdrawals it was given in emission order, and emission only ever takes a
+    /// front-prefix of each queue (pushes go to the back, the only removals are
+    /// these front pops). So the matched entry is always a current front entry —
+    /// no scan is needed, and `index` doubles as an integrity check.
+    pub fn pop_by_index(&mut self, _epoch: u64, index: u64) -> Option<PendingWithdrawal> {
+        if self
+            .withdrawals
+            .front()
+            .is_some_and(|w| w.inner.index == index)
+        {
+            return self.withdrawals.pop_front();
         }
-        pop_from_kind(self, WithdrawalKind::DepositRefund)
+        if self.refunds.front().is_some_and(|w| w.inner.index == index) {
+            return self.refunds.pop_front();
+        }
+        None
     }
 
-    /// Peek at the next withdrawal for the given epoch without removing it.
+    /// Peek at the next due withdrawal for the given epoch (validator priority).
     pub fn peek(&self, epoch: u64) -> Option<&PendingWithdrawal> {
-        self.validator_schedule
-            .get(&epoch)
-            .and_then(|queue| queue.front())
-            .and_then(|pubkey| self.withdrawals.get(pubkey))
-            .or_else(|| {
-                self.refund_schedule
-                    .get(&epoch)
-                    .and_then(|queue| queue.front())
-                    .and_then(|pubkey| self.withdrawals.get(pubkey))
-            })
+        self.withdrawals
+            .front()
+            .filter(|w| w.epoch <= epoch)
+            .or_else(|| self.refunds.front().filter(|w| w.epoch <= epoch))
     }
 
+    /// All due withdrawals of the given kind for `epoch` (earliest-epoch `<= epoch`),
+    /// in queue order.
     pub fn get_for_epoch_by_kind(
         &self,
         epoch: u64,
         kind: WithdrawalKind,
     ) -> Vec<&PendingWithdrawal> {
-        self.schedule(kind)
-            .get(&epoch)
-            .map(|queue| {
-                queue
-                    .iter()
-                    .filter_map(|pk| self.withdrawals.get(pk))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.deque(kind)
+            .iter()
+            .filter(|w| w.epoch <= epoch)
+            .collect()
     }
 
     /// Get all pending withdrawals for a specific epoch.
@@ -407,62 +420,28 @@ impl WithdrawalQueue {
         withdrawals
     }
 
-    fn reschedule_epoch_kind(&mut self, from_epoch: u64, to_epoch: u64, kind: WithdrawalKind) {
-        if let Some(mut pubkeys) = self.schedule_mut(kind).remove(&from_epoch) {
-            if pubkeys.is_empty() {
-                return;
-            }
-            // Update the epoch on each withdrawal entry
-            for pk in &pubkeys {
-                if let Some(w) = self.withdrawals.get_mut(pk) {
-                    w.epoch = to_epoch;
-                }
-            }
-            // Prepend to the target epoch's schedule (rescheduled withdrawals get priority)
-            if let Some(existing) = self.schedule_mut(kind).get_mut(&to_epoch) {
-                pubkeys.extend(existing.iter().copied());
-                *existing = pubkeys;
-            } else {
-                self.schedule_mut(kind).insert(to_epoch, pubkeys);
-            }
-        }
-    }
+    /// No-op: overflow handling is implicit. Entries that exceed a per-epoch cap
+    /// stay in the queue with their original (earliest) epoch and are picked up in a
+    /// later epoch via the `epoch <= current` due check. Retained for call-site
+    /// compatibility.
+    pub fn reschedule_epoch(&mut self, _from_epoch: u64, _to_epoch: u64) {}
 
-    /// Move all remaining withdrawals from one epoch to another.
-    /// Used to reschedule overflow withdrawals that exceeded the per-epoch cap.
-    /// Rescheduled withdrawals are placed at the front of the target epoch's queue
-    /// since they were scheduled earlier and should have priority.
-    pub fn reschedule_epoch(&mut self, from_epoch: u64, to_epoch: u64) {
-        self.reschedule_epoch_kind(from_epoch, to_epoch, WithdrawalKind::Validator);
-        self.reschedule_epoch_kind(from_epoch, to_epoch, WithdrawalKind::DepositRefund);
-    }
-
-    /// Get the number of pending withdrawals for a specific epoch.
+    /// Number of due withdrawals for `epoch` (earliest-epoch `<= epoch`).
     pub fn count_for_epoch(&self, epoch: u64) -> usize {
-        self.validator_schedule
-            .get(&epoch)
-            .map(|q| q.len())
-            .unwrap_or(0)
-            + self
-                .refund_schedule
-                .get(&epoch)
-                .map(|q| q.len())
-                .unwrap_or(0)
+        self.withdrawals.iter().filter(|w| w.epoch <= epoch).count()
+            + self.refunds.iter().filter(|w| w.epoch <= epoch).count()
     }
 
     pub fn count_for_epoch_by_kind(&self, epoch: u64, kind: WithdrawalKind) -> usize {
-        self.schedule(kind)
-            .get(&epoch)
-            .map(|q| q.len())
-            .unwrap_or(0)
+        self.deque(kind).iter().filter(|w| w.epoch <= epoch).count()
     }
 
     /// Get all epochs that have pending withdrawals.
     pub fn epochs_with_withdrawals(&self) -> Vec<u64> {
-        self.validator_schedule
-            .keys()
-            .chain(self.refund_schedule.keys())
-            .copied()
+        self.withdrawals
+            .iter()
+            .chain(self.refunds.iter())
+            .map(|w| w.epoch)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -478,14 +457,14 @@ impl WithdrawalQueue {
         self.next_index = index;
     }
 
-    /// Number of unique validators with pending withdrawals.
+    /// Total number of pending withdrawals (validator exits + refunds).
     pub fn len(&self) -> usize {
-        self.withdrawals.len()
+        self.withdrawals.len() + self.refunds.len()
     }
 
     /// Whether there are any pending withdrawals.
     pub fn is_empty(&self) -> bool {
-        self.withdrawals.is_empty()
+        self.withdrawals.is_empty() && self.refunds.is_empty()
     }
 
     /// Number of epochs with scheduled withdrawals.
@@ -495,73 +474,102 @@ impl WithdrawalQueue {
 
     /// Get the `balance_deduction` for a specific validator, or 0 if not in the queue.
     pub fn balance_deduction_for(&self, pubkey: &[u8; 32]) -> u64 {
-        self.withdrawals
-            .get(pubkey)
+        self.get_withdrawal(pubkey)
             .map(|w| w.balance_deduction)
             .unwrap_or(0)
     }
 
-    /// Get a pending withdrawal by validator pubkey.
+    /// Get the first pending withdrawal for a validator pubkey, validator queue
+    /// first. Entries are not deduplicated by pubkey, so a pubkey may have several
+    /// pending entries; this returns the earliest-queued one.
     pub fn get_withdrawal(&self, pubkey: &[u8; 32]) -> Option<&PendingWithdrawal> {
-        self.withdrawals.get(pubkey)
+        self.withdrawals
+            .iter()
+            .chain(self.refunds.iter())
+            .find(|w| &w.pubkey == pubkey)
     }
 
-    /// Iterate over all pending withdrawals as (pubkey, withdrawal) pairs.
-    pub fn withdrawals_iter(&self) -> impl Iterator<Item = (&[u8; 32], &PendingWithdrawal)> {
-        self.withdrawals.iter()
+    /// Iterate over the validator withdrawals scheduled for `epoch`, in queue order.
+    pub fn withdrawals_iter(&self, epoch: u64) -> impl Iterator<Item = PendingWithdrawal> {
+        self.withdrawals
+            .iter()
+            .filter(move |w| w.epoch == epoch)
+            .cloned()
     }
+}
+
+/// Serialized size of one flat withdrawal deque.
+fn flat_encode_size(deque: &VecDeque<PendingWithdrawal>) -> usize {
+    4 // count
+    + deque.len() * PendingWithdrawal::SIZE
+}
+
+/// Write one flat deque: count, then each full withdrawal in queue order.
+fn write_flat(deque: &VecDeque<PendingWithdrawal>, buf: &mut impl BufMut) {
+    buf.put_u32(deque.len() as u32);
+    for withdrawal in deque {
+        withdrawal.write(buf);
+    }
+}
+
+/// Read one flat deque written by [`write_flat`], validating that every item's
+/// `kind` matches the queue and that indexes are globally unique and below
+/// `next_index` (shared `indexes` set across both deques).
+fn read_flat(
+    buf: &mut impl Buf,
+    kind: WithdrawalKind,
+    next_index: u64,
+    indexes: &mut BTreeSet<u64>,
+) -> Result<VecDeque<PendingWithdrawal>, Error> {
+    let count = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+    // Bound preallocation by the bytes actually remaining so a crafted count
+    // cannot force a huge upfront allocation.
+    let mut deque =
+        VecDeque::with_capacity(count.min(buf.remaining() / PendingWithdrawal::SIZE + 1));
+    for _ in 0..count {
+        let withdrawal = PendingWithdrawal::read_cfg(buf, &())?;
+        if withdrawal.kind != kind {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "withdrawal kind does not match queue",
+            ));
+        }
+        if withdrawal.inner.index >= next_index {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "next_index must exceed pending withdrawal indexes",
+            ));
+        }
+        if !indexes.insert(withdrawal.inner.index) {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "duplicate withdrawal index",
+            ));
+        }
+        // The queue is drained from the front under the per-epoch cap, so it must
+        // stay ordered by earliest-processable `epoch`. Enabling a non-decreasing
+        // `epoch` check here is only sound once all withdrawals share one
+        // scheduling delay (the stake-bound `+1` must be unified first); until
+        // then mixed deltas can legitimately produce out-of-order queues, so the
+        // check stays off.
+        deque.push_back(withdrawal);
+    }
+    Ok(deque)
 }
 
 impl EncodeSize for WithdrawalQueue {
     fn encode_size(&self) -> usize {
         8 // next_index
-        + 4 // withdrawals count
-        + self.withdrawals.len() * (32 + PendingWithdrawal::SIZE)
-        + 4 // validator schedule epoch count
-        + self.validator_schedule.values().map(|pubkeys| {
-            8 // epoch
-            + 4 // pubkey count
-            + pubkeys.len() * 32
-        }).sum::<usize>()
-        + 4 // refund schedule epoch count
-        + self.refund_schedule.values().map(|pubkeys| {
-            8 // epoch
-            + 4 // pubkey count
-            + pubkeys.len() * 32
-        }).sum::<usize>()
+        + flat_encode_size(&self.withdrawals)
+        + flat_encode_size(&self.refunds)
     }
 }
 
 impl Write for WithdrawalQueue {
     fn write(&self, buf: &mut impl BufMut) {
         buf.put_u64(self.next_index);
-
-        // Write withdrawals map
-        buf.put_u32(self.withdrawals.len() as u32);
-        for (pubkey, withdrawal) in &self.withdrawals {
-            buf.put_slice(pubkey);
-            withdrawal.write(buf);
-        }
-
-        // Write validator schedule
-        buf.put_u32(self.validator_schedule.len() as u32);
-        for (epoch, pubkeys) in &self.validator_schedule {
-            buf.put_u64(*epoch);
-            buf.put_u32(pubkeys.len() as u32);
-            for pubkey in pubkeys {
-                buf.put_slice(pubkey);
-            }
-        }
-
-        // Write refund schedule
-        buf.put_u32(self.refund_schedule.len() as u32);
-        for (epoch, pubkeys) in &self.refund_schedule {
-            buf.put_u64(*epoch);
-            buf.put_u32(pubkeys.len() as u32);
-            for pubkey in pubkeys {
-                buf.put_slice(pubkey);
-            }
-        }
+        write_flat(&self.withdrawals, buf);
+        write_flat(&self.refunds, buf);
     }
 }
 
@@ -579,143 +587,15 @@ impl Read for WithdrawalQueue {
             ));
         }
 
-        let withdrawals_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut withdrawals = BTreeMap::new();
-        let mut withdrawal_indexes = BTreeSet::new();
-        for _ in 0..withdrawals_len {
-            let mut pubkey = [0u8; 32];
-            buf.try_copy_to_slice(&mut pubkey)
-                .map_err(|_| Error::EndOfBuffer)?;
-            let withdrawal = PendingWithdrawal::read_cfg(buf, &())?;
-            if pubkey != withdrawal.pubkey {
-                return Err(Error::Invalid(
-                    "WithdrawalQueue",
-                    "withdrawal map key does not match pending pubkey",
-                ));
-            }
-            if withdrawal.inner.index >= next_index {
-                return Err(Error::Invalid(
-                    "WithdrawalQueue",
-                    "next_index must exceed pending withdrawal indexes",
-                ));
-            }
-            if !withdrawal_indexes.insert(withdrawal.inner.index) {
-                return Err(Error::Invalid(
-                    "WithdrawalQueue",
-                    "duplicate withdrawal index",
-                ));
-            }
-            if withdrawals.insert(pubkey, withdrawal).is_some() {
-                return Err(Error::Invalid(
-                    "WithdrawalQueue",
-                    "duplicate withdrawal pubkey",
-                ));
-            }
-        }
-
-        let validator_schedule_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut validator_schedule = BTreeMap::new();
-        for _ in 0..validator_schedule_len {
-            let epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-            let pubkeys_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-            if pubkeys_len == 0 {
-                return Err(Error::Invalid(
-                    "WithdrawalQueue",
-                    "scheduled epoch has no withdrawals",
-                ));
-            }
-            // `pubkeys_len` is an attacker-controlled u32 and `buf.remaining()`
-            // is a byte count, not an element count, so a bounded hint could
-            // still over-allocate. Grow as pubkeys are decoded instead.
-            let mut pubkeys = VecDeque::new();
-            for _ in 0..pubkeys_len {
-                let mut pubkey = [0u8; 32];
-                buf.try_copy_to_slice(&mut pubkey)
-                    .map_err(|_| Error::EndOfBuffer)?;
-                pubkeys.push_back(pubkey);
-            }
-            if validator_schedule.insert(epoch, pubkeys).is_some() {
-                return Err(Error::Invalid(
-                    "WithdrawalQueue",
-                    "duplicate validator scheduled epoch",
-                ));
-            }
-        }
-
-        let refund_schedule_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut refund_schedule = BTreeMap::new();
-        for _ in 0..refund_schedule_len {
-            let epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-            let pubkeys_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-            if pubkeys_len == 0 {
-                return Err(Error::Invalid(
-                    "WithdrawalQueue",
-                    "scheduled epoch has no withdrawals",
-                ));
-            }
-            // `pubkeys_len` is an attacker-controlled u32 and `buf.remaining()`
-            // is a byte count, not an element count, so a bounded hint could
-            // still over-allocate. Grow as pubkeys are decoded instead.
-            let mut pubkeys = VecDeque::new();
-            for _ in 0..pubkeys_len {
-                let mut pubkey = [0u8; 32];
-                buf.try_copy_to_slice(&mut pubkey)
-                    .map_err(|_| Error::EndOfBuffer)?;
-                pubkeys.push_back(pubkey);
-            }
-            if refund_schedule.insert(epoch, pubkeys).is_some() {
-                return Err(Error::Invalid(
-                    "WithdrawalQueue",
-                    "duplicate refund scheduled epoch",
-                ));
-            }
-        }
-
-        let mut scheduled_pubkeys = BTreeSet::new();
-        for (kind, schedule) in [
-            (WithdrawalKind::Validator, &validator_schedule),
-            (WithdrawalKind::DepositRefund, &refund_schedule),
-        ] {
-            for (epoch, pubkeys) in schedule {
-                for pubkey in pubkeys {
-                    let Some(withdrawal) = withdrawals.get(pubkey) else {
-                        return Err(Error::Invalid(
-                            "WithdrawalQueue",
-                            "schedule references missing withdrawal",
-                        ));
-                    };
-                    if withdrawal.epoch != *epoch {
-                        return Err(Error::Invalid(
-                            "WithdrawalQueue",
-                            "scheduled epoch does not match pending withdrawal epoch",
-                        ));
-                    }
-                    if withdrawal.kind != kind {
-                        return Err(Error::Invalid(
-                            "WithdrawalQueue",
-                            "schedule contains withdrawal with wrong kind",
-                        ));
-                    }
-                    if !scheduled_pubkeys.insert(*pubkey) {
-                        return Err(Error::Invalid(
-                            "WithdrawalQueue",
-                            "withdrawal scheduled more than once",
-                        ));
-                    }
-                }
-            }
-        }
-        if scheduled_pubkeys.len() != withdrawals.len() {
-            return Err(Error::Invalid(
-                "WithdrawalQueue",
-                "withdrawal missing from schedule",
-            ));
-        }
+        // Indexes are unique across the whole queue (validator + refund), so the
+        // set is shared between both deques.
+        let mut indexes = BTreeSet::new();
+        let withdrawals = read_flat(buf, WithdrawalKind::Validator, next_index, &mut indexes)?;
+        let refunds = read_flat(buf, WithdrawalKind::DepositRefund, next_index, &mut indexes)?;
 
         Ok(Self {
             withdrawals,
-            validator_schedule,
-            refund_schedule,
+            refunds,
             next_index,
         })
     }
@@ -752,24 +632,38 @@ mod tests {
         assert_eq!(decoded, withdrawal);
     }
 
-    fn pending(tag: u8, epoch: u64) -> PendingWithdrawal {
+    fn pw(tag: u8, epoch: u64, index: u64, kind: WithdrawalKind) -> PendingWithdrawal {
         PendingWithdrawal {
             inner: Withdrawal {
-                index: tag as u64,
-                validator_index: tag as u64,
+                index,
+                validator_index: 0,
                 address: Address::from([tag; 20]),
                 amount: 1,
             },
             pubkey: [tag; 32],
             balance_deduction: 0,
             epoch,
-            kind: WithdrawalKind::Validator,
+            kind,
         }
     }
 
-    fn encode_queue(queue: &WithdrawalQueue) -> BytesMut {
+    /// Encode the flat wire format directly from explicit deques, for decode tests
+    /// that need to construct malformed input.
+    fn encode_flat(
+        next_index: u64,
+        validators: &[PendingWithdrawal],
+        refunds: &[PendingWithdrawal],
+    ) -> BytesMut {
         let mut buf = BytesMut::new();
-        queue.write(&mut buf);
+        buf.put_u64(next_index);
+        buf.put_u32(validators.len() as u32);
+        for w in validators {
+            w.write(&mut buf);
+        }
+        buf.put_u32(refunds.len() as u32);
+        for w in refunds {
+            w.write(&mut buf);
+        }
         buf
     }
 
@@ -781,82 +675,82 @@ mod tests {
     // These assert decode rejects the inconsistent forms (and accepts a
     // consistent one). RED until read_cfg cross-validates.
 
-    #[test]
-    fn decode_accepts_consistent_queue() {
-        let mut withdrawals = BTreeMap::new();
-        withdrawals.insert([1u8; 32], pending(1, 5));
-        let mut schedule = BTreeMap::new();
-        schedule.insert(5u64, VecDeque::from(vec![[1u8; 32]]));
-        let queue = WithdrawalQueue {
-            withdrawals,
-            validator_schedule: schedule,
-            refund_schedule: BTreeMap::new(),
-            // next_index must exceed every pending withdrawal index (pending(1)
-            // has inner.index == 1), or decode rejects the queue.
-            next_index: 2,
-        };
-        let buf = encode_queue(&queue);
-        assert!(
-            WithdrawalQueue::read(&mut buf.as_ref()).is_ok(),
-            "a map/schedule-consistent queue must decode"
-        );
-    }
+    //#[test]
+    //fn decode_accepts_consistent_queue() {
+    //    let mut withdrawals = BTreeMap::new();
+    //    withdrawals.insert([1u8; 32], pending(1, 5));
+    //    let mut schedule = BTreeMap::new();
+    //    schedule.insert(5u64, VecDeque::from(vec![[1u8; 32]]));
+    //    let queue = WithdrawalQueue {
+    //        withdrawals,
+    //        validator_schedule: schedule,
+    //        refund_schedule: BTreeMap::new(),
+    //        // next_index must exceed every pending withdrawal index (pending(1)
+    //        // has inner.index == 1), or decode rejects the queue.
+    //        next_index: 2,
+    //    };
+    //    let buf = encode_queue(&queue);
+    //    assert!(
+    //        WithdrawalQueue::read(&mut buf.as_ref()).is_ok(),
+    //        "a map/schedule-consistent queue must decode"
+    //    );
+    //}
 
-    #[test]
-    fn decode_rejects_unscheduled_map_entry() {
-        // pubkey in the map but in no schedule list: omitted from the SSZ root.
-        let mut withdrawals = BTreeMap::new();
-        withdrawals.insert([1u8; 32], pending(1, 5));
-        let queue = WithdrawalQueue {
-            withdrawals,
-            validator_schedule: BTreeMap::new(),
-            refund_schedule: BTreeMap::new(),
-            next_index: 1,
-        };
-        let buf = encode_queue(&queue);
-        assert!(
-            WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
-            "a map entry absent from the schedule must be rejected at decode"
-        );
-    }
+    //#[test]
+    //fn decode_rejects_unscheduled_map_entry() {
+    //    // pubkey in the map but in no schedule list: omitted from the SSZ root.
+    //    let mut withdrawals = BTreeMap::new();
+    //    withdrawals.insert([1u8; 32], pending(1, 5));
+    //    let queue = WithdrawalQueue {
+    //        withdrawals,
+    //        validator_schedule: BTreeMap::new(),
+    //        refund_schedule: BTreeMap::new(),
+    //        next_index: 1,
+    //    };
+    //    let buf = encode_queue(&queue);
+    //    assert!(
+    //        WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
+    //        "a map entry absent from the schedule must be rejected at decode"
+    //    );
+    //}
 
-    #[test]
-    fn decode_rejects_scheduled_pubkey_absent_from_map() {
-        let mut schedule = BTreeMap::new();
-        schedule.insert(5u64, VecDeque::from(vec![[1u8; 32]]));
-        let queue = WithdrawalQueue {
-            withdrawals: BTreeMap::new(),
-            validator_schedule: schedule,
-            refund_schedule: BTreeMap::new(),
-            next_index: 1,
-        };
-        let buf = encode_queue(&queue);
-        assert!(
-            WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
-            "a scheduled pubkey absent from the map must be rejected at decode"
-        );
-    }
+    //#[test]
+    //fn decode_rejects_scheduled_pubkey_absent_from_map() {
+    //    let mut schedule = BTreeMap::new();
+    //    schedule.insert(5u64, VecDeque::from(vec![[1u8; 32]]));
+    //    let queue = WithdrawalQueue {
+    //        withdrawals: BTreeMap::new(),
+    //        validator_schedule: schedule,
+    //        refund_schedule: BTreeMap::new(),
+    //        next_index: 1,
+    //    };
+    //    let buf = encode_queue(&queue);
+    //    assert!(
+    //        WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
+    //        "a scheduled pubkey absent from the map must be rejected at decode"
+    //    );
+    //}
 
-    #[test]
-    fn decode_rejects_schedule_epoch_mismatch() {
-        // pubkey scheduled under epoch 6 but its map entry says epoch 5: the
-        // root commits the map epoch, not the schedule key.
-        let mut withdrawals = BTreeMap::new();
-        withdrawals.insert([1u8; 32], pending(1, 5));
-        let mut schedule = BTreeMap::new();
-        schedule.insert(6u64, VecDeque::from(vec![[1u8; 32]]));
-        let queue = WithdrawalQueue {
-            withdrawals,
-            validator_schedule: schedule,
-            refund_schedule: BTreeMap::new(),
-            next_index: 1,
-        };
-        let buf = encode_queue(&queue);
-        assert!(
-            WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
-            "a schedule epoch disagreeing with the map entry must be rejected at decode"
-        );
-    }
+    //#[test]
+    //fn decode_rejects_schedule_epoch_mismatch() {
+    //    // pubkey scheduled under epoch 6 but its map entry says epoch 5: the
+    //    // root commits the map epoch, not the schedule key.
+    //    let mut withdrawals = BTreeMap::new();
+    //    withdrawals.insert([1u8; 32], pending(1, 5));
+    //    let mut schedule = BTreeMap::new();
+    //    schedule.insert(6u64, VecDeque::from(vec![[1u8; 32]]));
+    //    let queue = WithdrawalQueue {
+    //        withdrawals,
+    //        validator_schedule: schedule,
+    //        refund_schedule: BTreeMap::new(),
+    //        next_index: 1,
+    //    };
+    //    let buf = encode_queue(&queue);
+    //    assert!(
+    //        WithdrawalQueue::read(&mut buf.as_ref()).is_err(),
+    //        "a schedule epoch disagreeing with the map entry must be rejected at decode"
+    //    );
+    //}
 
     #[test]
     fn test_pending_withdrawal_try_from() {
@@ -1038,59 +932,6 @@ mod tests {
         }
     }
 
-    fn make_pending_withdrawal(
-        pubkey: [u8; 32],
-        epoch: u64,
-        index: u64,
-        amount: u64,
-        kind: WithdrawalKind,
-    ) -> PendingWithdrawal {
-        PendingWithdrawal {
-            inner: Withdrawal {
-                index,
-                validator_index: 0,
-                address: Address::from([1u8; 20]),
-                amount,
-            },
-            pubkey,
-            balance_deduction: amount,
-            epoch,
-            kind,
-        }
-    }
-
-    fn encode_queue_parts(
-        next_index: u64,
-        withdrawals: Vec<([u8; 32], PendingWithdrawal)>,
-        validator_schedule: Vec<(u64, Vec<[u8; 32]>)>,
-        refund_schedule: Vec<(u64, Vec<[u8; 32]>)>,
-    ) -> BytesMut {
-        let mut buf = BytesMut::new();
-        buf.put_u64(next_index);
-        buf.put_u32(withdrawals.len() as u32);
-        for (pubkey, withdrawal) in withdrawals {
-            buf.put(&pubkey[..]);
-            withdrawal.write(&mut buf);
-        }
-        buf.put_u32(validator_schedule.len() as u32);
-        for (epoch, pubkeys) in validator_schedule {
-            buf.put_u64(epoch);
-            buf.put_u32(pubkeys.len() as u32);
-            for pubkey in pubkeys {
-                buf.put(&pubkey[..]);
-            }
-        }
-        buf.put_u32(refund_schedule.len() as u32);
-        for (epoch, pubkeys) in refund_schedule {
-            buf.put_u64(epoch);
-            buf.put_u32(pubkeys.len() as u32);
-            for pubkey in pubkeys {
-                buf.put(&pubkey[..]);
-            }
-        }
-        buf
-    }
-
     #[test]
     fn test_queue_push_pop_basic() {
         let mut queue = WithdrawalQueue::default();
@@ -1130,14 +971,17 @@ mod tests {
     }
 
     #[test]
-    fn test_queue_pop_wrong_epoch() {
+    fn test_queue_pop_respects_due_epoch() {
         let mut queue = WithdrawalQueue::default();
         let req = make_request([1u8; 32], 100);
         queue.push_request(req, 5, 100);
 
+        // Not due before the scheduled (earliest) epoch.
         assert!(queue.pop(4).is_none());
-        assert!(queue.pop(6).is_none());
         assert_eq!(queue.len(), 1);
+        // Due once the current epoch reaches/passes the scheduled epoch.
+        assert!(queue.pop(6).is_some());
+        assert!(queue.is_empty());
     }
 
     #[test]
@@ -1170,9 +1014,10 @@ mod tests {
         epochs.sort();
         assert_eq!(epochs, vec![5, 7]);
 
-        assert_eq!(queue.count_for_epoch(5), 1);
-        assert_eq!(queue.count_for_epoch(7), 1);
-        assert_eq!(queue.count_for_epoch(6), 0);
+        // count_for_epoch(e) counts entries DUE at e (earliest epoch <= e).
+        assert_eq!(queue.count_for_epoch(5), 1); // only the epoch-5 entry is due
+        assert_eq!(queue.count_for_epoch(7), 2); // both are due by epoch 7
+        assert_eq!(queue.count_for_epoch(4), 0); // nothing due before epoch 5
     }
 
     #[test]
@@ -1182,98 +1027,19 @@ mod tests {
         queue.push_request(make_request([2u8; 32], 200), 5, 200);
         queue.push_request(make_request([3u8; 32], 300), 7, 300);
 
-        let epoch5 = queue.get_for_epoch(5);
-        assert_eq!(epoch5.len(), 2);
-        assert_eq!(epoch5[0].inner.amount, 100);
-        assert_eq!(epoch5[1].inner.amount, 200);
+        // get_for_epoch(e) returns entries DUE at e (earliest epoch <= e), in order.
+        let due5 = queue.get_for_epoch(5);
+        assert_eq!(due5.len(), 2);
+        assert_eq!(due5[0].inner.amount, 100);
+        assert_eq!(due5[1].inner.amount, 200);
 
-        let epoch7 = queue.get_for_epoch(7);
-        assert_eq!(epoch7.len(), 1);
-        assert_eq!(epoch7[0].inner.amount, 300);
+        // By epoch 7 all three are due, in queue order.
+        let due7 = queue.get_for_epoch(7);
+        assert_eq!(due7.len(), 3);
+        assert_eq!(due7[2].inner.amount, 300);
 
-        assert!(queue.get_for_epoch(6).is_empty());
-    }
-
-    #[test]
-    fn test_queue_merge_same_pubkey() {
-        let mut queue = WithdrawalQueue::default();
-
-        // First withdrawal: user-initiated, 50 ETH
-        queue.push_request(make_request([1u8; 32], 50), 5, 50);
-        assert_eq!(queue.next_index(), 1);
-
-        // Second validator withdrawal for same pubkey: 10 ETH, balance_deduction=0
-        queue.push_request(make_request([1u8; 32], 10), 7, 0);
-
-        // Should still be one entry, no new index assigned
-        assert_eq!(queue.len(), 1);
-        assert_eq!(queue.next_index(), 1);
-
-        // Amounts merged, original epoch preserved
-        let w = queue.peek(5).unwrap();
-        assert_eq!(w.inner.amount, 60); // 50 + 10
-        assert_eq!(w.balance_deduction, 50); // 50 + 0
-        assert_eq!(w.inner.index, 0);
-        assert_eq!(w.epoch, 5); // original epoch, not 7
-
-        // Nothing at the second epoch (merged into first)
-        assert!(queue.peek(7).is_none());
-        assert_eq!(queue.num_epochs(), 1);
-    }
-
-    #[test]
-    fn test_queue_merge_accumulates_balance_deduction() {
-        let mut queue = WithdrawalQueue::default();
-
-        // First: user withdrawal, 50 ETH
-        queue.push_request(make_request([1u8; 32], 50), 5, 50);
-
-        // Second: stake bounds enforcement adds 10 ETH
-        queue.push_request(make_request([1u8; 32], 10), 6, 10);
-
-        let w = queue.peek(5).unwrap();
-        assert_eq!(w.inner.amount, 60);
-        assert_eq!(w.balance_deduction, 60); // 50 + 10
-    }
-
-    #[test]
-    fn test_queue_merge_does_not_affect_other_validators() {
-        let mut queue = WithdrawalQueue::default();
-
-        queue.push_request(make_request([1u8; 32], 50), 5, 50);
-        queue.push_request(make_request([2u8; 32], 30), 5, 30);
-
-        // Merge into validator 1 only
-        queue.push_request(make_request([1u8; 32], 10), 5, 0);
-
-        assert_eq!(queue.len(), 2);
-
-        let epoch5 = queue.get_for_epoch(5);
-        assert_eq!(epoch5.len(), 2);
-        // Validator 1: merged
-        assert_eq!(epoch5[0].inner.amount, 60);
-        assert_eq!(epoch5[0].balance_deduction, 50);
-        // Validator 2: unchanged
-        assert_eq!(epoch5[1].inner.amount, 30);
-        assert_eq!(epoch5[1].balance_deduction, 30);
-    }
-
-    #[test]
-    fn test_queue_rejects_cross_kind_merge() {
-        let mut queue = WithdrawalQueue::default();
-
-        queue.push_request(make_request([1u8; 32], 50), 5, 50);
-        let err = queue
-            .push_request_with_kind(
-                make_request([1u8; 32], 10),
-                5,
-                0,
-                WithdrawalKind::DepositRefund,
-            )
-            .expect_err("same key cannot merge across withdrawal kinds");
-
-        assert_eq!(err.existing, WithdrawalKind::Validator);
-        assert_eq!(err.requested, WithdrawalKind::DepositRefund);
+        // Nothing is due before epoch 5.
+        assert!(queue.get_for_epoch(4).is_empty());
     }
 
     #[test]
@@ -1325,9 +1091,11 @@ mod tests {
         queue.push_request(make_request([2u8; 32], 200), 5, 200);
         assert_eq!(queue.next_index(), 2);
 
-        // Merge doesn't increment
+        // Every request is a distinct entry (no merge), so each increments the index —
+        // even a repeat of the same pubkey.
         queue.push_request(make_request([1u8; 32], 50), 5, 0);
-        assert_eq!(queue.next_index(), 2);
+        assert_eq!(queue.next_index(), 3);
+        assert_eq!(queue.len(), 3);
     }
 
     #[test]
@@ -1354,142 +1122,57 @@ mod tests {
     }
 
     #[test]
-    fn test_read_rejects_scheduled_pubkey_missing_from_withdrawal_map() {
-        let present_pubkey = [1u8; 32];
-        let missing_pubkey = [9u8; 32];
-        let pending = make_pending_withdrawal(present_pubkey, 5, 0, 100, WithdrawalKind::Validator);
-        let buf = encode_queue_parts(
+    fn test_read_rejects_wrong_kind_in_queue() {
+        // A DepositRefund-kind entry in the validator queue must be rejected.
+        let buf = encode_flat(1, &[pw(1, 5, 0, WithdrawalKind::DepositRefund)], &[]);
+        let err = WithdrawalQueue::read(&mut buf.as_ref())
+            .expect_err("read must reject a withdrawal whose kind does not match its queue");
+        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
+    }
+
+    #[test]
+    fn test_read_rejects_duplicate_index_across_queues() {
+        // Index 0 reused across the validator and refund queues.
+        let buf = encode_flat(
             1,
-            vec![(present_pubkey, pending)],
-            vec![(5, vec![missing_pubkey, present_pubkey])],
-            vec![],
+            &[pw(1, 5, 0, WithdrawalKind::Validator)],
+            &[pw(2, 5, 0, WithdrawalKind::DepositRefund)],
         );
-
-        let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject scheduled pubkeys missing from withdrawal map");
-        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
-    }
-
-    #[test]
-    fn test_read_rejects_map_key_that_differs_from_pending_pubkey() {
-        let map_pubkey = [1u8; 32];
-        let pending_pubkey = [2u8; 32];
-        let pending = make_pending_withdrawal(pending_pubkey, 5, 0, 100, WithdrawalKind::Validator);
-        let buf = encode_queue_parts(
-            1,
-            vec![(map_pubkey, pending)],
-            vec![(5, vec![map_pubkey])],
-            vec![],
-        );
-
-        let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject mismatched withdrawal map keys");
-        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
-    }
-
-    #[test]
-    fn test_read_rejects_schedule_epoch_mismatch() {
-        let pubkey = [1u8; 32];
-        let pending = make_pending_withdrawal(pubkey, 5, 0, 100, WithdrawalKind::Validator);
-        let buf = encode_queue_parts(1, vec![(pubkey, pending)], vec![(6, vec![pubkey])], vec![]);
-
-        let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject schedule entries for the wrong epoch");
-        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
-    }
-
-    #[test]
-    fn test_read_rejects_stale_next_index() {
-        let pubkey = [1u8; 32];
-        let pending = make_pending_withdrawal(pubkey, 5, 7, 100, WithdrawalKind::Validator);
-        let buf = encode_queue_parts(7, vec![(pubkey, pending)], vec![(5, vec![pubkey])], vec![]);
-
-        let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject next_index reuse");
-        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
-    }
-
-    #[test]
-    fn test_read_rejects_duplicate_withdrawal_index() {
-        let pubkey1 = [1u8; 32];
-        let pubkey2 = [2u8; 32];
-        let pending1 = make_pending_withdrawal(pubkey1, 5, 0, 100, WithdrawalKind::Validator);
-        let pending2 = make_pending_withdrawal(pubkey2, 5, 0, 200, WithdrawalKind::Validator);
-        let buf = encode_queue_parts(
-            1,
-            vec![(pubkey1, pending1), (pubkey2, pending2)],
-            vec![(5, vec![pubkey1, pubkey2])],
-            vec![],
-        );
-
         let err = WithdrawalQueue::read(&mut buf.as_ref())
             .expect_err("read must reject duplicate withdrawal indexes");
         assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
     }
 
     #[test]
-    fn test_read_rejects_empty_scheduled_epoch() {
-        let buf = encode_queue_parts(1, vec![], vec![(5, vec![])], vec![]);
-
+    fn test_read_rejects_index_at_or_above_next_index() {
+        // index == next_index is out of range (next_index must exceed all indexes).
+        let buf = encode_flat(1, &[pw(1, 5, 1, WithdrawalKind::Validator)], &[]);
         let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject scheduled epochs with no withdrawals");
+            .expect_err("read must reject an index >= next_index");
         assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
     }
 
     #[test]
-    fn test_read_rejects_duplicate_scheduled_epoch() {
-        let pubkey1 = [1u8; 32];
-        let pubkey2 = [2u8; 32];
-        let pending1 = make_pending_withdrawal(pubkey1, 5, 0, 100, WithdrawalKind::Validator);
-        let pending2 = make_pending_withdrawal(pubkey2, 5, 1, 200, WithdrawalKind::Validator);
-        let buf = encode_queue_parts(
-            2,
-            vec![(pubkey1, pending1), (pubkey2, pending2)],
-            vec![(5, vec![pubkey1]), (5, vec![pubkey2])],
-            vec![],
+    fn test_read_accepts_valid_flat_queue_with_refunds() {
+        // A consistent queue with both kinds round-trips and preserves order.
+        let buf = encode_flat(
+            3,
+            &[
+                pw(1, 5, 0, WithdrawalKind::Validator),
+                pw(2, 6, 1, WithdrawalKind::Validator),
+            ],
+            &[pw(3, 5, 2, WithdrawalKind::DepositRefund)],
         );
-
-        let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject duplicate scheduled epochs within a schedule");
-        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
-    }
-
-    #[test]
-    fn test_read_rejects_wrong_kind_schedule() {
-        let pubkey = [1u8; 32];
-        let pending = make_pending_withdrawal(pubkey, 5, 0, 100, WithdrawalKind::DepositRefund);
-        let buf = encode_queue_parts(1, vec![(pubkey, pending)], vec![(5, vec![pubkey])], vec![]);
-
-        let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject withdrawals scheduled under the wrong kind");
-        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
-    }
-
-    #[test]
-    fn test_read_rejects_duplicate_scheduled_pubkey() {
-        let pubkey = [1u8; 32];
-        let pending = make_pending_withdrawal(pubkey, 5, 0, 100, WithdrawalKind::Validator);
-        let buf = encode_queue_parts(
-            1,
-            vec![(pubkey, pending)],
-            vec![(5, vec![pubkey, pubkey])],
-            vec![],
+        let decoded = WithdrawalQueue::read(&mut buf.as_ref()).expect("valid queue must decode");
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(
+            decoded.back(WithdrawalKind::Validator).unwrap().pubkey,
+            [2u8; 32]
         );
-
-        let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject duplicate scheduled pubkeys");
-        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
-    }
-
-    #[test]
-    fn test_read_rejects_pending_withdrawal_missing_from_schedule() {
-        let pubkey = [1u8; 32];
-        let pending = make_pending_withdrawal(pubkey, 5, 0, 100, WithdrawalKind::Validator);
-        let buf = encode_queue_parts(1, vec![(pubkey, pending)], vec![], vec![]);
-
-        let err = WithdrawalQueue::read(&mut buf.as_ref())
-            .expect_err("read must reject pending withdrawals missing from schedules");
-        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
+        assert_eq!(
+            decoded.back(WithdrawalKind::DepositRefund).unwrap().pubkey,
+            [3u8; 32]
+        );
     }
 
     #[test]
@@ -1524,25 +1207,6 @@ mod tests {
     }
 
     #[test]
-    fn test_queue_serialization_roundtrip_after_merge() {
-        let mut queue = WithdrawalQueue::default();
-        queue.push_request(make_request([1u8; 32], 50), 5, 50);
-        queue.push_request(make_request([1u8; 32], 10), 7, 0); // merged
-
-        let mut buf = BytesMut::new();
-        queue.write(&mut buf);
-        assert_eq!(buf.len(), queue.encode_size());
-
-        let decoded = WithdrawalQueue::read(&mut buf.as_ref()).unwrap();
-        assert_eq!(decoded, queue);
-        assert_eq!(decoded.len(), 1);
-
-        let w = decoded.peek(5).unwrap();
-        assert_eq!(w.inner.amount, 60);
-        assert_eq!(w.balance_deduction, 50);
-    }
-
-    #[test]
     fn test_queue_push_raw() {
         let mut queue = WithdrawalQueue::default();
 
@@ -1574,45 +1238,6 @@ mod tests {
         queue.pop(5);
         assert_eq!(queue.num_epochs(), 0);
         assert!(queue.epochs_with_withdrawals().is_empty());
-    }
-
-    #[test]
-    fn test_reschedule_epoch_moves_all_withdrawals() {
-        let mut queue = WithdrawalQueue::default();
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
-        queue.push_request(make_request([2u8; 32], 200), 5, 200);
-
-        assert_eq!(queue.count_for_epoch(5), 2);
-        assert_eq!(queue.count_for_epoch(6), 0);
-
-        queue.reschedule_epoch(5, 6);
-
-        assert_eq!(queue.count_for_epoch(5), 0);
-        assert_eq!(queue.count_for_epoch(6), 2);
-        // Epochs on the withdrawal entries should be updated
-        assert_eq!(queue.get_for_epoch(6)[0].epoch, 6);
-        assert_eq!(queue.get_for_epoch(6)[1].epoch, 6);
-    }
-
-    #[test]
-    fn test_reschedule_epoch_prepends_to_existing() {
-        let mut queue = WithdrawalQueue::default();
-        // Two withdrawals in epoch 5 (will be rescheduled)
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
-        queue.push_request(make_request([2u8; 32], 200), 5, 200);
-        // One withdrawal already in epoch 6
-        queue.push_request(make_request([3u8; 32], 300), 6, 300);
-
-        queue.reschedule_epoch(5, 6);
-
-        assert_eq!(queue.count_for_epoch(5), 0);
-        assert_eq!(queue.count_for_epoch(6), 3);
-
-        // Rescheduled withdrawals should be at the front
-        let epoch6 = queue.get_for_epoch(6);
-        assert_eq!(epoch6[0].pubkey, [1u8; 32]);
-        assert_eq!(epoch6[1].pubkey, [2u8; 32]);
-        assert_eq!(epoch6[2].pubkey, [3u8; 32]);
     }
 
     #[test]

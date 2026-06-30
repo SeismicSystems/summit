@@ -92,6 +92,7 @@ impl SszHashTreeRoot for ValidatorStatus {
             ValidatorStatus::Inactive => 1,
             ValidatorStatus::SubmittedExitRequest => 2,
             ValidatorStatus::Joining => 3,
+            ValidatorStatus::FullPayoutPending => 4,
         };
         let mut chunk = [0u8; 32];
         chunk[0] = val;

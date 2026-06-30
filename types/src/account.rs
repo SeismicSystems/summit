@@ -4,11 +4,24 @@ use commonware_codec::{DecodeExt, Encode, Error, FixedSize, Read, Write};
 use commonware_cryptography::bls12381;
 
 #[derive(Debug, Clone, PartialEq)]
+/// Lifecycle state of a validator account.
+///
+/// Active: in the committee, balance at or above the minimum stake.
+/// Inactive: out of the committee, holds a retained balance, eligible to rejoin
+///   if a deposit lifts it back to the minimum stake.
+/// SubmittedExitRequest: a full exit was accepted but the validator is still
+///   serving the current epoch. Counts toward the active set until the boundary.
+/// Joining: deposited at least the minimum stake and warming up, scheduled to
+///   activate at a future epoch but not yet in the committee.
+/// FullPayoutPending: full exit complete, the validator has left the committee
+///   and its whole balance is committed to a pending payout. Not in the committee
+///   and not eligible to rejoin.
 pub enum ValidatorStatus {
     Active,
     Inactive,
     SubmittedExitRequest,
     Joining,
+    FullPayoutPending,
 }
 
 impl ValidatorStatus {
@@ -18,6 +31,7 @@ impl ValidatorStatus {
             ValidatorStatus::Inactive => 1,
             ValidatorStatus::SubmittedExitRequest => 2,
             ValidatorStatus::Joining => 3,
+            ValidatorStatus::FullPayoutPending => 4,
         }
     }
 
@@ -27,6 +41,7 @@ impl ValidatorStatus {
             1 => Ok(ValidatorStatus::Inactive),
             2 => Ok(ValidatorStatus::SubmittedExitRequest),
             3 => Ok(ValidatorStatus::Joining),
+            4 => Ok(ValidatorStatus::FullPayoutPending),
             _ => Err("Invalid ValidatorStatus value"),
         }
     }
@@ -37,6 +52,13 @@ impl ValidatorStatus {
 
     pub fn is_current_epoch_signer(&self) -> bool {
         matches!(self, Self::Active | Self::SubmittedExitRequest)
+    }
+
+    /// Whether the validator is outside the committee. Both inactive validators
+    /// and validators awaiting a full payout are excluded from the committee and
+    /// from the active validator count.
+    pub fn is_out_of_committee(&self) -> bool {
+        matches!(self, Self::Inactive | Self::FullPayoutPending)
     }
 }
 
@@ -435,9 +457,13 @@ mod tests {
             ValidatorStatus::from_u8(3).unwrap(),
             ValidatorStatus::Joining
         );
+        assert_eq!(
+            ValidatorStatus::from_u8(4).unwrap(),
+            ValidatorStatus::FullPayoutPending
+        );
 
         // Test invalid status
-        assert!(ValidatorStatus::from_u8(4).is_err());
+        assert!(ValidatorStatus::from_u8(5).is_err());
         assert!(ValidatorStatus::from_u8(255).is_err());
     }
 
