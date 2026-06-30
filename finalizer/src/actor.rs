@@ -2058,6 +2058,7 @@ impl<
                 removed_validators: state.get_removed_validators().clone(),
                 forkchoice,
                 suggested_fee_recipient,
+                treasury_address,
                 state_root: state.get_state_root(),
                 allowed_timestamp_future_ms: state.get_allowed_timestamp_future_ms(),
             }
@@ -2071,6 +2072,7 @@ impl<
                 removed_validators: vec![],
                 forkchoice,
                 suggested_fee_recipient,
+                treasury_address,
                 state_root: state.get_state_root(),
                 allowed_timestamp_future_ms: state.get_allowed_timestamp_future_ms(),
             }

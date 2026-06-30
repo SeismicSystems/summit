@@ -110,6 +110,7 @@ pub struct BlockAuxData {
     pub removed_validators: Vec<PublicKey>,
     pub forkchoice: ForkchoiceState,
     pub suggested_fee_recipient: Address,
+    pub treasury_address: Address,
     pub state_root: [u8; 32],
     pub allowed_timestamp_future_ms: u64,
 }
