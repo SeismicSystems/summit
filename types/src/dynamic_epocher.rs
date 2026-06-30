@@ -744,7 +744,13 @@ mod tests {
         let mut buf = BytesMut::new();
         buf.put_u64(0); // current_epoch
         buf.put_u32(u32::MAX); // claims ~4 billion segments
-        // No segment bodies follow.
+        // Provide exactly one valid segment body, then truncate. This leaves a
+        // non-zero `buf.remaining()` at the allocation point, so the original
+        // `with_capacity(len.min(buf.remaining()))` would have over-allocated
+        // `remaining`-many slots here rather than the degenerate zero.
+        buf.put_u64(0); // segment[0] start_epoch
+        buf.put_u64(0); // segment[0] start_height
+        buf.put_u64(1); // segment[0] length (non-zero so it decodes, not the body that bails)
 
         let result = DynamicEpocher::read(&mut buf.as_ref());
         assert!(matches!(result, Err(Error::EndOfBuffer)));

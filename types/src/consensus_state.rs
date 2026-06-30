@@ -1690,18 +1690,22 @@ mod tests {
         // must reject a bogus count by running out of buffer, not by pre-sizing
         // a VecDeque from it. (`buf.remaining()` is a byte count, so a
         // count-derived capacity — even one capped by remaining bytes —
-        // over-allocates by size_of::<DepositRequest>() per slot.) With no
-        // deposit bodies present, decode must bail cheaply on EndOfBuffer.
+        // over-allocates by size_of::<DepositRequest>() per slot.) With the
+        // count far exceeding the available bodies, decode must bail cheaply.
         let mut buf = BytesMut::new();
         buf.put_u64(0); // epoch
         buf.put_u64(0); // view
         buf.put_u64(0); // latest_height
         buf.put_u32(u32::MAX); // claims ~4 billion deposits
-        // No deposit bodies follow.
+        // Provide a partial deposit body, then truncate. This leaves a non-zero
+        // `buf.remaining()` at the allocation point, so the original
+        // `with_capacity(len.min(buf.remaining()))` would have over-allocated
+        // `remaining`-many slots here rather than the degenerate zero.
+        buf.put_slice(&[0u8; 48]);
 
-        // DepositRequest::read_cfg rejects the empty body with an Insufficient
-        // bytes error rather than EndOfBuffer; either way decode must fail
-        // cheaply rather than pre-allocate ~4 billion slots.
+        // DepositRequest::read_cfg runs out of buffer partway through the body;
+        // either way decode must fail cheaply rather than pre-allocate ~4
+        // billion slots.
         let result = ConsensusState::read(&mut buf.as_ref());
         assert!(result.is_err());
     }

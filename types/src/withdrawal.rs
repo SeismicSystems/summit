@@ -1640,7 +1640,12 @@ mod tests {
         buf.put_u32(1); // schedule_len = 1
         buf.put_u64(0); // schedule entry epoch
         buf.put_u32(u32::MAX); // claims ~4 billion scheduled pubkeys
-        // No pubkey bodies follow.
+        // Provide exactly one full pubkey body, then truncate. This leaves a
+        // non-zero `buf.remaining()` at the allocation point, so the original
+        // `with_capacity(pubkeys_len.min(buf.remaining()))` would have
+        // over-allocated `remaining`-many slots here rather than the
+        // degenerate zero; decode still bails on the second (missing) pubkey.
+        buf.put_slice(&[0u8; 32]);
 
         let result = WithdrawalQueue::read(&mut buf.as_ref());
         assert!(matches!(result, Err(Error::EndOfBuffer)));
