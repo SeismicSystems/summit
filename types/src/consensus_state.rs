@@ -1248,7 +1248,14 @@ impl Read for ConsensusState {
         let latest_height = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
 
         let deposit_queue_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut deposit_queue = VecDeque::with_capacity(deposit_queue_len.min(buf.remaining()));
+        // Never pre-size collections from the decoded length prefixes below:
+        // they are attacker-controlled u32s, and `buf.remaining()` is a byte
+        // count rather than an element count, so even a `min(buf.remaining())`
+        // hint over-allocates by `size_of::<T>()` per slot before any element
+        // is validated. Growing on push is safe — each loop reads from `buf`
+        // and bails on the first `EndOfBuffer`, so only genuinely decoded
+        // elements are ever allocated.
+        let mut deposit_queue = VecDeque::new();
         for _ in 0..deposit_queue_len {
             deposit_queue.push_back(DepositRequest::read_cfg(buf, &())?);
         }
@@ -1257,8 +1264,7 @@ impl Read for ConsensusState {
 
         let protocol_param_changes_len =
             buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut protocol_param_changes =
-            Vec::with_capacity(protocol_param_changes_len.min(buf.remaining()));
+        let mut protocol_param_changes = Vec::new();
         for _ in 0..protocol_param_changes_len {
             protocol_param_changes.push(crate::protocol_params::ProtocolParam::read_cfg(buf, &())?);
         }
@@ -1287,7 +1293,7 @@ impl Read for ConsensusState {
         for _ in 0..added_validators_len {
             let key = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
             let validator_count = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-            let mut validators = Vec::with_capacity(validator_count.min(buf.remaining()));
+            let mut validators = Vec::new();
             for _ in 0..validator_count {
                 let node_key = PublicKey::read_cfg(buf, &())?;
                 let consensus_key = bls12381::PublicKey::read_cfg(buf, &())?;
@@ -1301,8 +1307,7 @@ impl Read for ConsensusState {
 
         // Read removed_validators
         let removed_validators_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut removed_validators =
-            Vec::with_capacity(removed_validators_len.min(buf.remaining()));
+        let mut removed_validators = Vec::new();
         for _ in 0..removed_validators_len {
             removed_validators.push(PublicKey::read_cfg(buf, &())?);
         }
@@ -1310,8 +1315,7 @@ impl Read for ConsensusState {
         // Read pending_execution_requests
         let pending_execution_requests_len =
             buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut pending_execution_requests =
-            Vec::with_capacity(pending_execution_requests_len.min(buf.remaining()));
+        let mut pending_execution_requests = Vec::new();
         for _ in 0..pending_execution_requests_len {
             let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
             if len > buf.remaining() {
@@ -1449,6 +1453,13 @@ impl Read for ConsensusState {
         let has_captured = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? != 0;
         let captured_bytes = if has_captured {
             let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            // `len` is an attacker-controlled u32; reject it against the actual
+            // remaining bytes before allocating, so a malformed blob with a huge
+            // captured length fails cheaply instead of pre-allocating `len`
+            // bytes (mirrors the pending_execution_requests guard above).
+            if len > buf.remaining() {
+                return Err(Error::EndOfBuffer);
+            }
             let mut bytes = vec![0u8; len];
             buf.try_copy_to_slice(&mut bytes)
                 .map_err(|_| Error::EndOfBuffer)?;
@@ -1647,6 +1658,7 @@ mod tests {
 
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
+    use bytes::BytesMut;
     use commonware_codec::{DecodeExt, Encode, ReadExt};
     use commonware_consensus::types::{Epoch, Epocher, Height};
     use commonware_cryptography::{Signer, bls12381, ed25519};
@@ -1669,6 +1681,52 @@ mod tests {
                 "{n}-byte prefix should not successfully decode",
             );
         }
+    }
+
+    #[test]
+    fn test_decode_huge_deposit_queue_count_does_not_preallocate() {
+        // Regression guard for treating a length prefix as a safe element
+        // count. `deposit_queue_len` is an attacker-controlled u32; the decoder
+        // must reject a bogus count by running out of buffer, not by pre-sizing
+        // a VecDeque from it. (`buf.remaining()` is a byte count, so a
+        // count-derived capacity — even one capped by remaining bytes —
+        // over-allocates by size_of::<DepositRequest>() per slot.) With the
+        // count far exceeding the available bodies, decode must bail cheaply.
+        let mut buf = BytesMut::new();
+        buf.put_u64(0); // epoch
+        buf.put_u64(0); // view
+        buf.put_u64(0); // latest_height
+        buf.put_u32(u32::MAX); // claims ~4 billion deposits
+        // Provide a partial deposit body, then truncate. This leaves a non-zero
+        // `buf.remaining()` at the allocation point, so the original
+        // `with_capacity(len.min(buf.remaining()))` would have over-allocated
+        // `remaining`-many slots here rather than the degenerate zero.
+        buf.put_slice(&[0u8; 48]);
+
+        // DepositRequest::read_cfg runs out of buffer partway through the body;
+        // either way decode must fail cheaply rather than pre-allocate ~4
+        // billion slots.
+        let result = ConsensusState::read(&mut buf.as_ref());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_huge_captured_bytes_len_does_not_preallocate() {
+        // Regression guard for the captured-snapshot trailer: `captured_bytes`
+        // is a length-prefixed Vec<u8>, so a malformed blob with
+        // has_captured = true and a huge length must be rejected against the
+        // remaining bytes before the `vec![0u8; len]` allocation, not after.
+        let mut encoded = ConsensusState::default().encode().to_vec();
+        // A default state has captured_bytes = None, so the encoding ends with
+        // the has_captured presence flag (0). Flip it to 1 and append a u32
+        // length claiming ~4 GiB with no captured body following.
+        let last = encoded.len() - 1;
+        encoded[last] = 1;
+        encoded.extend_from_slice(&u32::MAX.to_be_bytes());
+
+        // Decode must bail cheaply on EndOfBuffer rather than pre-allocate ~4 GiB.
+        let result = ConsensusState::read(&mut encoded.as_slice());
+        assert!(result.is_err());
     }
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {

@@ -624,7 +624,10 @@ impl Read for WithdrawalQueue {
                     "scheduled epoch has no withdrawals",
                 ));
             }
-            let mut pubkeys = VecDeque::with_capacity(pubkeys_len.min(buf.remaining()));
+            // `pubkeys_len` is an attacker-controlled u32 and `buf.remaining()`
+            // is a byte count, not an element count, so a bounded hint could
+            // still over-allocate. Grow as pubkeys are decoded instead.
+            let mut pubkeys = VecDeque::new();
             for _ in 0..pubkeys_len {
                 let mut pubkey = [0u8; 32];
                 buf.try_copy_to_slice(&mut pubkey)
@@ -650,7 +653,10 @@ impl Read for WithdrawalQueue {
                     "scheduled epoch has no withdrawals",
                 ));
             }
-            let mut pubkeys = VecDeque::with_capacity(pubkeys_len.min(buf.remaining()));
+            // `pubkeys_len` is an attacker-controlled u32 and `buf.remaining()`
+            // is a byte count, not an element count, so a bounded hint could
+            // still over-allocate. Grow as pubkeys are decoded instead.
+            let mut pubkeys = VecDeque::new();
             for _ in 0..pubkeys_len {
                 let mut pubkey = [0u8; 32];
                 buf.try_copy_to_slice(&mut pubkey)
@@ -1619,5 +1625,29 @@ mod tests {
         // Nothing should change
         assert_eq!(queue.count_for_epoch(6), 1);
         assert_eq!(queue.get_for_epoch(6)[0].pubkey, [1u8; 32]);
+    }
+
+    #[test]
+    fn test_decode_huge_schedule_pubkey_count_does_not_preallocate() {
+        // A scheduled-pubkey count is an attacker-controlled u32; the decoder
+        // must reject a bogus count by exhausting the buffer, not by pre-sizing
+        // the VecDeque from it (the buffer is a byte count, so a count-derived
+        // capacity over-allocates by 32 bytes per slot). With the count far
+        // exceeding the available pubkey bodies, decode must bail cheaply.
+        let mut buf = BytesMut::new();
+        buf.put_u64(0); // next_index
+        buf.put_u32(0); // withdrawals_len = 0
+        buf.put_u32(1); // schedule_len = 1
+        buf.put_u64(0); // schedule entry epoch
+        buf.put_u32(u32::MAX); // claims ~4 billion scheduled pubkeys
+        // Provide exactly one full pubkey body, then truncate. This leaves a
+        // non-zero `buf.remaining()` at the allocation point, so the original
+        // `with_capacity(pubkeys_len.min(buf.remaining()))` would have
+        // over-allocated `remaining`-many slots here rather than the
+        // degenerate zero; decode still bails on the second (missing) pubkey.
+        buf.put_slice(&[0u8; 32]);
+
+        let result = WithdrawalQueue::read(&mut buf.as_ref());
+        assert!(matches!(result, Err(Error::EndOfBuffer)));
     }
 }

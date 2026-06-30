@@ -244,7 +244,12 @@ impl Read for DynamicEpocher {
         if segments_len == 0 {
             return Err(Error::Invalid("DynamicEpocher", "no segments"));
         }
-        let mut segments = Vec::with_capacity(segments_len.min(buf.remaining()));
+        // Do not size the Vec from `segments_len`: it is an attacker-controlled
+        // u32 and `buf.remaining()` is a byte count, not an element count, so a
+        // bounded hint could still over-allocate by `size_of::<Segment>()`. Let
+        // the Vec grow as elements are actually decoded; the loop bails on the
+        // first `EndOfBuffer`, so only genuine segments are ever allocated.
+        let mut segments = Vec::new();
         for _ in 0..segments_len {
             let start_epoch = Epoch::new(buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?);
             let start_height = Height::new(buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?);
@@ -726,5 +731,28 @@ mod tests {
 
         let result = DynamicEpocher::read(&mut buf.as_ref());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_huge_segment_count_does_not_preallocate() {
+        // `segments_len` is an attacker-controlled u32; the decoder must reject
+        // a bogus count by running out of buffer, not by pre-sizing a Vec from
+        // it. (The buffer is a byte count, so a count-derived capacity — even
+        // one capped by remaining bytes — over-allocates by size_of::<Segment>()
+        // per slot.) With the count far exceeding the available bodies, decode
+        // must bail cheaply on EndOfBuffer.
+        let mut buf = BytesMut::new();
+        buf.put_u64(0); // current_epoch
+        buf.put_u32(u32::MAX); // claims ~4 billion segments
+        // Provide exactly one valid segment body, then truncate. This leaves a
+        // non-zero `buf.remaining()` at the allocation point, so the original
+        // `with_capacity(len.min(buf.remaining()))` would have over-allocated
+        // `remaining`-many slots here rather than the degenerate zero.
+        buf.put_u64(0); // segment[0] start_epoch
+        buf.put_u64(0); // segment[0] start_height
+        buf.put_u64(1); // segment[0] length (non-zero so it decodes, not the body that bails)
+
+        let result = DynamicEpocher::read(&mut buf.as_ref());
+        assert!(matches!(result, Err(Error::EndOfBuffer)));
     }
 }
