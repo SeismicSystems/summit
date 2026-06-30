@@ -2285,7 +2285,16 @@ impl<
 
                 let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
                 if let Some(mut account) = self.canonical_state.get_account(&key_bytes).cloned() {
-                    account.status = ValidatorStatus::Inactive;
+                    // Route by why the validator is leaving the committee. A
+                    // voluntary full exit was staged as SubmittedExitRequest and its
+                    // whole balance is committed to a pending payout, so it must not
+                    // be rejoinable: mark it FullPayoutPending. A stake-bound removal
+                    // keeps its balance and may rejoin via a later deposit, so it
+                    // becomes Inactive.
+                    account.status = match account.status {
+                        ValidatorStatus::SubmittedExitRequest => ValidatorStatus::FullPayoutPending,
+                        _ => ValidatorStatus::Inactive,
+                    };
                     self.canonical_state.set_account(key_bytes, account);
                     info!(
                         next_epoch,

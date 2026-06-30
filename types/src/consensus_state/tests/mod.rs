@@ -1,0 +1,10 @@
+mod codec;
+mod common;
+mod deposits;
+mod guards;
+mod interactions;
+mod payouts;
+mod protocol_params;
+mod ssz;
+mod state;
+mod withdrawals;
