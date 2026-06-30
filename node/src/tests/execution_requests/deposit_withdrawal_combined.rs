@@ -2569,3 +2569,201 @@ fn test_deposit_and_withdrawal_same_block() {
         context.auditor().state()
     })
 }
+
+/// A stale queued deposit can outlive its account and then bind to a
+/// *replacement* account that reuses the same node AND consensus key but has
+/// different withdrawal credentials. The no-account branch does not fire (the
+/// replacement placeholder exists) and the consensus-key guard passes (same
+/// key), so the stale deposit is consumed against the replacement lifecycle and
+/// refunds to the replacement account's credentials (W2) instead of its own
+/// (W1).
+///
+/// We reproduce the resulting state directly: a replacement Inactive placeholder
+/// for node key X (consensus key A, credentials W2) plus a stale queued deposit
+/// for X (same A, credentials W1, amount below the minimum so it is refunded).
+/// The invariant is that the stale deposit refunds to its OWN W1
+/// (request.withdrawal_credentials), never the replacement account's W2.
+#[test_traced("INFO")]
+fn test_stale_deposit_binds_to_same_key_replacement_with_wrong_credentials() {
+    use summit_types::account::ValidatorAccount;
+
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let stale_deposit_amount = 1_000_000_000; // 1 ETH, below min_stake → refunded
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            key_stores.push(KeyStore {
+                node_key,
+                consensus_key,
+            });
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // The stale deposit's own withdrawal address (W1) and the replacement
+        // account's withdrawal address (W2) differ.
+        let stale_refund_address = Address::from([0xAA; 20]); // W1
+        let replacement_address = Address::from([0xBB; 20]); // W2
+        let mut stale_credentials = [0u8; 32];
+        stale_credentials[0] = 0x01;
+        stale_credentials[12..32].copy_from_slice(stale_refund_address.as_slice());
+
+        // Stale queued deposit for node key X, consensus key A, credentials W1.
+        let (stale_deposit, _node_key, stale_consensus_key) = common::create_deposit_request(
+            99,
+            stale_deposit_amount,
+            common::get_domain(),
+            None,
+            None,
+            Some(stale_credentials),
+        );
+        let node_pubkey: [u8; 32] = stale_deposit.node_pubkey.as_ref().try_into().unwrap();
+
+        let refund_epoch = VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let refund_height = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, refund_epoch);
+        let stop_height = refund_height + 1;
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(HashMap::new())
+            .with_stop_at(stop_height)
+            .build();
+
+        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+
+        // Replacement Inactive placeholder for X: same consensus key A as the
+        // stale deposit, but different withdrawal credentials (W2). This is the
+        // state left after the original (X, A) validator was deleted and a
+        // same-key replacement deposit recreated a placeholder, while the stale
+        // top-up is still queued.
+        let replacement_account = ValidatorAccount {
+            consensus_public_key: stale_consensus_key.public_key(),
+            withdrawal_credentials: replacement_address,
+            balance: 0,
+            status: ValidatorStatus::Inactive,
+            has_pending_deposit: true,
+            has_pending_withdrawal: false,
+            joining_epoch: 0,
+            last_deposit_index: 0,
+        };
+        initial_state.set_account(node_pubkey, replacement_account);
+        initial_state.push_deposit(stale_deposit.clone());
+
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        let refund_withdrawals = withdrawals
+            .get(&refund_height)
+            .expect("missing refund for the stale queued deposit");
+
+        // INVARIANT: the stale deposit must refund to its OWN credentials (W1),
+        // never to the replacement account's credentials (W2).
+        assert!(
+            refund_withdrawals
+                .iter()
+                .any(|w| w.address == stale_refund_address && w.amount == stale_deposit_amount),
+            "stale deposit must refund to its own W1 ({stale_refund_address:?}), not the \
+             replacement account's W2; got withdrawals = {refund_withdrawals:?}"
+        );
+        assert!(
+            !refund_withdrawals
+                .iter()
+                .any(|w| w.address == replacement_address),
+            "stale deposit must NOT refund to the replacement account's W2 \
+             ({replacement_address:?}); got withdrawals = {refund_withdrawals:?}"
+        );
+
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
+
+        context.auditor().state()
+    })
+}

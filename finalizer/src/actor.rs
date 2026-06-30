@@ -3100,18 +3100,22 @@ async fn process_execution_requests<
                             state.get_minimum_stake(),
                             state.get_maximum_stake()
                         );
-                        let refund_pubkey =
-                            refunded_deposit_key(account.withdrawal_credentials, request.index);
-                        let withdrawal_epoch =
-                            state.get_epoch() + consts.validator_withdrawal_num_epochs;
-
-                        push_invalid_deposit_withdrawals(
+                        // Refund to the DEPOSIT's own withdrawal credentials, not the
+                        // account's. A stale queued deposit can bind to a replacement
+                        // account that reused the same (node, consensus) key but has
+                        // different credentials; its funds must go back to the original
+                        // depositor (request.withdrawal_credentials), never the
+                        // replacement account's credentials. For a genuine new-validator
+                        // placeholder these are identical (the placeholder's credentials
+                        // were parsed from this same deposit), so honest flows are
+                        // unchanged.
+                        queue_deposit_refund(
                             state,
-                            account.withdrawal_credentials,
-                            refund_pubkey,
-                            request.index,
+                            request.withdrawal_credentials,
                             request.amount,
-                            withdrawal_epoch,
+                            request.index,
+                            DepositRejectionReason::Refund,
+                            consts,
                         );
                         // Remove the inactive account since validator won't be joining
                         state.remove_account(&node_pubkey_bytes);
@@ -3184,18 +3188,18 @@ async fn process_execution_requests<
                             state.get_minimum_stake(),
                             state.get_maximum_stake()
                         );
-                        let refund_pubkey =
-                            refunded_deposit_key(account.withdrawal_credentials, request.index);
-                        let withdrawal_epoch =
-                            state.get_epoch() + consts.validator_withdrawal_num_epochs;
-
-                        push_invalid_deposit_withdrawals(
+                        // Refund to the DEPOSIT's own withdrawal credentials, not the
+                        // account's, for the same reason as the new-validator path above:
+                        // a stale queued deposit can bind to a same-key replacement with
+                        // different credentials, and its funds must return to the original
+                        // depositor. For an honest top-up the two are identical.
+                        queue_deposit_refund(
                             state,
-                            account.withdrawal_credentials,
-                            refund_pubkey,
-                            request.index,
+                            request.withdrawal_credentials,
                             request.amount,
-                            withdrawal_epoch,
+                            request.index,
+                            DepositRejectionReason::Refund,
+                            consts,
                         );
                         // Persist the has_pending_deposit = false change
                         state.set_account(node_pubkey_bytes, account);
