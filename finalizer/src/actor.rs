@@ -2237,73 +2237,18 @@ impl<
     }
 
     fn update_validator_committee(&mut self, stake_changed: bool) -> bool {
-        // Add and remove validators for the next epoch
-        let mut validator_exit = false;
-        let next_epoch = self.canonical_state.get_epoch() + 1;
+        // Apply the staged committee deltas (activate added validators, route
+        // removed ones out). This node coordinates its own shutdown below if it
+        // was the validator removed.
+        let validator_exit = self
+            .canonical_state
+            .apply_committee_transition(&self.node_public_key);
         let staged_removed_validator_pubkeys: BTreeSet<[u8; 32]> = self
             .canonical_state
             .get_removed_validators()
             .iter()
             .map(|key| key.as_ref().try_into().expect("PublicKey is 32 bytes"))
             .collect();
-        if self.canonical_state.has_added_validators(next_epoch)
-            || !self.canonical_state.get_removed_validators().is_empty()
-        {
-            // Activate validators for the coming epoch.
-            // Clone to release the immutable borrow on canonical_state so we can call set_account.
-            if let Some(added_validators) = self
-                .canonical_state
-                .get_added_validators(next_epoch)
-                .cloned()
-            {
-                for validator in &added_validators {
-                    let key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
-                    let mut account = self
-                        .canonical_state
-                        .get_account(&key_bytes)
-                        .expect(
-                            "only validators with accounts are added to the added_validators queue",
-                        )
-                        .clone();
-                    account.status = ValidatorStatus::Active;
-                    self.canonical_state.set_account(key_bytes, account);
-                    info!(
-                        next_epoch,
-                        validator = hex::encode(key_bytes),
-                        "activated validator for next epoch"
-                    );
-                }
-            }
-
-            let removed_validators = self.canonical_state.get_removed_validators().clone();
-            for key in &removed_validators {
-                // Check if this node exits the validator set
-                if key == &self.node_public_key {
-                    validator_exit = true;
-                    warn!(next_epoch, "this node is being removed from validator set");
-                }
-
-                let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                if let Some(mut account) = self.canonical_state.get_account(&key_bytes).cloned() {
-                    // Route by why the validator is leaving the committee. A
-                    // voluntary full exit was staged as SubmittedExitRequest and its
-                    // whole balance is committed to a pending payout, so it must not
-                    // be rejoinable: mark it FullPayoutPending. A stake-bound removal
-                    // keeps its balance and may rejoin via a later deposit, so it
-                    // becomes Inactive.
-                    account.status = match account.status {
-                        ValidatorStatus::SubmittedExitRequest => ValidatorStatus::FullPayoutPending,
-                        _ => ValidatorStatus::Inactive,
-                    };
-                    self.canonical_state.set_account(key_bytes, account);
-                    info!(
-                        next_epoch,
-                        validator = hex::encode(key_bytes),
-                        "deactivated validator"
-                    );
-                }
-            }
-        }
 
         // Check stake bounds independently of validator additions/removals
         if stake_changed {
