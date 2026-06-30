@@ -146,17 +146,13 @@ pub struct SszStateTree {
     deposit_tree: SszTree,
     deposit_count: usize,
 
-    /// Epoch-level tree for withdrawal queue: each leaf is
-    /// `mix_in_length(per_epoch_subtree.root(), per_epoch_withdrawal_count)`.
-    withdrawal_epoch_tree: SszTree,
-    /// Per-epoch subtrees (8 field leaves per withdrawal), parallel to `withdrawal_epoch_keys`.
-    withdrawal_epoch_subtrees: Vec<SszTree>,
-    /// Per-epoch withdrawal counts, parallel to `withdrawal_epoch_subtrees`.
-    withdrawal_epoch_counts: Vec<usize>,
-    /// Sorted epoch keys for positional lookup.
-    withdrawal_epoch_keys: Vec<u64>,
-    /// Pubkey → (epoch_slot, item_slot) for O(1) proof lookup.
-    withdrawal_pubkey_index: HashMap<[u8; 32], (usize, usize)>,
+    /// Withdrawal queue subtree: a single flat list over the combined
+    /// `[validator withdrawals ++ deposit refunds]` sequence, 8 field leaves per
+    /// item. Mirrors the deposit subtree.
+    withdrawal_tree: SszTree,
+    withdrawal_count: usize,
+    /// Pubkey → flat slot for O(1) proof lookup.
+    withdrawal_pubkey_index: HashMap<[u8; 32], usize>,
 
     /// Protocol parameter changes subtree.
     protocol_param_tree: SszTree,
@@ -183,10 +179,8 @@ impl SszStateTree {
             validator_count: 0,
             deposit_tree: SszTree::new(1),
             deposit_count: 0,
-            withdrawal_epoch_tree: SszTree::new(1),
-            withdrawal_epoch_subtrees: Vec::new(),
-            withdrawal_epoch_counts: Vec::new(),
-            withdrawal_epoch_keys: Vec::new(),
+            withdrawal_tree: SszTree::new(1),
+            withdrawal_count: 0,
             withdrawal_pubkey_index: HashMap::new(),
             protocol_param_tree: SszTree::new(1),
             protocol_param_count: 0,
@@ -622,43 +616,22 @@ impl SszStateTree {
 
     // --- Withdrawal queue subtree ---
 
-    /// Rebuild the withdrawal queue as per-epoch subtrees.
+    /// Rebuild the withdrawal queue subtree from current contents.
     ///
-    /// Structure: epoch_tree → per-epoch subtree → 8 field leaves per withdrawal.
-    /// Each epoch leaf = `mix_in_length(per_epoch_tree.root(), per_epoch_count)`.
-    /// Top-level = `mix_in_length(epoch_tree.root(), epoch_count)`.
+    /// A single flat list over the combined `[validator withdrawals ++ deposit
+    /// refunds]` sequence; each item occupies 8 contiguous leaves (one per field),
+    /// enabling field-level proofs. Mirrors [`Self::rebuild_deposits`].
     pub fn rebuild_withdrawals(&mut self, queue: &WithdrawalQueue) {
-        let epochs = queue.epochs_with_withdrawals();
-        let epoch_count = epochs.len();
-
-        let mut epoch_subtrees = Vec::with_capacity(epoch_count);
-        let mut epoch_counts = Vec::with_capacity(epoch_count);
+        let count = queue.len();
+        let leaf_count = (count * WITHDRAWAL_FIELDS_PER_ITEM).max(1);
+        let mut tree = SszTree::new(leaf_count);
         let mut pubkey_index = HashMap::new();
-
-        let mut epoch_tree = SszTree::new(epoch_count.max(1));
-
-        for (epoch_slot, &epoch) in epochs.iter().enumerate() {
-            let withdrawals = queue.get_for_epoch(epoch);
-            let count = withdrawals.len();
-            let leaf_count = (count * WITHDRAWAL_FIELDS_PER_ITEM).max(1);
-            let mut subtree = SszTree::new(leaf_count);
-
-            for (item_slot, withdrawal) in withdrawals.iter().enumerate() {
-                Self::set_withdrawal_fields(&mut subtree, item_slot, withdrawal);
-                pubkey_index.insert(withdrawal.pubkey, (epoch_slot, item_slot));
-            }
-
-            let epoch_leaf = mix_in_length(subtree.root(), count);
-            epoch_tree.set_leaf(epoch_slot, epoch_leaf);
-
-            epoch_subtrees.push(subtree);
-            epoch_counts.push(count);
+        for (slot, withdrawal) in queue.iter_all().enumerate() {
+            Self::set_withdrawal_fields(&mut tree, slot, withdrawal);
+            pubkey_index.insert(withdrawal.pubkey, slot);
         }
-
-        self.withdrawal_epoch_tree = epoch_tree;
-        self.withdrawal_epoch_subtrees = epoch_subtrees;
-        self.withdrawal_epoch_counts = epoch_counts;
-        self.withdrawal_epoch_keys = epochs;
+        self.withdrawal_tree = tree;
+        self.withdrawal_count = count;
         self.withdrawal_pubkey_index = pubkey_index;
         self.update_withdrawal_collection_root();
     }
@@ -700,150 +673,30 @@ impl SszStateTree {
         );
     }
 
-    /// Incrementally update the tree after a withdrawal's fields changed (merge case).
+    /// Incrementally update the tree after a withdrawal is appended to the end of
+    /// the combined sequence. Mirrors [`Self::push_deposit`].
     ///
-    /// The pubkey must already exist in the tree. Only the affected item's 8 leaves
-    /// and the epoch leaf are recomputed.
-    pub fn update_withdrawal(&mut self, withdrawal: &PendingWithdrawal) {
-        let Some(&(epoch_slot, item_slot)) = self.withdrawal_pubkey_index.get(&withdrawal.pubkey)
-        else {
-            return;
-        };
-        let subtree = &mut self.withdrawal_epoch_subtrees[epoch_slot];
-        Self::set_withdrawal_fields(subtree, item_slot, withdrawal);
-        self.refresh_withdrawal_epoch_leaf(epoch_slot);
-    }
-
-    /// Incrementally update the tree after a new withdrawal is appended to an epoch.
-    ///
-    /// If the epoch is new, a new subtree and epoch-tree leaf are created.
-    /// If the epoch already exists, the item is appended to the end of its subtree.
+    /// The caller must guarantee the item belongs at the end of the combined
+    /// `[validators ++ refunds]` order (always true for a refund; true for a
+    /// validator only when no refunds are queued — otherwise the caller rebuilds).
     pub fn push_withdrawal(&mut self, withdrawal: &PendingWithdrawal) {
-        let epoch = withdrawal.epoch;
-
-        let epoch_slot = match self.withdrawal_epoch_keys.binary_search(&epoch) {
-            Ok(slot) => {
-                // Existing epoch — append item to its subtree
-                let count = self.withdrawal_epoch_counts[slot];
-                let new_count = count + 1;
-                let needed = new_count * WITHDRAWAL_FIELDS_PER_ITEM;
-                let subtree = &mut self.withdrawal_epoch_subtrees[slot];
-                subtree.grow(needed);
-                Self::set_withdrawal_fields(subtree, count, withdrawal);
-                self.withdrawal_epoch_counts[slot] = new_count;
-                self.withdrawal_pubkey_index
-                    .insert(withdrawal.pubkey, (slot, count));
-                slot
-            }
-            Err(insert_pos) => {
-                // New epoch — create subtree, insert into epoch-level structures
-                let mut subtree = SszTree::new(WITHDRAWAL_FIELDS_PER_ITEM);
-                Self::set_withdrawal_fields(&mut subtree, 0, withdrawal);
-
-                self.withdrawal_epoch_keys.insert(insert_pos, epoch);
-                self.withdrawal_epoch_subtrees.insert(insert_pos, subtree);
-                self.withdrawal_epoch_counts.insert(insert_pos, 1);
-
-                // Pubkey indices for epochs after insert_pos shift right by 1
-                for (_, (es, _)) in self.withdrawal_pubkey_index.iter_mut() {
-                    if *es >= insert_pos {
-                        *es += 1;
-                    }
-                }
-                self.withdrawal_pubkey_index
-                    .insert(withdrawal.pubkey, (insert_pos, 0));
-
-                // Rebuild epoch tree: all leaves shift after insert_pos
-                self.rebuild_withdrawal_epoch_tree();
-                self.update_withdrawal_collection_root();
-                return;
-            }
-        };
-
-        self.refresh_withdrawal_epoch_leaf(epoch_slot);
-    }
-
-    /// Incrementally update the tree after a withdrawal is popped from the front of an epoch.
-    ///
-    /// If the epoch becomes empty, its subtree and epoch-tree leaf are removed.
-    /// Otherwise, the epoch's subtree is rebuilt (items shift forward).
-    pub fn pop_withdrawal(
-        &mut self,
-        epoch: u64,
-        popped_pubkey: &[u8; 32],
-        queue: &WithdrawalQueue,
-    ) {
-        self.withdrawal_pubkey_index.remove(popped_pubkey);
-
-        let Ok(epoch_slot) = self.withdrawal_epoch_keys.binary_search(&epoch) else {
-            return;
-        };
-
-        let old_count = self.withdrawal_epoch_counts[epoch_slot];
-        if old_count <= 1 {
-            // Epoch is now empty — remove it
-            self.withdrawal_epoch_keys.remove(epoch_slot);
-            self.withdrawal_epoch_subtrees.remove(epoch_slot);
-            self.withdrawal_epoch_counts.remove(epoch_slot);
-
-            // Pubkey indices for epochs after epoch_slot shift left by 1
-            for (_, (es, _)) in self.withdrawal_pubkey_index.iter_mut() {
-                if *es > epoch_slot {
-                    *es -= 1;
-                }
-            }
-
-            self.rebuild_withdrawal_epoch_tree();
-            self.update_withdrawal_collection_root();
-            return;
-        }
-
-        // Rebuild just this epoch's subtree — items shifted after pop_front
-        let withdrawals = queue.get_for_epoch(epoch);
-        let new_count = withdrawals.len();
-        let leaf_count = (new_count * WITHDRAWAL_FIELDS_PER_ITEM).max(1);
-        let mut subtree = SszTree::new(leaf_count);
-        for (item_slot, w) in withdrawals.iter().enumerate() {
-            Self::set_withdrawal_fields(&mut subtree, item_slot, w);
-            self.withdrawal_pubkey_index
-                .insert(w.pubkey, (epoch_slot, item_slot));
-        }
-        self.withdrawal_epoch_subtrees[epoch_slot] = subtree;
-        self.withdrawal_epoch_counts[epoch_slot] = new_count;
-        self.refresh_withdrawal_epoch_leaf(epoch_slot);
-    }
-
-    /// Recompute the epoch-tree leaf for a single epoch slot and propagate to collection root.
-    fn refresh_withdrawal_epoch_leaf(&mut self, epoch_slot: usize) {
-        let subtree = &self.withdrawal_epoch_subtrees[epoch_slot];
-        let count = self.withdrawal_epoch_counts[epoch_slot];
-        let epoch_leaf = mix_in_length(subtree.root(), count);
-        self.withdrawal_epoch_tree.set_leaf(epoch_slot, epoch_leaf);
+        let slot = self.withdrawal_count;
+        let needed = (slot + 1) * WITHDRAWAL_FIELDS_PER_ITEM;
+        self.withdrawal_tree.grow(needed);
+        Self::set_withdrawal_fields(&mut self.withdrawal_tree, slot, withdrawal);
+        self.withdrawal_count += 1;
+        self.withdrawal_pubkey_index.insert(withdrawal.pubkey, slot);
         self.update_withdrawal_collection_root();
     }
 
-    /// Rebuild the epoch-level tree from all current epoch subtrees.
-    ///
-    /// Called when epochs are added or removed (structural change).
-    fn rebuild_withdrawal_epoch_tree(&mut self) {
-        let epoch_count = self.withdrawal_epoch_keys.len();
-        let mut epoch_tree = SszTree::new(epoch_count.max(1));
-        for (slot, subtree) in self.withdrawal_epoch_subtrees.iter().enumerate() {
-            let count = self.withdrawal_epoch_counts[slot];
-            epoch_tree.set_leaf(slot, mix_in_length(subtree.root(), count));
-        }
-        self.withdrawal_epoch_tree = epoch_tree;
-    }
-
     fn update_withdrawal_collection_root(&mut self) {
-        let epoch_count = self.withdrawal_epoch_keys.len();
-        let collection_root = mix_in_length(self.withdrawal_epoch_tree.root(), epoch_count);
+        let collection_root = mix_in_length(self.withdrawal_tree.root(), self.withdrawal_count);
         self.top.set_leaf(WITHDRAWAL_QUEUE_ROOT, collection_root);
     }
 
-    /// Number of epochs with pending withdrawals.
-    pub fn withdrawal_epoch_count(&self) -> usize {
-        self.withdrawal_epoch_keys.len()
+    /// Number of pending withdrawals in the subtree.
+    pub fn withdrawal_count(&self) -> usize {
+        self.withdrawal_count
     }
 
     /// Rebuild protocol parameter changes subtree.
@@ -1229,8 +1082,8 @@ impl SszStateTree {
 
     /// Generate a proof for a withdrawal identified by validator pubkey (O(1) lookup).
     pub fn generate_withdrawal_proof_by_key(&self, pubkey: &[u8; 32]) -> Option<SszProof> {
-        let &(epoch_slot, item_slot) = self.withdrawal_pubkey_index.get(pubkey)?;
-        self.generate_withdrawal_proof(epoch_slot, item_slot)
+        let &slot = self.withdrawal_pubkey_index.get(pubkey)?;
+        self.generate_withdrawal_proof(slot)
     }
 
     /// Generate a proof for a deposit at a given queue index (whole deposit).
@@ -1308,22 +1161,15 @@ impl SszStateTree {
         (gindex, node_value, branch)
     }
 
-    /// Generate a whole-withdrawal proof by (epoch_slot, item_slot).
+    /// Generate a whole-withdrawal proof at a given combined-queue index.
     ///
     /// The proof leaf is the per-withdrawal subtree root (internal node 3 levels
-    /// above the field leaves) in the per-epoch subtree.
-    pub fn generate_withdrawal_proof(
-        &self,
-        epoch_slot: usize,
-        item_slot: usize,
-    ) -> Option<SszProof> {
-        if epoch_slot >= self.withdrawal_epoch_keys.len() {
+    /// above the field leaves). Mirrors [`Self::generate_deposit_proof`].
+    pub fn generate_withdrawal_proof(&self, index: usize) -> Option<SszProof> {
+        if index >= self.withdrawal_count {
             return None;
         }
-        if item_slot >= self.withdrawal_epoch_counts[epoch_slot] {
-            return None;
-        }
-        let (gindex, node_value, branch) = self.withdrawal_epoch_item_proof(epoch_slot, item_slot);
+        let (gindex, node_value, branch) = self.withdrawal_item_proof(index);
         Some(SszProof {
             gindex,
             leaf: node_value,
@@ -1331,41 +1177,29 @@ impl SszStateTree {
         })
     }
 
-    /// Generate a field-level proof for a withdrawal by (epoch_slot, item_slot, field_index).
+    /// Generate a field-level proof for a withdrawal at a given combined-queue index.
     pub fn generate_withdrawal_field_proof(
         &self,
-        epoch_slot: usize,
-        item_slot: usize,
+        index: usize,
         field_index: usize,
     ) -> Option<SszProof> {
-        if epoch_slot >= self.withdrawal_epoch_keys.len() {
+        if index >= self.withdrawal_count || field_index >= WITHDRAWAL_FIELDS_PER_ITEM {
             return None;
         }
-        if item_slot >= self.withdrawal_epoch_counts[epoch_slot] {
-            return None;
-        }
-        if field_index >= WITHDRAWAL_FIELDS_PER_ITEM {
-            return None;
-        }
-        let subtree = &self.withdrawal_epoch_subtrees[epoch_slot];
-        let per_epoch_count = self.withdrawal_epoch_counts[epoch_slot];
-        let epoch_count = self.withdrawal_epoch_keys.len();
-        let leaf_index = item_slot * WITHDRAWAL_FIELDS_PER_ITEM + field_index;
-
-        let gindex = self.compose_withdrawal_field_gindex(subtree, epoch_slot, leaf_index);
-        let leaf = subtree.get_leaf(leaf_index);
-        let branch = self.build_withdrawal_branch_from_leaf(
-            subtree,
-            epoch_slot,
-            leaf_index,
-            per_epoch_count,
-            epoch_count,
-        );
-
+        let leaf_index = index * WITHDRAWAL_FIELDS_PER_ITEM + field_index;
         Some(SszProof {
-            gindex,
-            leaf,
-            branch,
+            gindex: self.compose_collection_gindex(
+                WITHDRAWAL_QUEUE_ROOT,
+                &self.withdrawal_tree,
+                leaf_index,
+            ),
+            leaf: self.withdrawal_tree.get_leaf(leaf_index),
+            branch: self.build_collection_branch(
+                WITHDRAWAL_QUEUE_ROOT,
+                &self.withdrawal_tree,
+                leaf_index,
+                self.withdrawal_count,
+            ),
         })
     }
 
@@ -1375,8 +1209,8 @@ impl SszStateTree {
         pubkey: &[u8; 32],
         field_index: usize,
     ) -> Option<SszProof> {
-        let &(epoch_slot, item_slot) = self.withdrawal_pubkey_index.get(pubkey)?;
-        self.generate_withdrawal_field_proof(epoch_slot, item_slot, field_index)
+        let &slot = self.withdrawal_pubkey_index.get(pubkey)?;
+        self.generate_withdrawal_field_proof(slot, field_index)
     }
 
     /// Generate a field-level proof for a withdrawal identified by pubkey,
@@ -1392,109 +1226,30 @@ impl SszStateTree {
         pubkey: &[u8; 32],
         field_index: usize,
     ) -> Option<KeyedFieldProof> {
-        let &(epoch_slot, item_slot) = self.withdrawal_pubkey_index.get(pubkey)?;
-        let field = self.generate_withdrawal_field_proof(epoch_slot, item_slot, field_index)?;
-        let key =
-            self.generate_withdrawal_field_proof(epoch_slot, item_slot, WITHDRAWAL_FIELD_PUBKEY)?;
+        let &slot = self.withdrawal_pubkey_index.get(pubkey)?;
+        let field = self.generate_withdrawal_field_proof(slot, field_index)?;
+        let key = self.generate_withdrawal_field_proof(slot, WITHDRAWAL_FIELD_PUBKEY)?;
         Some(KeyedFieldProof { field, key })
     }
 
-    /// Internal helper: produce (gindex, node_value, branch) for a whole-withdrawal proof.
-    ///
-    /// Three-level branch: per-epoch subtree (from internal node) +
-    /// per-epoch length + epoch tree + epoch count length + top tree.
-    fn withdrawal_epoch_item_proof(
-        &self,
-        epoch_slot: usize,
-        item_slot: usize,
-    ) -> (u64, [u8; 32], Vec<[u8; 32]>) {
-        let subtree = &self.withdrawal_epoch_subtrees[epoch_slot];
-        let per_epoch_count = self.withdrawal_epoch_counts[epoch_slot];
-        let epoch_count = self.withdrawal_epoch_keys.len();
+    /// Internal helper: produce (gindex, node_value, branch) for a whole-withdrawal
+    /// proof. Mirrors [`Self::deposit_item_proof`].
+    fn withdrawal_item_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
+        let sd = self.withdrawal_tree.depth();
+        let node_index = self.withdrawal_tree.capacity() / WITHDRAWAL_FIELDS_PER_ITEM + slot;
+        let node_value = self.withdrawal_tree.get_node(node_index);
 
-        // Per-withdrawal subtree root: 3 levels above field leaves
-        let node_index = subtree.capacity() / WITHDRAWAL_FIELDS_PER_ITEM + item_slot;
-        let node_value = subtree.get_node(node_index);
+        let td = self.top.depth();
+        let top_gindex = (1u64 << td) + WITHDRAWAL_QUEUE_ROOT as u64;
+        let gindex = (top_gindex << (sd - 2)) | (slot as u64);
 
-        let gindex = self.compose_withdrawal_item_gindex(subtree, epoch_slot, item_slot);
-
-        let mut branch = subtree.generate_proof_from_node(node_index);
-        // Per-epoch mix_in_length sibling
-        let mut per_epoch_len = [0u8; 32];
-        per_epoch_len[0..8].copy_from_slice(&(per_epoch_count as u64).to_le_bytes());
-        branch.push(per_epoch_len);
-        // Epoch tree siblings
-        branch.extend_from_slice(&self.withdrawal_epoch_tree.generate_proof(epoch_slot));
-        // Epoch count mix_in_length sibling
-        let mut epoch_len = [0u8; 32];
-        epoch_len[0..8].copy_from_slice(&(epoch_count as u64).to_le_bytes());
-        branch.push(epoch_len);
-        // Top tree siblings
+        let mut branch = self.withdrawal_tree.generate_proof_from_node(node_index);
+        let mut length_bytes = [0u8; 32];
+        length_bytes[0..8].copy_from_slice(&(self.withdrawal_count as u64).to_le_bytes());
+        branch.push(length_bytes);
         branch.extend_from_slice(&self.top.generate_proof(WITHDRAWAL_QUEUE_ROOT));
 
         (gindex, node_value, branch)
-    }
-
-    /// Compose gindex for a whole-withdrawal proof (per-item subtree root).
-    fn compose_withdrawal_item_gindex(
-        &self,
-        subtree: &SszTree,
-        epoch_slot: usize,
-        item_slot: usize,
-    ) -> u64 {
-        let td = self.top.depth();
-        let ed = self.withdrawal_epoch_tree.depth();
-        let sd = subtree.depth();
-
-        // Top-level gindex for WITHDRAWAL_QUEUE_ROOT
-        let top_gindex = (1u64 << td) + WITHDRAWAL_QUEUE_ROOT as u64;
-        // Descend through epoch-level mix_in_length (+1) and epoch tree
-        let epoch_gindex = (top_gindex << (ed + 1)) | (epoch_slot as u64);
-        // Descend through per-epoch mix_in_length (+1) to per-item subtree root
-        // Per-item root is at depth (sd - 3) in subtree, so (sd - 3 + 1) = (sd - 2) levels
-        (epoch_gindex << (sd - 2)) | (item_slot as u64)
-    }
-
-    /// Compose gindex for a withdrawal field proof (leaf in per-epoch subtree).
-    fn compose_withdrawal_field_gindex(
-        &self,
-        subtree: &SszTree,
-        epoch_slot: usize,
-        leaf_index: usize,
-    ) -> u64 {
-        let td = self.top.depth();
-        let ed = self.withdrawal_epoch_tree.depth();
-        let sd = subtree.depth();
-
-        let top_gindex = (1u64 << td) + WITHDRAWAL_QUEUE_ROOT as u64;
-        let epoch_gindex = (top_gindex << (ed + 1)) | (epoch_slot as u64);
-        // Descend through per-epoch mix_in_length (+1) to leaf
-        (epoch_gindex << (sd + 1)) | (leaf_index as u64)
-    }
-
-    /// Build branch for a withdrawal field proof starting from a leaf.
-    fn build_withdrawal_branch_from_leaf(
-        &self,
-        subtree: &SszTree,
-        epoch_slot: usize,
-        leaf_index: usize,
-        per_epoch_count: usize,
-        epoch_count: usize,
-    ) -> Vec<[u8; 32]> {
-        let mut branch = subtree.generate_proof(leaf_index);
-        // Per-epoch mix_in_length sibling
-        let mut per_epoch_len = [0u8; 32];
-        per_epoch_len[0..8].copy_from_slice(&(per_epoch_count as u64).to_le_bytes());
-        branch.push(per_epoch_len);
-        // Epoch tree siblings
-        branch.extend_from_slice(&self.withdrawal_epoch_tree.generate_proof(epoch_slot));
-        // Epoch count mix_in_length sibling
-        let mut epoch_len = [0u8; 32];
-        epoch_len[0..8].copy_from_slice(&(epoch_count as u64).to_le_bytes());
-        branch.push(epoch_len);
-        // Top tree siblings
-        branch.extend_from_slice(&self.top.generate_proof(WITHDRAWAL_QUEUE_ROOT));
-        branch
     }
 
     /// Generate a proof for a protocol parameter change at a given index.
@@ -2365,12 +2120,12 @@ mod tests {
         let proof3 = tree.generate_withdrawal_proof_by_key(&pk3).unwrap();
         assert!(proof3.verify(&root));
 
-        // By index: epoch_slot=0 (epoch 1) has 2 items, epoch_slot=1 (epoch 2) has 1
-        let proof_idx = tree.generate_withdrawal_proof(0, 0).unwrap();
+        // By flat index: combined [validators ++ refunds] order — pk1=0, pk2=1, pk3=2.
+        let proof_idx = tree.generate_withdrawal_proof(0).unwrap();
         assert!(proof_idx.verify(&root));
-        let proof_idx = tree.generate_withdrawal_proof(0, 1).unwrap();
+        let proof_idx = tree.generate_withdrawal_proof(1).unwrap();
         assert!(proof_idx.verify(&root));
-        let proof_idx = tree.generate_withdrawal_proof(1, 0).unwrap();
+        let proof_idx = tree.generate_withdrawal_proof(2).unwrap();
         assert!(proof_idx.verify(&root));
 
         // Unknown key returns None
@@ -2381,10 +2136,10 @@ mod tests {
     #[test]
     fn withdrawal_proof_out_of_bounds() {
         let tree = SszStateTree::new();
-        // No epochs at all
-        assert!(tree.generate_withdrawal_proof(0, 0).is_none());
+        // Empty queue
+        assert!(tree.generate_withdrawal_proof(0).is_none());
 
-        // Build with one epoch
+        // Build with one withdrawal
         let mut queue = WithdrawalQueue::default();
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2401,10 +2156,9 @@ mod tests {
         let mut tree = SszStateTree::new();
         tree.rebuild_withdrawals(&queue);
 
-        // epoch_slot out of bounds
-        assert!(tree.generate_withdrawal_proof(1, 0).is_none());
-        // item_slot out of bounds
-        assert!(tree.generate_withdrawal_proof(0, 1).is_none());
+        // index 0 is valid, index 1 is out of bounds
+        assert!(tree.generate_withdrawal_proof(0).is_some());
+        assert!(tree.generate_withdrawal_proof(1).is_none());
     }
 
     #[test]
@@ -2629,28 +2383,17 @@ mod tests {
 
         let root = tree.root();
 
-        // Verify field proofs for every withdrawal in epoch 1 (epoch_slot=0), every field
-        for item_slot in 0..2 {
+        // Verify field proofs for every withdrawal at every flat slot, every field.
+        for slot in 0..3 {
             for field_idx in 0..WITHDRAWAL_FIELDS_PER_ITEM {
                 let proof = tree
-                    .generate_withdrawal_field_proof(0, item_slot, field_idx)
+                    .generate_withdrawal_field_proof(slot, field_idx)
                     .unwrap();
                 assert!(
                     proof.verify(&root),
-                    "epoch 1 withdrawal {item_slot} field proof failed for field {field_idx}"
+                    "withdrawal {slot} field proof failed for field {field_idx}"
                 );
             }
-        }
-
-        // Verify field proofs for the withdrawal in epoch 2 (epoch_slot=1)
-        for field_idx in 0..WITHDRAWAL_FIELDS_PER_ITEM {
-            let proof = tree
-                .generate_withdrawal_field_proof(1, 0, field_idx)
-                .unwrap();
-            assert!(
-                proof.verify(&root),
-                "epoch 2 withdrawal 0 field proof failed for field {field_idx}"
-            );
         }
 
         // By-key field proof (O(1) lookup)
@@ -2660,9 +2403,9 @@ mod tests {
         assert!(proof_by_key.verify(&root));
 
         // Field proof branch is 3 elements longer than whole-item proof
-        let item_proof = tree.generate_withdrawal_proof(0, 0).unwrap();
+        let item_proof = tree.generate_withdrawal_proof(0).unwrap();
         let field_proof = tree
-            .generate_withdrawal_field_proof(0, 0, WITHDRAWAL_FIELD_AMOUNT)
+            .generate_withdrawal_field_proof(0, WITHDRAWAL_FIELD_AMOUNT)
             .unwrap();
         assert_eq!(
             field_proof.branch.len(),
@@ -2810,18 +2553,17 @@ mod tests {
         let mut tree = SszStateTree::new();
         tree.rebuild_withdrawals(&queue);
 
-        // epoch_slot=0, item_slot=0
-        let proof = tree.generate_withdrawal_proof(0, 0).unwrap();
+        let proof = tree.generate_withdrawal_proof(0).unwrap();
         assert_eq!(proof.leaf, withdrawal.hash_tree_root());
     }
 
     #[test]
     fn withdrawal_field_proof_out_of_bounds() {
         let tree = SszStateTree::new();
-        // No epochs
-        assert!(tree.generate_withdrawal_field_proof(0, 0, 0).is_none());
+        // Empty queue
+        assert!(tree.generate_withdrawal_field_proof(0, 0).is_none());
 
-        // Build with one withdrawal in epoch 1
+        // Build with one withdrawal
         let mut queue = WithdrawalQueue::default();
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2839,11 +2581,9 @@ mod tests {
         tree.rebuild_withdrawals(&queue);
 
         // Invalid field index
-        assert!(tree.generate_withdrawal_field_proof(0, 0, 8).is_none());
-        // Invalid item_slot
-        assert!(tree.generate_withdrawal_field_proof(0, 1, 0).is_none());
-        // Invalid epoch_slot
-        assert!(tree.generate_withdrawal_field_proof(1, 0, 0).is_none());
+        assert!(tree.generate_withdrawal_field_proof(0, 8).is_none());
+        // Invalid item index
+        assert!(tree.generate_withdrawal_field_proof(1, 0).is_none());
     }
 
     #[test]
@@ -2885,205 +2625,45 @@ mod tests {
             kind: WithdrawalKind::Validator,
         };
 
-        // Incremental: push one by one
+        // A deposit refund — lands after all validator entries in the combined
+        // `[validators ++ refunds]` order.
+        let r1 = PendingWithdrawal {
+            inner: Withdrawal {
+                index: 3,
+                validator_index: 0,
+                address: Address::from([0x44; 20]),
+                amount: 4_000_000_000,
+            },
+            pubkey: [4u8; 32],
+            balance_deduction: 0,
+            epoch: 1,
+            kind: WithdrawalKind::DepositRefund,
+        };
+
+        // Incremental: append in combined order (validators first, then refunds).
         let mut inc = SszStateTree::new();
         inc.push_withdrawal(&w1);
-        inc.push_withdrawal(&w2); // same epoch
-        inc.push_withdrawal(&w3); // new epoch
-
-        // Full rebuild
-        let mut queue = WithdrawalQueue::default();
-        queue.push(w1);
-        queue.push(w2);
-        queue.push(w3);
-        let mut full = SszStateTree::new();
-        full.rebuild_withdrawals(&queue);
-
-        assert_eq!(inc.root(), full.root());
-
-        // Proofs from incremental tree verify
-        let root = inc.root();
-        let proof = inc.generate_withdrawal_proof_by_key(&[1u8; 32]).unwrap();
-        assert!(proof.verify(&root));
-        let proof = inc.generate_withdrawal_proof_by_key(&[3u8; 32]).unwrap();
-        assert!(proof.verify(&root));
-    }
-
-    #[test]
-    fn withdrawal_incremental_pop_matches_rebuild() {
-        let w1 = PendingWithdrawal {
-            inner: Withdrawal {
-                index: 0,
-                validator_index: 0,
-                address: Address::from([0x11; 20]),
-                amount: 1_000_000_000,
-            },
-            pubkey: [1u8; 32],
-            balance_deduction: 1_000_000_000,
-            epoch: 1,
-            kind: WithdrawalKind::Validator,
-        };
-        let w2 = PendingWithdrawal {
-            inner: Withdrawal {
-                index: 1,
-                validator_index: 1,
-                address: Address::from([0x22; 20]),
-                amount: 2_000_000_000,
-            },
-            pubkey: [2u8; 32],
-            balance_deduction: 2_000_000_000,
-            epoch: 1,
-            kind: WithdrawalKind::Validator,
-        };
-        let w3 = PendingWithdrawal {
-            inner: Withdrawal {
-                index: 2,
-                validator_index: 2,
-                address: Address::from([0x33; 20]),
-                amount: 3_000_000_000,
-            },
-            pubkey: [3u8; 32],
-            balance_deduction: 3_000_000_000,
-            epoch: 2,
-            kind: WithdrawalKind::Validator,
-        };
-
-        // Start with full rebuild of 3 items
-        let mut queue = WithdrawalQueue::default();
-        queue.push(w1.clone());
-        queue.push(w2.clone());
-        queue.push(w3.clone());
-        let mut inc = SszStateTree::new();
-        inc.rebuild_withdrawals(&queue);
-
-        // Pop w1 (front of epoch 1) incrementally
-        queue.pop(1);
-        inc.pop_withdrawal(1, &w1.pubkey, &queue);
-
-        // Compare to full rebuild
-        let mut full = SszStateTree::new();
-        full.rebuild_withdrawals(&queue);
-        assert_eq!(inc.root(), full.root());
-
-        // Pop w2 (last in epoch 1, removes epoch) incrementally
-        queue.pop(1);
-        inc.pop_withdrawal(1, &w2.pubkey, &queue);
-
-        let mut full = SszStateTree::new();
-        full.rebuild_withdrawals(&queue);
-        assert_eq!(inc.root(), full.root());
-
-        // Pop w3 (last item, removes last epoch) incrementally
-        queue.pop(2);
-        inc.pop_withdrawal(2, &w3.pubkey, &queue);
-
-        let mut full = SszStateTree::new();
-        full.rebuild_withdrawals(&queue);
-        assert_eq!(inc.root(), full.root());
-    }
-
-    #[test]
-    fn withdrawal_incremental_update_matches_rebuild() {
-        let w1 = PendingWithdrawal {
-            inner: Withdrawal {
-                index: 0,
-                validator_index: 0,
-                address: Address::from([0x11; 20]),
-                amount: 1_000_000_000,
-            },
-            pubkey: [1u8; 32],
-            balance_deduction: 1_000_000_000,
-            epoch: 1,
-            kind: WithdrawalKind::Validator,
-        };
-
-        let mut queue = WithdrawalQueue::default();
-        queue.push(w1);
-        let mut inc = SszStateTree::new();
-        inc.rebuild_withdrawals(&queue);
-
-        // Simulate a merge: amount and balance_deduction change
-        let updated = PendingWithdrawal {
-            inner: Withdrawal {
-                index: 0,
-                validator_index: 0,
-                address: Address::from([0x11; 20]),
-                amount: 5_000_000_000,
-            },
-            pubkey: [1u8; 32],
-            balance_deduction: 5_000_000_000,
-            epoch: 1,
-            kind: WithdrawalKind::Validator,
-        };
-        inc.update_withdrawal(&updated);
-
-        // Compare to full rebuild with updated data
-        let mut queue2 = WithdrawalQueue::default();
-        queue2.push(updated);
-        let mut full = SszStateTree::new();
-        full.rebuild_withdrawals(&queue2);
-        assert_eq!(inc.root(), full.root());
-    }
-
-    #[test]
-    fn withdrawal_push_new_epoch_between_existing() {
-        // Push epochs 1, 3, then 2 — tests sorted insertion
-        let w1 = PendingWithdrawal {
-            inner: Withdrawal {
-                index: 0,
-                validator_index: 0,
-                address: Address::from([0x11; 20]),
-                amount: 1_000_000_000,
-            },
-            pubkey: [1u8; 32],
-            balance_deduction: 1_000_000_000,
-            epoch: 1,
-            kind: WithdrawalKind::Validator,
-        };
-        let w3 = PendingWithdrawal {
-            inner: Withdrawal {
-                index: 1,
-                validator_index: 1,
-                address: Address::from([0x33; 20]),
-                amount: 3_000_000_000,
-            },
-            pubkey: [3u8; 32],
-            balance_deduction: 3_000_000_000,
-            epoch: 3,
-            kind: WithdrawalKind::Validator,
-        };
-        let w2 = PendingWithdrawal {
-            inner: Withdrawal {
-                index: 2,
-                validator_index: 2,
-                address: Address::from([0x22; 20]),
-                amount: 2_000_000_000,
-            },
-            pubkey: [2u8; 32],
-            balance_deduction: 2_000_000_000,
-            epoch: 2,
-            kind: WithdrawalKind::Validator,
-        };
-
-        let mut inc = SszStateTree::new();
-        inc.push_withdrawal(&w1);
+        inc.push_withdrawal(&w2);
         inc.push_withdrawal(&w3);
-        inc.push_withdrawal(&w2); // inserted between epoch 1 and 3
+        inc.push_withdrawal(&r1);
 
+        // Batch build from the queue.
         let mut queue = WithdrawalQueue::default();
         queue.push(w1);
-        queue.push(w3);
         queue.push(w2);
+        queue.push(w3);
+        queue.push(r1);
         let mut full = SszStateTree::new();
         full.rebuild_withdrawals(&queue);
 
+        // Incremental appends must produce the same root as the batch build.
         assert_eq!(inc.root(), full.root());
 
-        // Verify pubkey lookups still work after epoch insertion
+        // Proofs from the incrementally built tree verify, including the refund.
         let root = inc.root();
-        for pk in [[1u8; 32], [2u8; 32], [3u8; 32]] {
+        for pk in [[1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]] {
             let proof = inc.generate_withdrawal_proof_by_key(&pk).unwrap();
-            assert!(proof.verify(&root), "proof failed for pubkey {:?}", pk);
+            assert!(proof.verify(&root), "proof failed for {pk:?}");
         }
     }
 
