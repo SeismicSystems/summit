@@ -25,7 +25,7 @@ use metrics::histogram;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::num::NonZeroU64;
 use std::sync::Arc;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 const INVALID_STAKE_INTERVAL: &str =
     "validator_minimum_stake must be less than or equal to validator_maximum_stake";
@@ -1655,6 +1655,64 @@ impl ConsensusState {
     /// Get the pending withdrawal amount (balance_deduction) for a specific validator.
     pub fn get_pending_withdrawal_amount(&self, pubkey: &[u8; 32]) -> u64 {
         self.withdrawal_queue.balance_deduction_for(pubkey)
+    }
+
+    /// Apply the staged committee deltas at an epoch boundary, mutating account
+    /// statuses for the upcoming epoch. Validators scheduled to be added become
+    /// Active. Removed validators leave the committee: a voluntary full exit
+    /// (staged as SubmittedExitRequest, whole balance committed to a pending
+    /// payout) becomes FullPayoutPending and cannot rejoin, while any other
+    /// removal (a stake-bound removal that keeps its balance) becomes Inactive
+    /// and may rejoin via a later deposit.
+    ///
+    /// Returns whether `node_public_key` was among the removed validators, so the
+    /// caller can coordinate its own shutdown. This method only mutates consensus
+    /// state. Persisting the result and notifying the orchestrator stay with the
+    /// caller.
+    pub fn apply_committee_transition(&mut self, node_public_key: &PublicKey) -> bool {
+        let next_epoch = self.get_epoch() + 1;
+        if !self.has_added_validators(next_epoch) && self.get_removed_validators().is_empty() {
+            return false;
+        }
+
+        // Activate the validators scheduled for the coming epoch.
+        if let Some(added_validators) = self.get_added_validators(next_epoch).cloned() {
+            for validator in &added_validators {
+                let key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
+                let mut account = self
+                    .get_account(&key_bytes)
+                    .expect("only validators with accounts are added to the added_validators queue")
+                    .clone();
+                account.status = ValidatorStatus::Active;
+                self.set_account(key_bytes, account);
+            }
+            info!(
+                next_epoch,
+                "activated validators scheduled for the next epoch"
+            );
+        }
+
+        // Move removed validators out of the committee, routing by departure reason.
+        let mut validator_exit = false;
+        let removed_validators = self.get_removed_validators().clone();
+        for key in &removed_validators {
+            if key == node_public_key {
+                validator_exit = true;
+                warn!(
+                    next_epoch,
+                    "this node is being removed from the validator set"
+                );
+            }
+            let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
+            if let Some(mut account) = self.get_account(&key_bytes).cloned() {
+                account.status = match account.status {
+                    ValidatorStatus::SubmittedExitRequest => ValidatorStatus::FullPayoutPending,
+                    _ => ValidatorStatus::Inactive,
+                };
+                self.set_account(key_bytes, account);
+            }
+        }
+        validator_exit
     }
 
     pub fn get_validator_keys(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {

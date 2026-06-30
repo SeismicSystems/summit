@@ -228,3 +228,57 @@ fn apply_panics_on_block_mismatch() {
     // emit would be [100]; pass an empty list to force the mismatch.
     state.apply_withdrawal_payouts(0, &[]);
 }
+
+// emit/apply honor the per-epoch total cap: only `max_withdrawals_per_epoch`
+// are paid, and the overflow rolls to a later sweep.
+#[test]
+fn emit_and_apply_honor_cap_and_defer_overflow() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(MIN);
+    state.set_max_withdrawals_per_epoch(1);
+    let k1 = [1u8; 32];
+    let k2 = [2u8; 32];
+    state.set_account(k1, create_test_validator_account(1, 100));
+    state.set_account(k2, create_test_validator_account(2, 100));
+    push_full_exit(&mut state, k1, 0);
+    push_full_exit(&mut state, k2, 0);
+
+    // Only one fits under the cap (FIFO: k1).
+    let block = state.emit_withdrawal_payouts(0);
+    assert_eq!(block.len(), 1);
+    state.apply_withdrawal_payouts(0, &block);
+    assert!(state.get_account(&k1).is_none());
+    assert!(state.get_account(&k2).is_some());
+
+    // The deferred exit is paid in the next sweep.
+    let block2 = state.emit_withdrawal_payouts(0);
+    assert_eq!(block2.len(), 1);
+    state.apply_withdrawal_payouts(0, &block2);
+    assert!(state.get_account(&k2).is_none());
+}
+
+// Under the cap, validator exits take strict priority over deposit refunds even
+// when a refund was enqueued first (#226 starvation guard).
+#[test]
+fn emit_prioritizes_validator_exits_over_refunds_under_cap() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(MIN);
+    state.set_max_withdrawals_per_epoch(1);
+    let k1 = [1u8; 32];
+    state.set_account(k1, create_test_validator_account(1, 100));
+    state.push_refund_withdrawal_request(
+        WithdrawalRequest {
+            source_address: Address::from([9u8; 20]),
+            validator_pubkey: [0u8; 32],
+            amount: 7,
+        },
+        0,
+        0,
+    );
+    push_full_exit(&mut state, k1, 0);
+
+    // Cap 1: the validator exit wins despite the refund being enqueued first.
+    let block = state.emit_withdrawal_payouts(0);
+    assert_eq!(block.len(), 1);
+    assert_eq!(block[0].amount, 100);
+}
