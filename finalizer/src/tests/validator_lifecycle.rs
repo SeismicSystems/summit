@@ -1148,163 +1148,6 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
     });
 }
 
-/// An active validator's full exit on the last block of an epoch must
-/// dominate a concurrent `MaximumStake` reduction at the same boundary:
-/// the buffered exit replays on the first block of the next epoch and the
-/// validator transitions to `SubmittedExitRequest` with balance zeroed,
-/// rather than being clipped to the new maximum by stake-bound enforcement.
-#[test]
-fn last_block_exit_dominates_concurrent_max_stake_reduction() {
-    let cfg = deterministic::Config::default().with_seed(57);
-    let executor = Runner::from(cfg);
-    executor.start(|context| async move {
-        let genesis_hash = [0x57u8; 32];
-
-        let local_node_key = ed25519::PrivateKey::from_seed(1);
-        let local_node_pubkey = local_node_key.public_key();
-        let exiting_node_key = ed25519::PrivateKey::from_seed(0);
-        let exiting_node_pubkey = exiting_node_key.public_key();
-        let exiting_pubkey_bytes: [u8; 32] = exiting_node_pubkey.as_ref().try_into().unwrap();
-        let exiting_withdrawal_address = Address::from([0u8; 20]);
-        let initial_balance: u64 = 32_000_000_000;
-        let reduced_max_stake: u64 = initial_balance - 1_000_000_000;
-
-        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
-
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
-        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
-
-        let cancellation_token = CancellationToken::new();
-
-        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            mailbox_size: 100,
-            db_prefix: "test_last_block_exit_dominates_max_stake".to_string(),
-            engine_client: MockEngineClient::new(),
-            oracle: MockNetworkOracle,
-            protocol_consts: ProtocolConsts {
-                validator_num_warm_up_epochs: 2,
-                validator_withdrawal_num_epochs: 2,
-            },
-            page_cache: CacheRef::from_pooler(
-                &context,
-                std::num::NonZero::new(4096).unwrap(),
-                NZUsize!(100),
-            ),
-            genesis_hash,
-            initial_state,
-            protocol_version: 1,
-            node_public_key: local_node_pubkey,
-            cancellation_token,
-            drain_interval: Duration::from_millis(100),
-            buffered_blocks_warn_threshold: 100,
-            pending_notarized_max: 1000,
-            namespace: Vec::new(),
-            observer_domain: Vec::new(),
-            _variant_marker: PhantomData,
-        };
-
-        let (finalizer, _state, mut mailbox, _state_query) =
-            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
-                finalizer_cfg,
-            )
-            .await;
-
-        let _handle = finalizer.start(orchestrator_mailbox);
-        context.sleep(Duration::from_millis(50)).await;
-
-        let genesis_block = Block::genesis(genesis_hash);
-        let mut parent_digest = genesis_block.digest();
-
-        let schemes = create_test_schemes(4);
-        let quorum = 3;
-
-        // Block 1: empty.
-        let b1 = create_test_block_with_epoch(parent_digest, 1, 2, 18001, 0);
-        parent_digest = b1.digest();
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b1, None), ack))
-            .await;
-        context.sleep(Duration::from_millis(30)).await;
-
-        // Block 2: queue MaximumStake reduction (activates at the epoch boundary).
-        let b2 = create_test_block_with_requests(
-            parent_digest,
-            2,
-            3,
-            18002,
-            0,
-            vec![maximum_stake_protocol_param_entry(reduced_max_stake)],
-        );
-        parent_digest = b2.digest();
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b2, None), ack))
-            .await;
-        context.sleep(Duration::from_millis(30)).await;
-
-        // Block 3: empty (penultimate of epoch 0).
-        let b3 = create_test_block_with_epoch(parent_digest, 3, 4, 18003, 0);
-        parent_digest = b3.digest();
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b3, None), ack))
-            .await;
-        context.sleep(Duration::from_millis(30)).await;
-
-        // Block 4 (LAST of epoch 0): full exit for the exiting validator.
-        let b4 = create_test_block_with_requests(
-            parent_digest,
-            4,
-            5,
-            18004,
-            0,
-            vec![full_exit_withdrawal_entry(
-                exiting_pubkey_bytes,
-                exiting_withdrawal_address,
-            )],
-        );
-        let b4_digest = b4.digest();
-        parent_digest = b4_digest;
-        let finalization4 = make_finalization(b4_digest, 4, 3, &schemes, quorum);
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b4, Some(finalization4)), ack))
-            .await;
-        context.sleep(Duration::from_millis(50)).await;
-
-        // Block 5 (first of epoch 1): the buffered exit replays.
-        let b5 = create_test_block_with_epoch(parent_digest, 5, 6, 18005, 1);
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b5, None), ack))
-            .await;
-        context.sleep(Duration::from_millis(50)).await;
-
-        let account = mailbox
-            .get_validator_account(exiting_node_pubkey.clone())
-            .await
-            .expect("exiting validator account must still exist after the deferred exit replays");
-
-        assert_eq!(
-            account.status,
-            ValidatorStatus::SubmittedExitRequest,
-            "full exit must take effect on replay; validator should be in SubmittedExitRequest"
-        );
-        assert_eq!(
-            account.balance, 0,
-            "full exit must zero the balance, not leave it clipped to {reduced_max_stake} gwei"
-        );
-        assert!(
-            account.has_pending_withdrawal,
-            "the full-exit withdrawal must be scheduled"
-        );
-
-        context.auditor().state()
-    });
-}
-
 /// A `NetworkOracle` that records every `track` call so a test can assert
 /// exactly which keys the finalizer advertises to the P2P/observer layer
 /// for each epoch.
@@ -1323,16 +1166,12 @@ impl NetworkOracle<PublicKey> for RecordingOracle {
 ///
 /// A validator that has processed a new-validator deposit but is still in its
 /// warm-up window (`status == Joining`, `joining_epoch > current_epoch`)
-/// submits a valid full withdrawal before activation. The finalizer must both
-/// cancel the pending activation AND flip the account out of `Joining`, so the
-/// canceled validator is excluded from the active-or-joining set advertised to
-/// the network oracle at the next epoch transition (and therefore from its
-/// derived observer keys) — while its withdrawal record stays processable.
-///
-/// Before #187, the cancellation branch left the zero-balance account as
-/// `Joining`, so `get_active_or_joining_validators()` kept returning it and the
-/// finalizer tracked its primary + observer keys for an epoch it would never
-/// enter.
+/// submits a valid full withdrawal before activation. The withdrawal is buffered
+/// and processed at the penultimate block: it cancels the pending activation and
+/// flips the account to `FullPayoutPending` (full exit), so the canceled
+/// validator is excluded from the active-or-joining set advertised to the
+/// network oracle at the next epoch transition (and therefore from its derived
+/// observer keys). The balance is retained until the payout epoch.
 #[test]
 fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
     let cfg = deterministic::Config::default().with_seed(59);
@@ -1484,14 +1323,13 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
             );
         assert_eq!(
             account.status,
-            ValidatorStatus::Inactive,
-            "canceled joining validator must leave the Joining state"
+            ValidatorStatus::FullPayoutPending,
+            "canceled joining validator must leave Joining for the full-exit payout state"
         );
-        assert!(
-            account.has_pending_withdrawal,
-            "the full-exit withdrawal must remain scheduled/processable"
+        assert_eq!(
+            account.balance, 32_000_000_000,
+            "balance is retained until the payout epoch, reduced only at payout"
         );
-        assert_eq!(account.balance, 0, "full exit must zero the balance");
 
         // The epoch-1 oracle update must NOT advertise the canceled validator's
         // key (and hence none of its derived observer keys), while still

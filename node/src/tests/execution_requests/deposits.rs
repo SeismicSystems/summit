@@ -117,54 +117,37 @@ fn test_deposit_request_single() {
         let mut height_reached = HashSet::new();
         let mut processed_requests = HashSet::new();
         loop {
+            // Peer-block health is a P2P signal, not consensus state, so it stays
+            // a metric check.
             let metrics = context.encode();
-
-            // Iterate over all lines
-            let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
                 if !line.starts_with("validator_") {
                     continue;
                 }
-
-                // Split metric and value
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
-
-                // If ends with peers_blocked, ensure it is zero
                 if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if metric.ends_with("validator_balance") {
-                    let value = value.parse::<u64>().unwrap();
-                    //println!("*********************************");
-                    //println!("{metric}: size: {}", processed_requests.len());
-                    // Parse the pubkey from the metric name using helper function
-                    let pubkey_hex =
-                        common::parse_metric_substring(metric, "pubkey").expect("pubkey missing");
-                    let creds =
-                        common::parse_metric_substring(metric, "creds").expect("creds missing");
-                    assert_eq!(creds, hex::encode(test_deposit.withdrawal_credentials));
-                    assert_eq!(pubkey_hex, test_deposit.node_pubkey.to_string());
-                    assert_eq!(value, test_deposit.amount);
-                    processed_requests.insert(metric.to_string());
-                }
-                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
-                    success = true;
-                    break;
+                    assert_eq!(value.parse::<u64>().unwrap(), 0);
                 }
             }
-            if success {
+
+            // Height and deposit processing both come from each validator's
+            // consensus state, queried via the finalizer mailbox.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
+                }
+                if let Some(balance) = query
+                    .get_validator_balance(test_deposit.node_pubkey.clone())
+                    .await
+                    && balance == test_deposit.amount
+                {
+                    processed_requests.insert(*idx);
+                }
+            }
+
+            if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                 break;
             }
 

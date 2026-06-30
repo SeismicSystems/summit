@@ -782,8 +782,8 @@ impl<
 
         //  aux_data.forkchoice.head_block_hash = parent_block.eth_block_hash().into();
 
-        // Add pending withdrawals to the block
-        let withdrawals = pending_withdrawals.into_iter().map(|w| w.inner).collect();
+        // Add the EIP-4895 withdrawals (re-clamped payouts) to the block.
+        let withdrawals = pending_withdrawals;
         let payload_id = {
             #[cfg(feature = "bench")]
             {
@@ -1153,10 +1153,11 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
-    // Validate withdrawals
-    let expected_withdrawals: Vec<_> = aux_data.withdrawals.iter().map(|w| w.inner).collect();
+    // Validate withdrawals: the block's EIP-4895 withdrawals must equal the
+    // re-clamped payouts the finalizer emitted into the aux data.
+    let expected_withdrawals: &[_] = &aux_data.withdrawals;
     let actual_withdrawals: &[_] = &block.payload.payload_inner.withdrawals;
-    if actual_withdrawals != expected_withdrawals.as_slice() {
+    if actual_withdrawals != expected_withdrawals {
         warn!(
             expected_count = expected_withdrawals.len(),
             actual_count = actual_withdrawals.len(),
