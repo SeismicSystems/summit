@@ -211,6 +211,10 @@ impl EngineClient for RethEngineClient {
     }
 
     async fn check_payload(&mut self, block: &Block) -> Result<PayloadStatus, EngineClientError> {
+        // versioned_hashes is `Vec::new()` because Summit does not currently
+        // support blob transactions: any payload with `blob_gas_used > 0` is
+        // rejected at handle_verify time, so check_payload only ever sees
+        // non-blob payloads.
         match self
             .provider
             .new_payload_v4(
