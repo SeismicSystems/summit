@@ -108,6 +108,10 @@ pub struct RunFlags {
     #[arg(long, default_value_t = 9090)]
     pub prom_port: u16,
 
+    /// Public RPC server bind address. 0.0.0.0 by default; set 127.0.0.1 when
+    /// it's only reached via a local reverse proxy like nginx.
+    #[arg(long, default_value_t = String::from("0.0.0.0"))]
+    pub rpc_ip: String,
     /// Port RPC server runs on
     #[arg(long, default_value_t = 3030)]
     pub rpc_port: u16,
@@ -1061,6 +1065,10 @@ where
 
     // Start RPC server
     let key_store_path = flags.key_store_path;
+    let rpc_listen_addr = flags
+        .rpc_ip
+        .parse::<IpAddr>()
+        .expect("invalid --rpc-ip address");
     let rpc_port = flags.rpc_port;
     let admin_rpc_port = flags.admin_rpc_port;
     let rpc_body_limits = RpcBodyLimits {
@@ -1076,6 +1084,7 @@ where
             key_store_path,
             genesis_hash,
             namespace,
+            rpc_listen_addr,
             rpc_port,
             admin_rpc_port,
             rpc_body_limits,
