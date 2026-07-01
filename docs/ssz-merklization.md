@@ -46,28 +46,27 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 3 | `head_digest` | Scalar |
 | 4 | `epoch_genesis_hash` | Scalar |
 | 5 | `validator_minimum_stake` | Scalar |
-| 6 | `validator_maximum_stake` | Scalar |
-| 7 | `next_withdrawal_index` | Scalar |
-| 8 | `forkchoice_head_block_hash` | Scalar |
-| 9 | `forkchoice_safe_block_hash` | Scalar |
-| 10 | `forkchoice_finalized_block_hash` | Scalar |
-| 11 | `allowed_timestamp_future_ms` | Scalar |
-| 12 | `validator_accounts` | Collection root |
-| 13 | `deposit_queue` | Collection root |
-| 14 | `withdrawal_queue` | Collection root |
-| 15 | `protocol_param_changes` | Collection root |
-| 16 | `added_validators` | Collection root |
-| 17 | `removed_validators` | Collection root |
-| 18 | `treasury_address` | Scalar |
-| 19 | `max_deposits_per_epoch` | Scalar |
-| 20 | `max_withdrawals_per_epoch` | Scalar |
-| 21 | `observers_per_validator` | Scalar |
-| 22 | `pending_execution_requests` | Collection root |
-| 23 | `pending_checkpoint` | Scalar (checkpoint digest, or zero when absent) |
-| 24 | `dynamic_epoch_schedule` | Scalar (SSZ byte-list root of the encoded `DynamicEpocher`) |
-| 25 | `minimum_validator_count` | Scalar |
-| 26 | `pending_active_validator_exits` | Scalar |
-| 27 | `invalid_deposit_tax` | Scalar |
+| 6 | `next_withdrawal_index` | Scalar |
+| 7 | `forkchoice_head_block_hash` | Scalar |
+| 8 | `forkchoice_safe_block_hash` | Scalar |
+| 9 | `forkchoice_finalized_block_hash` | Scalar |
+| 10 | `allowed_timestamp_future_ms` | Scalar |
+| 11 | `validator_accounts` | Collection root |
+| 12 | `deposit_queue` | Collection root |
+| 13 | `withdrawal_queue` | Collection root |
+| 14 | `protocol_param_changes` | Collection root |
+| 15 | `added_validators` | Collection root |
+| 16 | `removed_validators` | Collection root |
+| 17 | `treasury_address` | Scalar |
+| 18 | `max_deposits_per_epoch` | Scalar |
+| 19 | `max_withdrawals_per_epoch` | Scalar |
+| 20 | `observers_per_validator` | Scalar |
+| 21 | `pending_execution_requests` | Collection root |
+| 22 | `pending_checkpoint` | Scalar (checkpoint digest, or zero when absent) |
+| 23 | `dynamic_epoch_schedule` | Scalar (SSZ byte-list root of the encoded `DynamicEpocher`) |
+| 24 | `minimum_validator_count` | Scalar |
+| 25 | `pending_active_validator_exits` | Scalar |
+| 26 | `invalid_deposit_tax` | Scalar |
 
 ### Collection Subtrees
 
@@ -75,7 +74,7 @@ Each collection leaf in the top-level tree holds `mix_in_length(subtree.root(), 
 
 #### Validator Accounts
 
-Each validator occupies 16 contiguous leaves (depth-4 per-validator subtree): 9 fields padded to the next power of two. `node_pubkey` is the `BTreeMap` key (the validator's identity) — committing it as a leaf binds the key into the root and into validator proofs. Leaves 9–15 are zero padding.
+Each validator occupies 8 contiguous leaves (depth-3 per-validator subtree): 7 fields padded to the next power of two. `node_pubkey` is the `BTreeMap` key (the validator's identity) — committing it as a leaf binds the key into the root and into validator proofs. Leaf 7 is zero padding.
 
 | Field Index | Field |
 |-------------|-------|
@@ -83,12 +82,10 @@ Each validator occupies 16 contiguous leaves (depth-4 per-validator subtree): 9 
 | 1 | `withdrawal_credentials` |
 | 2 | `balance` |
 | 3 | `status` |
-| 4 | `has_pending_deposit` |
-| 5 | `has_pending_withdrawal` |
-| 6 | `joining_epoch` |
-| 7 | `last_deposit_index` |
-| 8 | `node_pubkey` (map key) |
-| 9–15 | (zero padding) |
+| 4 | `joining_epoch` |
+| 5 | `last_deposit_index` |
+| 6 | `node_pubkey` (map key) |
+| 7 | (zero padding) |
 
 Slot assignment is positional: the i-th entry in `BTreeMap` iteration order occupies leaves `[i*16 .. i*16+15]`. The subtree capacity is always a power of 2, growing/shrinking as validators are added/removed.
 
@@ -170,9 +167,8 @@ request). Because the epocher uses interior mutability and can change without a
 
 All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 
-- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum/maximum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, minimum_validator_count, pending_active_validator_exits, validator_index, balance_deduction.
+- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, minimum_validator_count, pending_active_validator_exits, validator_index, balance_deduction.
 - **`u32`**: Little-endian encoded, zero-padded to 32 bytes. Used by: observers_per_validator.
-- **`bool`**: `0x01` or `0x00`, zero-padded to 32 bytes. Used by: has_pending_deposit, has_pending_withdrawal.
 - **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3, FullPayoutPending=4), zero-padded to 32 bytes.
 - **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal), pending_checkpoint (the checkpoint digest, or the zero hash when no checkpoint is pending).
 - **`Address` (20 bytes)**: Zero-padded to 32 bytes. Used by: withdrawal_credentials (validator), address (withdrawal), treasury_address.
@@ -199,7 +195,6 @@ Single top-level leaf write + rehash of the 5-level path to root.
 | `set_head_digest()` | `ssz_tree.set_head_digest()` |
 | `set_epoch_genesis_hash()` | `ssz_tree.set_epoch_genesis_hash()` |
 | `set_minimum_stake()` | `ssz_tree.set_validator_minimum_stake()` |
-| `set_maximum_stake()` | `ssz_tree.set_validator_maximum_stake()` |
 | `set_allowed_timestamp_future_ms()` | `ssz_tree.set_allowed_timestamp_future_ms()` |
 | `set_treasury_address()` | `ssz_tree.set_treasury_address()` |
 | `set_max_deposits_per_epoch()` | `ssz_tree.set_max_deposits_per_epoch()` |
@@ -460,7 +455,6 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | `head_digest` | Head block digest |
 | `epoch_genesis_hash` | Genesis hash for current epoch |
 | `validator_minimum_stake` | Minimum validator stake |
-| `validator_maximum_stake` | Maximum validator stake |
 | `allowed_timestamp_future_ms` | Allowed timestamp future (ms) |
 | `treasury_address` | Treasury address |
 | `max_deposits_per_epoch` | Max validator deposits per epoch |
@@ -480,7 +474,7 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | `validator:<pubkey>` | `validator:0xABCD...` | Whole account |
 | `validator_field:<pubkey>:<field>` | `validator_field:0xABCD...:balance` | Single field (response includes a `key_proof` binding — see above) |
 
-Validator field names: `consensus_pubkey`, `withdrawal_credentials`, `balance`, `status`, `has_pending_deposit`, `has_pending_withdrawal`, `joining_epoch`, `last_deposit_index`.
+Validator field names: `consensus_pubkey`, `withdrawal_credentials`, `balance`, `status`, `joining_epoch`, `last_deposit_index`.
 
 **Deposit proofs** — by queue index:
 
