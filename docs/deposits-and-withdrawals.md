@@ -1,145 +1,32 @@
 # Deposits and Withdrawals
 
-This document describes the internal state management for deposit and withdrawal requests in Summit.
+## Deposits
+- Deposits follow the EIP-6110, although the contract is slightly modified to support an additional validator key.
+- Potential validators have to deposit at least **MINIMUM_STAKE** to join the network.
+- If a potential validator makes an initial deposit with *amount* < **MINIMUM_STAKE**, then the validator account is still created, but it won't be set to active.
+- Top-up deposits are allowed.
+- A potential validator will become active **VALIDATOR_NUM_WARM_UP_EPOCHS** after depositing at least **MINIMUM_STAKE**.
+- Deposit requests with invalid signatures will be refunded as a withdrawal. K% of the deposited amount will be burned. This prevents invalid deposits from becoming a DDOS vector.
+- if the deposit's keys are malformed, it is refunded with the same K% burn applied to invalid signatures.
+- If the deposit's consensus (BLS) key does not match the key already on the account (or is already used by another validator), the deposit is refunded in full with no burn.
+- If a deposit lands for an account that no longer exists, then a new account is created.
 
-## Account Flags
+## Withdrawals
+- Withdrawals follow the EIP-7002 spec.
+- Partial withdrawals are allowed.
+- If a partial withdrawal would leave the validator balance below **MINIMUM_STAKE**, then the withdrawal amount is capped such that the remaining balance is exactly **MINIMUM_STAKE**.
+- In order to withdraw a validator's full balance, a withdrawal request with amount=0 has to be submitted. This will initiate a validator exit.
+- If a full exit is submitted in epoch E, then the validator will exit the committee at the end of epoch E. The full balance will be payed out on the last block of  epoch **E + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**.
+- One exception: if the withdrawal lands on the last block of epoch E, then the request is deferred until the first block of epoch E+1, therefore the validator will remain active for epoch E+1 and exit at the end of epoch E+1. The payout will happen on the last block of epoch **E + 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**.
 
-Each `ValidatorAccount` has two flags to prevent concurrent requests:
+## Validator Balance
+- All active validators must have a balance of at least **MINIMUM_STAKE**.
+- There is no upper limit on validator balance, however, there is no advantage (such as higher chance of becoming a leader) in having a balance that exceeds **MINIMUM_STAKE**.
+- The **MINIMUM_STAKE** may be changed via a protocol parameter execution request.
+- If **MINIMUM_STAKE** is increased during epoch E, then on the last block of epoch E, the validators with *balance* < **MINIMUM_STAKE** will be removed from the committee. The balance remains in their account and can be withdrawn at any time.
+- Exception: if applying the updated **MINIMUM_STAKE** would leave fewer than **MINIMUM_VALIDATOR_COUNT** validators in the committee, then the change is rejected. The previous **MINIMUM_STAKE** remains in effect and no validators are removed.
+- Joining validators with *balance* < **MINIMUM_STAKE** will have their activation canceled.
+- The epoch's deposits are processed before the updated **MINIMUM_STAKE** is enforced, so a validator's balance already includes any same-epoch deposit when enforcement runs. If a top-up in the same epoch restores a validator to at least **MINIMUM_STAKE**, it stays in the committee.
+- A validator still below **MINIMUM_STAKE** after its deposits are applied is removed from the committee and set to inactive. Its balance remains in the account and can be withdrawn at any time.
 
-- `has_pending_deposit`: Set when a deposit is queued, cleared when processed
-- `has_pending_withdrawal`: Set when a withdrawal is queued, cleared when processed
 
-### Concurrent Request Prevention
-
-| Request Type | Blocked If |
-|--------------|------------|
-| Deposit | `has_pending_deposit = true` OR `has_pending_withdrawal = true` |
-| Withdrawal | `has_pending_deposit = true` OR `has_pending_withdrawal = true` |
-
-## Deposit Flow
-
-Deposits are parsed in `parse_execution_requests` and processed in `process_execution_requests`.
-
-### Deposit Scenarios
-
-| Scenario | When Parsed | When Processed |
-|----------|-------------|----------------|
-| New validator | Create `Inactive` account, set flag | Set `Joining`, set balance, clear flag |
-| Top-up | Set flag | Update balance, clear flag |
-| Failed signature | Refund withdrawal (no account) | N/A |
-
-### New Validator Deposit
-
-1. **Parsing**: Signature and stake range validated. Account created with `Inactive` status and `has_pending_deposit = true`. Deposit queued.
-2. **Processing**: Status changed to `Joining`, balance set, `joining_epoch` set, flag cleared. Validator added to `added_validators` for future activation.
-
-### Top-up Deposit
-
-1. **Parsing**: Signature validated, `has_pending_deposit = true` set on existing account. Deposit queued.
-2. **Processing**: Balance updated if within range, flag cleared. If out of range, refund withdrawal created.
-
-### Failed Signature
-
-If signature verification fails, a refund withdrawal is created immediately. No account is created or modified.
-
-## Withdrawal Flow
-
-Withdrawals are parsed in `parse_execution_requests` and processed when included in a block, unless
-they are deferred at an epoch boundary and retried from `pending_execution_requests` in the next
-epoch.
-
-### Withdrawal Scenarios
-
-| Scenario | When Parsed | When Processed |
-|----------|-------------|----------------|
-| User-initiated | Set balance to 0, set flag | Clear flag, remove account if balance is 0 |
-| Below min stake | Set balance to 0, set flag | Clear flag, remove account if balance is 0 |
-| Above max stake | Subtract excess from balance, set flag | Clear flag |
-| Failed deposit refund | Create refund withdrawal (or merge into an existing refund for the same validator) | No account changes |
-| Top-up exceeds range | Create refund withdrawal (or merge into an existing refund for the same validator) | No account changes |
-| New deposit invalid | Create refund withdrawal, remove account | No account changes |
-
-### User-Initiated Withdrawal
-
-1. **Parsing**: `balance` set to 0, `has_pending_withdrawal = true`. The withdrawn amount is tracked as `balance_deduction` on the `PendingWithdrawal` in the queue. Validator added to `removed_validators`.
-2. **Processing**: Flag cleared. Account removed if `balance` is zero.
-
-### Stake Bound Violations
-
-When `validator_min_stake` or `validator_max_stake` parameters change:
-- **Below min**: Full balance withdrawn, validator removed from committee
-- **Above max**: Excess withdrawn as partial withdrawal, validator remains active
-
-### Refund Withdrawals
-
-Refund withdrawals have `balance_deduction = 0` because the deposited funds were never credited to the account. These do not set `has_pending_withdrawal` and do not block future operations.
-
-Refund withdrawals and validator exits are tracked in separate schedules and are never merged across kinds: a refund is only ever merged with an **existing refund** for the same validator (adding to its `amount`, with `balance_deduction` unchanged since the refund portion contributes 0). A refund is never folded into a user-initiated or stake-bound exit. In the normal flow these never collide on the same validator anyway, because a validator cannot submit a deposit while a withdrawal is pending (and vice versa).
-
-### Invalid Deposit Tax
-
-When an invalid deposit is refunded, a portion of the refund is retained by the network as a tax. The `invalid_deposit_tax` protocol parameter is a percentage in `[0, 100]` (configurable in genesis and adjustable via `ProtocolParam::InvalidDepositTax`). The refund is split as:
-
-```
-tax    = amount * invalid_deposit_tax / 100   (integer division)
-refund = amount - tax
-```
-
-The `refund` portion is sent to the depositor's withdrawal credentials, and the `tax` portion is sent to the treasury address (keyed by a synthetic `0xFD`-prefixed key derived from the treasury address and deposit index, so it does not collide with a real validator). Either withdrawal is only created when its amount is greater than zero, so a tax of `0` produces a single full refund and a tax of `100` produces only the treasury withdrawal. Both are refund withdrawals (`balance_deduction = 0`) since the deposit was never credited to a balance.
-
-### Invalid Withdrawal Credentials
-
-Withdrawal credentials must be in Eth1 format: `0x01` prefix + 11 zero bytes + 20-byte Ethereum address.
-
-If withdrawal credentials cannot be parsed:
-- **New validator deposit**: Deposit is ignored, funds are lost
-- **Refund withdrawal**: Refund cannot be created, funds are lost
-
-## Withdrawal Queue and Merging
-
-The `WithdrawalQueue` stores at most one pending withdrawal per validator (keyed by pubkey). Each withdrawal tracks:
-- `amount`: the total withdrawal amount (included in the block as an EIP-4895 withdrawal)
-- `balance_deduction`: the amount that was moved out of the validator's `balance` when the withdrawal was created. This is used by the RPC `getValidatorBalance` endpoint to include pending withdrawal funds in the reported balance.
-
-Each pending withdrawal carries a `kind` (validator exit or deposit refund). When a new withdrawal is pushed for a validator that already has a pending entry **of the same kind**, the amounts and balance deductions are merged into the existing entry, keeping the original scheduled epoch. This ensures that refund withdrawals (which bypass the `has_pending_withdrawal` guard) do not create duplicate queue entries. Pushing a withdrawal whose kind differs from the existing entry is rejected (the no-deposit-while-withdrawing invariant means this does not arise in the normal flow).
-
-User-initiated withdrawals are still limited to one at a time via the `has_pending_withdrawal` flag on the account. The merging behavior only applies to system-initiated withdrawals (deposit refunds, stake bounds enforcement) that target a validator with an existing pending withdrawal of the same kind.
-
-## Withdrawal Deferral at Epoch Boundaries
-
-Withdrawal requests for active validators received on the **last block of an epoch** are deferred to the next epoch. This ensures that `removed_validators` in the finalized header accurately reflects all validator exits, since the header is created at the penultimate block.
-
-Deferred requests are stored in `pending_execution_requests` and processed at the start of the next
-epoch. Deferred withdrawals are re-queued individually.
-
-## Per-Epoch Caps
-
-### Deposit Cap
-
-The `max_deposits_per_epoch` protocol parameter (range: 0–256) limits how many deposits from the deposit queue are processed at the penultimate block of each epoch. Excess deposits remain in the queue and are processed in subsequent epochs. Setting this to 0 pauses all new validator onboarding.
-
-### Withdrawal Cap
-
-The `max_withdrawals_per_epoch` protocol parameter (range: 1–256) is a single **total** cap on how many withdrawals can be included in the last block of each epoch, covering both validator exits and deposit-refund withdrawals.
-
-Validator exits and deposit refunds are tracked in separate schedules, and **validator exits take strict priority** within the cap: exits fill the budget first, then deposit refunds use only the remaining capacity. So if `max_withdrawals_per_epoch = N` and there are `k` validator exits ready for the epoch, up to `min(k, N)` exits are included and refunds fill at most `N - min(k, N)` of the remaining slots. This guarantees a stream of deposit-refund withdrawals can never displace or delay legitimate validator exits.
-
-Withdrawals that do not fit (refunds that lose to exits, or exits beyond the cap) are rescheduled to the next epoch, placed at the **front** of that epoch's schedule so they have priority over withdrawals originally scheduled for that epoch. A withdrawal may therefore be delayed beyond its originally scheduled epoch if the cap is consistently exceeded; rescheduled entries keep their relative ordering and are processed before newly scheduled entries. The minimum of 1 ensures withdrawals can never be permanently blocked.
-
-## Invariants
-
-- A validator will join the committee `VALIDATOR_NUM_WARM_UP_EPOCHS` epochs after submitting a valid deposit request (subject to `max_deposits_per_epoch`). The phase after submitting the deposit request, and before joining the committee is called the `onboarding phase`.
-- If a withdrawal request is submitted in epoch `n`, then it is normally handled in epoch `n`, and
-  the withdrawal will be processed in epoch `n + VALIDATOR_WITHDRAWAL_NUM_EPOCHS` (subject to
-  `max_withdrawals_per_epoch`). Exceptions: requests received on the last block of epoch `n` are
-  deferred to the next epoch before being scheduled; if the per-epoch cap is exceeded, overflow
-  withdrawals are rescheduled to the following epoch.
-- There are two parameters that govern the staking amount: `validator_min_stake` and `validator_max_stake`. The balance of a validator must always be in range `[validator_min_stake, validator_max_stake]`.
-- Any deposit request with resulting balance outside `[validator_min_stake, validator_max_stake]` will be rejected and refunded.
-- A validator can only have one pending deposit request at a time. Subsequent deposit requests will be ignored.
-- A validator can only have one pending withdrawal entry in the queue at a time. User-initiated withdrawal requests are ignored if one is already pending. System-initiated withdrawals (deposit refunds, stake bounds enforcement) are merged into the existing entry of the same kind.
-- A validator cannot submit a deposit request while a withdrawal request is pending, and vice versa.
-- If a withdrawal request is submitted while a validator is in the onboarding phase, then the onboarding phase is aborted, and the withdrawal request will be processed `VALIDATOR_WITHDRAWAL_NUM_EPOCHS` epochs later.
-- No partial withdrawals. If a withdrawal request with amount `amount < balance` is submitted, the full `balance` will be withdrawn.
-- Exception: If `validator_max_stake` is lowered and a validator's balance exceeds the new maximum, the excess is withdrawn as a partial withdrawal, and the validator remains active.
-- If `validator_min_stake` is raised and a validator's balance is below the new minimum, the validator is removed and the full balance is withdrawn.
