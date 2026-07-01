@@ -1258,6 +1258,14 @@ impl ConsensusState {
             match status {
                 ValidatorStatus::Joining if joining_epoch > current_epoch => {
                     self.remove_added_validator(joining_epoch, &public_key);
+                    // Cancelling the pending activation returns the account to
+                    // Inactive so it is not left stuck as Joining with no scheduled
+                    // activation (it never re-activates on its own). This mirrors
+                    // the joining-validator cancel path in apply_withdrawal_request.
+                    if let Some(mut account) = self.get_account(&key).cloned() {
+                        account.status = ValidatorStatus::Inactive;
+                        self.set_account(key, account);
+                    }
                 }
                 ValidatorStatus::Active => {
                     self.push_removed_validator(public_key);
