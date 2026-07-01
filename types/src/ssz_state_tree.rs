@@ -8,8 +8,8 @@
 //! `mix_in_length(subtree_root, count)`.
 //!
 //! The validator accounts collection uses a dedicated subtree (`SszTree`)
-//! where each validator occupies 16 contiguous leaves (9 fields incl. the node
-//! pubkey/map key, padded to a depth-4 per-validator sub-subtree). This enables
+//! where each validator occupies 8 contiguous leaves (7 fields incl. the node
+//! pubkey/map key, padded to a depth-3 per-validator sub-subtree). This enables
 //! field-level Merkle proofs (e.g., proving just the balance) in addition to
 //! whole-account proofs, and binds the validator's identity (node pubkey) into
 //! the root and its proofs.
@@ -305,11 +305,11 @@ impl SszStateTree {
 
     /// Rebuild the validator subtree from the full validator accounts map.
     ///
-    /// Each validator occupies 16 contiguous leaves (8 fields incl. the
+    /// Each validator occupies 8 contiguous leaves (7 fields incl. the
     /// `node_pubkey` map key, plus zero padding) in the subtree, forming a
-    /// depth-4 per-validator sub-subtree. Slot assignment is purely positional:
+    /// depth-3 per-validator sub-subtree. Slot assignment is purely positional:
     /// the i-th entry in BTreeMap iteration order occupies leaves
-    /// `[i*16 .. i*16+15]`.
+    /// `[i*8 .. i*8+7]`.
     pub fn rebuild_validators(&mut self, accounts: &BTreeMap<[u8; 32], ValidatorAccount>) {
         let count = accounts.len();
         let leaf_count = (count * VALIDATOR_FIELDS_PER_ACCOUNT).max(1);
@@ -322,8 +322,8 @@ impl SszStateTree {
         self.update_validator_collection_root();
     }
 
-    /// Set the validator's 9 field leaves (node-pubkey key + 8 account fields,
-    /// padded to a 16-leaf depth-4 subtree) at positional slot `i`.
+    /// Set the validator's 7 field leaves (node-pubkey key + 6 account fields,
+    /// padded to an 8-leaf depth-3 subtree) at positional slot `i`.
     fn set_validator_fields(
         tree: &mut SszTree,
         slot: usize,
@@ -375,7 +375,7 @@ impl SszStateTree {
     /// Insert a new validator at positional `slot`, shifting existing validators right.
     ///
     /// Grows the tree if needed. Copies shifted validators' subtree nodes via memmove
-    /// (no rehash), then writes the new validator's 9 field leaves and rehashes only
+    /// (no rehash), then writes the new validator's 7 field leaves and rehashes only
     /// the new slot's subtree plus upper ancestors. O(N) memcpy + O(N/8) SHA256.
     pub fn insert_validator_at_slot(
         &mut self,
@@ -395,7 +395,7 @@ impl SszStateTree {
         // Write new validator's field leaves (no per-leaf rehash)
         Self::set_validator_fields_no_rehash(&mut self.validator_tree, slot, node_pubkey, account);
 
-        // Rehash only the new validator's subtree (4 internal levels above its 16 leaves)
+        // Rehash only the new validator's subtree (3 internal levels above its 8 leaves)
         self.validator_tree
             .rehash_block(slot, VALIDATOR_FIELDS_PER_ACCOUNT);
 
@@ -461,7 +461,7 @@ impl SszStateTree {
         self.update_validator_collection_root();
     }
 
-    /// Set the validator's 9 field leaves (node-pubkey key + 8 account fields)
+    /// Set the validator's 7 field leaves (node-pubkey key + 6 account fields)
     /// without triggering per-leaf rehash.
     fn set_validator_fields_no_rehash(
         tree: &mut SszTree,
@@ -1015,10 +1015,10 @@ impl SszStateTree {
     /// Build a proof for the whole validator at positional `slot`.
     ///
     /// Returns (gindex, node_value, branch) where the node is the
-    /// per-validator subtree root (4 levels above the field leaves).
+    /// per-validator subtree root (3 levels above the field leaves).
     fn validator_account_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
         let sd = self.validator_tree.depth();
-        // Per-validator root is at depth (sd - 4) in the subtree (16 leaves/item).
+        // Per-validator root is at depth (sd - 3) in the subtree (8 leaves/item).
         // Its 1-based tree index is: capacity / VALIDATOR_FIELDS_PER_ACCOUNT + slot
         let node_index = self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT + slot;
         let node_value = self.validator_tree.get_node(node_index);
