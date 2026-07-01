@@ -105,35 +105,30 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
 
         let mut height_reached = HashSet::new();
         loop {
+            // Peer-block health is a P2P signal, not consensus state, so it stays
+            // a metric check.
             let metrics = context.encode();
-            let mut success = false;
             for line in metrics.lines() {
                 if !line.starts_with("validator_") {
                     continue;
                 }
-
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
-
                 if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if height_reached.len() as u32 == n {
-                    success = true;
-                    break;
+                    assert_eq!(value.parse::<u64>().unwrap(), 0);
                 }
             }
-            if success {
+
+            // Height comes from each validator's consensus state, queried via
+            // the finalizer mailbox.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
+                }
+            }
+
+            if height_reached.len() as u32 == n {
                 break;
             }
 
@@ -264,35 +259,30 @@ fn test_protocol_param_allowed_timestamp_future() {
         // Poll metrics
         let mut height_reached = HashSet::new();
         loop {
+            // Peer-block health is a P2P signal, not consensus state, so it stays
+            // a metric check.
             let metrics = context.encode();
-            let mut success = false;
             for line in metrics.lines() {
                 if !line.starts_with("validator_") {
                     continue;
                 }
-
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
-
                 if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if height_reached.len() as u32 == n {
-                    success = true;
-                    break;
+                    assert_eq!(value.parse::<u64>().unwrap(), 0);
                 }
             }
-            if success {
+
+            // Height comes from each validator's consensus state, queried via
+            // the finalizer mailbox.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
+                }
+            }
+
+            if height_reached.len() as u32 == n {
                 break;
             }
 
@@ -441,39 +431,30 @@ fn test_protocol_param_max_stake() {
         // Poll metrics
         let mut height_reached = HashSet::new();
         loop {
+            // Peer-block health is a P2P signal, not consensus state, so it stays
+            // a metric check.
             let metrics = context.encode();
-            // Iterate over all lines
-            let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
                 if !line.starts_with("validator_") {
                     continue;
                 }
-
-                // Split metric and value
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
-
-                // If ends with peers_blocked, ensure it is zero
                 if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if height_reached.len() as u32 == n {
-                    success = true;
-                    break;
+                    assert_eq!(value.parse::<u64>().unwrap(), 0);
                 }
             }
-            if success {
+
+            // Height comes from each validator's consensus state, queried via
+            // the finalizer mailbox.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
+                }
+            }
+
+            if height_reached.len() as u32 == n {
                 break;
             }
 
@@ -680,41 +661,32 @@ fn test_protocol_param_stake_update_committee() {
         // Poll metrics
         let mut height_reached = HashSet::new();
         loop {
+            // Peer-block health is a P2P signal, not consensus state, so it stays
+            // a metric check.
             let metrics = context.encode();
-            // Iterate over all lines
-            let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
                 if !line.starts_with("validator_") {
                     continue;
                 }
-
-                // Split metric and value
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
-
-                // If ends with peers_blocked, ensure it is zero
                 if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                // One of the validators is kicked due to unsiffient stake,
-                // so we only check that n - 1 validators reached the stop height
-                if height_reached.len() as u32 == n - 1 {
-                    success = true;
-                    break;
+                    assert_eq!(value.parse::<u64>().unwrap(), 0);
                 }
             }
-            if success {
+
+            // Height comes from each validator's consensus state, queried via
+            // the finalizer mailbox.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
+                }
+            }
+
+            // One of the validators is kicked due to unsiffient stake,
+            // so we only check that n - 1 validators reached the stop height
+            if height_reached.len() as u32 == n - 1 {
                 break;
             }
 

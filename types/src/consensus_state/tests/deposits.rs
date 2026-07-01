@@ -377,3 +377,61 @@ fn consensus_key_mismatch_is_refunded() {
     assert_eq!(account.balance, 50); // not credited
     assert!(has_refund(&state));
 }
+
+// verify_deposit_request accepts a correctly signed deposit.
+#[test]
+fn verify_accepts_valid_signatures() {
+    let state = deposit_state();
+    let node = ed25519::PrivateKey::from_seed(50);
+    let bls = bls12381::PrivateKey::from_seed(50);
+    let deposit = make_signed_deposit(&node, &bls, eth1_credentials(1), 100, 0, test_domain());
+    assert_eq!(
+        state.verify_deposit_request(&deposit, test_domain()),
+        Ok(())
+    );
+}
+
+// A bad node (Ed25519) signature is reported as InvalidNodeSignature.
+#[test]
+fn verify_rejects_invalid_node_signature() {
+    let state = deposit_state();
+    let node = ed25519::PrivateKey::from_seed(51);
+    let bls = bls12381::PrivateKey::from_seed(51);
+    let mut deposit = make_signed_deposit(&node, &bls, eth1_credentials(1), 100, 0, test_domain());
+    deposit.node_signature[0] ^= 0xFF;
+    assert_eq!(
+        state.verify_deposit_request(&deposit, test_domain()),
+        Err(DepositRejectionReason::InvalidNodeSignature)
+    );
+}
+
+// A valid node signature but bad consensus (BLS) signature is reported as
+// InvalidConsensusSignature.
+#[test]
+fn verify_rejects_invalid_consensus_signature() {
+    let state = deposit_state();
+    let node = ed25519::PrivateKey::from_seed(52);
+    let bls = bls12381::PrivateKey::from_seed(52);
+    let mut deposit = make_signed_deposit(&node, &bls, eth1_credentials(1), 100, 0, test_domain());
+    deposit.consensus_signature[0] ^= 0xFF; // node signature stays valid
+    assert_eq!(
+        state.verify_deposit_request(&deposit, test_domain()),
+        Err(DepositRejectionReason::InvalidConsensusSignature)
+    );
+}
+
+// The node signature is checked before the consensus signature: a deposit with
+// both invalid reports the node failure (and the BLS verify is skipped).
+#[test]
+fn verify_checks_node_signature_before_consensus() {
+    let state = deposit_state();
+    let node = ed25519::PrivateKey::from_seed(53);
+    let bls = bls12381::PrivateKey::from_seed(53);
+    let mut deposit = make_signed_deposit(&node, &bls, eth1_credentials(1), 100, 0, test_domain());
+    deposit.node_signature[0] ^= 0xFF;
+    deposit.consensus_signature[0] ^= 0xFF;
+    assert_eq!(
+        state.verify_deposit_request(&deposit, test_domain()),
+        Err(DepositRejectionReason::InvalidNodeSignature)
+    );
+}

@@ -39,8 +39,13 @@ pub enum DepositRejectionReason {
     /// Refunded in full, untaxed (for example a consensus key mismatch against an
     /// existing account).
     Refund,
-    /// Signature verification failed.
-    InvalidSignature,
+    /// The node (Ed25519) signature failed verification. Checked before the
+    /// consensus signature, so this is also what a deposit with both signatures
+    /// invalid reports.
+    InvalidNodeSignature,
+    /// The consensus (BLS) signature failed verification, after a valid node
+    /// signature.
+    InvalidConsensusSignature,
     /// The deposit's Ed25519 or BLS key bytes did not decode.
     MalformedKey,
 }
@@ -825,28 +830,31 @@ impl ConsensusState {
         let validator_pubkey: [u8; 32] = deposit_request.node_pubkey.as_ref().try_into().unwrap();
         let message = deposit_request.as_message(deposit_signature_domain);
 
-        // Verify signatures first (cheap to forge, so failures are taxed).
+        // Verify signatures first (cheap to forge, so failures are taxed). The
+        // node signature is checked before the consensus signature, so a deposit
+        // with both invalid reports InvalidNodeSignature and the expensive BLS
+        // verify is skipped.
         let mut node_signature_bytes = &deposit_request.node_signature[..];
         let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
-            return Err(DepositRejectionReason::InvalidSignature);
+            return Err(DepositRejectionReason::InvalidNodeSignature);
         };
         if !deposit_request
             .node_pubkey
             .verify(&[], &message, &node_signature)
         {
-            return Err(DepositRejectionReason::InvalidSignature);
+            return Err(DepositRejectionReason::InvalidNodeSignature);
         }
 
         let mut consensus_signature_bytes = &deposit_request.consensus_signature[..];
         let Ok(consensus_signature) = bls12381::Signature::read(&mut consensus_signature_bytes)
         else {
-            return Err(DepositRejectionReason::InvalidSignature);
+            return Err(DepositRejectionReason::InvalidConsensusSignature);
         };
         if !deposit_request
             .consensus_pubkey
             .verify(&[], &message, &consensus_signature)
         {
-            return Err(DepositRejectionReason::InvalidSignature);
+            return Err(DepositRejectionReason::InvalidConsensusSignature);
         }
 
         // Key checks run only after valid signatures, so the untaxed refund path
@@ -902,7 +910,9 @@ impl ConsensusState {
         let withdrawal_epoch = self.get_epoch() + withdrawal_num_epochs;
         let (refund_amount, tax_amount) = match reason {
             DepositRejectionReason::Refund => (amount, 0),
-            DepositRejectionReason::InvalidSignature | DepositRejectionReason::MalformedKey => {
+            DepositRejectionReason::InvalidNodeSignature
+            | DepositRejectionReason::InvalidConsensusSignature
+            | DepositRejectionReason::MalformedKey => {
                 invalid_deposit_refund_split(amount, self.get_invalid_deposit_tax())
             }
         };
