@@ -109,8 +109,8 @@ fn main() {
 
             // Measure store_consensus_state + commit
             let start = Instant::now();
-            db.store_consensus_state(height, &state).await;
-            db.commit().await;
+            db.store_consensus_state(height, &state).await.unwrap();
+            db.commit().await.unwrap();
             let duration = start.elapsed().as_micros();
             write_times.push((epoch, duration));
 
@@ -118,8 +118,9 @@ fn main() {
             let checkpoint = Checkpoint::new(&state);
             let checkpoint_start = Instant::now();
             db.store_finalized_checkpoint(epoch, &checkpoint, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
             let checkpoint_duration = checkpoint_start.elapsed().as_micros();
             checkpoint_times.push((epoch, checkpoint_duration));
 
