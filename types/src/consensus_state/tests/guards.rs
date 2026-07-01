@@ -3,10 +3,11 @@ use super::common::*;
 use crate::PublicKey;
 use crate::account::ValidatorStatus;
 use crate::execution_request::WithdrawalRequest;
+use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt;
-use commonware_cryptography::{Signer, ed25519};
+use commonware_cryptography::{Signer, bls12381, ed25519};
 
 // Add an active validator keyed by a real ed25519 public key (arbitrary [n; 32]
 // byte patterns are not all valid curve points). Returns the account key.
@@ -17,6 +18,32 @@ fn add_active(state: &mut ConsensusState, seed: u64, balance: u64) -> [u8; 32] {
         .try_into()
         .unwrap();
     state.set_account(key, create_test_validator_account(1, balance));
+    key
+}
+
+// Add a joining validator (status Joining, activation scheduled for
+// `joining_epoch`) keyed by a real ed25519 public key. Returns the account key.
+fn add_joining(
+    state: &mut ConsensusState,
+    seed: u64,
+    balance: u64,
+    joining_epoch: u64,
+) -> [u8; 32] {
+    let node_key = ed25519::PrivateKey::from_seed(seed).public_key();
+    let consensus_key = bls12381::PrivateKey::from_seed(seed).public_key();
+    let key: [u8; 32] = node_key.as_ref().try_into().unwrap();
+    let mut account = create_test_validator_account(seed, balance);
+    account.status = ValidatorStatus::Joining;
+    account.joining_epoch = joining_epoch;
+    account.consensus_public_key = consensus_key.clone();
+    state.set_account(key, account);
+    state.add_validator(
+        joining_epoch,
+        AddedValidator {
+            node_key,
+            consensus_key,
+        },
+    );
     key
 }
 
@@ -94,4 +121,32 @@ fn enforce_minimum_stake_applies_when_enough_retained() {
     assert!(removed(&state, below));
     assert!(!removed(&state, key1));
     assert!(!removed(&state, key2));
+}
+
+// A joining validator below the raised minimum has its pending activation
+// cancelled and reverts to Inactive. It must not be left stuck as Joining (which
+// would never re-activate, since its scheduled activation was removed), and it is
+// not committee-removed (it never entered the committee).
+#[test]
+fn enforce_minimum_stake_cancels_joining_validator_to_inactive() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(32);
+    state.set_minimum_validator_count(1);
+    // Two active validators stay above the new minimum so the change is applied.
+    add_active(&mut state, 1, 100);
+    add_active(&mut state, 2, 100);
+    // A joining validator (activation scheduled for epoch 2) sits below it.
+    let joining = add_joining(&mut state, 3, 50, 2);
+    assert!(state.has_added_validators(2));
+    state.push_protocol_param_changes([ProtocolParam::MinimumStake(80)]);
+
+    state.enforce_minimum_stake();
+
+    // Activation cancelled, account reverted to Inactive, and not committee-removed.
+    assert_eq!(
+        state.get_account(&joining).unwrap().status,
+        ValidatorStatus::Inactive
+    );
+    assert!(!state.has_added_validators(2));
+    assert!(!removed(&state, joining));
 }

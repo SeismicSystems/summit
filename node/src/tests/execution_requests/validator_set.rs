@@ -289,11 +289,12 @@ fn test_removed_validators_at_epoch_boundary() {
             .expect("Public key must be 32 bytes");
 
         // Create withdrawal request for the genesis validator
-        // Genesis validators have Address::ZERO as withdrawal credentials by default
+        // Genesis validators have Address::ZERO as withdrawal credentials by default.
+        // Amount 0 is a full exit, which stages the validator for committee removal.
         let withdrawal_request = common::create_withdrawal_request(
             Address::ZERO,
             withdrawing_validator_pubkey_bytes,
-            min_stake, // Full withdrawal
+            0, // Full exit
         );
 
         let execution_requests = vec![ExecutionRequest::Withdrawal(withdrawal_request)];
@@ -371,14 +372,18 @@ fn test_removed_validators_at_epoch_boundary() {
             }
 
             // Height comes from each validator's consensus state, queried via the
-            // finalizer mailbox.
+            // finalizer mailbox. The withdrawing validator exits the committee and
+            // shuts its node down, so it is not queried.
             for (idx, query) in finalizer_mailboxes.iter() {
+                if *idx == withdrawing_validator_idx {
+                    continue;
+                }
                 if query.get_latest_height().await >= stop_height {
                     height_reached.insert(*idx);
                 }
             }
 
-            if height_reached.len() as u32 == n {
+            if height_reached.len() as u32 == n - 1 {
                 break;
             }
 
