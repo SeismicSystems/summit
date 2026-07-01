@@ -212,8 +212,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Wait a bit for nodes to be ready
             context.sleep(Duration::from_secs(2)).await;
 
-            // Send a transaction to update the maximum stake protocol parameter
-            println!("Sending protocol parameter update transaction to raise maximum stake to 64 ETH");
+            // Send a transaction to update the minimum stake protocol parameter
+            println!("Sending protocol parameter update transaction to lower minimum stake to 16 ETH");
             let node0_http_port = handles[1].http_port();
             let node0_url = format!("http://localhost:{}", node0_http_port);
 
@@ -230,12 +230,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let protocol_params_contract_address = Address::from_str("0x0000000000000000000000000000506172616D73").unwrap();
 
-            // Set parameter ID 0x01 (MaximumStake) to 64 ETH (64_000_000_000 gwei)
-            let param_id: u8 = 0x01; // MaximumStake
-            let new_max_stake: u64 = 64_000_000_000; // 64 ETH in gwei
+            // Set parameter ID 0x00 (MinimumStake) to 16 ETH (16_000_000_000 gwei).
+            // Lowering (rather than raising) keeps the genesis validators, which are
+            // staked at exactly the genesis minimum, inside the committee.
+            let param_id: u8 = 0x00; // MinimumStake
+            let new_min_stake: u64 = 16_000_000_000; // 16 ETH in gwei
 
             // Encode the u64 value as little-endian bytes
-            let param_data = new_max_stake.to_le_bytes();
+            let param_data = new_min_stake.to_le_bytes();
 
             // Encode param with length prefix: [length, ...data]
             let mut param_value = Vec::with_capacity(param_data.len() + 1);
@@ -248,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Also send a transaction to update epoch length to 100
             println!("Sending protocol parameter update transaction to set epoch length to 100");
-            let epoch_length_param_id: u8 = 0x02; // EpochLength
+            let epoch_length_param_id: u8 = 0x01; // EpochLength
             let new_epoch_length: u64 = 100;
             let epoch_length_data = new_epoch_length.to_le_bytes();
             let mut epoch_length_value = Vec::with_capacity(epoch_length_data.len() + 1);
@@ -260,7 +262,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("failed to send epoch length protocol params transaction");
 
             // Wait for nodes to reach epoch 2 so both param changes are active.
-            // MaximumStake applies at the next epoch boundary (epoch 1).
+            // MinimumStake applies at the next epoch boundary (epoch 1).
             // EpochLength targets current_epoch + 2 (epoch 2 if included in epoch 0).
             let target_height = 2 * blocks_per_epoch + 1;
             println!(
@@ -291,17 +293,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 context.sleep(Duration::from_secs(2)).await;
             }
 
-            // Verify that the maximum stake was correctly updated
-            println!("Verifying maximum stake was updated to {} gwei...", new_max_stake);
+            // Verify that the minimum stake was correctly updated
+            println!("Verifying minimum stake was updated to {} gwei...", new_min_stake);
             let rpc_port = get_node_flags(0, &e2e_genesis_path_str).rpc_port;
             let url = format!("http://localhost:{}", rpc_port);
             let client = HttpClientBuilder::default().build(&url).expect("Failed to create RPC client");
 
-            let max_stake = client.get_maximum_stake().await.expect("Failed to get maximum stake");
-            println!("Current maximum stake: {} gwei", max_stake);
+            let min_stake = client.get_minimum_stake().await.expect("Failed to get minimum stake");
+            println!("Current minimum stake: {} gwei", min_stake);
 
-            assert_eq!(max_stake, new_max_stake, "Maximum stake should be {} gwei", new_max_stake);
-            println!("Maximum stake successfully updated to {} gwei!", new_max_stake);
+            assert_eq!(min_stake, new_min_stake, "Minimum stake should be {} gwei", new_min_stake);
+            println!("Minimum stake successfully updated to {} gwei!", new_min_stake);
 
             // Verify that the epoch length was correctly updated
             println!("Verifying epoch length was updated to {}...", new_epoch_length);

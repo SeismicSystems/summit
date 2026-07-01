@@ -31,7 +31,6 @@ pub struct MockFinalizerState {
     pub validator_balances: HashMap<summit_types::PublicKey, Option<u64>>,
     pub validator_accounts: HashMap<summit_types::PublicKey, Option<ValidatorAccount>>,
     pub minimum_stake: u64,
-    pub maximum_stake: u64,
 }
 
 impl Default for MockFinalizerState {
@@ -45,7 +44,6 @@ impl Default for MockFinalizerState {
             validator_balances: HashMap::new(),
             validator_accounts: HashMap::new(),
             minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            maximum_stake: 32_000_000_000, // 32 ETH in gwei
         }
     }
 }
@@ -100,10 +98,6 @@ pub fn create_test_finalizer_mailbox(
                 ConsensusStateRequest::GetMinimumStake => {
                     let _ =
                         response.send(ConsensusStateResponse::MinimumStake(state.minimum_stake));
-                }
-                ConsensusStateRequest::GetMaximumStake => {
-                    let _ =
-                        response.send(ConsensusStateResponse::MaximumStake(state.maximum_stake));
                 }
                 ConsensusStateRequest::GetStateRoot => {
                     let _ = response.send(ConsensusStateResponse::StateRoot {

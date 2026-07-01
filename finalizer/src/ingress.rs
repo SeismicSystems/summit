@@ -243,24 +243,6 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         stake
     }
 
-    pub async fn get_maximum_stake(&self) -> u64 {
-        let (response, rx) = oneshot::channel();
-        let request = ConsensusStateRequest::GetMaximumStake;
-        let _ = self
-            .sender
-            .clone()
-            .send(FinalizerMessage::QueryState { request, response })
-            .await;
-
-        let res = rx
-            .await
-            .expect("consensus state query response sender dropped");
-        let ConsensusStateResponse::MaximumStake(stake) = res else {
-            unreachable!("request and response variants must match");
-        };
-        stake
-    }
-
     pub async fn get_epoch_length(&self) -> u64 {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetEpochLength;

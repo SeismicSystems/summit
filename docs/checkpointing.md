@@ -16,9 +16,12 @@ Checkpoints are created at the **penultimate block of each epoch** (block `epoch
 ### Creation Flow
 
 1. **Penultimate Block Processing** (`process_execution_requests`):
-   - Pending deposit requests are processed from `deposit_queue`
+   - Buffered execution requests are processed: withdrawal requests are validated
+     and enqueued, and deposits are drained from `deposit_queue` (up to
+     `max_deposits_per_epoch`)
    - New validators are added to `added_validators` for the appropriate activation epoch
-   - The `removed_validators` list is populated with validators exiting this epoch
+   - Validators exiting this epoch — voluntary full exits and minimum-stake removals
+     (`enforce_minimum_stake`) — are added to `removed_validators`
 
 2. **Checkpoint Creation** (`process_block`):
    ```
@@ -42,7 +45,7 @@ A checkpoint contains the serialized `ConsensusState`, which includes:
 | `latest_height` | Height of the last finalized block |
 | `head_digest` | Digest of the last finalized block |
 | `deposit_queue` | Pending deposit requests |
-| `withdrawal_queue` | Scheduled withdrawals by epoch |
+| `withdrawal_queue` | Pending payout queue (validator withdrawals and deposit refunds) |
 | `validator_accounts` | All validator account states |
 | `added_validators` | Validators scheduled to join, by activation epoch |
 | `removed_validators` | Validators exiting at the current epoch boundary |

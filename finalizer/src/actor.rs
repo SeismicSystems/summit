@@ -1211,7 +1211,8 @@ impl<
             // Set the epoch genesis hash for the next epoch
             self.canonical_state
                 .set_epoch_genesis_hash(block.digest().0);
-            self.canonical_state.reset_pending_active_validator_exits();
+            // The active-exit budget is reset inside apply_committee_transition (run
+            // earlier this block), so no explicit reset is needed here.
 
             // Clear transition deltas before persisting the next-epoch consensus state.
             self.canonical_state
@@ -1961,10 +1962,6 @@ impl<
             ConsensusStateRequest::GetMinimumStake => {
                 let stake = self.canonical_state.get_minimum_stake();
                 let _ = sender.send(ConsensusStateResponse::MinimumStake(stake));
-            }
-            ConsensusStateRequest::GetMaximumStake => {
-                let stake = self.canonical_state.get_maximum_stake();
-                let _ = sender.send(ConsensusStateResponse::MaximumStake(stake));
             }
             ConsensusStateRequest::GetEpochLength => {
                 let length = self.canonical_state.get_epocher().current_length();

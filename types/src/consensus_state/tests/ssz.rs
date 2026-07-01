@@ -177,10 +177,6 @@ fn test_ssz_scalar_setters_update_root() {
     state.set_minimum_stake(16_000_000_000);
     assert_ne!(state.ssz_tree().root(), r5);
 
-    let r6 = state.ssz_tree().root();
-    state.set_maximum_stake(64_000_000_000);
-    assert_ne!(state.ssz_tree().root(), r6);
-
     let r7 = state.ssz_tree().root();
     state.set_next_withdrawal_index(42);
     assert_ne!(state.ssz_tree().root(), r7);
@@ -337,15 +333,10 @@ fn test_ssz_protocol_param_changes() {
     state.push_protocol_param_change(ProtocolParam::MinimumStake(40_000_000_000));
     assert_ne!(state.ssz_tree().root(), root_before);
 
-    let r1 = state.ssz_tree().root();
-    state.push_protocol_param_change(ProtocolParam::MaximumStake(80_000_000_000));
-    assert_ne!(state.ssz_tree().root(), r1);
-
     // apply_protocol_parameter_changes consumes them
     let changed = state.apply_protocol_parameter_changes().unwrap();
     assert!(changed);
     assert_eq!(state.get_minimum_stake(), 40_000_000_000);
-    assert_eq!(state.get_maximum_stake(), 80_000_000_000);
 
     let root_before_tax = state.ssz_tree().root();
     state.push_protocol_param_change(ProtocolParam::InvalidDepositTax(25));
@@ -371,7 +362,6 @@ fn test_ssz_rebuild_matches_incremental() {
     state.set_head_digest(sha256::Digest([0xAB; 32]));
     state.set_epoch_genesis_hash([0xCD; 32]);
     state.set_minimum_stake(16_000_000_000);
-    state.set_maximum_stake(64_000_000_000);
     state.set_next_withdrawal_index(5);
     state.set_forkchoice(ForkchoiceState {
         head_block_hash: [0x11; 32].into(),
@@ -646,7 +636,6 @@ fn test_ssz_full_block_lifecycle_matches_rebuild() {
     let mut state = ConsensusState::new(
         forkchoice,
         32_000_000_000,
-        32_000_000_000,
         NonZeroU64::new(10).unwrap(),
         10_000,
         Address::ZERO,
@@ -869,7 +858,6 @@ fn test_withdrawal_requests_keep_ssz_tree_in_sync() {
 fn test_genesis_materialization_refreshes_proof_snapshot() {
     let mut state = ConsensusState::new(
         ForkchoiceState::default(),
-        0,
         0,
         NonZeroU64::new(10).unwrap(),
         10_000,

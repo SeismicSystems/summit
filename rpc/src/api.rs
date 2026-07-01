@@ -47,9 +47,6 @@ pub trait SummitApi {
     #[method(name = "getMinimumStake")]
     async fn get_minimum_stake(&self) -> RpcResult<u64>;
 
-    #[method(name = "getMaximumStake")]
-    async fn get_maximum_stake(&self) -> RpcResult<u64>;
-
     #[method(name = "getEpochLength")]
     async fn get_epoch_length(&self) -> RpcResult<u64>;
 

@@ -52,9 +52,6 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "validator_minimum_stake" => {
             Ok(SszStateKey::Scalar(ssz_state_tree::VALIDATOR_MINIMUM_STAKE))
         }
-        "validator_maximum_stake" => {
-            Ok(SszStateKey::Scalar(ssz_state_tree::VALIDATOR_MAXIMUM_STAKE))
-        }
         "allowed_timestamp_future_ms" => Ok(SszStateKey::Scalar(
             ssz_state_tree::ALLOWED_TIMESTAMP_FUTURE_MS,
         )),
@@ -262,7 +259,7 @@ mod tests {
         assert_eq!(parse_key("latest_height").unwrap(), SszStateKey::Scalar(2));
         assert_eq!(
             parse_key("forkchoice_finalized_block_hash").unwrap(),
-            SszStateKey::Scalar(10)
+            SszStateKey::Scalar(9)
         );
         assert_eq!(
             parse_key("minimum_validator_count").unwrap(),

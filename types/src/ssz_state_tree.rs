@@ -39,31 +39,30 @@ pub const LATEST_HEIGHT: usize = 2;
 pub const HEAD_DIGEST: usize = 3;
 pub const EPOCH_GENESIS_HASH: usize = 4;
 pub const VALIDATOR_MINIMUM_STAKE: usize = 5;
-pub const VALIDATOR_MAXIMUM_STAKE: usize = 6;
-pub const NEXT_WITHDRAWAL_INDEX: usize = 7;
-pub const FORKCHOICE_HEAD_BLOCK_HASH: usize = 8;
-pub const FORKCHOICE_SAFE_BLOCK_HASH: usize = 9;
-pub const FORKCHOICE_FINALIZED_BLOCK_HASH: usize = 10;
-pub const ALLOWED_TIMESTAMP_FUTURE_MS: usize = 11;
-pub const VALIDATOR_ACCOUNTS_ROOT: usize = 12;
-pub const DEPOSIT_QUEUE_ROOT: usize = 13;
-pub const WITHDRAWAL_QUEUE_ROOT: usize = 14;
-pub const PROTOCOL_PARAM_CHANGES_ROOT: usize = 15;
-pub const ADDED_VALIDATORS_ROOT: usize = 16;
-pub const REMOVED_VALIDATORS_ROOT: usize = 17;
-pub const TREASURY_ADDRESS: usize = 18;
-pub const MAX_DEPOSITS_PER_EPOCH: usize = 19;
-pub const MAX_WITHDRAWALS_PER_EPOCH: usize = 20;
-pub const OBSERVERS_PER_VALIDATOR: usize = 21;
-pub const PENDING_EXECUTION_REQUESTS_ROOT: usize = 22;
-pub const PENDING_CHECKPOINT: usize = 23;
-pub const DYNAMIC_EPOCH_SCHEDULE: usize = 24;
-pub const MINIMUM_VALIDATOR_COUNT: usize = 25;
-pub const PENDING_ACTIVE_VALIDATOR_EXITS: usize = 26;
-pub const INVALID_DEPOSIT_TAX: usize = 27;
+pub const NEXT_WITHDRAWAL_INDEX: usize = 6;
+pub const FORKCHOICE_HEAD_BLOCK_HASH: usize = 7;
+pub const FORKCHOICE_SAFE_BLOCK_HASH: usize = 8;
+pub const FORKCHOICE_FINALIZED_BLOCK_HASH: usize = 9;
+pub const ALLOWED_TIMESTAMP_FUTURE_MS: usize = 10;
+pub const VALIDATOR_ACCOUNTS_ROOT: usize = 11;
+pub const DEPOSIT_QUEUE_ROOT: usize = 12;
+pub const WITHDRAWAL_QUEUE_ROOT: usize = 13;
+pub const PROTOCOL_PARAM_CHANGES_ROOT: usize = 14;
+pub const ADDED_VALIDATORS_ROOT: usize = 15;
+pub const REMOVED_VALIDATORS_ROOT: usize = 16;
+pub const TREASURY_ADDRESS: usize = 17;
+pub const MAX_DEPOSITS_PER_EPOCH: usize = 18;
+pub const MAX_WITHDRAWALS_PER_EPOCH: usize = 19;
+pub const OBSERVERS_PER_VALIDATOR: usize = 20;
+pub const PENDING_EXECUTION_REQUESTS_ROOT: usize = 21;
+pub const PENDING_CHECKPOINT: usize = 22;
+pub const DYNAMIC_EPOCH_SCHEDULE: usize = 23;
+pub const MINIMUM_VALIDATOR_COUNT: usize = 24;
+pub const PENDING_ACTIVE_VALIDATOR_EXITS: usize = 25;
+pub const INVALID_DEPOSIT_TAX: usize = 26;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 28;
+pub const NUM_TOP_LEAVES: usize = 27;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -223,11 +222,6 @@ impl SszStateTree {
     pub fn set_validator_minimum_stake(&mut self, stake: u64) {
         self.top
             .set_leaf(VALIDATOR_MINIMUM_STAKE, stake.hash_tree_root());
-    }
-
-    pub fn set_validator_maximum_stake(&mut self, stake: u64) {
-        self.top
-            .set_leaf(VALIDATOR_MAXIMUM_STAKE, stake.hash_tree_root());
     }
 
     pub fn set_allowed_timestamp_future_ms(&mut self, ms: u64) {
@@ -720,15 +714,14 @@ impl SszStateTree {
         let base = slot * PROTOCOL_PARAM_FIELDS_PER_ITEM;
         let (tag, value_hash) = match param {
             ProtocolParam::MinimumStake(v) => (0u64, v.hash_tree_root()),
-            ProtocolParam::MaximumStake(v) => (1u64, v.hash_tree_root()),
-            ProtocolParam::EpochLength(v) => (2u64, v.hash_tree_root()),
-            ProtocolParam::AllowedTimestampFuture(v) => (3u64, v.hash_tree_root()),
-            ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
-            ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
-            ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
-            ProtocolParam::ObserversPerValidator(v) => (7u64, v.hash_tree_root()),
-            ProtocolParam::MinimumValidatorCount(v) => (8u64, v.hash_tree_root()),
-            ProtocolParam::InvalidDepositTax(v) => (9u64, v.hash_tree_root()),
+            ProtocolParam::EpochLength(v) => (1u64, v.hash_tree_root()),
+            ProtocolParam::AllowedTimestampFuture(v) => (2u64, v.hash_tree_root()),
+            ProtocolParam::TreasuryAddress(addr) => (3u64, addr.hash_tree_root()),
+            ProtocolParam::MaxDepositsPerEpoch(v) => (4u64, v.hash_tree_root()),
+            ProtocolParam::MaxWithdrawalsPerEpoch(v) => (5u64, v.hash_tree_root()),
+            ProtocolParam::ObserversPerValidator(v) => (6u64, v.hash_tree_root()),
+            ProtocolParam::MinimumValidatorCount(v) => (7u64, v.hash_tree_root()),
+            ProtocolParam::InvalidDepositTax(v) => (8u64, v.hash_tree_root()),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value_hash);
@@ -855,7 +848,6 @@ impl SszStateTree {
         head_digest: &[u8; 32],
         epoch_genesis_hash: &[u8; 32],
         validator_minimum_stake: u64,
-        validator_maximum_stake: u64,
         allowed_timestamp_future_ms: u64,
         next_withdrawal_index: u64,
         forkchoice_head: &[u8; 32],
@@ -887,7 +879,6 @@ impl SszStateTree {
         self.set_head_digest(head_digest);
         self.set_epoch_genesis_hash(epoch_genesis_hash);
         self.set_validator_minimum_stake(validator_minimum_stake);
-        self.set_validator_maximum_stake(validator_maximum_stake);
         self.set_allowed_timestamp_future_ms(allowed_timestamp_future_ms);
         self.set_next_withdrawal_index(next_withdrawal_index);
         self.set_forkchoice_head_block_hash(forkchoice_head);
@@ -1660,12 +1651,8 @@ mod tests {
         assert_ne!(tree.root(), r4);
         let r5 = tree.root();
 
-        tree.set_validator_maximum_stake(200);
-        assert_ne!(tree.root(), r5);
-        let r6 = tree.root();
-
         tree.set_allowed_timestamp_future_ms(5_000);
-        assert_ne!(tree.root(), r6);
+        assert_ne!(tree.root(), r5);
         let r7 = tree.root();
 
         tree.set_next_withdrawal_index(7);
@@ -1801,7 +1788,6 @@ mod tests {
         inc.set_head_digest(&[0xAA; 32]);
         inc.set_epoch_genesis_hash(&[0xBB; 32]);
         inc.set_validator_minimum_stake(32_000_000_000);
-        inc.set_validator_maximum_stake(64_000_000_000);
         inc.set_allowed_timestamp_future_ms(10_000);
         inc.set_next_withdrawal_index(5);
         inc.set_forkchoice_head_block_hash(&[0xCC; 32]);
@@ -1833,7 +1819,6 @@ mod tests {
             &[0xAA; 32],
             &[0xBB; 32],
             32_000_000_000,
-            64_000_000_000,
             10_000,
             5,
             &[0xCC; 32],
@@ -1946,7 +1931,6 @@ mod tests {
             0,
             &[0u8; 32],
             &[0u8; 32],
-            32_000_000_000,
             32_000_000_000,
             10_000,
             0,
@@ -3268,7 +3252,6 @@ mod tests {
     fn protocol_param_proof_verifies() {
         let params = vec![
             ProtocolParam::MinimumStake(1_000_000),
-            ProtocolParam::MaximumStake(64_000_000_000),
             ProtocolParam::MinimumStake(2_000_000),
         ];
         let mut tree = SszStateTree::new();
@@ -3406,10 +3389,7 @@ mod tests {
 
     #[test]
     fn protocol_param_field_proof_verifies() {
-        let params = vec![
-            ProtocolParam::MinimumStake(1_000_000),
-            ProtocolParam::MaximumStake(64_000_000_000),
-        ];
+        let params = vec![ProtocolParam::MinimumStake(1_000_000)];
         let mut tree = SszStateTree::new();
         tree.rebuild_protocol_params(&params);
         tree.set_epoch(1);
@@ -3550,10 +3530,7 @@ mod tests {
         assert!(proof_v1.verify(&root_v1));
 
         // Rebuild with different data
-        let params_v2 = vec![
-            ProtocolParam::MinimumStake(2_000),
-            ProtocolParam::MaximumStake(99_000),
-        ];
+        let params_v2 = vec![ProtocolParam::MinimumStake(2_000)];
         tree.rebuild_protocol_params(&params_v2);
         let root_v2 = tree.root();
 

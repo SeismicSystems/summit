@@ -21,7 +21,6 @@ max_message_size_bytes = 10485760
 # started with, not to what it currently runs. For the parameter ids and their
 # bounds, see types/src/protocol_params.rs.
 validator_minimum_stake = 32000000000
-validator_maximum_stake = 32000000000
 blocks_per_epoch = 10000
 allowed_timestamp_future_ms = 10000
 treasury_address = "0x0000000000000000000000000000000000000000"

@@ -632,7 +632,6 @@ fn test_top_up_deposit_with_mismatched_bls_key_rejected() {
 
     let n = 5;
     let min_stake = 32_000_000_000;
-    let max_stake = 64_000_000_000;
     let top_up_amount = 8_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
@@ -739,13 +738,12 @@ fn test_top_up_deposit_with_mismatched_bls_key_rejected() {
             .with_execution_requests(execution_requests_map)
             .with_stop_at(stop_height)
             .build();
-        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
         // Raise max_stake so that the post-top-up balance (32 + 8 = 40) is
         // within [min, max]; otherwise the bounds check at deposit
         // verification refunds the deposit and we wouldn't actually be
         // exercising the missing "BLS key must match the account's stored
         // BLS key" check.
-        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();

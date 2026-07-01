@@ -455,7 +455,6 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
     // - Both withdrawals are processed independently at the same withdrawal height
     let n = 5;
     let min_stake = 32_000_000_000;
-    let max_stake = 100_000_000_000;
     let deposit_amount = 5_000_000_000; // 5 ETH
     let link = Link {
         latency: Duration::from_millis(80),
@@ -555,9 +554,8 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
             .with_stop_at(stop_height)
             .build();
 
-        let mut initial_state =
+        let initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.set_maximum_stake(max_stake);
 
         let mut consensus_state_queries = HashMap::new();
         for (idx, key_store) in key_stores.into_iter().enumerate() {
@@ -655,7 +653,6 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
 fn test_invalid_deposit_refund_applies_invalid_deposit_tax() {
     let n = 5;
     let min_stake = 32_000_000_000;
-    let max_stake = 100_000_000_000;
     let deposit_amount = 5_000_000_000;
     let invalid_deposit_tax = 25;
     let link = Link {
@@ -745,7 +742,6 @@ fn test_invalid_deposit_refund_applies_invalid_deposit_tax() {
 
         let mut initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.set_maximum_stake(max_stake);
         initial_state.set_treasury_address(treasury_address);
         initial_state.set_invalid_deposit_tax(invalid_deposit_tax);
 
@@ -1030,7 +1026,6 @@ fn test_withdrawal_blocked_by_pending_deposit() {
     // - Deposit should be processed, withdrawal should be ignored
     let n = 5;
     let min_stake = 32_000_000_000;
-    let max_stake = 100_000_000_000;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -1124,9 +1119,8 @@ fn test_withdrawal_blocked_by_pending_deposit() {
             .with_stop_at(stop_height)
             .build();
 
-        let mut initial_state =
+        let initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();
@@ -1231,7 +1225,6 @@ fn test_deposit_and_withdrawal_same_block() {
     // - Result: balance increases by 5 ETH, no withdrawal occurs
     let n = 10;
     let min_stake = 32_000_000_000;
-    let max_stake = 100_000_000_000;
     let deposit_amount = 5_000_000_000; // 5 ETH top-up
     let link = Link {
         latency: Duration::from_millis(80),
@@ -1329,9 +1322,8 @@ fn test_deposit_and_withdrawal_same_block() {
             .with_stop_at(stop_height)
             .build();
 
-        let mut initial_state =
+        let initial_state =
             get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
-        initial_state.set_maximum_stake(max_stake);
 
         let mut public_keys = HashSet::new();
         let mut consensus_state_queries = HashMap::new();

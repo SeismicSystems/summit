@@ -1,31 +1,14 @@
 use super::super::*;
 
 #[test]
-fn protocol_param_batch_accepts_valid_final_stake_interval() {
+fn protocol_param_batch_applies_minimum_stake_change() {
     let mut state = ConsensusState::default();
-    state.push_protocol_param_change(ProtocolParam::MaximumStake(20_000_000_000));
     state.push_protocol_param_change(ProtocolParam::MinimumStake(10_000_000_000));
 
     let changed = state.apply_protocol_parameter_changes().unwrap();
 
     assert!(changed);
     assert_eq!(state.get_minimum_stake(), 10_000_000_000);
-    assert_eq!(state.get_maximum_stake(), 20_000_000_000);
-}
-
-#[test]
-fn protocol_param_batch_rejects_inverted_final_stake_interval() {
-    let mut state = ConsensusState::default();
-    let root_before = state.ssz_tree().root();
-    state.push_protocol_param_change(ProtocolParam::MinimumStake(80_000_000_000));
-
-    let err = state.apply_protocol_parameter_changes().unwrap_err();
-
-    assert!(matches!(err, Error::Invalid("ConsensusState", _)));
-    assert_eq!(state.get_minimum_stake(), 32_000_000_000);
-    assert_eq!(state.get_maximum_stake(), 32_000_000_000);
-    assert_eq!(state.ssz_tree().root(), root_before);
-    assert_eq!(state.protocol_param_changes.len(), 0);
 }
 
 // A grouped batch of protocol param changes flushed
@@ -38,7 +21,6 @@ fn test_batch_protocol_param_changes_match_per_record() {
 
     let params = vec![
         ProtocolParam::MinimumStake(16_000_000_000),
-        ProtocolParam::MaximumStake(64_000_000_000),
         ProtocolParam::EpochLength(128),
         ProtocolParam::MaxDepositsPerEpoch(8),
     ];

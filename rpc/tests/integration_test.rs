@@ -647,7 +647,6 @@ skip_timeout_views = 32
 max_message_size_bytes = 104857600
 namespace = "_SUMMIT"
 validator_minimum_stake = 32000000000
-validator_maximum_stake = 32000000000
 blocks_per_epoch = 10000
 allowed_timestamp_future_ms = 10000
 
@@ -849,40 +848,6 @@ async fn test_is_paused_open_access() {
     let client = HttpClientBuilder::default().build(&url).unwrap();
 
     assert!(!client.is_paused().await.unwrap());
-
-    handle.stop().unwrap();
-}
-
-#[tokio::test]
-async fn test_get_maximum_stake() {
-    use summit_rpc::SummitApiClient;
-
-    let state = MockFinalizerState {
-        maximum_stake: 64_000_000_000, // 64 ETH in gwei
-        ..Default::default()
-    };
-    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(state);
-    let temp_dir = create_test_keystore().unwrap();
-    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
-
-    let (handle, addr) = start_rpc_server_with_handle(
-        mailbox,
-        key_store_path,
-        TEST_GENESIS_HASH,
-        b"_SUMMIT".to_vec(),
-        0,
-        #[cfg(feature = "permissioned")]
-        Arc::new(AtomicBool::new(false)),
-    )
-    .await
-    .unwrap();
-
-    let url = format!("http://{}", addr);
-    let client = HttpClientBuilder::default().build(&url).unwrap();
-
-    let response = client.get_maximum_stake().await;
-    assert!(response.is_ok());
-    assert_eq!(response.unwrap(), 64_000_000_000);
 
     handle.stop().unwrap();
 }

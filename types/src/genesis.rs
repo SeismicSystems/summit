@@ -48,8 +48,6 @@ pub struct Genesis {
     pub namespace: String,
     /// Minimum validator stake in gwei
     pub validator_minimum_stake: u64,
-    /// Maximum validator stake in gwei
-    pub validator_maximum_stake: u64,
     /// Number of blocks in each epoch
     pub blocks_per_epoch: u64,
     /// Maximum allowed delta (in milliseconds) between a block's timestamp
@@ -238,13 +236,6 @@ impl Genesis {
         // queued param changes — until that boundary, turning epoch functionality
         // into a liveness failure.
         ProtocolParam::EpochLength(self.blocks_per_epoch).validate()?;
-        if self.validator_minimum_stake > self.validator_maximum_stake {
-            return Err(format!(
-                "validator_minimum_stake {} exceeds validator_maximum_stake {}",
-                self.validator_minimum_stake, self.validator_maximum_stake
-            )
-            .into());
-        }
         // The P2P message ceiling must hold the largest legitimate message (full
         // blocks, checkpoints) yet stay bounded against per-message allocation DoS,
         // and must not exceed u32::MAX (the p2p config converts it with `as u32`,
@@ -438,13 +429,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_inverted_validator_stake_interval() {
-        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        genesis.validator_minimum_stake = genesis.validator_maximum_stake + 1;
-        assert!(genesis.validate().is_err());
-    }
-
-    #[test]
     fn accepts_max_withdrawals_per_epoch_at_bounds() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.max_withdrawals_per_epoch = MAX_WITHDRAWALS_PER_EPOCH_MIN;
@@ -614,10 +598,6 @@ mod tests {
             (
                 "validator_minimum_stake",
                 Box::new(|g| g.validator_minimum_stake += 1),
-            ),
-            (
-                "validator_maximum_stake",
-                Box::new(|g| g.validator_maximum_stake += 1),
             ),
             ("blocks_per_epoch", Box::new(|g| g.blocks_per_epoch += 1)),
             (

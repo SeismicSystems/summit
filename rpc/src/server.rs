@@ -290,11 +290,6 @@ impl SummitApiServer for SummitRpcServer {
         Ok(minimum_stake)
     }
 
-    async fn get_maximum_stake(&self) -> RpcResult<u64> {
-        let maximum_stake = self.state_query.get_maximum_stake().await;
-        Ok(maximum_stake)
-    }
-
     async fn get_epoch_length(&self) -> RpcResult<u64> {
         let epoch_length = self.state_query.get_epoch_length().await;
         Ok(epoch_length)

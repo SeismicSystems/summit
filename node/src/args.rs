@@ -511,7 +511,6 @@ async fn run_node_inner(
         namespace = genesis.namespace,
         genesis_validators = committee.len(),
         min_stake = genesis.validator_minimum_stake,
-        max_stake = genesis.validator_maximum_stake,
         "loaded genesis configuration"
     );
 
@@ -1132,7 +1131,6 @@ fn get_initial_state(
         let mut state = ConsensusState::new(
             forkchoice,
             genesis.validator_minimum_stake,
-            genesis.validator_maximum_stake,
             epoch_length,
             genesis.allowed_timestamp_future_ms,
             treasury_address,
