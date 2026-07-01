@@ -1,35 +1,9 @@
 use alloy_primitives::FixedBytes;
 use clap::Parser;
-use serde::{Deserialize, Serialize};
 use std::fs;
-use summit_types::GenesisValidator;
+use summit_types::{Genesis, GenesisValidator};
 
 const DEFAULT_GENESIS_FILE: &str = "./example_genesis.toml";
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GenesisConfig {
-    eth_genesis_hash: String,
-    leader_timeout_ms: u64,
-    notarization_timeout_ms: u64,
-    nullify_timeout_ms: u64,
-    activity_timeout_views: u64,
-    skip_timeout_views: u64,
-    max_message_size_bytes: u64,
-    namespace: String,
-    blocks_per_epoch: u64,
-    allowed_timestamp_future_ms: u64,
-    #[serde(default)]
-    treasury_address: Option<String>,
-    pub validators: Vec<GenesisValidator>,
-}
-
-impl GenesisConfig {
-    pub fn load(path: &str) -> Result<GenesisConfig, Box<dyn std::error::Error>> {
-        let genesis_content = std::fs::read_to_string(path)?;
-        let genesis_config: GenesisConfig = toml::from_str(&genesis_content)?;
-        Ok(genesis_config)
-    }
-}
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -68,17 +42,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let validators = parse_validators(&args.validators_path)?;
     let node_count = validators.len() as u32;
 
-    let mut genesis_config = GenesisConfig::load(&args.genesis_in)?;
+    // Load the template into summit's canonical Genesis type rather than a
+    // local copy — a private struct here silently drops fields the runtime
+    // requires (e.g. validator_minimum_stake), producing a genesis the node
+    // can't load. Fill in the validators, then write it back out.
+    let mut genesis: Genesis = toml::from_str(&fs::read_to_string(&args.genesis_in)?)?;
     if let Some(genesis_hash) = args.genesis_hash {
         let hash_str = genesis_hash.to_string();
         println!("Overriding eth_genesis_hash to {hash_str}");
-        genesis_config.eth_genesis_hash = hash_str;
+        genesis.eth_genesis_hash = hash_str;
     }
-    genesis_config.validators = validators;
+    genesis.validators = validators;
 
-    // Write the updated genesis config
-    let updated_genesis = toml::to_string_pretty(&genesis_config)?;
-    fs::write(format!("{}/genesis.toml", args.out_dir), updated_genesis)?;
+    fs::write(
+        format!("{}/genesis.toml", args.out_dir),
+        toml::to_string_pretty(&genesis)?,
+    )?;
     println!("Updated genesis config at {}", args.out_dir);
     println!("\nSetup complete for {} nodes", node_count);
 
