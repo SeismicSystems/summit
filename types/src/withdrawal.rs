@@ -532,6 +532,7 @@ fn read_flat(
     // cannot force a huge upfront allocation.
     let mut deque =
         VecDeque::with_capacity(count.min(buf.remaining() / PendingWithdrawal::SIZE + 1));
+    let mut prev_epoch = 0u64;
     for _ in 0..count {
         let withdrawal = PendingWithdrawal::read_cfg(buf, &())?;
         if withdrawal.kind != kind {
@@ -553,11 +554,19 @@ fn read_flat(
             ));
         }
         // The queue is drained from the front under the per-epoch cap, so it must
-        // stay ordered by earliest-processable `epoch`. Enabling a non-decreasing
-        // `epoch` check here is only sound once all withdrawals share one
-        // scheduling delay (the stake-bound `+1` must be unified first); until
-        // then mixed deltas can legitimately produce out-of-order queues, so the
-        // check stays off.
+        // stay ordered by earliest-processable `epoch`. Every runtime enqueue uses
+        // `current_epoch + validator_withdrawal_num_epochs` (a fixed genesis
+        // constant, not a runtime-changeable param) with a monotonic
+        // `current_epoch`, so a legitimately serialized deque is non-decreasing by
+        // `epoch`; an out-of-order one is a tampered/corrupt artifact and is
+        // rejected here.
+        if withdrawal.epoch < prev_epoch {
+            return Err(Error::Invalid(
+                "WithdrawalQueue",
+                "withdrawal epochs must be non-decreasing",
+            ));
+        }
+        prev_epoch = withdrawal.epoch;
         deque.push_back(withdrawal);
     }
     Ok(deque)
@@ -1156,6 +1165,40 @@ mod tests {
         let err = WithdrawalQueue::read(&mut buf.as_ref())
             .expect_err("read must reject an index >= next_index");
         assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
+    }
+
+    #[test]
+    fn test_read_rejects_decreasing_epoch() {
+        // The deque is drained from the front under the per-epoch cap, so it must
+        // stay ordered by earliest-processable epoch. A later entry with a smaller
+        // epoch is a tampered/corrupt artifact and must be rejected at decode.
+        let buf = encode_flat(
+            2,
+            &[
+                pw(1, 5, 0, WithdrawalKind::Validator),
+                pw(2, 3, 1, WithdrawalKind::Validator),
+            ],
+            &[],
+        );
+        let err = WithdrawalQueue::read(&mut buf.as_ref())
+            .expect_err("read must reject a queue whose epochs decrease");
+        assert!(matches!(err, Error::Invalid("WithdrawalQueue", _)));
+    }
+
+    #[test]
+    fn test_read_accepts_non_decreasing_epoch() {
+        // Equal and increasing epochs are the legitimate order every runtime
+        // enqueue produces (current_epoch + a fixed delay), so they must decode.
+        let buf = encode_flat(
+            3,
+            &[
+                pw(1, 3, 0, WithdrawalKind::Validator),
+                pw(2, 3, 1, WithdrawalKind::Validator),
+                pw(3, 7, 2, WithdrawalKind::Validator),
+            ],
+            &[],
+        );
+        WithdrawalQueue::read(&mut buf.as_ref()).expect("non-decreasing epochs must decode");
     }
 
     #[test]
