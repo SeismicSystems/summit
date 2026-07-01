@@ -73,7 +73,6 @@ fn test_serialization_deserialization_populated() {
     let mut original_state = ConsensusState::new(
         ForkchoiceState::default(),
         0,
-        0,
         NonZeroU64::new(100).unwrap(),
         10_000,
         Address::ZERO,
@@ -110,9 +109,6 @@ fn test_serialization_deserialization_populated() {
     // Add protocol param changes
     original_state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
         40_000_000_000,
-    ));
-    original_state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MaximumStake(
-        80_000_000_000,
     ));
     original_state
         .push_protocol_param_change(crate::protocol_params::ProtocolParam::EpochLength(500));
@@ -187,7 +183,7 @@ fn test_serialization_deserialization_populated() {
     assert_eq!(epoch11_withdrawals[1].inner.amount, 24000000000);
 
     // Verify protocol_param_changes
-    assert_eq!(decoded_state.protocol_param_changes.len(), 3);
+    assert_eq!(decoded_state.protocol_param_changes.len(), 2);
     match &decoded_state.protocol_param_changes[0] {
         crate::protocol_params::ProtocolParam::MinimumStake(value) => {
             assert_eq!(*value, 40_000_000_000)
@@ -195,12 +191,6 @@ fn test_serialization_deserialization_populated() {
         _ => panic!("Expected MinimumStake variant"),
     }
     match &decoded_state.protocol_param_changes[1] {
-        crate::protocol_params::ProtocolParam::MaximumStake(value) => {
-            assert_eq!(*value, 80_000_000_000)
-        }
-        _ => panic!("Expected MaximumStake variant"),
-    }
-    match &decoded_state.protocol_param_changes[2] {
         crate::protocol_params::ProtocolParam::EpochLength(value) => {
             assert_eq!(*value, 500)
         }
@@ -262,9 +252,6 @@ fn test_encode_size_accuracy() {
     state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
         50_000_000_000,
     ));
-    state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MaximumStake(
-        100_000_000_000,
-    ));
 
     let pubkey = [1u8; 32];
     let account = create_test_validator_account(1, 32000000000);
@@ -303,9 +290,7 @@ fn test_protocol_param_changes_serialization() {
     state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
         32_000_000_000,
     ));
-    state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MaximumStake(
-        64_000_000_000,
-    ));
+    state.push_protocol_param_change(crate::protocol_params::ProtocolParam::EpochLength(64));
     state.push_protocol_param_change(crate::protocol_params::ProtocolParam::MinimumStake(
         40_000_000_000,
     ));
@@ -327,10 +312,10 @@ fn test_protocol_param_changes_serialization() {
     }
 
     match &decoded_state.protocol_param_changes[1] {
-        crate::protocol_params::ProtocolParam::MaximumStake(value) => {
-            assert_eq!(*value, 64_000_000_000)
+        crate::protocol_params::ProtocolParam::EpochLength(value) => {
+            assert_eq!(*value, 64)
         }
-        _ => panic!("Expected MaximumStake variant"),
+        _ => panic!("Expected EpochLength variant"),
     }
 
     match &decoded_state.protocol_param_changes[2] {
@@ -462,16 +447,4 @@ fn test_decode_rejects_out_of_range_observers_per_validator() {
         ConsensusState::read(&mut encoded.as_ref()).is_err(),
         "oversized observers_per_validator should be rejected on decode"
     );
-}
-
-#[test]
-fn consensus_state_decode_rejects_inverted_stake_interval() {
-    let mut state = ConsensusState::default();
-    state.validator_minimum_stake = 80_000_000_000;
-    state.validator_maximum_stake = 32_000_000_000;
-
-    let mut encoded = state.encode();
-    let err = ConsensusState::decode(&mut encoded).unwrap_err();
-
-    assert!(matches!(err, Error::Invalid("ConsensusState", _)));
 }

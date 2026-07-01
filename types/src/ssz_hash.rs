@@ -105,15 +105,14 @@ impl SszHashTreeRoot for ProtocolParam {
     fn hash_tree_root(&self) -> [u8; 32] {
         let (tag, value_hash) = match self {
             ProtocolParam::MinimumStake(v) => (0u64, v.hash_tree_root()),
-            ProtocolParam::MaximumStake(v) => (1u64, v.hash_tree_root()),
-            ProtocolParam::EpochLength(v) => (2u64, v.hash_tree_root()),
-            ProtocolParam::AllowedTimestampFuture(v) => (3u64, v.hash_tree_root()),
-            ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
-            ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
-            ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
-            ProtocolParam::ObserversPerValidator(v) => (7u64, v.hash_tree_root()),
-            ProtocolParam::MinimumValidatorCount(v) => (8u64, v.hash_tree_root()),
-            ProtocolParam::InvalidDepositTax(v) => (9u64, v.hash_tree_root()),
+            ProtocolParam::EpochLength(v) => (1u64, v.hash_tree_root()),
+            ProtocolParam::AllowedTimestampFuture(v) => (2u64, v.hash_tree_root()),
+            ProtocolParam::TreasuryAddress(addr) => (3u64, addr.hash_tree_root()),
+            ProtocolParam::MaxDepositsPerEpoch(v) => (4u64, v.hash_tree_root()),
+            ProtocolParam::MaxWithdrawalsPerEpoch(v) => (5u64, v.hash_tree_root()),
+            ProtocolParam::ObserversPerValidator(v) => (6u64, v.hash_tree_root()),
+            ProtocolParam::MinimumValidatorCount(v) => (7u64, v.hash_tree_root()),
+            ProtocolParam::InvalidDepositTax(v) => (8u64, v.hash_tree_root()),
         };
         merkleize(&[tag.hash_tree_root(), value_hash])
     }
@@ -321,8 +320,8 @@ mod tests {
     #[test]
     fn protocol_param_different_variants() {
         let min = ProtocolParam::MinimumStake(100);
-        let max = ProtocolParam::MaximumStake(100);
-        assert_ne!(min.hash_tree_root(), max.hash_tree_root());
+        let other = ProtocolParam::EpochLength(100);
+        assert_ne!(min.hash_tree_root(), other.hash_tree_root());
     }
 
     #[test]

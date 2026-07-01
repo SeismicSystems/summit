@@ -798,7 +798,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -932,7 +931,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -989,7 +987,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1130,7 +1127,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1192,7 +1188,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1259,7 +1254,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1322,7 +1316,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1483,7 +1476,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1612,7 +1604,6 @@ mod tests {
             max_message_size_bytes: 1_048_576,
             namespace: namespace.clone(),
             validator_minimum_stake: 32_000_000_000,
-            validator_maximum_stake: 64_000_000_000,
             blocks_per_epoch: 10,
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO.to_string(),
@@ -1626,7 +1617,6 @@ mod tests {
         let mut state = ConsensusState::new(
             Default::default(),
             32_000_000_000,
-            64_000_000_000,
             NonZeroU64::new(10).unwrap(),
             10_000,
             Address::ZERO,

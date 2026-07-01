@@ -58,14 +58,12 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
             .expect("failed to convert genesis hash");
 
         let new_min_stake = 16_000_000_000u64;
-        let new_max_stake = 64_000_000_000u64;
         let min_request = common::create_protocol_param_request(0x00, new_min_stake);
-        let max_request = common::create_protocol_param_request(0x01, new_max_stake);
 
-        let requests = common::execution_requests_to_requests(vec![
-            ExecutionRequest::ProtocolParam(min_request),
-            ExecutionRequest::ProtocolParam(max_request),
-        ]);
+        let requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::ProtocolParam(
+                min_request,
+            )]);
 
         let protocol_param_block_height = 5;
         let stop_height = DEFAULT_BLOCKS_PER_EPOCH + 1;
@@ -137,7 +135,6 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
 
         let state_query = consensus_state_queries.get(&0).unwrap();
         assert_eq!(state_query.get_minimum_stake().await, new_min_stake);
-        assert_eq!(state_query.get_maximum_stake().await, new_max_stake);
 
         assert!(
             engine_client_network
@@ -210,7 +207,7 @@ fn test_protocol_param_allowed_timestamp_future() {
         // Create a protocol param request for allowed_timestamp_future (param_id 0x03)
         let new_allowed_timestamp_future = 30_000u64; // 30 seconds
         let test_protocol_param =
-            common::create_protocol_param_request(0x03, new_allowed_timestamp_future);
+            common::create_protocol_param_request(0x02, new_allowed_timestamp_future);
 
         let execution_requests = vec![ExecutionRequest::ProtocolParam(test_protocol_param)];
         let requests = common::execution_requests_to_requests(execution_requests);
@@ -310,176 +307,6 @@ fn test_protocol_param_allowed_timestamp_future() {
 }
 
 #[test_traced("INFO")]
-fn test_protocol_param_max_stake() {
-    // Adds a protocol param request for maximum stake to the block at height 5
-    // and verifies that the maximum stake is changed at the end of the epoch.
-    let n = 5;
-    let min_stake = 32_000_000_000;
-    let link = Link {
-        latency: Duration::from_millis(80),
-        jitter: Duration::from_millis(10),
-        success_rate: 0.98,
-    };
-    // Create context
-    let cfg = deterministic::Config::default().with_seed(0);
-    let executor = Runner::from(cfg);
-    executor.start(|context| async move {
-        // Create simulated network
-        let (network, mut oracle) = Network::new(
-            context.with_label("network"),
-            simulated::Config {
-                max_size: 1024 * 1024,
-                disconnect_on_block: false,
-                tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
-            },
-        );
-
-        // Start network
-        network.start();
-
-        // Register participants
-        let mut key_stores = Vec::new();
-        let mut validators = Vec::new();
-        for i in 0..n {
-            let mut rng = StdRng::seed_from_u64(i as u64);
-            let node_key = PrivateKey::random(&mut rng);
-            let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::random(&mut rng);
-            let consensus_public_key = consensus_key.public_key();
-            let key_store = KeyStore {
-                node_key,
-                consensus_key,
-            };
-            key_stores.push(key_store);
-            validators.push((node_public_key, consensus_public_key));
-        }
-        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
-        key_stores.sort_by_key(|ks| ks.node_key.public_key());
-
-        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
-
-        // Link all validators
-        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
-
-        // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
-        let genesis_hash: [u8; 32] = genesis_hash
-            .try_into()
-            .expect("failed to convert genesis hash");
-
-        // Create a single protocol_param request for minimum stake
-        let new_max_stake = 64_000_000_000;
-        let test_protocol_param1 = common::create_protocol_param_request(0x01, new_max_stake);
-
-        // Convert to ExecutionRequest and then to Requests
-        let execution_requests1 = vec![ExecutionRequest::ProtocolParam(
-            test_protocol_param1.clone(),
-        )];
-        let requests1 = common::execution_requests_to_requests(execution_requests1);
-
-        // Create execution requests map (add deposit to block 5)
-        // The protocol param request will be processed after 10 blocks because `DEFAULT_BLOCKS_PER_EPOCH`
-        // is set to 10.
-        let protocol_param_block_height1 = 5;
-        let stop_height = DEFAULT_BLOCKS_PER_EPOCH + 1;
-        let mut execution_requests_map = HashMap::new();
-        execution_requests_map.insert(protocol_param_block_height1, requests1);
-
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
-            .with_execution_requests(execution_requests_map)
-            .with_stop_at(stop_height)
-            .build();
-        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
-
-        // Create instances
-        let mut public_keys = HashSet::new();
-        let mut consensus_state_queries = HashMap::new();
-        for (idx, key_store) in key_stores.into_iter().enumerate() {
-            // Create signer context
-            let public_key = key_store.node_key.public_key();
-            public_keys.insert(public_key.clone());
-
-            // Configure engine
-            let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SUMMIT");
-
-            let engine_client = engine_client_network.create_client(uid.clone());
-
-            let config = get_default_engine_config(
-                engine_client,
-                SimulatedOracle::new(oracle.clone()),
-                uid.clone(),
-                genesis_hash,
-                namespace,
-                key_store,
-                validators.clone(),
-                initial_state.clone(),
-            );
-            let engine = Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
-
-            // Get networking
-            let (pending, recovered, resolver, orchestrator, broadcast) =
-                registrations.remove(&public_key).unwrap();
-
-            // Start engine
-            engine.start(pending, recovered, resolver, orchestrator, broadcast);
-        }
-
-        // Poll metrics
-        let mut height_reached = HashSet::new();
-        loop {
-            // Peer-block health is a P2P signal, not consensus state, so it stays
-            // a metric check.
-            let metrics = context.encode();
-            for line in metrics.lines() {
-                if !line.starts_with("validator_") {
-                    continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.ends_with("_peers_blocked") {
-                    assert_eq!(value.parse::<u64>().unwrap(), 0);
-                }
-            }
-
-            // Height comes from each validator's consensus state, queried via
-            // the finalizer mailbox.
-            for (idx, query) in consensus_state_queries.iter() {
-                if query.get_latest_height().await >= stop_height {
-                    height_reached.insert(*idx);
-                }
-            }
-
-            if height_reached.len() as u32 == n {
-                break;
-            }
-
-            // Still waiting for all validators to complete
-            context.sleep(Duration::from_secs(1)).await;
-        }
-
-        // Check that the minimum stake was updated
-        let state_query = consensus_state_queries.get(&0).unwrap();
-        assert_eq!(state_query.get_maximum_stake().await, new_max_stake);
-
-        // Check that all nodes have the same canonical chain
-        assert!(
-            engine_client_network
-                .verify_consensus(None, Some(stop_height))
-                .is_ok()
-        );
-
-        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
-
-        context.auditor().state()
-    })
-}
-
-#[test_traced("INFO")]
 fn test_protocol_param_treasury_address() {
     // Tests that the treasury address protocol parameter controls suggested_fee_recipient:
     // - Epoch 0: treasury_address is zero → fee_recipient = proposer's withdrawal credentials
@@ -539,7 +366,7 @@ fn test_protocol_param_treasury_address() {
 
         // Create a treasury address protocol param request (param_id 0x04, 20-byte address)
         let test_protocol_param = ProtocolParamRequest {
-            param_id: 0x04,
+            param_id: 0x03,
             param: treasury_address.as_slice().to_vec(),
         };
 
@@ -728,7 +555,7 @@ fn test_protocol_param_max_deposits_per_epoch() {
             .expect("failed to convert genesis hash");
 
         let new_max_joining = 1u64;
-        let test_protocol_param = common::create_protocol_param_request(0x05, new_max_joining);
+        let test_protocol_param = common::create_protocol_param_request(0x04, new_max_joining);
 
         let execution_requests = vec![ExecutionRequest::ProtocolParam(test_protocol_param)];
         let requests = common::execution_requests_to_requests(execution_requests);
@@ -885,7 +712,7 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
 
         // Value above MAX_MAX_DEPOSITS_PER_EPOCH (256)
         let invalid_value = MAX_MAX_DEPOSITS_PER_EPOCH + 1;
-        let test_protocol_param = common::create_protocol_param_request(0x05, invalid_value);
+        let test_protocol_param = common::create_protocol_param_request(0x04, invalid_value);
 
         let execution_requests = vec![ExecutionRequest::ProtocolParam(test_protocol_param)];
         let requests = common::execution_requests_to_requests(execution_requests);
@@ -1002,7 +829,6 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
 fn test_removed_validators_at_epoch_boundary_stake_bound() {
     let n: u32 = 5;
     let min_stake = 32_000_000_000; // 32 ETH
-    let max_stake = 40_000_000_000; // 40 ETH (set from genesis to avoid partial-withdrawal noise)
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -1094,8 +920,7 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
             .with_execution_requests(execution_requests_map)
             .with_stop_at(stop_height)
             .build();
-        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
-        initial_state.set_maximum_stake(max_stake);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         let mut public_keys = HashSet::new();
         let mut finalizer_mailboxes = HashMap::new();
@@ -1229,7 +1054,6 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
 fn test_stake_increase_topup_keeps_active_validator() {
     let n: u32 = 5;
     let min_stake = 32_000_000_000; // 32 ETH
-    let max_stake = 64_000_000_000; // 64 ETH (well above every top-up target)
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
@@ -1326,8 +1150,7 @@ fn test_stake_increase_topup_keeps_active_validator() {
             .with_execution_requests(execution_requests_map)
             .with_stop_at(stop_height)
             .build();
-        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
-        initial_state.set_maximum_stake(max_stake);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         let mut public_keys = HashSet::new();
         let mut finalizer_mailboxes = HashMap::new();
@@ -1457,7 +1280,6 @@ fn test_stake_increase_topup_keeps_active_validator() {
 fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
     let n: u32 = 5;
     let min_stake = 32_000_000_000; // 32 ETH
-    let max_stake = 40_000_000_000; // 40 ETH
     let new_validator_amount = 32_000_000_000u64; // below new min after the raise
     let link = Link {
         latency: Duration::from_millis(80),
@@ -1564,8 +1386,7 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
             .with_execution_requests(execution_requests_map)
             .with_stop_at(stop_height)
             .build();
-        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
-        initial_state.set_maximum_stake(max_stake);
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
         let mut public_keys = HashSet::new();
         let mut finalizer_mailboxes = HashMap::new();
@@ -1669,254 +1490,6 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
             "force-removed Joining validator should NOT appear in added_validators of \
              epoch 1's finalized header, but added_validators = {added:?}"
         );
-
-        context.auditor().state()
-    })
-}
-
-/// A pending-deposit placeholder account (balance=0, has_pending_deposit=true,
-/// status=Inactive) is not flagged as an underfunded validator by stake-bound
-/// enforcement. After the deposit is later credited at the penultimate block
-/// of the next epoch and the validator is activated, the account is fully
-/// usable: has_pending_withdrawal is false, so subsequent withdrawal or top-up
-/// requests are not silently rejected.
-///
-/// Setup (DEFAULT_BLOCKS_PER_EPOCH = 10, VALIDATOR_NUM_WARM_UP_EPOCHS = 2):
-///  - 5 genesis validators @ 32 ETH (min_stake = 32 ETH, max_stake = 64 ETH).
-///  - Block 9 (last block of epoch 0): a brand-new validator deposit (32 ETH)
-///    and a protocol-param change lowering max_stake to 50 ETH land in the
-///    same block. Deposit processing only runs at the penultimate block, so
-///    the placeholder is still in the deposit queue with balance=0 when the
-///    last-block stake-bound enforcement runs. Lowering max_stake is enough
-///    to flip stake_changed = true while keeping every genesis validator
-///    inside the new [32, 50] band.
-///
-/// Timeline:
-///  - Block 9 (last of epoch 0): placeholder is created in parse_execution_requests.
-///    apply_protocol_parameter_changes lowers max_stake → stake_changed=true.
-///    The stake-bound scan must skip the placeholder (it has not been credited
-///    yet) instead of force-removing it with a zero-amount withdrawal.
-///  - Block 18 (penultimate of epoch 1): deposit processed — balance = 32 ETH,
-///    status = Joining, joining_epoch = 3.
-///  - Block 29 (last of epoch 2): joining_epoch=3 matches next_epoch — the
-///    validator is activated for epoch 3.
-///
-/// Assertions (stop at block 30 — one block into epoch 3):
-///  - Account exists with status = Active and balance = 32 ETH.
-///  - has_pending_deposit = false (deposit was processed).
-///  - has_pending_withdrawal = false. The last-block stake-bound scan must
-///    not flag the placeholder, otherwise the flag remains stuck after deposit
-///    processing (the deposit path does not clear it) and after the
-///    zero-amount withdrawal completes (the balance_deduction == 0 path skips
-///    account updates) — permanently blocking future withdrawal/top-up
-///    requests for this validator.
-#[test_traced("INFO")]
-fn test_stake_bound_skips_pending_deposit_placeholder() {
-    let n: u32 = 5;
-    let min_stake = 32_000_000_000;
-    let max_stake = 64_000_000_000;
-    let new_max_stake = 50_000_000_000;
-    let new_validator_amount = min_stake;
-    let link = Link {
-        latency: Duration::from_millis(80),
-        jitter: Duration::from_millis(10),
-        success_rate: 0.98,
-    };
-
-    let cfg = deterministic::Config::default().with_seed(0);
-    let executor = Runner::from(cfg);
-    executor.start(|context| async move {
-        let (network, mut oracle) = Network::new(
-            context.with_label("network"),
-            simulated::Config {
-                max_size: 1024 * 1024,
-                disconnect_on_block: false,
-                tracked_peer_sets: NZUsize!(n as usize * 10),
-            },
-        );
-
-        network.start();
-
-        let mut key_stores = Vec::new();
-        let mut validators = Vec::new();
-        for i in 0..n {
-            let mut rng = StdRng::seed_from_u64(i as u64);
-            let node_key = PrivateKey::random(&mut rng);
-            let node_public_key = node_key.public_key();
-            let consensus_key = bls12381::PrivateKey::random(&mut rng);
-            let consensus_public_key = consensus_key.public_key();
-            let key_store = KeyStore {
-                node_key,
-                consensus_key,
-            };
-            key_stores.push(key_store);
-            validators.push((node_public_key, consensus_public_key));
-        }
-        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
-        key_stores.sort_by_key(|ks| ks.node_key.public_key());
-
-        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
-        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
-
-        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
-
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
-        let genesis_hash: [u8; 32] = genesis_hash
-            .try_into()
-            .expect("failed to convert genesis hash");
-
-        // Brand-new validator deposit, scheduled to land at block 9 (last of
-        // epoch 0). Index = n so the seed does not collide with any genesis
-        // validator.
-        let (new_deposit, new_validator_private_key, _) = common::create_deposit_request(
-            n as u64,
-            new_validator_amount,
-            common::get_domain(),
-            None,
-            None,
-            None,
-        );
-        let new_validator_pubkey = new_validator_private_key.public_key();
-
-        // Lower max_stake to flip stake_changed = true at the end of epoch 0
-        // without putting genesis validators (32 ETH each) outside the new band.
-        let param_request = common::create_protocol_param_request(0x01, new_max_stake);
-
-        // Bundle the deposit and the protocol-param change into the same
-        // block (last block of epoch 0). Deposit processing only runs at the
-        // penultimate block, so the placeholder is still uncredited when the
-        // last-block stake-bound scan fires.
-        let last_block_epoch_0 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 0);
-        let block_requests = common::execution_requests_to_requests(vec![
-            ExecutionRequest::Deposit(new_deposit),
-            ExecutionRequest::ProtocolParam(param_request),
-        ]);
-
-        // Stop one block past epoch 2's last block so the joining_epoch=3
-        // boundary has been processed and the validator is Active.
-        let last_block_epoch_2 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 2);
-        let stop_height = last_block_epoch_2 + 1;
-
-        let mut execution_requests_map = HashMap::new();
-        execution_requests_map.insert(last_block_epoch_0, block_requests);
-
-        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
-            .with_execution_requests(execution_requests_map)
-            .with_stop_at(stop_height)
-            .build();
-        let mut initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
-        initial_state.set_maximum_stake(max_stake);
-
-        let mut public_keys = HashSet::new();
-        let mut consensus_state_queries = HashMap::new();
-        for (idx, key_store) in key_stores.into_iter().enumerate() {
-            let public_key = key_store.node_key.public_key();
-            public_keys.insert(public_key.clone());
-
-            let uid = format!("validator_{public_key}");
-            let namespace = String::from("_SUMMIT");
-
-            let engine_client = engine_client_network.create_client(uid.clone());
-
-            let config = get_default_engine_config(
-                engine_client,
-                SimulatedOracle::new(oracle.clone()),
-                uid.clone(),
-                genesis_hash,
-                namespace,
-                key_store,
-                validators.clone(),
-                initial_state.clone(),
-            );
-            let engine = Engine::new(context.with_label(&uid), config).await;
-            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
-
-            let (pending, recovered, resolver, orchestrator, broadcast) =
-                registrations.remove(&public_key).unwrap();
-
-            engine.start(pending, recovered, resolver, orchestrator, broadcast);
-        }
-
-        let mut height_reached = HashSet::new();
-        loop {
-            let metrics = context.encode();
-            let mut success = false;
-            for line in metrics.lines() {
-                if !line.starts_with("validator_") {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if height_reached.len() as u32 == n {
-                    success = true;
-                    break;
-                }
-            }
-            if success {
-                break;
-            }
-            context.sleep(Duration::from_secs(1)).await;
-        }
-
-        let state_query = consensus_state_queries.get(&0).unwrap();
-
-        // Protocol-param change landed and stake_changed was true at the
-        // epoch 0 boundary.
-        assert_eq!(state_query.get_maximum_stake().await, new_max_stake);
-        assert_eq!(state_query.get_minimum_stake().await, min_stake);
-
-        // Genesis validators are unaffected — all 5 stay Active at 32 ETH.
-        for (pk, _) in &validators {
-            let account = state_query
-                .get_validator_account(pk.clone())
-                .await
-                .expect("genesis validator account should exist");
-            assert_eq!(account.status, ValidatorStatus::Active);
-            assert_eq!(account.balance, min_stake);
-            assert!(!account.has_pending_withdrawal);
-        }
-
-        // The new validator is activated for epoch 3, and the account is not
-        // carrying a stale pending-withdrawal flag from a stake-bound scan
-        // against the zero-balance placeholder.
-        let new_account = state_query
-            .get_validator_account(new_validator_pubkey.clone())
-            .await
-            .expect("new validator account should exist after activation");
-        assert_eq!(new_account.status, ValidatorStatus::Active);
-        assert_eq!(new_account.balance, new_validator_amount);
-        assert!(
-            !new_account.has_pending_deposit,
-            "has_pending_deposit must be cleared after deposit processing"
-        );
-        assert!(
-            !new_account.has_pending_withdrawal,
-            "has_pending_withdrawal must be false; the placeholder must not be \
-             treated as an underfunded validator by the last-block stake-bound \
-             scan, otherwise the flag stays stuck (deposit processing does not \
-             clear it and the zero-balance_deduction withdrawal completion \
-             skips account updates), permanently blocking future withdrawal \
-             and top-up requests"
-        );
-
-        assert!(
-            engine_client_network
-                .verify_consensus(None, Some(stop_height))
-                .is_ok()
-        );
-
-        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })

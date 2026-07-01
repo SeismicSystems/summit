@@ -71,7 +71,6 @@ fn test_clone_preserves_epoch_schedule_snapshot() {
     let state = ConsensusState::new(
         ForkchoiceState::default(),
         0,
-        0,
         NonZeroU64::new(10).unwrap(),
         10_000,
         Address::ZERO,

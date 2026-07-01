@@ -27,9 +27,6 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-const INVALID_STAKE_INTERVAL: &str =
-    "validator_minimum_stake must be less than or equal to validator_maximum_stake";
-
 /// Why a deposit was rejected during epoch end processing. Drives the refund
 /// path: a plain refund returns the full amount, while signature and key
 /// failures route through the taxed refund so invalid deposits cannot be a free
@@ -48,14 +45,6 @@ pub enum DepositRejectionReason {
     InvalidConsensusSignature,
     /// The deposit's Ed25519 or BLS key bytes did not decode.
     MalformedKey,
-}
-
-fn validate_stake_interval(minimum_stake: u64, maximum_stake: u64) -> Result<(), Error> {
-    if minimum_stake <= maximum_stake {
-        Ok(())
-    } else {
-        Err(Error::Invalid("ConsensusState", INVALID_STAKE_INTERVAL))
-    }
 }
 
 #[derive(Debug)]
@@ -77,7 +66,6 @@ pub struct ConsensusState {
     pub(crate) forkchoice: ForkchoiceState,
     pub(crate) epoch_genesis_hash: [u8; 32],
     pub(crate) validator_minimum_stake: u64, // in gwei
-    pub(crate) validator_maximum_stake: u64, // in gwei
     pub(crate) allowed_timestamp_future_ms: u64,
     pub(crate) treasury_address: Address,
     pub(crate) max_deposits_per_epoch: u64,
@@ -145,7 +133,6 @@ impl Default for ConsensusState {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             // Must stay within the protocol-parameter bound (see ProtocolParam::validate
             // and the decode guard in read_cfg); genesis would reject anything below
             // MIN_ALLOWED_TIMESTAMP_FUTURE_MS, so the default sits at that floor.
@@ -194,7 +181,6 @@ impl ConsensusState {
             forkchoice: self.forkchoice,
             epoch_genesis_hash: self.epoch_genesis_hash,
             validator_minimum_stake: self.validator_minimum_stake,
-            validator_maximum_stake: self.validator_maximum_stake,
             allowed_timestamp_future_ms: self.allowed_timestamp_future_ms,
             treasury_address: self.treasury_address,
             max_deposits_per_epoch: self.max_deposits_per_epoch,
@@ -226,7 +212,6 @@ impl ConsensusState {
     pub fn new(
         forkchoice: ForkchoiceState,
         validator_minimum_stake: u64,
-        validator_maximum_stake: u64,
         epoch_length: NonZeroU64,
         allowed_timestamp_future_ms: u64,
         treasury_address: Address,
@@ -252,7 +237,6 @@ impl ConsensusState {
             forkchoice,
             epoch_genesis_hash: forkchoice.head_block_hash.into(),
             validator_minimum_stake,
-            validator_maximum_stake,
             allowed_timestamp_future_ms,
             treasury_address,
             max_deposits_per_epoch,
@@ -318,10 +302,6 @@ impl ConsensusState {
         self.validator_minimum_stake
     }
 
-    pub fn get_maximum_stake(&self) -> u64 {
-        self.validator_maximum_stake
-    }
-
     /// Returns the minimum stake that *will* apply after the queued protocol-parameter
     /// changes are drained at the next epoch boundary. If no `MinimumStake` change is
     /// queued, returns the currently-active value.
@@ -334,31 +314,6 @@ impl ConsensusState {
                 _ => None,
             })
             .unwrap_or(self.validator_minimum_stake)
-    }
-
-    /// Returns the maximum stake that *will* apply after the queued protocol-parameter
-    /// changes are drained at the next epoch boundary. If no `MaximumStake` change is
-    /// queued, returns the currently-active value.
-    pub fn prospective_maximum_stake(&self) -> u64 {
-        self.protocol_param_changes
-            .iter()
-            .rev()
-            .find_map(|p| match p {
-                ProtocolParam::MaximumStake(v) => Some(*v),
-                _ => None,
-            })
-            .unwrap_or(self.validator_maximum_stake)
-    }
-
-    /// Whether a `MinimumStake` or `MaximumStake` change is queued for application at
-    /// the next epoch boundary.
-    pub fn has_pending_stake_bound_change(&self) -> bool {
-        self.protocol_param_changes.iter().any(|p| {
-            matches!(
-                p,
-                ProtocolParam::MinimumStake(_) | ProtocolParam::MaximumStake(_)
-            )
-        })
     }
 
     /// Returns the minimum validator count that *will* apply after the queued
@@ -384,11 +339,6 @@ impl ConsensusState {
     pub fn set_minimum_stake(&mut self, stake: u64) {
         self.validator_minimum_stake = stake;
         self.ssz_tree.set_validator_minimum_stake(stake);
-    }
-
-    pub fn set_maximum_stake(&mut self, stake: u64) {
-        self.validator_maximum_stake = stake;
-        self.ssz_tree.set_validator_maximum_stake(stake);
     }
 
     pub fn get_allowed_timestamp_future_ms(&self) -> u64 {
@@ -1700,6 +1650,13 @@ impl ConsensusState {
     /// caller.
     pub fn apply_committee_transition(&mut self, node_public_key: &PublicKey) -> bool {
         let next_epoch = self.get_epoch() + 1;
+
+        // The per-epoch active-exit budget is consumed by the exits this transition
+        // applies, so reset it here for the coming epoch. Done unconditionally (and
+        // before the no-deltas early return) so it never depends on there being
+        // removed validators to clear.
+        self.reset_pending_active_validator_exits();
+
         if !self.has_added_validators(next_epoch) && self.get_removed_validators().is_empty() {
             return false;
         }
@@ -1843,29 +1800,13 @@ impl ConsensusState {
     }
 
     pub fn apply_protocol_parameter_changes(&mut self) -> Result<bool, Error> {
-        let prospective_minimum_stake = self.prospective_minimum_stake();
-        let prospective_maximum_stake = self.prospective_maximum_stake();
-        if let Err(err) =
-            validate_stake_interval(prospective_minimum_stake, prospective_maximum_stake)
-        {
-            self.protocol_param_changes.clear();
-            self.ssz_tree
-                .rebuild_protocol_params(&self.protocol_param_changes);
-            return Err(err);
-        }
-
-        let mut min_or_max_stake_changed = false;
+        let mut minimum_stake_changed = false;
         for param in self.protocol_param_changes.drain(0..) {
             match param {
                 ProtocolParam::MinimumStake(min_stake) => {
                     self.validator_minimum_stake = min_stake;
                     self.ssz_tree.set_validator_minimum_stake(min_stake);
-                    min_or_max_stake_changed = true;
-                }
-                ProtocolParam::MaximumStake(max_stake) => {
-                    self.validator_maximum_stake = max_stake;
-                    self.ssz_tree.set_validator_maximum_stake(max_stake);
-                    min_or_max_stake_changed = true;
+                    minimum_stake_changed = true;
                 }
                 ProtocolParam::EpochLength(length) => {
                     let new_length = NonZeroU64::new(length)
@@ -1913,7 +1854,7 @@ impl ConsensusState {
         // Protocol param changes have been consumed — update the (now empty) collection root
         self.ssz_tree
             .rebuild_protocol_params(&self.protocol_param_changes);
-        Ok(min_or_max_stake_changed)
+        Ok(minimum_stake_changed)
     }
 
     /// Rebuild the entire SSZ state tree from scratch.
@@ -1930,7 +1871,6 @@ impl ConsensusState {
             &self.head_digest.0,
             &self.epoch_genesis_hash,
             self.validator_minimum_stake,
-            self.validator_maximum_stake,
             self.allowed_timestamp_future_ms,
             self.withdrawal_queue.next_index(),
             &self.forkchoice.head_block_hash.0,
@@ -2003,7 +1943,6 @@ impl EncodeSize for ConsensusState {
         + 32 // epoch_genesis_hash
         + 32 // head_digest
         + 8 // validator_minimum_stake
-        + 8 // validator_maximum_stake
         + 8 // allowed_timestamp_future_ms
         + 20 // treasury_address
         + 8 // proof_el_block_number
@@ -2134,8 +2073,6 @@ impl Read for ConsensusState {
         let head_digest = sha256::Digest(head_digest_bytes);
 
         let validator_minimum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-        let validator_maximum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-        validate_stake_interval(validator_minimum_stake, validator_maximum_stake)?;
         let allowed_timestamp_future_ms = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         // Enforce the same bound the runtime protocol-parameter path applies (see
         // ProtocolParam::validate). An out-of-range window here means a crafted or
@@ -2264,7 +2201,6 @@ impl Read for ConsensusState {
             forkchoice,
             epoch_genesis_hash,
             validator_minimum_stake,
-            validator_maximum_stake,
             allowed_timestamp_future_ms,
             treasury_address,
             max_deposits_per_epoch,
@@ -2371,9 +2307,8 @@ impl Write for ConsensusState {
         // Write head_digest
         buf.put_slice(&self.head_digest.0);
 
-        // Write validator stake bounds
+        // Write validator minimum stake
         buf.put_u64(self.validator_minimum_stake);
-        buf.put_u64(self.validator_maximum_stake);
         buf.put_u64(self.allowed_timestamp_future_ms);
 
         // Write treasury_address

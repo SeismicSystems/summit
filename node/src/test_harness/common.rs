@@ -387,7 +387,6 @@ pub fn get_initial_state(
         let mut state = ConsensusState::new(
             forkchoice,
             balance,
-            balance,
             NonZeroU64::new(DEFAULT_BLOCKS_PER_EPOCH).unwrap(),
             10_000, // 10 seconds
             Address::ZERO,
@@ -586,7 +585,7 @@ pub fn create_withdrawal_request(
 /// Create a ProtocolParamRequest for testing
 ///
 /// # Arguments
-/// * `param_id` - The protocol parameter ID (0x00 for MinimumStake, 0x01 for MaximumStake)
+/// * `param_id` - The protocol parameter ID (0x00 for MinimumStake, 0x01 for EpochLength)
 /// * `value` - The parameter value as u64
 ///
 /// # Returns
@@ -597,8 +596,8 @@ pub fn create_withdrawal_request(
 /// // Create a minimum stake parameter request
 /// let min_stake_request = create_protocol_param_request(0x00, 40_000_000_000);
 ///
-/// // Create a maximum stake parameter request
-/// let max_stake_request = create_protocol_param_request(0x01, 64_000_000_000);
+/// // Create an epoch length parameter request
+/// let epoch_length_request = create_protocol_param_request(0x01, 100);
 /// ```
 pub fn create_protocol_param_request(param_id: u8, value: u64) -> ProtocolParamRequest {
     ProtocolParamRequest {
