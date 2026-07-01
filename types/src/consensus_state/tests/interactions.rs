@@ -161,3 +161,50 @@ fn deposit_rejoin_and_exit_are_independent() {
         ValidatorStatus::SubmittedExitRequest
     );
 }
+
+// Regression for #211 (Critical): a deposit refund and a validator full-exit that
+// target the SAME node pubkey and are scheduled for the SAME payout epoch must stay
+// separate queue entries. The old code keyed refunds by the depositor's node pubkey
+// and merged same-pubkey withdrawals, so a same-pubkey withdrawal could mutate an
+// already-snapshotted refund and trip the emit-equals-block assertion in
+// apply_withdrawal_payouts, panicking finalization. The rework makes this impossible:
+// refunds carry a zero pubkey, are a distinct kind, and are never merged (append-only).
+#[test]
+fn refund_and_same_pubkey_exit_do_not_merge_and_payout_is_stable() {
+    let mut state = interaction_state();
+
+    // An active validator fully exits: a Validator-kind payout of its live balance
+    // (100) scheduled for epoch WITHDRAWAL_EPOCHS.
+    let node = ed25519::PrivateKey::from_seed(40);
+    let bls = bls12381::PrivateKey::from_seed(40);
+    let key = seed(&mut state, &node, &bls, ValidatorStatus::Active, 100);
+    full_exit(&mut state, key);
+
+    // A deposit for the SAME node pubkey but carrying a different consensus key is
+    // rejected at processing time and refunded (a DepositRefund-kind payout with a
+    // zero pubkey, scheduled for the same epoch WITHDRAWAL_EPOCHS). This is exactly
+    // the same-pubkey collision that used to merge into the exit.
+    let wrong_bls = bls12381::PrivateKey::from_seed(41);
+    state.push_deposit(make_signed_deposit(
+        &node,
+        &wrong_bls,
+        eth1_credentials(1),
+        50,
+        5,
+        test_domain(),
+    ));
+    state.process_deposits(test_domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+
+    // The exit (100) and the refund (50) are two independent payouts, not a single
+    // merged 150 entry. A merge would surface as one payout here and then panic in
+    // apply_withdrawal_payouts.
+    let block = state.emit_withdrawal_payouts(WITHDRAWAL_EPOCHS);
+    assert_eq!(block.len(), 2);
+    let mut amounts: Vec<u64> = block.iter().map(|w| w.amount).collect();
+    amounts.sort_unstable();
+    assert_eq!(amounts, vec![50, 100]);
+
+    // Emit equals the applied payouts, so the reconciliation assertion does not fire.
+    state.apply_withdrawal_payouts(WITHDRAWAL_EPOCHS, &block);
+    assert!(state.get_account(&key).is_none());
+}
