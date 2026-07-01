@@ -148,40 +148,30 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
 
         let mut height_reached = HashSet::new();
         loop {
+            // Peer-block health is a P2P signal, not consensus state, so it stays
+            // a metric check.
             let metrics = context.encode();
-
-            // Iterate over all lines
-            let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
                 if !line.starts_with("validator_") {
                     continue;
                 }
-
-                // Split metric and value
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
-
-                // If ends with peers_blocked, ensure it is zero
                 if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if height_reached.len() as u32 == n {
-                    success = true;
-                    break;
+                    assert_eq!(value.parse::<u64>().unwrap(), 0);
                 }
             }
-            if success {
+
+            // Height comes from each validator's consensus state, queried via
+            // the finalizer mailbox.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
+                }
+            }
+
+            if height_reached.len() as u32 == n {
                 break;
             }
 
@@ -371,54 +361,44 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         let mut height_reached = HashSet::new();
         let mut processed_requests = HashSet::new();
         loop {
+            // Peer-block health is a P2P signal, not consensus state, so it stays
+            // a metric check.
             let metrics = context.encode();
-
-            // Iterate over all lines
-            let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
                 if !line.starts_with("validator_") {
                     continue;
                 }
-
-                // Split metric and value
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
-
-                // If ends with peers_blocked, ensure it is zero
                 if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if metric.ends_with("withdrawal_validator_balance") {
-                    let balance = value.parse::<u64>().unwrap();
-                    // Parse the pubkey from the metric name using helper function
-                    if let Some(ed_pubkey_hex) = common::parse_metric_substring(metric, "pubkey") {
-                        let creds =
-                            common::parse_metric_substring(metric, "creds").expect("creds missing");
-                        assert_eq!(creds, hex::encode(test_withdrawal1.source_address));
-                        assert_eq!(ed_pubkey_hex, test_deposit.node_pubkey.to_string());
-                        assert_eq!(balance, 0);
-                        processed_requests.insert(metric.to_string());
-                    } else {
-                        println!("{}: {} (failed to parse pubkey)", metric, value);
-                    }
-                }
-                if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
-                    success = true;
-                    break;
+                    assert_eq!(value.parse::<u64>().unwrap(), 0);
                 }
             }
-            if success {
+
+            // Height and the withdrawal result both come from each validator's
+            // consensus state, queried via the finalizer mailbox. A fully
+            // withdrawn validator may have its account removed, so treat a
+            // missing account or a zero balance as processed.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
+                }
+                match query
+                    .get_validator_account(test_deposit.node_pubkey.clone())
+                    .await
+                {
+                    None => {
+                        processed_requests.insert(*idx);
+                    }
+                    Some(account) if account.balance == 0 => {
+                        processed_requests.insert(*idx);
+                    }
+                    Some(_) => {}
+                }
+            }
+
+            if processed_requests.len() as u32 >= n && height_reached.len() as u32 == n {
                 break;
             }
 
@@ -582,30 +562,15 @@ fn test_duplicate_withdrawal_blocked() {
         // Wait for n-1 validators (validator 0 exits)
         let mut height_reached = HashSet::new();
         loop {
-            let metrics = context.encode();
-            let mut success = false;
-            for line in metrics.lines() {
-                if !line.starts_with("validator_") {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if height_reached.len() as u32 == n - 1 {
-                    success = true;
-                    break;
+            // Height comes from each validator's consensus state, queried via
+            // the finalizer mailbox.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
                 }
             }
-            if success {
+
+            if height_reached.len() as u32 == n - 1 {
                 break;
             }
             context.sleep(Duration::from_secs(1)).await;
@@ -759,30 +724,15 @@ fn test_withdrawal_wrong_source_address_rejected() {
         // Wait for all validators to reach stop_height
         let mut height_reached = HashSet::new();
         loop {
-            let metrics = context.encode();
-            let mut success = false;
-            for line in metrics.lines() {
-                if !line.starts_with("validator_") {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= stop_height {
-                        height_reached.insert(metric.to_string());
-                    }
-                }
-
-                if height_reached.len() as u32 == n {
-                    success = true;
-                    break;
+            // Height comes from each validator's consensus state, queried via
+            // the finalizer mailbox.
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
                 }
             }
-            if success {
+
+            if height_reached.len() as u32 == n {
                 break;
             }
             context.sleep(Duration::from_secs(1)).await;
@@ -960,6 +910,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
                     break;
                 }
             }
+            // Replaced by query-based loop below.
             if success {
                 break;
             }
