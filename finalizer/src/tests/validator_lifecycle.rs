@@ -122,14 +122,6 @@ fn full_exit_withdrawal_entry(
     entry.into()
 }
 
-/// Encode a MaximumStake protocol-param change as a type-0xFF EIP-7685 entry.
-/// Layout: 0xFF | param_id(0x01 = MaximumStake) | length(8) | value (LE u64).
-fn maximum_stake_protocol_param_entry(new_max_stake: u64) -> alloy_primitives::Bytes {
-    let mut entry = vec![0xFFu8, 0x01u8, 8u8];
-    entry.extend_from_slice(&new_max_stake.to_le_bytes());
-    entry.into()
-}
-
 /// Create a minimal initial ConsensusState for testing
 fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -> ConsensusState {
     use rand::SeedableRng;
