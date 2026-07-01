@@ -208,3 +208,50 @@ fn refund_and_same_pubkey_exit_do_not_merge_and_payout_is_stable() {
     state.apply_withdrawal_payouts(WITHDRAWAL_EPOCHS, &block);
     assert!(state.get_account(&key).is_none());
 }
+
+// Regression for #339: a queued deposit for a node pubkey whose consensus (BLS)
+// key does not match the account currently registered for that pubkey (a stale
+// top-up landing after the original validator exited and a replacement account
+// was created under the same node pubkey) is refunded to the deposit's own
+// withdrawal credentials. It must not be credited to the replacement account or
+// overwrite its metadata.
+#[test]
+fn stale_topup_with_mismatched_consensus_key_is_refunded_not_rebound() {
+    let mut state = interaction_state();
+    let node = ed25519::PrivateKey::from_seed(50);
+    let replacement_bls = bls12381::PrivateKey::from_seed(50);
+    // The account currently registered for this node pubkey (the replacement).
+    let key = seed(
+        &mut state,
+        &node,
+        &replacement_bls,
+        ValidatorStatus::Active,
+        100,
+    );
+
+    // A stale deposit for the same node pubkey but carrying a different consensus
+    // key (the pre-exit identity). Signatures are valid; the key mismatches.
+    let stale_bls = bls12381::PrivateKey::from_seed(51);
+    let refund_creds = eth1_credentials(9);
+    state.push_deposit(make_signed_deposit(
+        &node,
+        &stale_bls,
+        refund_creds,
+        40,
+        7,
+        test_domain(),
+    ));
+    state.process_deposits(test_domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+
+    // The replacement account is untouched: balance not credited, key preserved.
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.balance, 100);
+    assert_eq!(account.consensus_public_key, replacement_bls.public_key());
+
+    // The stale deposit was refunded (untaxed) to its own withdrawal address, not
+    // rebound to the replacement account.
+    let block = state.emit_withdrawal_payouts(WITHDRAWAL_EPOCHS);
+    assert_eq!(block.len(), 1);
+    assert_eq!(block[0].amount, 40);
+    assert_eq!(block[0].address, Address::from([9u8; 20]));
+}

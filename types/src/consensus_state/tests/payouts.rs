@@ -282,3 +282,42 @@ fn emit_prioritizes_validator_exits_over_refunds_under_cap() {
     assert_eq!(block.len(), 1);
     assert_eq!(block[0].amount, 100);
 }
+
+// #362: a ready backlog far larger than the per-epoch cap is served by emitting and
+// applying only the capped front-prefix each sweep, deferring the remainder. This
+// exercises the lazy capped selection and the single batched SSZ rebuild at apply
+// over a large backlog, and that the whole backlog drains over successive sweeps.
+#[test]
+fn large_backlog_emits_capped_prefix_and_defers_remainder() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(MIN);
+    let cap = 5usize;
+    state.set_max_withdrawals_per_epoch(cap as u64);
+
+    let backlog = 50u64;
+    for i in 1..=backlog {
+        let key = [i as u8; 32];
+        state.set_account(key, create_test_validator_account(i, 100));
+        push_full_exit(&mut state, key, 0);
+    }
+    assert_eq!(state.get_withdrawal_count_for_epoch(0), backlog as usize);
+
+    // One sweep pays exactly the cap and leaves the remainder queued.
+    let block = state.emit_withdrawal_payouts(0);
+    assert_eq!(block.len(), cap);
+    state.apply_withdrawal_payouts(0, &block);
+    assert_eq!(
+        state.get_withdrawal_count_for_epoch(0),
+        backlog as usize - cap
+    );
+
+    // The whole backlog drains over successive capped sweeps without error.
+    let mut swept = cap;
+    while state.get_withdrawal_count_for_epoch(0) > 0 {
+        let block = state.emit_withdrawal_payouts(0);
+        assert!(block.len() <= cap);
+        state.apply_withdrawal_payouts(0, &block);
+        swept += block.len();
+    }
+    assert_eq!(swept, backlog as usize);
+}

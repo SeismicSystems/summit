@@ -25,6 +25,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 #[cfg(feature = "permissioned")]
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 use summit_types::consensus_state_query::ConsensusStateQuery;
 use summit_types::scheme::MultisigScheme;
 use tokio_util::sync::CancellationToken;
@@ -46,7 +47,7 @@ pub struct RpcBodyLimits {
     pub max_request_body_size: u32,
     pub max_response_body_size: u32,
     /// Per-request timeout (accept through body read and method dispatch).
-    pub request_timeout: std::time::Duration,
+    pub request_timeout: Duration,
     /// Maximum calls per JSON-RPC batch (`0` disables batching).
     pub max_batch_size: u32,
 }

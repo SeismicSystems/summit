@@ -1633,10 +1633,16 @@ impl ConsensusState {
             .map(|entry| entry.inner.index)
             .collect();
 
+        let mut drained_any = false;
         for index in indices {
-            let Some(entry) = self.pop_withdrawal_by_index(epoch, index) else {
+            // Pop straight from the queue without rebuilding the withdrawal subtree
+            // per pop; the whole capped batch is rebuilt once below. This keeps the
+            // consensus-critical commit at O(backlog) rather than O(cap · backlog)
+            // (#362).
+            let Some(entry) = self.withdrawal_queue.pop_by_index(epoch, index) else {
                 continue;
             };
+            drained_any = true;
             if entry.kind == WithdrawalKind::DepositRefund {
                 continue;
             }
@@ -1651,6 +1657,11 @@ impl ConsensusState {
             } else {
                 self.set_account(entry.pubkey, account);
             }
+        }
+        // Rebuild the withdrawal SSZ subtree once for the whole capped batch, instead
+        // of once per popped entry (#362).
+        if drained_any {
+            self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
         }
     }
 
