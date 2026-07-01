@@ -70,17 +70,15 @@ pub const VALIDATOR_FIELD_CONSENSUS_PUBKEY: usize = 0;
 pub const VALIDATOR_FIELD_WITHDRAWAL_CREDENTIALS: usize = 1;
 pub const VALIDATOR_FIELD_BALANCE: usize = 2;
 pub const VALIDATOR_FIELD_STATUS: usize = 3;
-pub const VALIDATOR_FIELD_HAS_PENDING_DEPOSIT: usize = 4;
-pub const VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL: usize = 5;
-pub const VALIDATOR_FIELD_JOINING_EPOCH: usize = 6;
-pub const VALIDATOR_FIELD_LAST_DEPOSIT_INDEX: usize = 7;
+pub const VALIDATOR_FIELD_JOINING_EPOCH: usize = 4;
+pub const VALIDATOR_FIELD_LAST_DEPOSIT_INDEX: usize = 5;
 /// The node public key — the `BTreeMap` key the account belongs to. Committed as
 /// a leaf so the validator's identity is bound into the root and its proofs.
-pub const VALIDATOR_FIELD_NODE_PUBKEY: usize = 8;
+pub const VALIDATOR_FIELD_NODE_PUBKEY: usize = 6;
 
-/// Leaves per validator: 9 fields padded to the next power of two (16 leaves,
-/// depth-4 subtree). Leaves 9–15 are zero padding.
-pub const VALIDATOR_FIELDS_PER_ACCOUNT: usize = 16;
+/// Leaves per validator: 7 fields padded to the next power of two (8 leaves,
+/// depth-3 subtree). Leaf 7 is zero padding.
+pub const VALIDATOR_FIELDS_PER_ACCOUNT: usize = 8;
 
 // --- Deposit field indices (within each deposit's 8-leaf subtree) ---
 
@@ -351,14 +349,6 @@ impl SszStateTree {
             account.status.hash_tree_root(),
         );
         tree.set_leaf(
-            base + VALIDATOR_FIELD_HAS_PENDING_DEPOSIT,
-            account.has_pending_deposit.hash_tree_root(),
-        );
-        tree.set_leaf(
-            base + VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL,
-            account.has_pending_withdrawal.hash_tree_root(),
-        );
-        tree.set_leaf(
             base + VALIDATOR_FIELD_JOINING_EPOCH,
             account.joining_epoch.hash_tree_root(),
         );
@@ -496,14 +486,6 @@ impl SszStateTree {
         tree.set_leaf_no_rehash(
             base + VALIDATOR_FIELD_STATUS,
             account.status.hash_tree_root(),
-        );
-        tree.set_leaf_no_rehash(
-            base + VALIDATOR_FIELD_HAS_PENDING_DEPOSIT,
-            account.has_pending_deposit.hash_tree_root(),
-        );
-        tree.set_leaf_no_rehash(
-            base + VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL,
-            account.has_pending_withdrawal.hash_tree_root(),
         );
         tree.set_leaf_no_rehash(
             base + VALIDATOR_FIELD_JOINING_EPOCH,
@@ -1587,8 +1569,6 @@ mod tests {
             withdrawal_credentials: Address::from([seed as u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0,
         };
@@ -2711,12 +2691,12 @@ mod tests {
         let account_proof = tree.generate_validator_proof(&pk, &keys).unwrap();
         let field_proof = tree.generate_validator_field_proof(&pk, 0, &keys).unwrap();
 
-        // Field proof branch is 4 elements longer (depth-4 per-validator subtree:
-        // 9 fields incl. node pubkey, padded to 16 leaves)
+        // Field proof branch is 3 elements longer (depth-3 per-validator subtree:
+        // 7 fields incl. node pubkey, padded to 8 leaves)
         assert_eq!(
             field_proof.branch.len(),
-            account_proof.branch.len() + 4,
-            "field branch should be 4 longer than account branch"
+            account_proof.branch.len() + 3,
+            "field branch should be 3 longer than account branch"
         );
     }
 
@@ -2731,16 +2711,14 @@ mod tests {
         let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
         let proof = tree.generate_validator_proof(&pk, &keys).unwrap();
 
-        // The whole-account proof leaf is the per-validator subtree root: the 8
-        // account fields plus the node pubkey (field 8), merkleized over 16 leaves.
+        // The whole-account proof leaf is the per-validator subtree root: the 6
+        // account fields plus the node pubkey (field 6), merkleized over 8 leaves.
         // (No longer equal to ValidatorAccount::hash_tree_root, which omits the key.)
         let expected = crate::ssz_tree::merkleize(&[
             acc.consensus_public_key.hash_tree_root(),
             acc.withdrawal_credentials.hash_tree_root(),
             acc.balance.hash_tree_root(),
             acc.status.hash_tree_root(),
-            acc.has_pending_deposit.hash_tree_root(),
-            acc.has_pending_withdrawal.hash_tree_root(),
             acc.joining_epoch.hash_tree_root(),
             acc.last_deposit_index.hash_tree_root(),
             pk,

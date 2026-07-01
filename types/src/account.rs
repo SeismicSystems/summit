@@ -68,8 +68,6 @@ pub struct ValidatorAccount {
     pub withdrawal_credentials: Address,           // Ethereum address
     pub balance: u64,                              // Balance in gwei
     pub status: ValidatorStatus,
-    pub has_pending_deposit: bool,
-    pub has_pending_withdrawal: bool,
     pub joining_epoch: u64, // Epoch when validator joined/will join (genesis validators = 0)
     pub last_deposit_index: u64, // Last deposit request index
 }
@@ -78,11 +76,11 @@ impl TryFrom<&[u8]> for ValidatorAccount {
     type Error = &'static str;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        // ValidatorAccount data is exactly 95 bytes
-        // Format: consensus_public_key(48) + withdrawal_credentials(20) + balance(8) + status(1) + has_pending_deposit(1) + has_pending_withdrawal(1) + joining_epoch(8) + last_deposit_index(8) = 95 bytes
+        // ValidatorAccount data is exactly 93 bytes
+        // Format: consensus_public_key(48) + withdrawal_credentials(20) + balance(8) + status(1) + joining_epoch(8) + last_deposit_index(8) = 93 bytes
 
-        if bytes.len() != 95 {
-            return Err("ValidatorAccount must be exactly 95 bytes");
+        if bytes.len() != 93 {
+            return Err("ValidatorAccount must be exactly 93 bytes");
         }
 
         // Extract consensus_public_key (48 bytes)
@@ -107,28 +105,14 @@ impl TryFrom<&[u8]> for ValidatorAccount {
         // Extract status (1 byte)
         let status = ValidatorStatus::from_u8(bytes[76])?;
 
-        // Extract has_pending_deposit (1 byte)
-        let has_pending_deposit = match bytes[77] {
-            0x0 => Ok(false),
-            0x1 => Ok(true),
-            _ => Err("Invalid has_pending_deposit value"),
-        }?;
-
-        // Extract has_pending_withdrawal (1 byte)
-        let has_pending_withdrawal = match bytes[78] {
-            0x0 => Ok(false),
-            0x1 => Ok(true),
-            _ => Err("Invalid has_pending_withdrawal value"),
-        }?;
-
         // Extract joining_epoch (8 bytes, little-endian u64)
-        let joining_epoch_bytes: [u8; 8] = bytes[79..87]
+        let joining_epoch_bytes: [u8; 8] = bytes[77..85]
             .try_into()
             .map_err(|_| "Failed to parse joining_epoch")?;
         let joining_epoch = u64::from_le_bytes(joining_epoch_bytes);
 
         // Extract last_deposit_index (8 bytes, little-endian u64)
-        let last_deposit_index_bytes: [u8; 8] = bytes[87..95]
+        let last_deposit_index_bytes: [u8; 8] = bytes[85..93]
             .try_into()
             .map_err(|_| "Failed to parse last_deposit_index")?;
         let last_deposit_index = u64::from_le_bytes(last_deposit_index_bytes);
@@ -138,8 +122,6 @@ impl TryFrom<&[u8]> for ValidatorAccount {
             withdrawal_credentials,
             balance,
             status,
-            has_pending_deposit,
-            has_pending_withdrawal,
             joining_epoch,
             last_deposit_index,
         })
@@ -152,22 +134,20 @@ impl Write for ValidatorAccount {
         buf.put(&self.withdrawal_credentials.0[..]);
         buf.put(&self.balance.to_le_bytes()[..]);
         buf.put_u8(self.status.to_u8());
-        buf.put_u8(self.has_pending_deposit as u8);
-        buf.put_u8(self.has_pending_withdrawal as u8);
         buf.put(&self.joining_epoch.to_le_bytes()[..]);
         buf.put(&self.last_deposit_index.to_le_bytes()[..]);
     }
 }
 
 impl FixedSize for ValidatorAccount {
-    const SIZE: usize = 95; // 48 + 20 + 8 + 1 + 1 + 1 + 8 + 8
+    const SIZE: usize = 93; // 48 + 20 + 8 + 1 + 8 + 8
 }
 
 impl Read for ValidatorAccount {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        if buf.remaining() < 95 {
+        if buf.remaining() < 93 {
             return Err(Error::Invalid("ValidatorAccount", "Insufficient bytes"));
         }
 
@@ -191,26 +171,6 @@ impl Read for ValidatorAccount {
         let status = ValidatorStatus::from_u8(status_byte)
             .map_err(|_| Error::Invalid("ValidatorAccount", "Invalid status value"))?;
 
-        // Extract has_pending_deposit (1 byte)
-        let has_pending_deposit = match buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? {
-            0x0 => Ok(false),
-            0x1 => Ok(true),
-            _ => Err(Error::Invalid(
-                "ValidatorAccount",
-                "Invalid has_pending_deposit value",
-            )),
-        }?;
-
-        // Extract has_pending_withdrawal (1 byte)
-        let has_pending_withdrawal = match buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? {
-            0x0 => Ok(false),
-            0x1 => Ok(true),
-            _ => Err(Error::Invalid(
-                "ValidatorAccount",
-                "Invalid has_pending_withdrawal value",
-            )),
-        }?;
-
         let mut joining_epoch_bytes = [0u8; 8];
         buf.try_copy_to_slice(&mut joining_epoch_bytes)
             .map_err(|_| Error::EndOfBuffer)?;
@@ -226,8 +186,6 @@ impl Read for ValidatorAccount {
             withdrawal_credentials,
             balance,
             status,
-            has_pending_deposit,
-            has_pending_withdrawal,
             joining_epoch,
             last_deposit_index,
         })
@@ -249,8 +207,6 @@ mod tests {
             withdrawal_credentials: Address::from([2u8; 20]),
             balance: 32000000000u64, // 32 ETH in gwei
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 42u64,
         };
@@ -273,8 +229,6 @@ mod tests {
             withdrawal_credentials: Address::from([4u8; 20]),
             balance: 64000000000u64, // 64 ETH in gwei
             status: ValidatorStatus::Inactive,
-            has_pending_deposit: false,
-            has_pending_withdrawal: true,
             joining_epoch: 0,
             last_deposit_index: 100u64,
         };
@@ -291,7 +245,7 @@ mod tests {
     #[test]
     fn test_validator_account_insufficient_bytes() {
         let mut buf = BytesMut::new();
-        buf.put(&[0u8; 94][..]); // One byte short
+        buf.put(&[0u8; 92][..]); // One byte short
 
         let result = ValidatorAccount::read(&mut buf.as_ref());
         assert!(result.is_err());
@@ -305,23 +259,23 @@ mod tests {
 
     #[test]
     fn test_validator_account_try_from_insufficient_bytes() {
-        let buf = [0u8; 94]; // One byte short
+        let buf = [0u8; 92]; // One byte short
         let result = ValidatorAccount::try_from(buf.as_ref());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "ValidatorAccount must be exactly 95 bytes"
+            "ValidatorAccount must be exactly 93 bytes"
         );
     }
 
     #[test]
     fn test_validator_account_try_from_too_many_bytes() {
-        let buf = [0u8; 96]; // One byte too many
+        let buf = [0u8; 94]; // One byte too many
         let result = ValidatorAccount::try_from(buf.as_ref());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "ValidatorAccount must be exactly 95 bytes"
+            "ValidatorAccount must be exactly 93 bytes"
         );
     }
 
@@ -334,8 +288,6 @@ mod tests {
             withdrawal_credentials: Address::from([6u8; 20]),
             balance: 128000000000u64, // 128 ETH in gwei
             status: ValidatorStatus::SubmittedExitRequest,
-            has_pending_deposit: true,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 500u64,
         };
@@ -356,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_validator_account_fixed_size() {
-        assert_eq!(ValidatorAccount::SIZE, 95);
+        assert_eq!(ValidatorAccount::SIZE, 93);
 
         let consensus_key = bls12381::PrivateKey::from_seed(1);
         let account = ValidatorAccount {
@@ -364,8 +316,6 @@ mod tests {
             withdrawal_credentials: Address::ZERO,
             balance: 0,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0,
         };
@@ -388,8 +338,6 @@ mod tests {
             ]),
             balance: 0x0123456789abcdefu64,
             status: ValidatorStatus::SubmittedExitRequest,
-            has_pending_deposit: true,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0xa1b2c3d4e5f60708u64,
         };
@@ -417,17 +365,11 @@ mod tests {
         // Check status (next 1 byte)
         assert_eq!(bytes[76], 2); // SubmittedExitRequest = 2
 
-        // Check has_pending_deposit (next 1 byte)
-        assert_eq!(bytes[77], 1); // true = 1
-
-        // Check has_pending_withdrawal (next 1 byte)
-        assert_eq!(bytes[78], 0); // false = 0
-
         // Check joining_epoch (next 8 bytes, little-endian)
-        assert_eq!(&bytes[79..87], &0u64.to_le_bytes());
+        assert_eq!(&bytes[77..85], &0u64.to_le_bytes());
 
         // Check last_deposit_index (last 8 bytes, little-endian)
-        assert_eq!(&bytes[87..95], &0xa1b2c3d4e5f60708u64.to_le_bytes());
+        assert_eq!(&bytes[85..93], &0xa1b2c3d4e5f60708u64.to_le_bytes());
 
         // Verify roundtrip
         let decoded = ValidatorAccount::read(&mut buf.as_ref()).unwrap();
@@ -477,8 +419,6 @@ mod tests {
         buf.put(&[2u8; 20][..]); // withdrawal_credentials
         buf.put(&1000u64.to_le_bytes()[..]); // balance
         buf.put_u8(99); // invalid status
-        buf.put_u8(0); // has_pending_deposit
-        buf.put_u8(0); // has_pending_withdrawal
         buf.put(&0u64.to_le_bytes()[..]); // joining_epoch
         buf.put(&42u64.to_le_bytes()[..]); // last_deposit_index
 

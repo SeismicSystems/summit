@@ -1011,8 +1011,6 @@ impl ConsensusState {
                         withdrawal_credentials,
                         balance: 0,
                         status: ValidatorStatus::Inactive,
-                        has_pending_deposit: false,
-                        has_pending_withdrawal: false,
                         joining_epoch: 0,
                         last_deposit_index: request.index,
                     }

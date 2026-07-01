@@ -92,8 +92,6 @@ pub(crate) fn create_test_validator_account(index: u64, balance: u64) -> Validat
         withdrawal_credentials: Address::from([index as u8; 20]),
         balance,
         status: ValidatorStatus::Active,
-        has_pending_deposit: false,
-        has_pending_withdrawal: false,
         joining_epoch: 0,
         last_deposit_index: index,
     }

@@ -129,16 +129,14 @@ impl SszHashTreeRoot for WithdrawalKind {
 // --- Containers ---
 
 impl SszHashTreeRoot for ValidatorAccount {
-    /// 8-field container: consensus_public_key, withdrawal_credentials, balance,
-    /// status, has_pending_deposit, has_pending_withdrawal, joining_epoch, last_deposit_index.
+    /// 6-field container: consensus_public_key, withdrawal_credentials, balance,
+    /// status, joining_epoch, last_deposit_index.
     fn hash_tree_root(&self) -> [u8; 32] {
         merkleize(&[
             self.consensus_public_key.hash_tree_root(),
             self.withdrawal_credentials.hash_tree_root(),
             self.balance.hash_tree_root(),
             self.status.hash_tree_root(),
-            self.has_pending_deposit.hash_tree_root(),
-            self.has_pending_withdrawal.hash_tree_root(),
             self.joining_epoch.hash_tree_root(),
             self.last_deposit_index.hash_tree_root(),
         ])
@@ -339,8 +337,6 @@ mod tests {
             withdrawal_credentials: Address::from([1u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 42,
         };
@@ -359,8 +355,6 @@ mod tests {
             withdrawal_credentials: Address::from([1u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0,
         };
@@ -373,14 +367,6 @@ mod tests {
         let mut m = base.clone();
         m.status = ValidatorStatus::Inactive;
         assert_ne!(base_root, m.hash_tree_root(), "status");
-
-        let mut m = base.clone();
-        m.has_pending_deposit = true;
-        assert_ne!(base_root, m.hash_tree_root(), "has_pending_deposit");
-
-        let mut m = base.clone();
-        m.has_pending_withdrawal = true;
-        assert_ne!(base_root, m.hash_tree_root(), "has_pending_withdrawal");
 
         let mut m = base.clone();
         m.joining_epoch = 42;

@@ -140,8 +140,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
             withdrawal_credentials: Address::from([i as u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0,
         };
@@ -190,7 +188,6 @@ fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epo
             .clone();
         exiting_account.status = ValidatorStatus::SubmittedExitRequest;
         exiting_account.balance = 0;
-        exiting_account.has_pending_withdrawal = true;
         initial_state.set_account(exiting_pubkey_bytes, exiting_account);
         initial_state.push_removed_validator(exiting_node_pubkey.clone());
 
@@ -664,8 +661,6 @@ fn test_joining_validator_peer_tier_follows_activation() {
             withdrawal_credentials: Address::from([99u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Joining,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             // Activates at epoch 2: still Joining across the epoch-1 boundary,
             // promoted to Active at the epoch-2 boundary.
             joining_epoch: 2,
@@ -820,8 +815,6 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
                 withdrawal_credentials: Address::from([10u8; 20]),
                 balance: 32_000_000_000,
                 status: ValidatorStatus::Joining,
-                has_pending_deposit: false,
-                has_pending_withdrawal: false,
                 joining_epoch: 1,
                 last_deposit_index: 0,
             },
@@ -1199,8 +1192,6 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
                 withdrawal_credentials: joining_withdrawal_address,
                 balance: 32_000_000_000,
                 status: ValidatorStatus::Joining,
-                has_pending_deposit: false,
-                has_pending_withdrawal: false,
                 joining_epoch: 1,
                 last_deposit_index: 0,
             },

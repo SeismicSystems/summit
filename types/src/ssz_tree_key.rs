@@ -175,8 +175,6 @@ fn parse_validator_field_name(name: &str) -> Result<usize, String> {
         "withdrawal_credentials" => Ok(ssz_state_tree::VALIDATOR_FIELD_WITHDRAWAL_CREDENTIALS),
         "balance" => Ok(ssz_state_tree::VALIDATOR_FIELD_BALANCE),
         "status" => Ok(ssz_state_tree::VALIDATOR_FIELD_STATUS),
-        "has_pending_deposit" => Ok(ssz_state_tree::VALIDATOR_FIELD_HAS_PENDING_DEPOSIT),
-        "has_pending_withdrawal" => Ok(ssz_state_tree::VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL),
         "joining_epoch" => Ok(ssz_state_tree::VALIDATOR_FIELD_JOINING_EPOCH),
         "last_deposit_index" => Ok(ssz_state_tree::VALIDATOR_FIELD_LAST_DEPOSIT_INDEX),
         _ => Err(format!("unknown validator field: {name}")),
@@ -352,14 +350,6 @@ mod tests {
             ),
             ("balance", ssz_state_tree::VALIDATOR_FIELD_BALANCE),
             ("status", ssz_state_tree::VALIDATOR_FIELD_STATUS),
-            (
-                "has_pending_deposit",
-                ssz_state_tree::VALIDATOR_FIELD_HAS_PENDING_DEPOSIT,
-            ),
-            (
-                "has_pending_withdrawal",
-                ssz_state_tree::VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL,
-            ),
             (
                 "joining_epoch",
                 ssz_state_tree::VALIDATOR_FIELD_JOINING_EPOCH,
