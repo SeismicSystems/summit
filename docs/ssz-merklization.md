@@ -109,21 +109,19 @@ Same 8-leaf-per-item structure as validators (7 fields + 1 zero padding leaf):
 
 #### Withdrawal Queue
 
-The withdrawal queue uses a three-level structure organized by epoch:
+The withdrawal queue is a flat collection with the same shape as the deposit
+queue. The `WithdrawalQueue` holds two FIFO deques — validator withdrawals
+followed by deposit refunds — which are flattened in that order (`iter_all`) into
+a single positional subtree:
 
 ```
-withdrawal collection root = mix_in_length(epoch_tree.root(), epoch_count)
+withdrawal collection root = mix_in_length(withdrawal_tree.root(), withdrawal_count)
 
-epoch_tree:
-  leaf[0] = mix_in_length(epoch_0_subtree.root(), epoch_0_count)
-  leaf[1] = mix_in_length(epoch_1_subtree.root(), epoch_1_count)
-  ...
-
-epoch_N_subtree:
-  8 leaves per withdrawal (same field layout as below)
+withdrawal_tree:
+  8 leaves per withdrawal, item i at leaves [i*8 .. i*8+7]
 ```
 
-Each withdrawal occupies 8 leaves (8 fields):
+Each withdrawal occupies 8 leaves (8 fields, already a power of two, so no padding):
 
 | Field Index | Field |
 |-------------|-------|
@@ -131,12 +129,15 @@ Each withdrawal occupies 8 leaves (8 fields):
 | 1 | `validator_index` |
 | 2 | `address` |
 | 3 | `amount` |
-| 4 | `pubkey` |
+| 4 | `pubkey` (zero for deposit refunds) |
 | 5 | `balance_deduction` |
 | 6 | `epoch` |
-| 7 | `kind` |
+| 7 | `kind` (0 = validator withdrawal, 1 = deposit refund) |
 
-A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by validator pubkey.
+Slot assignment is positional in `iter_all` order (all validator withdrawals, then
+all refunds), exactly like the deposit queue. A `HashMap<pubkey, usize>` index maps
+a validator pubkey to its flat slot for O(1) proof lookup; deposit refunds carry a
+zero pubkey and are not indexed.
 
 #### Protocol Parameter Changes
 
@@ -172,7 +173,7 @@ All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 - **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum/maximum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, minimum_validator_count, pending_active_validator_exits, validator_index, balance_deduction.
 - **`u32`**: Little-endian encoded, zero-padded to 32 bytes. Used by: observers_per_validator.
 - **`bool`**: `0x01` or `0x00`, zero-padded to 32 bytes. Used by: has_pending_deposit, has_pending_withdrawal.
-- **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3), zero-padded to 32 bytes.
+- **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3, FullPayoutPending=4), zero-padded to 32 bytes.
 - **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal), pending_checkpoint (the checkpoint digest, or the zero hash when no checkpoint is pending).
 - **`Address` (20 bytes)**: Zero-padded to 32 bytes. Used by: withdrawal_credentials (validator), address (withdrawal), treasury_address.
 - **Ed25519 public key (32 bytes)**: Used directly as the leaf value. Used by: node_pubkey (deposit), node_key (added validator), removed validator pubkeys.
@@ -241,11 +242,9 @@ This reduces insert/remove from O(N * 8 * log(N * 8)) (full rebuild) to O(N) mem
 
 **Deposit push (`push_deposit`):** Grows the subtree if needed, then writes 8 field leaves with `set_leaf()` (each rehashes to root). Amortized O(8 log N).
 
-**Withdrawal push (`push_withdrawal`):**
-- Append to existing epoch: grows the epoch subtree, writes 8 field leaves, refreshes the epoch leaf. O(8 log N).
-- New epoch: creates a new subtree, rebuilds the epoch-level tree. O(E) where E = number of epochs.
-
-**Withdrawal merge (`update_withdrawal`):** When a withdrawal request merges with an existing one (same pubkey), only the 8 leaves in the existing item are overwritten. O(8 log N).
+**Withdrawal push (`push_withdrawal`):** Identical to deposit push — grows the flat
+subtree if needed, then writes the 8 field leaves at the appended slot. Amortized
+O(8 log N). Withdrawals are never merged: each request is a distinct appended entry.
 
 ### Tier 5: Small Collection Rebuild — O(K log K)
 
@@ -268,9 +267,9 @@ Protocol parameters, added validators, and removed validators always rebuild the
 
 **Deposit pop (`pop_deposit`):** Rebuilds the entire deposit subtree from the remaining items. Since items shift forward in the `VecDeque`, the positional mapping changes for every remaining item.
 
-**Withdrawal pop (`pop_withdrawal`):** If items remain in the epoch, rebuilds that epoch's subtree from scratch. If the epoch is now empty, removes it and rebuilds the epoch-level tree.
+**Withdrawal pop (`pop_withdrawal`):** Rebuilds the flat withdrawal subtree from the remaining items, exactly like a deposit pop — front removal shifts every remaining item's positional slot.
 
-Both are called in loops during block execution — deposits up to `validator_onboarding_limit_per_block` times, withdrawals once per withdrawal in the block payload. Each pop triggers a full rebuild, so K consecutive pops cost O(K * D * log D) where D is the queue size.
+Both are drained under a per-epoch cap during block execution — deposits up to `max_deposits_per_epoch`, withdrawals up to `max_withdrawals_per_epoch`. To keep this off the O(cap * D) path, the drain loops rebuild the subtree **once** per block rather than once per pop: deposits pop via `pop_deposit_deferred` then a single `rebuild_deposit_tree`, and the terminal-block payout (`apply_withdrawal_payouts`) pops the capped entries then calls `rebuild_withdrawals` once. So a batch of K pops over a queue of size D costs O(D), not O(K * D).
 
 ### Bulk Operations
 
@@ -305,12 +304,8 @@ collection_gindex = top_gindex << (subtree_depth + 1) | item_index
 
 The `+1` accounts for the `mix_in_length` node that sits between the top-level leaf and the subtree root.
 
-For withdrawals, there is an additional nesting level:
-
-```
-epoch_gindex = top_gindex << (epoch_tree_depth + 1) | epoch_slot
-item_gindex = epoch_gindex << (subtree_depth - 2) | item_slot
-```
+Withdrawals use this same two-level composition as the deposit queue and validator
+accounts — the flat withdrawal subtree has no extra nesting.
 
 ### Branch Composition
 
@@ -318,17 +313,10 @@ The proof branch concatenates sibling hashes from multiple tree levels:
 
 **Scalar proof:** Top-level tree siblings only (5 elements for depth-5 tree).
 
-**Collection element proof (e.g., validator, deposit):**
+**Collection element proof (validator, deposit, withdrawal):**
 1. Subtree siblings (from leaf/node to subtree root)
 2. `mix_in_length` sibling: `LE_u64(count)` zero-padded to 32 bytes
 3. Top-level tree siblings (from collection leaf to state root)
-
-**Withdrawal proof (three-level):**
-1. Per-epoch subtree siblings
-2. Per-epoch `mix_in_length` sibling (epoch item count)
-3. Epoch tree siblings
-4. Epoch count `mix_in_length` sibling
-5. Top-level tree siblings
 
 ### Proof Granularity
 
@@ -548,13 +536,21 @@ A deferred approach would accumulate mutations and apply them in a single batch 
 
 2. **Operation log**: Record the sequence of mutations (e.g., "popped 5 deposits", "inserted validator at slot 3") and replay them optimally in batch. Enables batch-shift optimizations but adds complexity.
 
-### Batch Queue Pop
+### Batch Queue Pop (implemented)
 
-The deposit and withdrawal pop operations are the primary candidates for optimization:
+The per-pop full rebuild was the primary drain-loop cost and is now batched to once
+per block for both queues:
 
-- **Deposit pop**: Currently calls `rebuild_deposits()` (full subtree rebuild) on every `pop_deposit()`. During block execution, deposits are popped in a loop up to `validator_onboarding_limit_per_block` times. K consecutive pops trigger K full rebuilds of decreasing size. A single rebuild after all pops would be ~K times cheaper.
+- **Deposit drain**: pops via `pop_deposit_deferred` (no tree touch) and calls
+  `rebuild_deposit_tree` once after draining up to `max_deposits_per_epoch`.
 
-- **Withdrawal pop**: Currently rebuilds the affected epoch's subtree on every `pop_withdrawal()`. If a block contains K withdrawals from the same epoch, that's K successive epoch-subtree rebuilds. A batch pop could rebuild the epoch subtree once after all pops.
+- **Withdrawal payout**: `apply_withdrawal_payouts` pops the capped prefix (up to
+  `max_withdrawals_per_epoch`) and calls `rebuild_withdrawals` once. Emit selects
+  the capped prefix lazily rather than materializing the whole ready set.
+
+Both make a batch of K pops over a queue of size D cost O(D) instead of O(K * D).
+The standalone `pop_deposit` / `pop_withdrawal` helpers still rebuild per call and
+are used only outside the drain loops.
 
 ### Block-Shift Optimization for Deposits
 
