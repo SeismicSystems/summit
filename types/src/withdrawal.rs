@@ -406,15 +406,21 @@ impl WithdrawalQueue {
         epoch: u64,
         max_total: usize,
     ) -> Vec<&PendingWithdrawal> {
+        // Take the capped front-prefix lazily instead of materializing the whole
+        // ready set: `filter(..).take(..)` stops after `max_total` due entries, so
+        // the work and allocation stay bounded by the cap even when a far larger
+        // backlog is ready for this epoch (#362).
         let mut withdrawals: Vec<_> = self
-            .get_for_epoch_by_kind(epoch, WithdrawalKind::Validator)
-            .into_iter()
+            .withdrawals
+            .iter()
+            .filter(|w| w.epoch <= epoch)
             .take(max_total)
             .collect();
         let remaining = max_total - withdrawals.len();
         withdrawals.extend(
-            self.get_for_epoch_by_kind(epoch, WithdrawalKind::DepositRefund)
-                .into_iter()
+            self.refunds
+                .iter()
+                .filter(|w| w.epoch <= epoch)
                 .take(remaining),
         );
         withdrawals
