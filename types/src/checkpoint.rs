@@ -210,10 +210,12 @@ pub enum CheckpointVerificationError {
     /// the validator deltas committed by the verified terminal finalized header.
     CheckpointTransitionQueueMismatch(String),
     /// A checkpoint validator account's BLS consensus key does not match the key
-    /// accumulated for that node from genesis and the verified finalized headers.
-    /// Historical finalization signatures are verified with the accumulated key,
-    /// so a mismatch means the checkpoint swapped a consensus key it never signed
-    /// with while keeping the node identity and active status.
+    /// verified for that node. For active validators this is the key accumulated
+    /// from genesis and the verified finalized headers (used to check historical
+    /// finalization signatures); for next-epoch joining validators it is the
+    /// consensus key committed in the terminal header's `added_validators`. A
+    /// mismatch means the checkpoint's stored account key — the key that actually
+    /// goes live on activation — was never bound to the verified history.
     CheckpointConsensusKeyMismatch(String),
 }
 
@@ -679,6 +681,42 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
                 header_added.len(),
             )),
         );
+    }
+
+    // Bind each next-epoch joining validator's *account* consensus key to the
+    // (now header-authenticated) `added_validators` entry. Epoch activation flips
+    // the account's status to Active by node key but never copies the
+    // `AddedValidator.consensus_key` onto the account (see finalizer/src/actor.rs),
+    // so the account's stored consensus key is what actually goes live. Binding
+    // added_validators to the header (above) is therefore not enough on its own: a
+    // checkpoint could keep added_validators[next_epoch] matching the header while
+    // pointing the corresponding joining account at a different BLS key, which the
+    // active-validator consensus-key check (Step 3) does not cover because a
+    // joining node is not in the accumulated signing set.
+    for added in &header_added {
+        let node_bytes: [u8; 32] = added
+            .node_key
+            .as_ref()
+            .try_into()
+            .expect("ed25519 public key should be 32 bytes");
+        match checkpoint_state.validator_accounts.get(&node_bytes) {
+            None => {
+                return Err(CheckpointVerificationError::ValidatorSetMismatch(format!(
+                    "validator {node_bytes:?} is in the committed added_validators for epoch \
+                     {next_epoch} but has no account in the checkpoint"
+                )));
+            }
+            Some(account) => {
+                if account.consensus_public_key != added.consensus_key {
+                    return Err(CheckpointVerificationError::CheckpointConsensusKeyMismatch(
+                        format!(
+                            "joining validator {node_bytes:?} account consensus key does not match \
+                             the key committed in added_validators for epoch {next_epoch}"
+                        ),
+                    ));
+                }
+            }
+        }
     }
 
     let mut checkpoint_removed = checkpoint_state.get_removed_validators().clone();
@@ -1604,6 +1642,17 @@ mod tests {
         apply(&mut state);
         let checkpoint = Checkpoint::new(&state);
 
+        // Mirror the finalizer's last-block header: it commits the state's
+        // next-epoch additions (`get_added_validators(epoch + 1)`). Deriving this
+        // from the (possibly mutated) state lets a test stage a next-epoch joining
+        // validator whose committed delta matches the header while diverging the
+        // stored account key. `removed_validators` stays empty here so the
+        // transition-queue test can diverge it via the decoded state alone.
+        let header_added = state
+            .get_added_validators(state.get_epoch() + 1)
+            .cloned()
+            .unwrap_or_default();
+
         // Honest header commits to the (possibly mutated) checkpoint.
         let header = Header::new(
             [0u8; 32].into(),
@@ -1615,7 +1664,7 @@ mod tests {
             [2u8; 32].into(),
             checkpoint.digest,
             [0u8; 32].into(),
-            Vec::new(),
+            header_added,
             Vec::new(),
             [0u8; 32],
         );
@@ -1874,8 +1923,11 @@ mod tests {
             },
             6,
         );
-        let result =
-            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&tampered_keys), &checkpoint);
+        let result = super::verify_checkpoint_chain(
+            &genesis,
+            std::slice::from_ref(&tampered_keys),
+            &checkpoint,
+        );
         assert!(
             matches!(
                 result,
@@ -1883,6 +1935,82 @@ mod tests {
             ),
             "verifier must reject a checkpoint whose account consensus key is not bound to the \
              key accumulated from the verified finalized headers, got {result:?}"
+        );
+    }
+
+    // Binds a next-epoch *joining* validator's stored account consensus key to the
+    // consensus key committed in the terminal header's `added_validators`. #216
+    // binds the added_validators queue entry to the header, but epoch activation
+    // flips the account to Active by node key without copying the added entry's
+    // consensus key onto the account — so the account key is what goes live. A
+    // joining node is not in the accumulated signing set, so the active-validator
+    // check does not cover it. Without this a checkpoint could keep
+    // added_validators[next_epoch] matching the header while pointing the joining
+    // account at a different BLS key.
+    #[test]
+    fn test_checkpoint_verifier_binds_joining_account_consensus_key() {
+        use crate::account::{ValidatorAccount, ValidatorStatus};
+        use crate::header::AddedValidator;
+
+        // Stages a next-epoch joining validator (a node not in the genesis signing
+        // set) whose account consensus key and committed added_validators entry
+        // both carry `account_bls`, while the added entry always carries
+        // `added_bls`. The fixture's terminal header commits
+        // `get_added_validators(next_epoch)`, so the queue entry is header-bound.
+        let stage_joining = |account_bls: bls12381::PublicKey,
+                             added_bls: bls12381::PublicKey|
+         -> Box<dyn FnOnce(&mut ConsensusState)> {
+            Box::new(move |s: &mut ConsensusState| {
+                s.set_latest_height(5);
+                let node = ed25519::PrivateKey::from_seed(50).public_key();
+                let node_bytes: [u8; 32] = node.as_ref().try_into().unwrap();
+                s.set_account(
+                    node_bytes,
+                    ValidatorAccount {
+                        consensus_public_key: account_bls,
+                        withdrawal_credentials: Address::from([50u8; 20]),
+                        balance: 32_000_000_000,
+                        status: ValidatorStatus::Joining,
+                        has_pending_deposit: false,
+                        has_pending_withdrawal: false,
+                        joining_epoch: 1,
+                        last_deposit_index: 0,
+                    },
+                );
+                // next_epoch = decoded epoch (0) + 1.
+                s.add_validator(
+                    1,
+                    AddedValidator {
+                        node_key: node,
+                        consensus_key: added_bls,
+                    },
+                );
+            })
+        };
+
+        let real_bls = bls12381::PrivateKey::from_seed(500).public_key();
+        let attacker_bls = bls12381::PrivateKey::from_seed(900).public_key();
+
+        // Honest: the joining account key matches its committed added entry.
+        let (genesis, checkpoint, honest) =
+            build_checkpoint_and_header(stage_joining(real_bls.clone(), real_bls.clone()), 6);
+        super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
+            .expect("a joining account whose key matches the committed added entry must verify");
+
+        // Divergent: added_validators[next_epoch] still commits `real_bls` (so it
+        // matches the header and passes the #216 queue binding), but the joining
+        // account stores `attacker_bls` — the key that would go live on activation.
+        let (genesis, checkpoint, tampered) =
+            build_checkpoint_and_header(stage_joining(attacker_bls, real_bls), 6);
+        let result =
+            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&tampered), &checkpoint);
+        assert!(
+            matches!(
+                result,
+                Err(super::CheckpointVerificationError::CheckpointConsensusKeyMismatch(_))
+            ),
+            "verifier must reject a checkpoint whose joining account consensus key diverges from \
+             the header-committed added_validators entry, got {result:?}"
         );
     }
 
