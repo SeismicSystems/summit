@@ -407,8 +407,6 @@ pub fn get_initial_state(
                 withdrawal_credentials: *address,
                 balance,
                 status: ValidatorStatus::Active,
-                has_pending_deposit: false,
-                has_pending_withdrawal: false,
                 joining_epoch: 0,
                 // Since there is no deposit transaction for the genesis nodes, the index will still be
                 // 0 for the deposit contract. Right now we only use this index to avoid counting the same deposit request twice.

@@ -1152,8 +1152,6 @@ fn get_initial_state(
                 withdrawal_credentials: validator.withdrawal_credentials,
                 balance: genesis.validator_minimum_stake,
                 status: ValidatorStatus::Active,
-                has_pending_deposit: false,
-                has_pending_withdrawal: false,
                 joining_epoch: 0,
                 // This index comes from the deposit contract.
                 // Since there is no deposit transaction for the genesis nodes, the index will still be

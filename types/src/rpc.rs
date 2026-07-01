@@ -6,8 +6,6 @@ pub struct ValidatorAccountResponse {
     pub withdrawal_credentials: [u8; 20],
     pub balance: u64,
     pub status: String,
-    pub has_pending_deposit: bool,
-    pub has_pending_withdrawal: bool,
     pub joining_epoch: u64,
     pub last_deposit_index: u64,
 }

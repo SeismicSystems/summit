@@ -276,8 +276,6 @@ impl SummitApiServer for SummitRpcServer {
                 withdrawal_credentials: a.withdrawal_credentials.0.0,
                 balance: a.balance,
                 status: format!("{:?}", a.status),
-                has_pending_deposit: a.has_pending_deposit,
-                has_pending_withdrawal: a.has_pending_withdrawal,
                 joining_epoch: a.joining_epoch,
                 last_deposit_index: a.last_deposit_index,
             }),

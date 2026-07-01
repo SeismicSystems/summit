@@ -101,8 +101,6 @@ fn validator_account_key_binds_into_state_root() {
         withdrawal_credentials: Address::from([7u8; 20]),
         balance: 32_000_000_000,
         status: ValidatorStatus::Active,
-        has_pending_deposit: false,
-        has_pending_withdrawal: false,
         joining_epoch: 0,
         last_deposit_index: 0,
     };
@@ -782,7 +780,6 @@ fn test_ssz_full_block_lifecycle_matches_rebuild() {
     // Mark validator as exiting
     let mut account = state.get_account(&pubkeys[0]).unwrap().clone();
     account.balance = 0;
-    account.has_pending_withdrawal = true;
     account.status = ValidatorStatus::Inactive;
     state.set_account(pubkeys[0], account);
 
