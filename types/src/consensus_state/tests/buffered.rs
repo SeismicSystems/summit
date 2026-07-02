@@ -205,3 +205,95 @@ fn buffered_exit_and_topup_same_validator_both_apply() {
     // dropped: 100 + 50 = 150.
     assert_eq!(account.balance, 150);
 }
+
+// Multiple buffered partial withdrawals for the same validator are accepted as
+// distinct queue entries, then re-clamped sequentially at payout time. This
+// covers the production parsing path (buffer -> process_buffered_requests), not
+// just direct queue insertion.
+#[test]
+fn buffered_multiple_partials_same_validator_reclamp_at_payout() {
+    let mut state = buffered_state();
+    let node = ed25519::PrivateKey::from_seed(46);
+    let key = node_bytes(&node);
+    state.set_account(key, create_test_validator_account(1, 100));
+
+    let first = WithdrawalRequest {
+        source_address: Address::from([1u8; 20]),
+        validator_pubkey: key,
+        amount: 50,
+    };
+    let second = first.clone();
+
+    state.buffer_execution_requests(&[withdrawal_entry(&first), withdrawal_entry(&second)]);
+    state.process_buffered_requests(domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+
+    assert_eq!(state.get_withdrawals_for_epoch(WITHDRAWAL_EPOCHS).len(), 2);
+
+    let block = state.emit_withdrawal_payouts(WITHDRAWAL_EPOCHS);
+    assert_eq!(
+        block.iter().map(|w| w.amount).collect::<Vec<_>>(),
+        vec![50, 18]
+    );
+
+    state.apply_withdrawal_payouts(WITHDRAWAL_EPOCHS, &block);
+    assert_eq!(state.get_account(&key).unwrap().balance, MIN);
+    assert!(
+        state
+            .get_withdrawals_for_epoch(WITHDRAWAL_EPOCHS)
+            .is_empty()
+    );
+}
+
+// Requests buffered after the epoch's processing point (i.e. the last block)
+// survive the epoch transition, stay ahead of later next-epoch requests, and are
+// scheduled from the next epoch when the buffer is processed.
+#[test]
+fn deferred_last_block_request_keeps_order_and_next_epoch_schedule() {
+    let mut state = buffered_state();
+    let node_a = ed25519::PrivateKey::from_seed(47);
+    let node_b = ed25519::PrivateKey::from_seed(48);
+    let key_a = node_bytes(&node_a);
+    let key_b = node_bytes(&node_b);
+    state.set_account(key_a, create_test_validator_account(1, 100));
+    state.set_account(key_b, create_test_validator_account(2, 100));
+
+    let exit_a = WithdrawalRequest {
+        source_address: Address::from([1u8; 20]),
+        validator_pubkey: key_a,
+        amount: 0,
+    };
+    let exit_b = WithdrawalRequest {
+        source_address: Address::from([2u8; 20]),
+        validator_pubkey: key_b,
+        amount: 0,
+    };
+
+    // Simulate a request that arrived after epoch 0 processing already ran.
+    state.buffer_execution_requests(&[withdrawal_entry(&exit_a)]);
+    state.set_epoch(1);
+    // Then a normal request from epoch 1 arrives behind it.
+    state.buffer_execution_requests(&[withdrawal_entry(&exit_b)]);
+
+    state.process_buffered_requests(domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+
+    assert!(
+        state
+            .get_withdrawals_for_epoch(WITHDRAWAL_EPOCHS)
+            .is_empty(),
+        "deferred last-block request must not keep the previous epoch's payout schedule"
+    );
+
+    let payout_epoch = 1 + WITHDRAWAL_EPOCHS;
+    let queued = state.get_withdrawals_for_epoch(payout_epoch);
+    assert_eq!(queued.len(), 2);
+    assert_eq!(queued[0].pubkey, key_a);
+    assert_eq!(queued[1].pubkey, key_b);
+    assert_eq!(
+        state.get_account(&key_a).unwrap().status,
+        ValidatorStatus::SubmittedExitRequest
+    );
+    assert_eq!(
+        state.get_account(&key_b).unwrap().status,
+        ValidatorStatus::SubmittedExitRequest
+    );
+}
