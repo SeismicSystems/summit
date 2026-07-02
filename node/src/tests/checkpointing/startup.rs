@@ -82,7 +82,6 @@ fn single_file_import_has_no_chain_and_is_refused() {
     let state = ConsensusState::new(
         Default::default(),
         32_000_000_000,
-        64_000_000_000,
         NonZeroU64::new(10).unwrap(),
         10_000,
         Address::ZERO,
