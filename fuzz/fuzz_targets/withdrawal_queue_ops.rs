@@ -2,7 +2,7 @@
 
 //! Property-based fuzz target for `WithdrawalQueue` operations.
 //!
-//! Runs an arbitrary sequence of push/pop/reschedule ops and asserts:
+//! Runs an arbitrary sequence of push/pop ops and asserts:
 //!   - No panic.
 //!   - `len()` == number of withdrawals actually stored.
 //!   - Sum of `count_for_epoch(e)` over all `e` equals `len()`.
@@ -38,10 +38,6 @@ enum Op {
     Pop {
         epoch: u64,
     },
-    Reschedule {
-        from_epoch: u64,
-        to_epoch: u64,
-    },
     SetNextIndex(u64),
 }
 
@@ -75,12 +71,6 @@ fuzz_target!(|ops: Vec<Op>| {
             Op::Pop { epoch } => {
                 let _ = queue.pop(epoch);
             }
-            Op::Reschedule {
-                from_epoch,
-                to_epoch,
-            } => {
-                queue.reschedule_epoch(from_epoch, to_epoch);
-            }
             Op::SetNextIndex(idx) => {
                 let idx = idx & FUZZ_VALUE_MAX;
                 queue.set_next_index(idx);
@@ -91,7 +81,7 @@ fuzz_target!(|ops: Vec<Op>| {
             }
         }
 
-        // next_index must be non-decreasing across push/pop/reschedule.
+        // next_index must be non-decreasing across push/pop.
         let cur = queue.next_index();
         assert!(
             cur >= prev_next_index,
