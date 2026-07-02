@@ -358,7 +358,6 @@ impl SummitApiServer for SummitRpcServer {
                 address: w.inner.address.0.0,
                 amount: w.inner.amount,
                 pubkey: w.pubkey,
-                balance_deduction: w.balance_deduction,
                 epoch: w.epoch,
             }),
             None => Err(RpcError::WithdrawalNotFound.into()),

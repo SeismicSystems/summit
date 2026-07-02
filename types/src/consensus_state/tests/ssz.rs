@@ -593,7 +593,7 @@ fn test_ssz_push_withdrawal_request_keeps_next_index_in_sync() {
         validator_pubkey: [1u8; 32],
         amount: 16_000_000_000,
     };
-    state.push_withdrawal_request(request, 5, 16_000_000_000);
+    state.push_withdrawal_request(request, 5);
 
     let incremental_root = state.ssz_tree().root();
 
@@ -775,7 +775,7 @@ fn test_ssz_full_block_lifecycle_matches_rebuild() {
         validator_pubkey: pubkeys[0],
         amount: 32_000_000_000,
     };
-    state.push_withdrawal_request(wr, 4, 32_000_000_000);
+    state.push_withdrawal_request(wr, 4);
 
     // Mark validator as exiting
     let mut account = state.get_account(&pubkeys[0]).unwrap().clone();
@@ -830,10 +830,10 @@ fn test_withdrawal_requests_keep_ssz_tree_in_sync() {
     // Interleave validator withdrawals and deposit refunds. Pushing a validator
     // withdrawal while a refund is already queued exercises the rebuild branch in
     // `push_withdrawal_request_with_kind`; the rest are incremental appends.
-    state.push_withdrawal_request(req(1, 100), 5, 100);
-    state.push_refund_withdrawal_request(req(2, 200), 5, 0);
-    state.push_withdrawal_request(req(3, 300), 6, 300); // validator after a refund → rebuild
-    state.push_refund_withdrawal_request(req(4, 400), 7, 0);
+    state.push_withdrawal_request(req(1, 100), 5);
+    state.push_refund_withdrawal_request(req(2, 200), 5);
+    state.push_withdrawal_request(req(3, 300), 6); // validator after a refund → rebuild
+    state.push_refund_withdrawal_request(req(4, 400), 7);
 
     // The incrementally maintained root must equal a full rebuild from the queue.
     let incremental_root = state.ssz_tree().root();

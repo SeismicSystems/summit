@@ -42,11 +42,6 @@ pub struct WithdrawalKindMismatch {
 pub struct PendingWithdrawal {
     pub inner: Withdrawal,
     pub pubkey: [u8; 32],
-    /// Amount to subtract from the validator's `pending_withdrawal_amount` when processed.
-    /// For validator-initiated withdrawals and stake bounds enforcement, this equals the
-    /// withdrawal amount. For deposit refunds (where funds were never credited to the
-    /// account), this is 0.
-    pub balance_deduction: u64,
     /// The epoch in which this withdrawal is scheduled to be processed.
     pub epoch: u64,
     pub kind: WithdrawalKind,
@@ -56,11 +51,11 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
     type Error = &'static str;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        // PendingWithdrawal data is exactly 93 bytes
-        // Format: index(8) + validator_index(8) + address(20) + amount(8) + pubkey(32) + balance_deduction(8) + epoch(8) + kind(1) = 93 bytes
+        // PendingWithdrawal data is exactly 85 bytes
+        // Format: index(8) + validator_index(8) + address(20) + amount(8) + pubkey(32) + epoch(8) + kind(1) = 85 bytes
 
-        if bytes.len() != 93 {
-            return Err("PendingWithdrawal must be exactly 93 bytes");
+        if bytes.len() != 85 {
+            return Err("PendingWithdrawal must be exactly 85 bytes");
         }
 
         // Extract index (8 bytes, little-endian u64)
@@ -92,18 +87,12 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
             .try_into()
             .map_err(|_| "Failed to parse pubkey")?;
 
-        // Extract balance_deduction (8 bytes, little-endian u64)
-        let balance_deduction_bytes: [u8; 8] = bytes[76..84]
-            .try_into()
-            .map_err(|_| "Failed to parse balance_deduction")?;
-        let balance_deduction = u64::from_le_bytes(balance_deduction_bytes);
-
         // Extract epoch (8 bytes, little-endian u64)
-        let epoch_bytes: [u8; 8] = bytes[84..92]
+        let epoch_bytes: [u8; 8] = bytes[76..84]
             .try_into()
             .map_err(|_| "Failed to parse epoch")?;
         let epoch = u64::from_le_bytes(epoch_bytes);
-        let kind = WithdrawalKind::try_from(bytes[92]).map_err(|_| "Failed to parse kind")?;
+        let kind = WithdrawalKind::try_from(bytes[84]).map_err(|_| "Failed to parse kind")?;
 
         Ok(PendingWithdrawal {
             inner: Withdrawal {
@@ -113,7 +102,6 @@ impl TryFrom<&[u8]> for PendingWithdrawal {
                 amount,
             },
             pubkey,
-            balance_deduction,
             epoch,
             kind,
         })
@@ -127,21 +115,20 @@ impl Write for PendingWithdrawal {
         buf.put(&self.inner.address.0[..]);
         buf.put(&self.inner.amount.to_le_bytes()[..]);
         buf.put(&self.pubkey[..]);
-        buf.put(&self.balance_deduction.to_le_bytes()[..]);
         buf.put(&self.epoch.to_le_bytes()[..]);
         buf.put_u8(self.kind.as_u8());
     }
 }
 
 impl FixedSize for PendingWithdrawal {
-    const SIZE: usize = 93; // 8 + 8 + 20 + 8 + 32 + 8 + 8 + 1
+    const SIZE: usize = 85; // 8 + 8 + 20 + 8 + 32 + 8 + 1
 }
 
 impl Read for PendingWithdrawal {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        if buf.remaining() < 93 {
+        if buf.remaining() < 85 {
             return Err(Error::Invalid("PendingWithdrawal", "Insufficient bytes"));
         }
 
@@ -169,11 +156,6 @@ impl Read for PendingWithdrawal {
         buf.try_copy_to_slice(&mut pubkey)
             .map_err(|_| Error::EndOfBuffer)?;
 
-        let mut balance_deduction_bytes = [0u8; 8];
-        buf.try_copy_to_slice(&mut balance_deduction_bytes)
-            .map_err(|_| Error::EndOfBuffer)?;
-        let balance_deduction = u64::from_le_bytes(balance_deduction_bytes);
-
         let mut epoch_bytes = [0u8; 8];
         buf.try_copy_to_slice(&mut epoch_bytes)
             .map_err(|_| Error::EndOfBuffer)?;
@@ -189,7 +171,6 @@ impl Read for PendingWithdrawal {
                 amount,
             },
             pubkey,
-            balance_deduction,
             epoch,
             kind,
         })
@@ -224,7 +205,6 @@ impl WithdrawalQueue {
                 amount: request.amount,
             },
             pubkey: request.validator_pubkey,
-            balance_deduction: request.amount,
             epoch,
             kind: WithdrawalKind::Validator,
         };
@@ -242,7 +222,6 @@ impl WithdrawalQueue {
                 amount: request.amount,
             },
             pubkey: request.validator_pubkey,
-            balance_deduction: request.amount,
             epoch,
             kind: WithdrawalKind::DepositRefund,
         };
@@ -279,8 +258,8 @@ impl WithdrawalQueue {
     }
 
     /// Append a validator withdrawal request to the end of the queue.
-    pub fn push_request(&mut self, request: WithdrawalRequest, epoch: u64, balance_deduction: u64) {
-        self.push_request_with_kind(request, epoch, balance_deduction, WithdrawalKind::Validator)
+    pub fn push_request(&mut self, request: WithdrawalRequest, epoch: u64) {
+        self.push_request_with_kind(request, epoch, WithdrawalKind::Validator)
             .expect("validator withdrawal kind must match queue");
     }
 
@@ -293,7 +272,6 @@ impl WithdrawalQueue {
         &mut self,
         request: WithdrawalRequest,
         epoch: u64,
-        balance_deduction: u64,
         kind: WithdrawalKind,
     ) -> Result<bool, WithdrawalKindMismatch> {
         let index = self.next_index;
@@ -306,7 +284,6 @@ impl WithdrawalQueue {
                 amount: request.amount,
             },
             pubkey: request.validator_pubkey,
-            balance_deduction,
             epoch,
             kind,
         };
@@ -478,13 +455,6 @@ impl WithdrawalQueue {
         self.epochs_with_withdrawals().len()
     }
 
-    /// Get the `balance_deduction` for a specific validator, or 0 if not in the queue.
-    pub fn balance_deduction_for(&self, pubkey: &[u8; 32]) -> u64 {
-        self.get_withdrawal(pubkey)
-            .map(|w| w.balance_deduction)
-            .unwrap_or(0)
-    }
-
     /// Get the first pending withdrawal for a validator pubkey, validator queue
     /// first. Entries are not deduplicated by pubkey, so a pubkey may have several
     /// pending entries; this returns the earliest-queued one.
@@ -632,7 +602,6 @@ mod tests {
                 amount: 16000000000u64, // 16 ETH in gwei
             },
             pubkey: [42u8; 32],
-            balance_deduction: 16000000000u64,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };
@@ -640,7 +609,7 @@ mod tests {
         // Test Write
         let mut buf = BytesMut::new();
         withdrawal.write(&mut buf);
-        assert_eq!(buf.len(), 93); // 8 + 8 + 20 + 8 + 32 + 8 + 8 + 1
+        assert_eq!(buf.len(), 85); // 8 + 8 + 20 + 8 + 32 + 8 + 1
 
         // Test Read
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();
@@ -656,7 +625,6 @@ mod tests {
                 amount: 1,
             },
             pubkey: [tag; 32],
-            balance_deduction: 0,
             epoch,
             kind,
         }
@@ -777,7 +745,6 @@ mod tests {
                 amount: 32000000000u64, // 32 ETH in gwei
             },
             pubkey: [2u8; 32],
-            balance_deduction: 0,
             epoch: 10,
             kind: WithdrawalKind::DepositRefund,
         };
@@ -794,7 +761,7 @@ mod tests {
     #[test]
     fn test_pending_withdrawal_insufficient_bytes() {
         let mut buf = BytesMut::new();
-        buf.put(&[0u8; 92][..]); // One byte short
+        buf.put(&[0u8; 84][..]); // One byte short
 
         let result = PendingWithdrawal::read(&mut buf.as_ref());
         assert!(result.is_err());
@@ -808,23 +775,23 @@ mod tests {
 
     #[test]
     fn test_pending_withdrawal_try_from_insufficient_bytes() {
-        let buf = [0u8; 92]; // One byte short
+        let buf = [0u8; 84]; // One byte short
         let result = PendingWithdrawal::try_from(buf.as_ref());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 93 bytes"
+            "PendingWithdrawal must be exactly 85 bytes"
         );
     }
 
     #[test]
     fn test_pending_withdrawal_try_from_too_many_bytes() {
-        let buf = [0u8; 94]; // One byte too many
+        let buf = [0u8; 86]; // One byte too many
         let result = PendingWithdrawal::try_from(buf.as_ref());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "PendingWithdrawal must be exactly 93 bytes"
+            "PendingWithdrawal must be exactly 85 bytes"
         );
     }
 
@@ -839,7 +806,6 @@ mod tests {
                 amount: 64000000000u64, // 64 ETH in gwei
             },
             pubkey: [3u8; 32],
-            balance_deduction: 64000000000u64,
             epoch: 42,
             kind: WithdrawalKind::Validator,
         };
@@ -860,7 +826,7 @@ mod tests {
 
     #[test]
     fn test_pending_withdrawal_fixed_size() {
-        assert_eq!(PendingWithdrawal::SIZE, 93);
+        assert_eq!(PendingWithdrawal::SIZE, 85);
 
         let withdrawal = PendingWithdrawal {
             inner: Withdrawal {
@@ -870,7 +836,6 @@ mod tests {
                 amount: 0,
             },
             pubkey: [0u8; 32],
-            balance_deduction: 0,
             epoch: 0,
             kind: WithdrawalKind::Validator,
         };
@@ -894,7 +859,6 @@ mod tests {
                 amount: 0xa1b2c3d4e5f60708u64,
             },
             pubkey: [5u8; 32],
-            balance_deduction: 0xa1b2c3d4e5f60708u64,
             epoch: 0x1122334455667788u64,
             kind: WithdrawalKind::DepositRefund,
         };
@@ -925,14 +889,11 @@ mod tests {
         // Check pubkey (next 32 bytes)
         assert_eq!(&bytes[44..76], &[5u8; 32]);
 
-        // Check balance_deduction (next 8 bytes, little-endian)
-        assert_eq!(&bytes[76..84], &0xa1b2c3d4e5f60708u64.to_le_bytes());
-
         // Check epoch (next 8 bytes, little-endian)
-        assert_eq!(&bytes[84..92], &0x1122334455667788u64.to_le_bytes());
+        assert_eq!(&bytes[76..84], &0x1122334455667788u64.to_le_bytes());
 
         // Check kind (last byte)
-        assert_eq!(bytes[92], WithdrawalKind::DepositRefund.as_u8());
+        assert_eq!(bytes[84], WithdrawalKind::DepositRefund.as_u8());
 
         // Verify roundtrip
         let decoded = PendingWithdrawal::read(&mut buf.as_ref()).unwrap();
@@ -954,7 +915,7 @@ mod tests {
         assert_eq!(queue.len(), 0);
 
         let req = make_request([1u8; 32], 100);
-        queue.push_request(req, 5, 100);
+        queue.push_request(req, 5);
 
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.num_epochs(), 1);
@@ -963,7 +924,6 @@ mod tests {
         let w = queue.pop(5).unwrap();
         assert_eq!(w.inner.amount, 100);
         assert_eq!(w.inner.index, 0);
-        assert_eq!(w.balance_deduction, 100);
         assert_eq!(w.pubkey, [1u8; 32]);
         assert_eq!(w.epoch, 5);
 
@@ -977,7 +937,7 @@ mod tests {
         assert!(queue.peek(5).is_none());
 
         let req = make_request([1u8; 32], 100);
-        queue.push_request(req, 5, 100);
+        queue.push_request(req, 5);
 
         let w = queue.peek(5).unwrap();
         assert_eq!(w.inner.amount, 100);
@@ -989,7 +949,7 @@ mod tests {
     fn test_queue_pop_respects_due_epoch() {
         let mut queue = WithdrawalQueue::default();
         let req = make_request([1u8; 32], 100);
-        queue.push_request(req, 5, 100);
+        queue.push_request(req, 5);
 
         // Not due before the scheduled (earliest) epoch.
         assert!(queue.pop(4).is_none());
@@ -1002,9 +962,9 @@ mod tests {
     #[test]
     fn test_queue_multiple_validators_same_epoch() {
         let mut queue = WithdrawalQueue::default();
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
-        queue.push_request(make_request([2u8; 32], 200), 5, 200);
-        queue.push_request(make_request([3u8; 32], 300), 5, 300);
+        queue.push_request(make_request([1u8; 32], 100), 5);
+        queue.push_request(make_request([2u8; 32], 200), 5);
+        queue.push_request(make_request([3u8; 32], 300), 5);
 
         assert_eq!(queue.len(), 3);
         assert_eq!(queue.count_for_epoch(5), 3);
@@ -1021,8 +981,8 @@ mod tests {
     #[test]
     fn test_queue_multiple_epochs() {
         let mut queue = WithdrawalQueue::default();
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
-        queue.push_request(make_request([2u8; 32], 200), 7, 200);
+        queue.push_request(make_request([1u8; 32], 100), 5);
+        queue.push_request(make_request([2u8; 32], 200), 7);
 
         assert_eq!(queue.num_epochs(), 2);
         let mut epochs = queue.epochs_with_withdrawals();
@@ -1038,9 +998,9 @@ mod tests {
     #[test]
     fn test_queue_get_for_epoch() {
         let mut queue = WithdrawalQueue::default();
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
-        queue.push_request(make_request([2u8; 32], 200), 5, 200);
-        queue.push_request(make_request([3u8; 32], 300), 7, 300);
+        queue.push_request(make_request([1u8; 32], 100), 5);
+        queue.push_request(make_request([2u8; 32], 200), 5);
+        queue.push_request(make_request([3u8; 32], 300), 7);
 
         // get_for_epoch(e) returns entries DUE at e (earliest epoch <= e), in order.
         let due5 = queue.get_for_epoch(5);
@@ -1065,11 +1025,10 @@ mod tests {
             .push_request_with_kind(
                 make_request([0xFE; 32], 10),
                 5,
-                0,
                 WithdrawalKind::DepositRefund,
             )
             .unwrap();
-        queue.push_request(make_request([1u8; 32], 50), 5, 50);
+        queue.push_request(make_request([1u8; 32], 50), 5);
 
         let epoch5 = queue.get_for_epoch(5);
         assert_eq!(epoch5.len(), 2);
@@ -1100,15 +1059,15 @@ mod tests {
         let mut queue = WithdrawalQueue::default();
         assert_eq!(queue.next_index(), 0);
 
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([1u8; 32], 100), 5);
         assert_eq!(queue.next_index(), 1);
 
-        queue.push_request(make_request([2u8; 32], 200), 5, 200);
+        queue.push_request(make_request([2u8; 32], 200), 5);
         assert_eq!(queue.next_index(), 2);
 
         // Every request is a distinct entry (no merge), so each increments the index —
         // even a repeat of the same pubkey.
-        queue.push_request(make_request([1u8; 32], 50), 5, 0);
+        queue.push_request(make_request([1u8; 32], 50), 5);
         assert_eq!(queue.next_index(), 3);
         assert_eq!(queue.len(), 3);
     }
@@ -1119,7 +1078,7 @@ mod tests {
         queue.set_next_index(42);
         assert_eq!(queue.next_index(), 42);
 
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([1u8; 32], 100), 5);
         assert_eq!(queue.next_index(), 43);
     }
 
@@ -1240,9 +1199,9 @@ mod tests {
     fn test_queue_serialization_roundtrip_populated() {
         let mut queue = WithdrawalQueue::default();
         queue.set_next_index(10);
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
-        queue.push_request(make_request([2u8; 32], 200), 5, 200);
-        queue.push_request(make_request([3u8; 32], 300), 7, 300);
+        queue.push_request(make_request([1u8; 32], 100), 5);
+        queue.push_request(make_request([2u8; 32], 200), 5);
+        queue.push_request(make_request([3u8; 32], 300), 7);
 
         let mut buf = BytesMut::new();
         queue.write(&mut buf);
@@ -1267,7 +1226,6 @@ mod tests {
                 amount: 100,
             },
             pubkey: [1u8; 32],
-            balance_deduction: 100,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };
@@ -1281,7 +1239,7 @@ mod tests {
     #[test]
     fn test_queue_pop_cleans_up_empty_epoch() {
         let mut queue = WithdrawalQueue::default();
-        queue.push_request(make_request([1u8; 32], 100), 5, 100);
+        queue.push_request(make_request([1u8; 32], 100), 5);
 
         assert_eq!(queue.num_epochs(), 1);
         queue.pop(5);
@@ -1292,7 +1250,7 @@ mod tests {
     #[test]
     fn test_reschedule_epoch_noop_when_empty() {
         let mut queue = WithdrawalQueue::default();
-        queue.push_request(make_request([1u8; 32], 100), 6, 100);
+        queue.push_request(make_request([1u8; 32], 100), 6);
 
         queue.reschedule_epoch(5, 6);
 

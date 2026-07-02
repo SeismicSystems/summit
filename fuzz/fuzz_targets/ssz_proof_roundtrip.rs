@@ -85,15 +85,15 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // Withdrawal proofs: grid over (epoch_slot, item_slot). None cases skipped.
-    for epoch_slot in 0..16 {
-        for item_slot in 0..16 {
-            if let Some(proof) = tree.generate_withdrawal_proof(epoch_slot, item_slot) {
-                assert!(
-                    proof.verify(&root),
-                    "withdrawal proof at ({epoch_slot}, {item_slot}) failed to verify",
-                );
-            }
+    // Withdrawal proofs: the queue is a flat combined collection, so iterate by
+    // positional index until None (past the count), like the deposit proofs.
+    for i in 0..64 {
+        match tree.generate_withdrawal_proof(i) {
+            Some(proof) => assert!(
+                proof.verify(&root),
+                "withdrawal proof at index {i} failed to verify",
+            ),
+            None => break,
         }
     }
 });

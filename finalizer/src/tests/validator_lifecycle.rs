@@ -1582,7 +1582,6 @@ fn restart_preserves_pending_full_exit_payout() {
                 amount: 0,
             },
             2,
-            0,
         );
         assert_eq!(
             initial_state.get_withdrawals_for_epoch(2).len(),

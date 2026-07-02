@@ -1940,12 +1940,13 @@ impl<
                 let mut key_bytes = [0u8; 32];
                 key_bytes.copy_from_slice(&public_key);
 
-                let balance = self.canonical_state.get_account(&key_bytes).map(|account| {
-                    account.balance
-                        + self
-                            .canonical_state
-                            .get_pending_withdrawal_amount(&key_bytes)
-                });
+                // Balance is not debited until payout, so account.balance already
+                // reflects the current balance including any not-yet-paid queued
+                // withdrawal. Reporting balance + pending would double-count.
+                let balance = self
+                    .canonical_state
+                    .get_account(&key_bytes)
+                    .map(|account| account.balance);
                 let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
             }
             ConsensusStateRequest::GetValidatorAccount(public_key) => {

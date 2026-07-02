@@ -101,11 +101,12 @@ pub const WITHDRAWAL_FIELD_VALIDATOR_INDEX: usize = 1;
 pub const WITHDRAWAL_FIELD_ADDRESS: usize = 2;
 pub const WITHDRAWAL_FIELD_AMOUNT: usize = 3;
 pub const WITHDRAWAL_FIELD_PUBKEY: usize = 4;
-pub const WITHDRAWAL_FIELD_BALANCE_DEDUCTION: usize = 5;
-pub const WITHDRAWAL_FIELD_EPOCH: usize = 6;
-pub const WITHDRAWAL_FIELD_KIND: usize = 7;
+pub const WITHDRAWAL_FIELD_EPOCH: usize = 5;
+pub const WITHDRAWAL_FIELD_KIND: usize = 6;
+// leaf 7 is unused (zero hash padding for the 7-field container in an 8-leaf subtree)
 
-/// Number of SSZ leaves per PendingWithdrawal (8 fields → 8 leaves, depth-3 subtree).
+/// Number of SSZ leaves per PendingWithdrawal: 7 fields padded to the next power
+/// of two (8 leaves, depth-3 subtree). Leaf 7 is zero padding.
 pub const WITHDRAWAL_FIELDS_PER_ITEM: usize = 8;
 
 // --- Protocol parameter field indices (within each param's 2-leaf subtree) ---
@@ -612,7 +613,8 @@ impl SszStateTree {
         self.update_withdrawal_collection_root();
     }
 
-    /// Set the 8 field leaves for withdrawal at positional slot `i`.
+    /// Set the 7 field leaves for withdrawal at positional slot `i` (leaf 7 stays
+    /// zero as SSZ padding for the 7-field container in an 8-leaf subtree).
     fn set_withdrawal_fields(tree: &mut SszTree, slot: usize, withdrawal: &PendingWithdrawal) {
         let base = slot * WITHDRAWAL_FIELDS_PER_ITEM;
         tree.set_leaf(
@@ -634,10 +636,6 @@ impl SszStateTree {
         tree.set_leaf(
             base + WITHDRAWAL_FIELD_PUBKEY,
             withdrawal.pubkey.hash_tree_root(),
-        );
-        tree.set_leaf(
-            base + WITHDRAWAL_FIELD_BALANCE_DEDUCTION,
-            withdrawal.balance_deduction.hash_tree_root(),
         );
         tree.set_leaf(
             base + WITHDRAWAL_FIELD_EPOCH,
@@ -2039,7 +2037,6 @@ mod tests {
                 amount: 1_000_000_000,
             },
             pubkey: pk1,
-            balance_deduction: 1_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         });
@@ -2051,7 +2048,6 @@ mod tests {
                 amount: 2_000_000_000,
             },
             pubkey: pk2,
-            balance_deduction: 2_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         });
@@ -2063,7 +2059,6 @@ mod tests {
                 amount: 3_000_000_000,
             },
             pubkey: pk3,
-            balance_deduction: 3_000_000_000,
             epoch: 2,
             kind: WithdrawalKind::Validator,
         });
@@ -2113,7 +2108,6 @@ mod tests {
                 amount: 1_000_000_000,
             },
             pubkey: [1u8; 32],
-            balance_deduction: 1_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         });
@@ -2312,7 +2306,6 @@ mod tests {
                 amount: 1_000_000_000,
             },
             pubkey: pk1,
-            balance_deduction: 1_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         });
@@ -2324,7 +2317,6 @@ mod tests {
                 amount: 2_000_000_000,
             },
             pubkey: pk2,
-            balance_deduction: 2_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         });
@@ -2336,7 +2328,6 @@ mod tests {
                 amount: 3_000_000_000,
             },
             pubkey: pk3,
-            balance_deduction: 3_000_000_000,
             epoch: 2,
             kind: WithdrawalKind::Validator,
         });
@@ -2392,7 +2383,6 @@ mod tests {
                 amount: 1_000_000_000,
             },
             pubkey: pk1,
-            balance_deduction: 1_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         });
@@ -2404,7 +2394,6 @@ mod tests {
                 amount: 2_000_000_000,
             },
             pubkey: pk2,
-            balance_deduction: 2_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         });
@@ -2507,7 +2496,6 @@ mod tests {
                 amount: 1_000_000_000,
             },
             pubkey: [1u8; 32],
-            balance_deduction: 1_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         };
@@ -2537,7 +2525,6 @@ mod tests {
                 amount: 1_000_000_000,
             },
             pubkey: [1u8; 32],
-            balance_deduction: 1_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         });
@@ -2560,7 +2547,6 @@ mod tests {
                 amount: 1_000_000_000,
             },
             pubkey: [1u8; 32],
-            balance_deduction: 1_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         };
@@ -2572,7 +2558,6 @@ mod tests {
                 amount: 2_000_000_000,
             },
             pubkey: [2u8; 32],
-            balance_deduction: 2_000_000_000,
             epoch: 1,
             kind: WithdrawalKind::Validator,
         };
@@ -2584,7 +2569,6 @@ mod tests {
                 amount: 3_000_000_000,
             },
             pubkey: [3u8; 32],
-            balance_deduction: 3_000_000_000,
             epoch: 2,
             kind: WithdrawalKind::Validator,
         };
@@ -2599,7 +2583,6 @@ mod tests {
                 amount: 4_000_000_000,
             },
             pubkey: [4u8; 32],
-            balance_deduction: 0,
             epoch: 1,
             kind: WithdrawalKind::DepositRefund,
         };

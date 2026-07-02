@@ -871,7 +871,6 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
-            balance_deduction: 8_000_000_000,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };
@@ -1063,7 +1062,6 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
-            balance_deduction: 8_000_000_000,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };
@@ -1423,7 +1421,6 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
-            balance_deduction: 8_000_000_000,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };
