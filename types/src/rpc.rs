@@ -28,7 +28,6 @@ pub struct PendingWithdrawalResponse {
     pub address: [u8; 20],
     pub amount: u64,
     pub pubkey: [u8; 32],
-    pub balance_deduction: u64,
     pub epoch: u64,
 }
 

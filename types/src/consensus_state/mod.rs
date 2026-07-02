@@ -875,7 +875,6 @@ impl ConsensusState {
                     amount: refund_amount,
                 },
                 withdrawal_epoch,
-                0,
             );
         }
         if tax_amount > 0 {
@@ -887,7 +886,6 @@ impl ConsensusState {
                     amount: tax_amount,
                 },
                 withdrawal_epoch,
-                0,
             );
         }
     }
@@ -1225,16 +1223,10 @@ impl ConsensusState {
     }
 
     // Withdrawal queue operations
-    pub fn push_withdrawal_request(
-        &mut self,
-        request: WithdrawalRequest,
-        withdrawal_epoch: u64,
-        balance_deduction: u64,
-    ) {
+    pub fn push_withdrawal_request(&mut self, request: WithdrawalRequest, withdrawal_epoch: u64) {
         self.push_withdrawal_request_with_kind(
             request,
             withdrawal_epoch,
-            balance_deduction,
             WithdrawalKind::Validator,
         );
     }
@@ -1243,12 +1235,10 @@ impl ConsensusState {
         &mut self,
         request: WithdrawalRequest,
         withdrawal_epoch: u64,
-        balance_deduction: u64,
     ) {
         self.push_withdrawal_request_with_kind(
             request,
             withdrawal_epoch,
-            balance_deduction,
             WithdrawalKind::DepositRefund,
         );
     }
@@ -1257,14 +1247,13 @@ impl ConsensusState {
         &mut self,
         request: WithdrawalRequest,
         withdrawal_epoch: u64,
-        balance_deduction: u64,
         kind: WithdrawalKind,
     ) {
         #[cfg(feature = "prom")]
         let start = std::time::Instant::now();
 
         self.withdrawal_queue
-            .push_request_with_kind(request, withdrawal_epoch, balance_deduction, kind)
+            .push_request_with_kind(request, withdrawal_epoch, kind)
             .expect("withdrawal kind must match queue");
         // push_request_with_kind increments next_index — sync the scalar leaf.
         self.ssz_tree
@@ -1378,7 +1367,6 @@ impl ConsensusState {
                     amount,
                 },
                 withdrawal_epoch,
-                amount,
             );
         };
 
@@ -1627,11 +1615,6 @@ impl ConsensusState {
     /// Get all epochs that have pending withdrawals
     pub fn get_epochs_with_withdrawals(&self) -> Vec<u64> {
         self.withdrawal_queue.epochs_with_withdrawals()
-    }
-
-    /// Get the pending withdrawal amount (balance_deduction) for a specific validator.
-    pub fn get_pending_withdrawal_amount(&self, pubkey: &[u8; 32]) -> u64 {
-        self.withdrawal_queue.balance_deduction_for(pubkey)
     }
 
     /// Apply the staged committee deltas at an epoch boundary, mutating account

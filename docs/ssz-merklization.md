@@ -118,7 +118,7 @@ withdrawal_tree:
   8 leaves per withdrawal, item i at leaves [i*8 .. i*8+7]
 ```
 
-Each withdrawal occupies 8 leaves (8 fields, already a power of two, so no padding):
+Each withdrawal occupies 8 leaves (7 fields + 1 zero padding leaf):
 
 | Field Index | Field |
 |-------------|-------|
@@ -127,9 +127,9 @@ Each withdrawal occupies 8 leaves (8 fields, already a power of two, so no paddi
 | 2 | `address` |
 | 3 | `amount` |
 | 4 | `pubkey` (zero for deposit refunds) |
-| 5 | `balance_deduction` |
-| 6 | `epoch` |
-| 7 | `kind` (0 = validator withdrawal, 1 = deposit refund) |
+| 5 | `epoch` |
+| 6 | `kind` (0 = validator withdrawal, 1 = deposit refund) |
+| 7 | (zero padding) |
 
 Slot assignment is positional in `iter_all` order (all validator withdrawals, then
 all refunds), exactly like the deposit queue. A `HashMap<pubkey, usize>` index maps
@@ -167,7 +167,7 @@ request). Because the epocher uses interior mutability and can change without a
 
 All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 
-- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, minimum_validator_count, pending_active_validator_exits, validator_index, balance_deduction.
+- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, minimum_validator_count, pending_active_validator_exits, validator_index.
 - **`u32`**: Little-endian encoded, zero-padded to 32 bytes. Used by: observers_per_validator.
 - **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3, FullPayoutPending=4), zero-padded to 32 bytes.
 - **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal), pending_checkpoint (the checkpoint digest, or the zero hash when no checkpoint is pending).
@@ -492,7 +492,7 @@ Deposit field names: `node_pubkey`, `consensus_pubkey`, `withdrawal_credentials`
 | `withdrawal:<pubkey>` | `withdrawal:0xABCD...` | Whole withdrawal |
 | `withdrawal_field:<pubkey>:<field>` | `withdrawal_field:0xABCD...:amount` | Single field (response includes a `key_proof` binding — see above) |
 
-Withdrawal field names: `index`, `validator_index`, `address`, `amount`, `pubkey`, `balance_deduction`, `epoch`.
+Withdrawal field names: `index`, `validator_index`, `address`, `amount`, `pubkey`, `epoch`, `kind`.
 
 **Protocol parameter proofs** — by index:
 

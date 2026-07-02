@@ -21,7 +21,6 @@ fn push_partial(state: &mut ConsensusState, pubkey: [u8; 32], amount: u64, epoch
             amount,
         },
         epoch,
-        amount,
     );
 }
 
@@ -33,7 +32,6 @@ fn push_full_exit(state: &mut ConsensusState, pubkey: [u8; 32], epoch: u64) {
             amount: 0,
         },
         epoch,
-        0,
     );
 }
 
@@ -136,7 +134,6 @@ fn emit_refund_pays_fixed_amount() {
             amount: 7,
         },
         0,
-        0,
     );
 
     assert_eq!(amounts(&state.emit_withdrawal_payouts(0)), vec![7]);
@@ -205,7 +202,6 @@ fn apply_refund_leaves_balance_unchanged() {
             amount: 7,
         },
         0,
-        0,
     );
 
     let block = state.emit_withdrawal_payouts(0);
@@ -272,7 +268,6 @@ fn emit_prioritizes_validator_exits_over_refunds_under_cap() {
             validator_pubkey: [0u8; 32],
             amount: 7,
         },
-        0,
         0,
     );
     push_full_exit(&mut state, k1, 0);

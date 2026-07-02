@@ -3,8 +3,9 @@
 //! Property-based fuzz target for `ExtPrivateKey` sign / verify.
 //!
 //! Invariants:
-//!   - `ExtPrivateKey::derive_child_signer(master, idx).public_key()` equals
-//!     `derive_child_public(master.public_key(), idx)` for any `(master, idx)`.
+//!   - `ExtPrivateKey::derive_child_signer(master, ns, idx).public_key()` equals
+//!     `derive_child_public(master.public_key(), ns, idx)` for any
+//!     `(master, ns, idx)`.
 //!   - A signature produced by the child signer verifies under both the child's
 //!     own public key and the public-only derivation.
 
@@ -25,9 +26,9 @@ fuzz_target!(|input: Input| {
     let master = PrivateKey::from_seed(input.master_seed);
     let master_pub = master.public_key();
 
-    let child = ExtPrivateKey::derive_child_signer(&master, input.index);
+    let child = ExtPrivateKey::derive_child_signer(&master, &input.namespace, input.index);
     let child_pub = child.public_key();
-    let derived_pub = derive_child_public(master_pub, input.index);
+    let derived_pub = derive_child_public(master_pub, &input.namespace, input.index);
 
     assert_eq!(
         child_pub, derived_pub,

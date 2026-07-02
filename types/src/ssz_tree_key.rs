@@ -203,7 +203,6 @@ fn parse_withdrawal_field_name(name: &str) -> Result<usize, String> {
         "address" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_ADDRESS),
         "amount" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_AMOUNT),
         "pubkey" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_PUBKEY),
-        "balance_deduction" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION),
         "epoch" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
         "kind" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_KIND),
         _ => Err(format!("unknown withdrawal field: {name}")),
@@ -473,10 +472,6 @@ mod tests {
             ("address", ssz_state_tree::WITHDRAWAL_FIELD_ADDRESS),
             ("amount", ssz_state_tree::WITHDRAWAL_FIELD_AMOUNT),
             ("pubkey", ssz_state_tree::WITHDRAWAL_FIELD_PUBKEY),
-            (
-                "balance_deduction",
-                ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION,
-            ),
             ("epoch", ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
             ("kind", ssz_state_tree::WITHDRAWAL_FIELD_KIND),
         ];

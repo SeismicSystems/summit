@@ -160,8 +160,8 @@ impl SszHashTreeRoot for DepositRequest {
 }
 
 impl SszHashTreeRoot for PendingWithdrawal {
-    /// 8-field container: index, validator_index, address, amount,
-    /// pubkey, balance_deduction, epoch, kind.
+    /// 7-field container: index, validator_index, address, amount,
+    /// pubkey, epoch, kind.
     fn hash_tree_root(&self) -> [u8; 32] {
         merkleize(&[
             self.inner.index.hash_tree_root(),
@@ -169,7 +169,6 @@ impl SszHashTreeRoot for PendingWithdrawal {
             self.inner.address.hash_tree_root(),
             self.inner.amount.hash_tree_root(),
             self.pubkey.hash_tree_root(),
-            self.balance_deduction.hash_tree_root(),
             self.epoch.hash_tree_root(),
             self.kind.hash_tree_root(),
         ])
@@ -395,7 +394,6 @@ mod tests {
                 amount: 1000,
             },
             pubkey: [4u8; 32],
-            balance_deduction: 1000,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };

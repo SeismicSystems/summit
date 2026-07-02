@@ -79,7 +79,6 @@ pub(crate) fn create_test_withdrawal(index: u64, amount: u64, epoch: u64) -> Pen
             amount,
         },
         pubkey: [index as u8; 32],
-        balance_deduction: amount,
         epoch,
         kind: WithdrawalKind::Validator,
     }
