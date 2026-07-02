@@ -247,3 +247,54 @@ fn enforce_minimum_stake_removal_retains_topped_up_balance() {
     assert!(!removed(&state, key1));
     assert!(!removed(&state, key2));
 }
+
+// enforce_minimum_stake only considers Active and Joining validators as removal
+// candidates. Validators already out of the committee — Inactive (kept balance,
+// may rejoin) and FullPayoutPending (awaiting a full-exit payout) — must be left
+// untouched even when their balance is below a raised minimum: status unchanged,
+// not (re-)added to removed_validators, balance preserved. Completes the
+// status-variant matrix for stake-bound enforcement.
+#[test]
+fn enforce_minimum_stake_ignores_out_of_committee_validators() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(32);
+    state.set_minimum_validator_count(1);
+    state.set_max_withdrawals_per_epoch(10);
+
+    // Two active validators keep the committee above the floor so the change applies.
+    let stays_a = add_active(&mut state, 1, 100);
+    let stays_b = add_active(&mut state, 2, 100);
+
+    // Out-of-committee validators sitting below the raised minimum of 80.
+    let inactive = add_active(&mut state, 3, 50);
+    let mut acc = state.get_account(&inactive).unwrap().clone();
+    acc.status = ValidatorStatus::Inactive;
+    state.set_account(inactive, acc);
+
+    let payout_pending = add_active(&mut state, 4, 50);
+    let mut acc = state.get_account(&payout_pending).unwrap().clone();
+    acc.status = ValidatorStatus::FullPayoutPending;
+    state.set_account(payout_pending, acc);
+
+    state.push_protocol_param_changes([ProtocolParam::MinimumStake(80)]);
+    state.enforce_minimum_stake();
+
+    assert_eq!(state.prospective_minimum_stake(), 80);
+
+    // Neither out-of-committee validator is touched: not removed, balance kept.
+    assert!(!removed(&state, inactive));
+    assert!(!removed(&state, payout_pending));
+    assert_eq!(state.get_account(&inactive).unwrap().balance, 50);
+    assert_eq!(state.get_account(&payout_pending).unwrap().balance, 50);
+    assert_eq!(
+        state.get_account(&inactive).unwrap().status,
+        ValidatorStatus::Inactive
+    );
+    assert_eq!(
+        state.get_account(&payout_pending).unwrap().status,
+        ValidatorStatus::FullPayoutPending
+    );
+    // The retained active validators are untouched too.
+    assert!(!removed(&state, stays_a));
+    assert!(!removed(&state, stays_b));
+}
