@@ -3,9 +3,9 @@ use super::common::*;
 use crate::account::ValidatorStatus;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::withdrawal::WithdrawalKind;
-use crate::{Digest, deposit_signature_domain};
+use crate::{Digest, PublicKey, deposit_signature_domain};
 use alloy_primitives::{Address, Bytes};
-use commonware_codec::Write;
+use commonware_codec::{DecodeExt, Write};
 use commonware_cryptography::{Signer, bls12381, ed25519};
 
 const MIN: u64 = 32;
@@ -60,6 +60,11 @@ fn has_refund(state: &ConsensusState) -> bool {
         .get_withdrawals_for_epoch(WITHDRAWAL_EPOCHS)
         .iter()
         .any(|w| w.kind == WithdrawalKind::DepositRefund)
+}
+
+fn removed(state: &ConsensusState, key: [u8; 32]) -> bool {
+    let pk = PublicKey::decode(&key[..]).unwrap();
+    state.get_removed_validators().contains(&pk)
 }
 
 // A buffered deposit entry is decoded, queued, processed, and (at or above the
@@ -160,4 +165,43 @@ fn buffer_accumulates_then_processing_consumes_it() {
     state.process_buffered_requests(domain(), WARM_UP, WITHDRAWAL_EPOCHS);
     assert_eq!(state.get_account(&key_a).unwrap().balance, 100);
     assert_eq!(state.get_account(&key_b).unwrap().balance, 100);
+}
+
+// Regression for #248: a full exit and a deposit (top-up) for the SAME validator
+// buffered for the same block must both take effect. Withdrawals are applied
+// inline as the buffer is parsed and deposits are drained afterward, so the
+// deposit can never drop the exit. The old mutual-exclusion (a pending-deposit
+// flag that suppressed the withdrawal) would have silently discarded the exit.
+#[test]
+fn buffered_exit_and_topup_same_validator_both_apply() {
+    let mut state = buffered_state();
+    let node = ed25519::PrivateKey::from_seed(45);
+    let bls = bls12381::PrivateKey::from_seed(45);
+    let key = node_bytes(&node);
+    let mut account = create_test_validator_account(1, 100);
+    account.consensus_public_key = bls.public_key();
+    state.set_account(key, account);
+
+    // Deposit entry (type 0x00) groups before the withdrawal entry (type 0x01),
+    // mirroring EIP-7685 type ordering. The withdrawal still wins: it is applied
+    // during the parse loop, before the deposit queue is drained.
+    let topup = make_signed_deposit(&node, &bls, eth1_credentials(1), 50, 0, domain());
+    let exit = WithdrawalRequest {
+        source_address: Address::from([1u8; 20]),
+        validator_pubkey: key,
+        amount: 0,
+    };
+    state.buffer_execution_requests(&[deposit_entry(&topup), withdrawal_entry(&exit)]);
+    state.process_buffered_requests(domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+
+    // The exit took effect: the validator is exiting and staged for committee
+    // removal, with a single full-exit payout queued.
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.status, ValidatorStatus::SubmittedExitRequest);
+    assert!(removed(&state, key));
+    assert_eq!(state.get_withdrawals_for_epoch(WITHDRAWAL_EPOCHS).len(), 1);
+
+    // The deposit was still credited (folded into the pending exit balance), not
+    // dropped: 100 + 50 = 150.
+    assert_eq!(account.balance, 150);
 }

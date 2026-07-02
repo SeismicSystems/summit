@@ -435,3 +435,65 @@ fn verify_checks_node_signature_before_consensus() {
         Err(DepositRejectionReason::InvalidNodeSignature)
     );
 }
+
+// A top-up for a validator that is already Joining (activation pending) credits
+// the balance without disturbing the scheduled activation: the status stays
+// Joining, the original joining_epoch is preserved (not pushed later by the new
+// deposit's later epoch), and the activation is not duplicated. The second
+// deposit lands in a later epoch to prove joining_epoch is not re-derived from
+// the current epoch.
+#[test]
+fn joining_topup_credits_without_rescheduling_activation() {
+    let mut state = deposit_state();
+    let node = ed25519::PrivateKey::from_seed(15);
+    let bls = bls12381::PrivateKey::from_seed(15);
+    let key = node_bytes(&node);
+
+    // First deposit in epoch 0 creates the account and schedules activation for
+    // epoch WARM_UP.
+    state.push_deposit(make_signed_deposit(
+        &node,
+        &bls,
+        eth1_credentials(1),
+        100,
+        0,
+        test_domain(),
+    ));
+    state.process_deposits(test_domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.status, ValidatorStatus::Joining);
+    assert_eq!(account.joining_epoch, WARM_UP);
+    assert!(state.has_added_validators(WARM_UP));
+
+    // A top-up in a later epoch (1) with a higher deposit index.
+    state.set_epoch(1);
+    state.push_deposit(make_signed_deposit(
+        &node,
+        &bls,
+        eth1_credentials(1),
+        50,
+        1,
+        test_domain(),
+    ));
+    state.process_deposits(test_domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.balance, 150, "top-up must be credited");
+    assert_eq!(
+        account.status,
+        ValidatorStatus::Joining,
+        "an already-joining validator stays Joining after a top-up"
+    );
+    assert_eq!(
+        account.joining_epoch, WARM_UP,
+        "the top-up must not push the activation to a later epoch"
+    );
+    assert!(
+        state.has_added_validators(WARM_UP),
+        "the original scheduled activation must remain"
+    );
+    assert!(
+        !state.has_added_validators(1 + WARM_UP),
+        "the top-up must not create a second, later activation"
+    );
+}
