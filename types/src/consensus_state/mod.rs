@@ -1606,12 +1606,6 @@ impl ConsensusState {
         self.withdrawal_queue.count_for_epoch(epoch)
     }
 
-    /// Move remaining withdrawals from one epoch to another.
-    pub fn reschedule_withdrawal_epoch(&mut self, from_epoch: u64, to_epoch: u64) {
-        self.withdrawal_queue.reschedule_epoch(from_epoch, to_epoch);
-        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
-    }
-
     /// Get all epochs that have pending withdrawals
     pub fn get_epochs_with_withdrawals(&self) -> Vec<u64> {
         self.withdrawal_queue.epochs_with_withdrawals()
@@ -2151,10 +2145,8 @@ impl Read for ConsensusState {
         let has_captured = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? != 0;
         let captured_bytes = if has_captured {
             let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-            // `len` is an attacker-controlled u32; reject it against the actual
-            // remaining bytes before allocating, so a malformed blob with a huge
-            // captured length fails cheaply instead of pre-allocating `len`
-            // bytes (mirrors the pending_execution_requests guard above).
+            // Bound the allocation by the bytes actually available so a corrupt or
+            // adversarial length prefix can't force a multi-gigabyte allocation.
             if len > buf.remaining() {
                 return Err(Error::EndOfBuffer);
             }

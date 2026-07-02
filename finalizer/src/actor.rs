@@ -1152,24 +1152,12 @@ impl<
             // Build the committee for the next epoch.
             self.validator_exit = self.update_validator_committee();
 
-            // Reschedule any overflow withdrawals that exceeded the per-epoch
-            // total withdrawal cap to the next epoch.
-            let current_epoch = self.canonical_state.get_epoch();
-            if self
-                .canonical_state
-                .get_withdrawal_count_for_epoch(current_epoch)
-                > 0
-            {
-                let overflow_count = self
-                    .canonical_state
-                    .get_withdrawal_count_for_epoch(current_epoch);
-                info!(
-                    current_epoch,
-                    overflow_count, "rescheduling overflow withdrawals to next epoch"
-                );
-                self.canonical_state
-                    .reschedule_withdrawal_epoch(current_epoch, current_epoch + 1);
-            }
+            // Withdrawals that exceeded this epoch's per-epoch cap need no
+            // rescheduling: they stay in the queue with their original (earliest)
+            // epoch and are picked up next epoch via the `epoch <= current` due
+            // check. Explicitly rescheduling them here would be an O(backlog) scan
+            // plus a full withdrawal-subtree rebuild at every boundary for no
+            // change in behavior.
 
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();

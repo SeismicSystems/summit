@@ -1224,15 +1224,20 @@ fn test_partial_withdrawal_at_floor_dropped_while_topup_is_credited() {
 
 #[test_traced("INFO")]
 fn test_deposit_and_withdrawal_same_block() {
-    // Tests that when a deposit and withdrawal for the same validator are in the same block,
-    // the second request is blocked by the first one's pending flag.
+    // A deposit and a partial withdrawal for the same validator in the same block:
+    // the deposit is credited and the partial withdrawal is dropped at the
+    // minimum-stake floor. The deposit does NOT block the withdrawal (there is no
+    // deposit/withdrawal mutual exclusion); the floor does.
     //
     // Test setup:
-    // - Genesis validator 0 starts with 32 ETH
-    // - Submit both a deposit (5 ETH top-up) and withdrawal in block 5
-    // - Deposit is processed first, sets has_pending_deposit = true
-    // - Withdrawal sees the flag and is blocked
-    // - Result: balance increases by 5 ETH, no withdrawal occurs
+    // - Genesis validator 0 starts at the minimum stake (32 ETH).
+    // - Submit both a 5 ETH top-up deposit and a 32 ETH partial withdrawal in block 5.
+    //
+    // Both are buffered and processed together at the epoch's penultimate block.
+    // Withdrawals are applied inline before the deposit queue is drained, so the
+    // partial is evaluated against the balance BEFORE the top-up credits:
+    // withdrawable = balance - min_stake = 0, so it clamps to zero and is dropped.
+    // The deposit is then credited independently (32 + 5 = 37 ETH).
     let n = 10;
     let min_stake = 32_000_000_000;
     let deposit_amount = 5_000_000_000; // 5 ETH top-up
@@ -1311,8 +1316,9 @@ fn test_deposit_and_withdrawal_same_block() {
         let withdrawal =
             common::create_withdrawal_request(withdrawal_address, validator0_pubkey, min_stake);
 
-        // Put BOTH requests in the same block - deposit first, then withdrawal
-        // The deposit will set has_pending_deposit, blocking the withdrawal
+        // Put BOTH requests in the same block. Order is irrelevant: withdrawals
+        // are applied inline before the deposit queue drains, so the partial is
+        // evaluated (and clamped to zero at the floor) before the top-up credits.
         let execution_requests = vec![
             ExecutionRequest::Deposit(deposit.clone()),
             ExecutionRequest::Withdrawal(withdrawal.clone()),
@@ -1397,7 +1403,7 @@ fn test_deposit_and_withdrawal_same_block() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        // Verify NO withdrawal occurred (withdrawal was blocked by pending deposit)
+        // Verify NO withdrawal occurred (the partial clamped to zero at the floor)
         let withdrawals = engine_client_network.get_withdrawals();
         assert!(withdrawals.is_empty());
 

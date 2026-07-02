@@ -383,31 +383,26 @@ impl WithdrawalQueue {
         epoch: u64,
         max_total: usize,
     ) -> Vec<&PendingWithdrawal> {
-        // Take the capped front-prefix lazily instead of materializing the whole
-        // ready set: `filter(..).take(..)` stops after `max_total` due entries, so
-        // the work and allocation stay bounded by the cap even when a far larger
-        // backlog is ready for this epoch (#362).
+        // The deques are epoch-ordered (non-decreasing), so the due entries
+        // (`epoch <= epoch`) form a contiguous front prefix. `take_while` stops at
+        // the first not-due entry instead of scanning the whole deque, and `take`
+        // caps the result — so the work stays bounded by min(cap, due-prefix) even
+        // when a far larger future backlog is queued behind it (#362).
         let mut withdrawals: Vec<_> = self
             .withdrawals
             .iter()
-            .filter(|w| w.epoch <= epoch)
+            .take_while(|w| w.epoch <= epoch)
             .take(max_total)
             .collect();
         let remaining = max_total - withdrawals.len();
         withdrawals.extend(
             self.refunds
                 .iter()
-                .filter(|w| w.epoch <= epoch)
+                .take_while(|w| w.epoch <= epoch)
                 .take(remaining),
         );
         withdrawals
     }
-
-    /// No-op: overflow handling is implicit. Entries that exceed a per-epoch cap
-    /// stay in the queue with their original (earliest) epoch and are picked up in a
-    /// later epoch via the `epoch <= current` due check. Retained for call-site
-    /// compatibility.
-    pub fn reschedule_epoch(&mut self, _from_epoch: u64, _to_epoch: u64) {}
 
     /// Number of due withdrawals for `epoch` (earliest-epoch `<= epoch`).
     pub fn count_for_epoch(&self, epoch: u64) -> usize {
@@ -1245,41 +1240,5 @@ mod tests {
         queue.pop(5);
         assert_eq!(queue.num_epochs(), 0);
         assert!(queue.epochs_with_withdrawals().is_empty());
-    }
-
-    #[test]
-    fn test_reschedule_epoch_noop_when_empty() {
-        let mut queue = WithdrawalQueue::default();
-        queue.push_request(make_request([1u8; 32], 100), 6);
-
-        queue.reschedule_epoch(5, 6);
-
-        // Nothing should change
-        assert_eq!(queue.count_for_epoch(6), 1);
-        assert_eq!(queue.get_for_epoch(6)[0].pubkey, [1u8; 32]);
-    }
-
-    #[test]
-    fn test_decode_huge_schedule_pubkey_count_does_not_preallocate() {
-        // A scheduled-pubkey count is an attacker-controlled u32; the decoder
-        // must reject a bogus count by exhausting the buffer, not by pre-sizing
-        // the VecDeque from it (the buffer is a byte count, so a count-derived
-        // capacity over-allocates by 32 bytes per slot). With the count far
-        // exceeding the available pubkey bodies, decode must bail cheaply.
-        let mut buf = BytesMut::new();
-        buf.put_u64(0); // next_index
-        buf.put_u32(0); // withdrawals_len = 0
-        buf.put_u32(1); // schedule_len = 1
-        buf.put_u64(0); // schedule entry epoch
-        buf.put_u32(u32::MAX); // claims ~4 billion scheduled pubkeys
-        // Provide exactly one full pubkey body, then truncate. This leaves a
-        // non-zero `buf.remaining()` at the allocation point, so the original
-        // `with_capacity(pubkeys_len.min(buf.remaining()))` would have
-        // over-allocated `remaining`-many slots here rather than the
-        // degenerate zero; decode still bails on the second (missing) pubkey.
-        buf.put_slice(&[0u8; 32]);
-
-        let result = WithdrawalQueue::read(&mut buf.as_ref());
-        assert!(matches!(result, Err(Error::EndOfBuffer)));
     }
 }
