@@ -54,6 +54,17 @@ fn full_exit(state: &mut ConsensusState, key: [u8; 32]) {
     );
 }
 
+fn partial_withdrawal(state: &mut ConsensusState, key: [u8; 32], amount: u64) {
+    state.apply_withdrawal_request(
+        WithdrawalRequest {
+            source_address: Address::from([1u8; 20]),
+            validator_pubkey: key,
+            amount,
+        },
+        WITHDRAWAL_EPOCHS,
+    );
+}
+
 fn land_deposit(
     state: &mut ConsensusState,
     node_priv: &ed25519::PrivateKey,
@@ -254,4 +265,50 @@ fn stale_topup_with_mismatched_consensus_key_is_refunded_not_rebound() {
     assert_eq!(block.len(), 1);
     assert_eq!(block[0].amount, 40);
     assert_eq!(block[0].address, Address::from([9u8; 20]));
+}
+
+// A partial withdrawal followed by a full exit for the same active validator,
+// both scheduled for the same payout epoch, must pay out the balance exactly
+// once across the two entries: the partial pays its requested amount and the
+// full-exit marker pays only the remaining balance (not the whole balance
+// again), so the sum equals the original balance and the account is removed.
+// This guards against a double-pay where the full-exit marker would ignore the
+// partial already draining part of the balance.
+#[test]
+fn partial_then_full_exit_pays_balance_once_and_removes_account() {
+    let mut state = interaction_state();
+    let node = ed25519::PrivateKey::from_seed(60);
+    let bls = bls12381::PrivateKey::from_seed(60);
+    let key = seed(&mut state, &node, &bls, ValidatorStatus::Active, 100);
+
+    // Partial first: withdrawable is 100 - MIN(32) = 68, so 40 is enqueued in
+    // full. The validator stays Active with its balance unchanged (debited at
+    // payout).
+    partial_withdrawal(&mut state, key, 40);
+    assert_eq!(
+        state.get_account(&key).unwrap().status,
+        ValidatorStatus::Active
+    );
+
+    // Then a full exit: stages committee removal and enqueues a full-exit marker
+    // (amount 0) behind the partial for the same epoch.
+    full_exit(&mut state, key);
+    assert_eq!(
+        state.get_account(&key).unwrap().status,
+        ValidatorStatus::SubmittedExitRequest
+    );
+    assert_eq!(state.get_withdrawals_for_epoch(WITHDRAWAL_EPOCHS).len(), 2);
+
+    // Payout: the partial pays 40 (running balance 100 -> 60), then the full-exit
+    // marker pays the remaining 60 (running balance 60 -> 0). Total 100, the
+    // original balance, with no double-pay.
+    let block = state.emit_withdrawal_payouts(WITHDRAWAL_EPOCHS);
+    assert_eq!(
+        block.iter().map(|w| w.amount).collect::<Vec<_>>(),
+        vec![40, 60]
+    );
+    assert_eq!(block.iter().map(|w| w.amount).sum::<u64>(), 100);
+
+    state.apply_withdrawal_payouts(WITHDRAWAL_EPOCHS, &block);
+    assert!(state.get_account(&key).is_none());
 }

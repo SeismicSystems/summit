@@ -52,6 +52,15 @@ fn removed(state: &ConsensusState, key: [u8; 32]) -> bool {
     state.get_removed_validators().contains(&pk)
 }
 
+fn removed_count(state: &ConsensusState, key: [u8; 32]) -> usize {
+    let pk = PublicKey::decode(&key[..]).unwrap();
+    state
+        .get_removed_validators()
+        .iter()
+        .filter(|k| **k == pk)
+        .count()
+}
+
 // A full exit is refused when it would drop the active set below the minimum
 // validator count: the validator stays Active and nothing is enqueued.
 #[test]
@@ -149,4 +158,92 @@ fn enforce_minimum_stake_cancels_joining_validator_to_inactive() {
     );
     assert!(!state.has_added_validators(2));
     assert!(!removed(&state, joining));
+}
+
+// Regression for #204: a voluntary full exit and a minimum-stake increase that
+// takes effect in the same epoch must not collide. The voluntarily-exiting
+// validator (already SubmittedExitRequest and in removed_validators) is excluded
+// from the stake-bound removal candidates, so it is neither reverted nor listed
+// twice, and its single full-exit payout is untouched. The separately
+// below-minimum validator is removed with no forced payout.
+#[test]
+fn enforce_minimum_stake_preserves_concurrent_voluntary_exit() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(32);
+    state.set_minimum_validator_count(1);
+    state.set_max_withdrawals_per_epoch(10);
+    let stays = add_active(&mut state, 1, 100);
+    let exiting = add_active(&mut state, 2, 100);
+    let below = add_active(&mut state, 3, 50);
+
+    // The exiting validator submits a voluntary full exit first: staged for
+    // committee removal with a full-exit payout enqueued for epoch 2.
+    state.apply_withdrawal_request(
+        WithdrawalRequest {
+            source_address: Address::from([1u8; 20]),
+            validator_pubkey: exiting,
+            amount: 0,
+        },
+        2,
+    );
+    assert_eq!(
+        state.get_account(&exiting).unwrap().status,
+        ValidatorStatus::SubmittedExitRequest
+    );
+
+    // A minimum-stake increase to 80 is enforced the same epoch. `stays` (100)
+    // retains the committee above the floor, so the change applies.
+    state.push_protocol_param_changes([ProtocolParam::MinimumStake(80)]);
+    state.enforce_minimum_stake();
+
+    assert_eq!(state.prospective_minimum_stake(), 80);
+
+    // The voluntary exit is preserved exactly: status unchanged, listed for
+    // removal once (not duplicated by enforcement), and its single full-exit
+    // payout still queued.
+    assert_eq!(
+        state.get_account(&exiting).unwrap().status,
+        ValidatorStatus::SubmittedExitRequest
+    );
+    assert_eq!(removed_count(&state, exiting), 1);
+    let queued = state.get_withdrawals_for_epoch(2);
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].pubkey, exiting);
+
+    // The below-minimum validator is removed by the stake bound, but keeps its
+    // balance and gets no forced payout (removed validators withdraw later).
+    assert!(removed(&state, below));
+    assert_eq!(state.get_account(&below).unwrap().balance, 50);
+    assert!(!removed(&state, stays));
+}
+
+// Regression for #374: when the minimum stake is raised, a validator whose
+// same-epoch top-up did not reach the new minimum is removed from the committee
+// but keeps its full (topped-up) balance. The rework never force-withdraws on
+// stake-bound removal, so the balance is retained (withdrawable later), not
+// dropped.
+#[test]
+fn enforce_minimum_stake_removal_retains_topped_up_balance() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(32);
+    state.set_minimum_validator_count(1);
+    state.set_max_withdrawals_per_epoch(10);
+    let key1 = add_active(&mut state, 1, 100);
+    let key2 = add_active(&mut state, 2, 100);
+    // Balance 60 reflects an original 50 plus a same-epoch top-up of 10 that
+    // still falls short of the raised minimum of 80.
+    let below = add_active(&mut state, 3, 60);
+
+    state.push_protocol_param_changes([ProtocolParam::MinimumStake(80)]);
+    state.enforce_minimum_stake();
+
+    // Removed from the committee, but the account and its full balance are kept:
+    // the balance is not dropped and nothing is force-withdrawn.
+    assert!(removed(&state, below));
+    let account = state.get_account(&below).unwrap();
+    assert_eq!(account.balance, 60);
+    assert_eq!(account.status, ValidatorStatus::Active);
+    assert!(state.get_withdrawals_for_epoch(2).is_empty());
+    assert!(!removed(&state, key1));
+    assert!(!removed(&state, key2));
 }

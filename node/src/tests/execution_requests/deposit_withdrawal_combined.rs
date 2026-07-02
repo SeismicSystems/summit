@@ -1017,13 +1017,22 @@ fn test_invalid_deposit_refunds_do_not_delay_validator_exit_withdrawal() {
 }
 
 #[test_traced("INFO")]
-fn test_withdrawal_blocked_by_pending_deposit() {
-    // Tests that a withdrawal request is ignored when the validator has a pending deposit.
+fn test_partial_withdrawal_at_floor_dropped_while_topup_is_credited() {
+    // A partial withdrawal that would take an active validator below the minimum
+    // stake is dropped, while a same-epoch deposit for that validator is still
+    // credited. The deposit does NOT block the withdrawal (there is no
+    // deposit/withdrawal mutual exclusion); the minimum-stake floor does.
     //
     // Test setup:
-    // - New validator submits deposit at block 3
-    // - Same validator submits withdrawal at block 4 (before deposit is processed)
-    // - Deposit should be processed, withdrawal should be ignored
+    // - Validator 0 starts at exactly the minimum stake (32 ETH).
+    // - It submits a 5 ETH top-up deposit at block 3.
+    // - It submits a partial withdrawal of 32 ETH at block 4.
+    //
+    // Both requests are buffered and processed together at the epoch's penultimate
+    // block. Withdrawals are applied inline as the buffer is parsed, before the
+    // deposit queue is drained, so the partial is evaluated against the balance
+    // BEFORE the top-up credits: withdrawable = balance - min_stake = 0, so it
+    // clamps to zero and is dropped. The deposit is then credited independently.
     let n = 5;
     let min_stake = 32_000_000_000;
     let link = Link {
@@ -1184,19 +1193,20 @@ fn test_withdrawal_blocked_by_pending_deposit() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
-        // Verify deposit was processed and withdrawal was ignored
+        // The deposit was credited; the partial withdrawal clamped to zero at the
+        // minimum-stake floor and was dropped.
         let state_query = consensus_state_queries.get(&0).unwrap();
         let account = state_query
             .get_validator_account(validators[0].0.clone())
             .await
             .unwrap();
 
-        // Balance should be initial (32 ETH) + deposit (5 ETH) = 37 ETH
-        // Withdrawal should have been ignored
+        // Balance is initial (32 ETH) + deposit (5 ETH) = 37 ETH: the top-up landed
+        // even though the withdrawal did not.
         assert_eq!(account.balance, min_stake + deposit_amount);
         assert_eq!(account.status, ValidatorStatus::Active);
 
-        // No withdrawals should have occurred
+        // The dropped partial produced no payout.
         let withdrawals = engine_client_network.get_withdrawals();
         assert!(withdrawals.is_empty());
 
