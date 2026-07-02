@@ -2095,7 +2095,7 @@ mod tests {
         use crate::header::{FinalizedHeader, FinalizedHeaderError, Header};
 
         let (genesis, checkpoint, _tampered_checkpoint, honest) =
-            checkpoint_verification_fixture(0, 1, Vec::new(), false);
+            checkpoint_verification_fixture(0, 1);
 
         // Sanity: the honest finalized header verifies against the honest checkpoint.
         super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
@@ -2166,8 +2166,7 @@ mod tests {
     fn test_checkpoint_verifier_rejects_extra_joining_account() {
         use crate::account::{ValidatorAccount, ValidatorStatus};
 
-        let (genesis, checkpoint, _tampered, honest) =
-            checkpoint_verification_fixture(0, 1, Vec::new(), false);
+        let (genesis, checkpoint, _tampered, honest) = checkpoint_verification_fixture(0, 1);
 
         // Sanity: the honest checkpoint verifies against the honest finalized header.
         super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
