@@ -1946,8 +1946,6 @@ mod tests {
                         withdrawal_credentials: Address::from([50u8; 20]),
                         balance: 32_000_000_000,
                         status: ValidatorStatus::Joining,
-                        has_pending_deposit: false,
-                        has_pending_withdrawal: false,
                         joining_epoch: 1,
                         last_deposit_index: 0,
                     },
@@ -2161,8 +2159,6 @@ mod tests {
             withdrawal_credentials: Address::from([99u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Joining,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 5,
             last_deposit_index: 0,
         };
