@@ -2095,7 +2095,7 @@ mod tests {
         use crate::header::{FinalizedHeader, FinalizedHeaderError, Header};
 
         let (genesis, checkpoint, _tampered_checkpoint, honest) =
-            checkpoint_verification_fixture(0, 1, Vec::new(), false);
+            checkpoint_verification_fixture(0, 1);
 
         // Sanity: the honest finalized header verifies against the honest checkpoint.
         super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
@@ -2149,6 +2149,62 @@ mod tests {
             ),
             "verifier must reject a finalized header whose epoch was mutated away \
              from the signed certificate payload, got {result:?}"
+        );
+    }
+
+    // A malicious checkpoint carries an extra attacker-controlled
+    // validator account with status Joining, while the active signing set still
+    // matches the finalized-header chain. The verifier's reverse membership check
+    // only rejects extra *Active* accounts (extra Joining accounts are legitimate
+    // for pending joiners), so the membership check alone would let it through.
+    // It is instead caught by the Step 2 checkpoint-hash binding: injecting the
+    // account changes the checkpoint digest, which no longer matches the
+    // checkpoint_hash the honest terminal header committed to. An attacker cannot
+    // append a Joining account to a checkpoint and still pair it with the genuine
+    // finalized-header chain.
+    #[test]
+    fn test_checkpoint_verifier_rejects_extra_joining_account() {
+        use crate::account::{ValidatorAccount, ValidatorStatus};
+
+        let (genesis, checkpoint, _tampered, honest) = checkpoint_verification_fixture(0, 1);
+
+        // Sanity: the honest checkpoint verifies against the honest finalized header.
+        super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &checkpoint)
+            .expect("fixture checkpoint should verify before tampering");
+
+        // Inject an extra Joining account into the decoded state, leaving the
+        // active signing set untouched.
+        let mut state =
+            ConsensusState::try_from(&checkpoint).expect("honest checkpoint state should decode");
+        let rogue_node = ed25519::PrivateKey::from_seed(99).public_key();
+        let rogue_node_bytes: [u8; 32] = rogue_node
+            .as_ref()
+            .try_into()
+            .expect("ed25519 public key is 32 bytes");
+        let rogue_account = ValidatorAccount {
+            consensus_public_key: bls12381::PrivateKey::from_seed(999).public_key(),
+            withdrawal_credentials: Address::from([99u8; 20]),
+            balance: 32_000_000_000,
+            status: ValidatorStatus::Joining,
+            has_pending_deposit: false,
+            has_pending_withdrawal: false,
+            joining_epoch: 5,
+            last_deposit_index: 0,
+        };
+        state.set_account(rogue_node_bytes, rogue_account);
+
+        // Re-encoding the tampered state changes the checkpoint digest, so it no
+        // longer matches the honest terminal header's committed checkpoint_hash.
+        let tampered = Checkpoint::new(&state);
+        let result =
+            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&honest), &tampered);
+        assert!(
+            matches!(
+                result,
+                Err(super::CheckpointVerificationError::CheckpointHashMismatch)
+            ),
+            "verifier must reject a checkpoint carrying an extra Joining account not \
+             committed by the terminal finalized header, got {result:?}"
         );
     }
 }

@@ -2243,4 +2243,69 @@ mod tests {
             "honest block with prev_randao = 0 must be accepted"
         );
     }
+
+    /// handle_verify must reject a block whose `checkpoint_hash` disagrees with
+    /// the verifying node's locally-derived `aux_data.checkpoint_hash`. An honest
+    /// validator only votes for a block whose checkpoint_hash matches the
+    /// checkpoint it computed from its own canonical state, so a finalized
+    /// terminal header's checkpoint_hash provably commits to the canonical
+    /// state an honest supermajority agreed on. This is the consensus-layer
+    /// binding that makes checkpoint-state injection (extra accounts, funds,
+    /// params) unreachable on the verified import path: such bytes change the
+    /// checkpoint digest and would never be signed.
+    ///
+    /// This mirrors `accepts_ordinary_child_inside_epoch` exactly, changing only
+    /// the block's checkpoint_hash, so the checkpoint_hash check is the sole
+    /// cause of the flip from accept to reject.
+    #[test]
+    fn rejects_block_with_mismatched_checkpoint_hash() {
+        let parent_height = 3; // mid-epoch 0
+        let parent = make_block(
+            [0u8; 32].into(),
+            parent_height,
+            0,
+            parent_height,
+            parent_height * 12,
+        );
+
+        // Identical to the accepted ordinary child, except it carries an
+        // attacker-chosen checkpoint_hash instead of the expected `None`.
+        let height = parent_height + 1;
+        let timestamp = height * 12;
+        let payload = empty_payload(height, parent.eth_block_hash(), timestamp);
+        let block = Block::compute_digest(
+            parent.digest(),
+            height,
+            timestamp,
+            payload,
+            Vec::new(),
+            0,
+            height,
+            Some([7u8; 32].into()), // <-- disagrees with aux_data.checkpoint_hash (None)
+            [0u8; 32].into(),
+            Vec::new(),
+            Vec::new(),
+            [0u8; 32],
+        );
+
+        // The verifying node derived no checkpoint at this height (None = [0; 32]).
+        let aux_data = make_aux_data(0);
+
+        let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
+        let parent_view = parent.view();
+        assert!(
+            !handle_verify(
+                round,
+                &block,
+                parent,
+                parent_view,
+                &epocher(),
+                &aux_data,
+                u64::MAX / 4,
+                u32::MAX
+            ),
+            "block whose checkpoint_hash disagrees with the locally-derived \
+             aux_data.checkpoint_hash must be rejected"
+        );
+    }
 }
