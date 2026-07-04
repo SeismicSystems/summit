@@ -805,6 +805,8 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         prom_port: (28600 + (node * 10)) as u16,
         prom_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
+        #[cfg(feature = "permissioned")]
+        pause_admin_address: summit_rpc::DEFAULT_PAUSE_ADMIN_ADDRESS_HEX.into(),
         worker_threads: Some(2),
         log_level: "debug".into(),
         db_prefix: format!("{node}"),

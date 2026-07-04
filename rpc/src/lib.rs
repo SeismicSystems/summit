@@ -17,6 +17,8 @@ pub use api::{
 };
 #[cfg(feature = "permissioned")]
 pub use api::{SummitPermissionedApiClient, SummitPermissionedApiServer};
+#[cfg(feature = "permissioned")]
+pub use auth::{DEFAULT_PAUSE_ADMIN_ADDRESS_HEX, parse_admin_address};
 
 use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
@@ -36,12 +38,15 @@ pub async fn start_rpc_server(
     port: u16,
     stop_signal: Signal,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+    #[cfg(feature = "permissioned")] pause_admin: alloy_primitives::Address,
 ) -> anyhow::Result<()> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
         finalizer_mailbox,
         #[cfg(feature = "permissioned")]
         paused,
+        #[cfg(feature = "permissioned")]
+        pause_admin,
     );
 
     let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());
@@ -74,12 +79,15 @@ pub async fn start_rpc_server_with_handle(
     key_store_path: String,
     port: u16,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+    #[cfg(feature = "permissioned")] pause_admin: alloy_primitives::Address,
 ) -> anyhow::Result<(ServerHandle, SocketAddr)> {
     let rpc_impl = SummitRpcServer::new(
         key_store_path,
         finalizer_mailbox,
         #[cfg(feature = "permissioned")]
         paused,
+        #[cfg(feature = "permissioned")]
+        pause_admin,
     );
 
     let mut methods = SummitApiServer::into_rpc(rpc_impl.clone());

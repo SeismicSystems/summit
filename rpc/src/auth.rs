@@ -4,19 +4,23 @@ use commonware_utils::from_hex_formatted;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// TODO: replace with the real admin address before production use.
-pub const PAUSE_ADMIN_ADDRESS_HEX: &str = "0xD9b09DCAe1B5D2fFd36200E12f2617414D5fcC30";
+/// Default pause admin address, used when `--pause-admin-address` is not provided.
+pub const DEFAULT_PAUSE_ADMIN_ADDRESS_HEX: &str = "0xD9b09DCAe1B5D2fFd36200E12f2617414D5fcC30";
+
+/// Parses a pause admin address from its hex representation.
+///
+/// Intended to be called once at startup so that a misconfigured address
+/// fails fast instead of surfacing on the first `pause`/`unpause` call.
+pub fn parse_admin_address(hex: &str) -> Result<Address, RpcError> {
+    Address::from_str(hex)
+        .map_err(|e| RpcError::InvalidAdminAddress(format!("admin address parse failed: {e}")))
+}
 
 pub const TIMESTAMP_WINDOW_SECS: u64 = 30;
 pub const DOMAIN: &str = "summit-pause-v1";
 
 pub const ACTION_PAUSE: &str = "pause";
 pub const ACTION_UNPAUSE: &str = "unpause";
-
-fn admin_address() -> Result<Address, RpcError> {
-    Address::from_str(PAUSE_ADMIN_ADDRESS_HEX)
-        .map_err(|e| RpcError::InvalidAdminAddress(format!("admin address parse failed: {e}")))
-}
 
 fn now_secs() -> Result<u64, RpcError> {
     SystemTime::now()
@@ -26,12 +30,12 @@ fn now_secs() -> Result<u64, RpcError> {
 }
 
 pub fn verify_action(
+    admin: &Address,
     action: &str,
     timestamp_secs: u64,
     signature_hex: &str,
 ) -> Result<(), RpcError> {
-    let admin = admin_address()?;
-    verify_action_with(&admin, now_secs()?, action, timestamp_secs, signature_hex)
+    verify_action_with(admin, now_secs()?, action, timestamp_secs, signature_hex)
 }
 
 pub(crate) fn verify_action_with(
@@ -129,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wrong_signer() {
+    fn rejects_signature_from_non_admin() {
         let attacker = PrivateKeySigner::random();
         let admin = PrivateKeySigner::random();
         let now = 1_700_000_000;
@@ -163,7 +167,13 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_admin_address_parses() {
-        assert!(admin_address().is_ok());
+    fn default_admin_address_parses() {
+        assert!(parse_admin_address(DEFAULT_PAUSE_ADMIN_ADDRESS_HEX).is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_admin_address() {
+        let err = parse_admin_address("0xnot-an-address").unwrap_err();
+        assert!(matches!(err, RpcError::InvalidAdminAddress(_)));
     }
 }

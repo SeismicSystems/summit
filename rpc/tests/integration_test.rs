@@ -10,6 +10,14 @@ use summit_rpc::{
 };
 use utils::{MockFinalizerState, create_test_finalizer_mailbox, create_test_keystore};
 
+#[cfg(feature = "permissioned")]
+fn test_pause_admin() -> alloy_primitives::Address {
+    match summit_rpc::parse_admin_address(summit_rpc::DEFAULT_PAUSE_ADMIN_ADDRESS_HEX) {
+        Ok(address) => address,
+        Err(_) => panic!("default pause admin address should parse in tests"),
+    }
+}
+
 #[tokio::test]
 async fn test_health_endpoint() {
     use summit_rpc::SummitApiClient;
@@ -24,6 +32,8 @@ async fn test_health_endpoint() {
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "permissioned")]
+        test_pause_admin(),
     )
     .await
     .unwrap();
@@ -56,6 +66,8 @@ async fn test_get_latest_height() {
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "permissioned")]
+        test_pause_admin(),
     )
     .await
     .unwrap();
@@ -88,6 +100,8 @@ async fn test_get_latest_epoch() {
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "permissioned")]
+        test_pause_admin(),
     )
     .await
     .unwrap();
@@ -116,6 +130,8 @@ async fn test_validator_balance_not_found() {
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "permissioned")]
+        test_pause_admin(),
     )
     .await
     .unwrap();
@@ -148,6 +164,8 @@ async fn test_get_public_keys() {
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "permissioned")]
+        test_pause_admin(),
     )
     .await
     .unwrap();
@@ -245,6 +263,8 @@ async fn test_get_minimum_stake() {
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "permissioned")]
+        test_pause_admin(),
     )
     .await
     .unwrap();
@@ -270,9 +290,15 @@ async fn test_pause_rejects_invalid_signature() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
     let paused = Arc::new(AtomicBool::new(false));
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, paused.clone())
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        paused.clone(),
+        test_pause_admin(),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -307,9 +333,15 @@ async fn test_pause_rejects_stale_timestamp() {
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
     let paused = Arc::new(AtomicBool::new(false));
 
-    let (handle, addr) = start_rpc_server_with_handle(mailbox, key_store_path, 0, paused.clone())
-        .await
-        .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        paused.clone(),
+        test_pause_admin(),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -336,10 +368,15 @@ async fn test_is_paused_open_access() {
     let temp_dir = create_test_keystore().unwrap();
     let key_store_path = temp_dir.path().to_str().unwrap().to_string();
 
-    let (handle, addr) =
-        start_rpc_server_with_handle(mailbox, key_store_path, 0, Arc::new(AtomicBool::new(false)))
-            .await
-            .unwrap();
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        0,
+        Arc::new(AtomicBool::new(false)),
+        test_pause_admin(),
+    )
+    .await
+    .unwrap();
 
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
@@ -367,6 +404,8 @@ async fn test_get_maximum_stake() {
         0,
         #[cfg(feature = "permissioned")]
         Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "permissioned")]
+        test_pause_admin(),
     )
     .await
     .unwrap();

@@ -34,6 +34,8 @@ pub struct SummitRpcServer {
     finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
+    #[cfg(feature = "permissioned")]
+    pause_admin: alloy_primitives::Address,
 }
 
 impl SummitRpcServer {
@@ -41,12 +43,15 @@ impl SummitRpcServer {
         key_store_path: String,
         finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
         #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
+        #[cfg(feature = "permissioned")] pause_admin: alloy_primitives::Address,
     ) -> Self {
         Self {
             key_store_path,
             finalizer_mailbox,
             #[cfg(feature = "permissioned")]
             paused,
+            #[cfg(feature = "permissioned")]
+            pause_admin,
         }
     }
 }
@@ -379,14 +384,24 @@ impl SummitApiServer for SummitRpcServer {
 #[async_trait]
 impl SummitPermissionedApiServer for SummitRpcServer {
     async fn pause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
-        auth::verify_action(auth::ACTION_PAUSE, timestamp_secs, &signature)?;
+        auth::verify_action(
+            &self.pause_admin,
+            auth::ACTION_PAUSE,
+            timestamp_secs,
+            &signature,
+        )?;
         self.paused.store(true, Ordering::Relaxed);
         tracing::info!("consensus paused via RPC");
         Ok(true)
     }
 
     async fn unpause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
-        auth::verify_action(auth::ACTION_UNPAUSE, timestamp_secs, &signature)?;
+        auth::verify_action(
+            &self.pause_admin,
+            auth::ACTION_UNPAUSE,
+            timestamp_secs,
+            &signature,
+        )?;
         self.paused.store(false, Ordering::Relaxed);
         tracing::info!("consensus unpaused via RPC");
         Ok(true)

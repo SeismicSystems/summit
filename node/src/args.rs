@@ -109,6 +109,11 @@ pub struct RunFlags {
     #[arg(long, default_value_t = 3030)]
     pub rpc_port: u16,
 
+    /// Address authorized to sign pause/unpause RPC requests
+    #[cfg(feature = "permissioned")]
+    #[arg(long, default_value_t = String::from(summit_rpc::DEFAULT_PAUSE_ADMIN_ADDRESS_HEX))]
+    pub pause_admin_address: String,
+
     /// Number of tokio worker threads (defaults to number of logical CPUs)
     #[arg(long)]
     pub worker_threads: Option<usize>,
@@ -674,6 +679,11 @@ where
     let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
     #[cfg(feature = "permissioned")]
     let paused = engine.paused.clone();
+    #[cfg(feature = "permissioned")]
+    let pause_admin = match summit_rpc::parse_admin_address(&flags.pause_admin_address) {
+        Ok(address) => address,
+        Err(_) => panic!("invalid --pause-admin-address"),
+    };
 
     let finalizer_mailbox = engine.finalizer_mailbox.clone();
     let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
@@ -692,6 +702,8 @@ where
             stop_signal,
             #[cfg(feature = "permissioned")]
             paused,
+            #[cfg(feature = "permissioned")]
+            pause_admin,
         )
         .await
         {
