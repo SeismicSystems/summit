@@ -298,3 +298,107 @@ fn enforce_minimum_stake_ignores_out_of_committee_validators() {
     assert!(!removed(&state, stays_a));
     assert!(!removed(&state, stays_b));
 }
+
+// Regression for the terminal payout ordering finding (F2): payouts run on the
+// terminal block, after enforce_minimum_stake retained the committee against a
+// pending raise (penultimate block) and before the boundary applies it. A
+// partial due on the terminal block must clamp against the prospective
+// minimum, not the outgoing one. Clamping against the old minimum lets the
+// payout drain a retained validator below the raise, leaving it stranded
+// Active under the new minimum with no later re enforcement.
+#[test]
+fn terminal_payout_clamps_against_prospective_minimum() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(32);
+    state.set_minimum_validator_count(1);
+    state.set_max_withdrawals_per_epoch(10);
+    // A well funded validator keeps the committee above the retention floor.
+    let stays = add_active(&mut state, 1, 100);
+    // The target validator sits above the pending raise before payouts.
+    let clipped = add_active(&mut state, 2, 45);
+
+    // A partial withdrawal of 10 is requested at epoch 0 and falls due at
+    // epoch 2, the epoch whose terminal block pays it out.
+    state.apply_withdrawal_request(
+        WithdrawalRequest {
+            source_address: Address::from([1u8; 20]),
+            validator_pubkey: clipped,
+            amount: 10,
+        },
+        2,
+    );
+
+    // Penultimate block of the payout epoch: a raise to 40 lands and is
+    // enforced against pre payout balances. 45 >= 40, so the validator is
+    // retained rather than removed.
+    state.push_protocol_param_changes([ProtocolParam::MinimumStake(40)]);
+    state.enforce_minimum_stake();
+    assert_eq!(state.prospective_minimum_stake(), 40);
+    assert!(!removed(&state, clipped));
+
+    // Terminal block: the payout must keep the retained validator viable under
+    // the incoming minimum, paying min(10, 45 - 40) = 5 rather than the full 10.
+    let block = state.emit_withdrawal_payouts(2);
+    assert_eq!(block.iter().map(|w| w.amount).collect::<Vec<_>>(), vec![5]);
+    state.apply_withdrawal_payouts(2, &block);
+
+    // Boundary: the raise is applied after the payouts.
+    state.apply_protocol_parameter_changes().unwrap();
+    assert_eq!(state.get_minimum_stake(), 40);
+
+    // The validator ends the boundary Active at exactly the new minimum.
+    let account = state.get_account(&clipped).unwrap();
+    assert_eq!(account.status, ValidatorStatus::Active);
+    assert_eq!(account.balance, 40);
+    assert!(!removed(&state, stays));
+}
+
+// Companion in the lowering direction: a pending minimum stake decrease also
+// takes effect for terminal block payouts. The second of two same epoch
+// partials clamps against the incoming lower minimum and gains the headroom
+// the decrease opens up, instead of being clamped to zero by the outgoing
+// minimum and dropped.
+#[test]
+fn terminal_payout_uses_incoming_lowered_minimum() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(40);
+    state.set_minimum_validator_count(1);
+    state.set_max_withdrawals_per_epoch(10);
+    let key = add_active(&mut state, 1, 100);
+
+    // Two partials of 60 due at epoch 2, pushed raw as in the payouts tests:
+    // request time clamping is not under test here.
+    for _ in 0..2 {
+        state.push_withdrawal_request(
+            WithdrawalRequest {
+                source_address: Address::from([1u8; 20]),
+                validator_pubkey: key,
+                amount: 60,
+            },
+            2,
+        );
+    }
+
+    // Penultimate block: a decrease to 32 lands; nobody is below it, so
+    // enforcement retains everyone and keeps the change pending.
+    state.push_protocol_param_changes([ProtocolParam::MinimumStake(32)]);
+    state.enforce_minimum_stake();
+    assert_eq!(state.prospective_minimum_stake(), 32);
+
+    // Terminal block: the sequential clamp runs against the incoming minimum.
+    // The first pays min(60, 100 - 32) = 60, the second min(60, 40 - 32) = 8.
+    let block = state.emit_withdrawal_payouts(2);
+    assert_eq!(
+        block.iter().map(|w| w.amount).collect::<Vec<_>>(),
+        vec![60, 8]
+    );
+    state.apply_withdrawal_payouts(2, &block);
+
+    // Boundary: the decrease is applied after the payouts; the validator ends
+    // Active at exactly the new minimum.
+    state.apply_protocol_parameter_changes().unwrap();
+    assert_eq!(state.get_minimum_stake(), 32);
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.status, ValidatorStatus::Active);
+    assert_eq!(account.balance, 32);
+}

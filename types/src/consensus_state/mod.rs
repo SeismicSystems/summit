@@ -1509,8 +1509,16 @@ impl ConsensusState {
     /// via a transient running balance, so concurrent partials keep an active
     /// validator at or above the minimum stake. A partial that clamps to zero is
     /// dropped: it is not emitted here and is consumed at apply.
+    ///
+    /// Partials clamp against the prospective minimum stake, not the outgoing
+    /// one. Payouts run on the terminal block, one block after
+    /// enforce_minimum_stake retained the committee against a pending change
+    /// and one block before the boundary applies it. Clamping against the old
+    /// minimum would let a partial drain a retained validator below a pending
+    /// raise, stranding it Active under the new minimum with no later
+    /// re enforcement.
     pub fn emit_withdrawal_payouts(&self, epoch: u64) -> Vec<Withdrawal> {
-        let min_stake = self.get_minimum_stake();
+        let min_stake = self.prospective_minimum_stake();
         let max_total = self.get_max_withdrawals_per_epoch() as usize;
         let mut running: HashMap<[u8; 32], u64> = HashMap::new();
         let mut payouts = Vec::new();
@@ -1560,7 +1568,7 @@ impl ConsensusState {
             "block withdrawals must match the payouts emitted from consensus state"
         );
 
-        let min_stake = self.get_minimum_stake();
+        let min_stake = self.prospective_minimum_stake();
         let max_total = self.get_max_withdrawals_per_epoch() as usize;
         let indices: Vec<u64> = self
             .withdrawal_queue
