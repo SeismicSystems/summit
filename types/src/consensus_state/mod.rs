@@ -913,15 +913,6 @@ impl ConsensusState {
         self.deposit_queue.len()
     }
 
-    /// Total amount of queued (not-yet-processed) deposits for `node_pubkey`.
-    pub fn pending_deposit_amount(&self, node_pubkey: &[u8; 32]) -> u64 {
-        self.deposit_queue
-            .iter()
-            .filter(|deposit| deposit.node_pubkey.as_ref() == &node_pubkey[..])
-            .map(|deposit| deposit.amount)
-            .sum()
-    }
-
     pub fn pop_deposit(&mut self) -> Option<DepositRequest> {
         #[cfg(feature = "prom")]
         let start = std::time::Instant::now();
