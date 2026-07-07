@@ -745,7 +745,7 @@ impl<
         // canonical height; the finalized path must do the same. We must still ACK the
         // duplicate so the syncer's pending-ack pipeline doesn't stall, and we must NOT
         // re-execute it — re-execution would re-run the EL payload check, re-process
-        // deposits/withdrawals, regress the height, or trip the epoch assertion in
+        // deposits/withdrawals, regress the height, or fail the epoch check in
         // `execute_block` when the canonical state has already advanced past an epoch
         // boundary.
         let latest_height = self.canonical_state.get_latest_height();
@@ -2093,6 +2093,25 @@ async fn execute_block<
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
 
+    // The block's declared epoch must match the finalizer's deterministic epoch
+    // counter (unchanged for the duration of this call; the boundary advance runs
+    // in the finalized-block handler, not here). Verify binds this on the notarized
+    // path, but this function also executes certified blocks the local node never
+    // verified (finalized catch up), so recheck it here, BEFORE check_payload and
+    // the EL forkchoice adoption. A mismatch is fail stop territory (a byzantine
+    // 2/3+1 quorum or an epoch computation bug): route it through the InvalidPayload
+    // policy so the node rejects cleanly instead of panicking after the EL already
+    // adopted the block.
+    if block.epoch() != state.get_epoch() {
+        warn!(
+            height = block.height(),
+            block_epoch = block.epoch(),
+            state_epoch = state.get_epoch(),
+            "block epoch does not match consensus state epoch; rejecting"
+        );
+        return Ok(ExecuteOutcome::InvalidPayload);
+    }
+
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
@@ -2214,7 +2233,10 @@ async fn execute_block<
     state.set_latest_height(new_height);
     state.set_view(block.view());
     state.set_head_digest(block.digest());
-    assert_eq!(block.epoch(), state.get_epoch());
+    // Guaranteed by the epoch check at the top of this function; the boundary
+    // advance runs in the finalized-block handler, not here, so the epoch is
+    // unchanged across execution.
+    debug_assert_eq!(block.epoch(), state.get_epoch());
 
     // Periodically persist state to database as a blob
     // We build the checkpoint one height before the epoch end which
