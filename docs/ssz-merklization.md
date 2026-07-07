@@ -241,6 +241,13 @@ This reduces insert/remove from O(N * 8 * log(N * 8)) (full rebuild) to O(N) mem
 subtree if needed, then writes the 8 field leaves at the appended slot. Amortized
 O(8 log N). Withdrawals are never merged: each request is a distinct appended entry.
 
+One exception: the committed order is `[validator withdrawals ++ deposit refunds]`,
+so a validator entry pushed while any refund is queued lands mid-sequence and needs
+a full subtree rebuild. During the buffered-request pass this rebuild is deferred
+and collapsed into a single `rebuild_withdrawal_tree` after the routing loop (see
+Batch Queue Rebuild below); a standalone `apply_withdrawal_request` rebuilds
+immediately.
+
 ### Tier 5: Small Collection Rebuild — O(K log K)
 
 Protocol parameters, added validators, and removed validators always rebuild their subtree from scratch. These collections are typically very small (single-digit items), so the rebuild cost is negligible.
@@ -530,10 +537,10 @@ A deferred approach would accumulate mutations and apply them in a single batch 
 
 2. **Operation log**: Record the sequence of mutations (e.g., "popped 5 deposits", "inserted validator at slot 3") and replay them optimally in batch. Enables batch-shift optimizations but adds complexity.
 
-### Batch Queue Pop (implemented)
+### Batch Queue Rebuild (implemented)
 
-The per-pop full rebuild was the primary drain-loop cost and is now batched to once
-per block for both queues:
+The per-operation full rebuild was the primary batch-loop cost and is now collapsed
+to once per block for the hot paths:
 
 - **Deposit drain**: pops via `pop_deposit_deferred` (no tree touch) and calls
   `rebuild_deposit_tree` once after draining up to `max_deposits_per_epoch`.
@@ -542,9 +549,14 @@ per block for both queues:
   `max_withdrawals_per_epoch`) and calls `rebuild_withdrawals` once. Emit selects
   the capped prefix lazily rather than materializing the whole ready set.
 
-Both make a batch of K pops over a queue of size D cost O(D) instead of O(K * D).
-The standalone `pop_deposit` / `pop_withdrawal` helpers still rebuild per call and
-are used only outside the drain loops.
+- **Withdrawal push**: during `process_buffered_requests`, validator entries that
+  land mid-sequence (a refund is queued) defer their rebuild; one
+  `rebuild_withdrawal_tree` runs after the routing loop. The tree is stale between
+  the first deferred push and that rebuild, which is contained inside the pass.
+
+Each makes a batch of K operations over a queue of size D cost O(D) instead of
+O(K * D). The standalone `pop_deposit` / `pop_withdrawal` helpers still rebuild per
+call and are used only outside the drain loops.
 
 ### Block-Shift Optimization for Deposits
 

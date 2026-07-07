@@ -27,15 +27,15 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-/// Why a deposit was rejected during epoch end processing. Drives the refund
-/// path: a plain refund returns the full amount, while signature and key
-/// failures route through the taxed refund so invalid deposits cannot be a free
-/// DoS vector.
+/// Why a deposit was rejected during epoch end processing. Recorded for
+/// diagnostics; every rejection routes through the taxed refund so invalid
+/// deposits cannot be a free DoS vector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DepositRejectionReason {
-    /// Refunded in full, untaxed (for example a consensus key mismatch against an
-    /// existing account).
-    Refund,
+    /// A key check failed after valid signatures: the consensus key does not
+    /// match the existing account, or it already belongs to a different
+    /// account.
+    KeyMismatch,
     /// The node (Ed25519) signature failed verification. Checked before the
     /// consensus signature, so this is also what a deposit with both signatures
     /// invalid reports.
@@ -755,14 +755,13 @@ impl ConsensusState {
     // Deposit queue operations
     /// Validate a deposit request at epoch end processing time.
     ///
-    /// Signatures are verified first. Garbage signature bytes are cheap to
-    /// produce, so a signature failure is taxed (see the refund path). Only after
-    /// both signatures verify do we run the key checks: the consensus key must
-    /// match an existing account, and it must not already belong to a different
-    /// account (cross account BLS uniqueness, so the orchestrator's BiMap cannot
-    /// collide). Those reach the untaxed refund, which is safe because passing the
-    /// signature checks requires control of the keys, so it is not a free flood
-    /// vector.
+    /// Signatures are verified first, and the cheap node signature check runs
+    /// before the expensive BLS verify. Only after both signatures verify do we
+    /// run the key checks: the consensus key must match an existing account, and
+    /// it must not already belong to a different account (cross account BLS
+    /// uniqueness, so the orchestrator's BiMap cannot collide). Every rejection
+    /// is refunded through the taxed path (see refund_deposit), so consuming a
+    /// slot of the per epoch processing cap always has a cost.
     ///
     /// There is no minimum or maximum balance check here. A below minimum deposit
     /// is kept (the account stays inactive with the credited balance), and there is
@@ -776,10 +775,9 @@ impl ConsensusState {
         let validator_pubkey: [u8; 32] = deposit_request.node_pubkey.as_ref().try_into().unwrap();
         let message = deposit_request.as_message(deposit_signature_domain);
 
-        // Verify signatures first (cheap to forge, so failures are taxed). The
-        // node signature is checked before the consensus signature, so a deposit
-        // with both invalid reports InvalidNodeSignature and the expensive BLS
-        // verify is skipped.
+        // Verify signatures first. The node signature is checked before the
+        // consensus signature, so a deposit with both invalid reports
+        // InvalidNodeSignature and the expensive BLS verify is skipped.
         let mut node_signature_bytes = &deposit_request.node_signature[..];
         let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
             return Err(DepositRejectionReason::InvalidNodeSignature);
@@ -803,13 +801,12 @@ impl ConsensusState {
             return Err(DepositRejectionReason::InvalidConsensusSignature);
         }
 
-        // Key checks run only after valid signatures, so the untaxed refund path
-        // cannot be reached for free. A top up must carry the same BLS consensus
-        // key already on the account.
+        // Key checks run only after valid signatures. A top up must carry the
+        // same BLS consensus key already on the account.
         if let Some(acc) = self.get_account(&validator_pubkey)
             && acc.consensus_public_key != deposit_request.consensus_pubkey
         {
-            return Err(DepositRejectionReason::Refund);
+            return Err(DepositRejectionReason::KeyMismatch);
         }
 
         // The consensus key must not already belong to a different validator.
@@ -817,7 +814,7 @@ impl ConsensusState {
             if key != &validator_pubkey
                 && acc.consensus_public_key == deposit_request.consensus_pubkey
             {
-                return Err(DepositRejectionReason::Refund);
+                return Err(DepositRejectionReason::KeyMismatch);
             }
         }
 
@@ -827,11 +824,9 @@ impl ConsensusState {
     /// Enqueue a refund for a deposit rejected before any balance was credited.
     ///
     /// The refund pays to the deposit's withdrawal address with a zero pubkey
-    /// (refunds are not validator withdrawals, so they carry no validator key). A
-    /// signature or malformed key failure is taxed: a fraction is sent to the
-    /// treasury and the rest refunded, so invalid deposits cannot be a free DoS
-    /// vector. A plain refund (a consensus key mismatch, which is reachable only
-    /// after valid signatures) is returned in full.
+    /// (refunds are not validator withdrawals, so they carry no validator key).
+    /// Every rejected deposit is taxed: a fraction is sent to the treasury and
+    /// the rest refunded, so invalid deposits cannot be a free DoS vector.
     pub fn refund_deposit(
         &mut self,
         withdrawal_credentials: [u8; 32],
@@ -854,14 +849,12 @@ impl ConsensusState {
         };
 
         let withdrawal_epoch = self.get_epoch() + withdrawal_num_epochs;
-        let (refund_amount, tax_amount) = match reason {
-            DepositRejectionReason::Refund => (amount, 0),
-            DepositRejectionReason::InvalidNodeSignature
-            | DepositRejectionReason::InvalidConsensusSignature
-            | DepositRejectionReason::MalformedKey => {
-                invalid_deposit_refund_split(amount, self.get_invalid_deposit_tax())
-            }
-        };
+        let (refund_amount, tax_amount) =
+            invalid_deposit_refund_split(amount, self.get_invalid_deposit_tax());
+        info!(
+            ?reason,
+            amount, refund_amount, tax_amount, "refunding rejected deposit"
+        );
 
         if refund_amount > 0 {
             self.push_refund_withdrawal_request(
@@ -1044,7 +1037,9 @@ impl ConsensusState {
     /// deposits go to the deposit queue, withdrawal requests are validated and
     /// enqueued, protocol param requests are batched, and a malformed deposit chunk
     /// is refunded. After routing, the batched protocol param changes are queued
-    /// and the deposit queue is drained up to the per epoch cap.
+    /// and the deposit queue is drained up to the per epoch cap. Withdrawal
+    /// enqueues defer any needed subtree rebuild to a single batch rebuild after
+    /// the routing loop.
     ///
     /// Requests that arrive after this runs (on the last block of the epoch) stay
     /// buffered and are processed in the next epoch, which is the last block
@@ -1057,6 +1052,7 @@ impl ConsensusState {
     ) {
         let buffered = self.take_pending_execution_requests();
         let mut protocol_param_batch: Vec<ProtocolParam> = Vec::new();
+        let mut withdrawal_tree_stale = false;
 
         for entry in &buffered {
             match ExecutionRequest::parse_eth_entry(entry.as_ref()) {
@@ -1069,7 +1065,10 @@ impl ConsensusState {
                             ParsedExecutionRequest::Valid(ExecutionRequest::Withdrawal(
                                 withdrawal,
                             )) => {
-                                self.apply_withdrawal_request(withdrawal, withdrawal_num_epochs);
+                                withdrawal_tree_stale |= self.apply_withdrawal_request_deferred(
+                                    withdrawal,
+                                    withdrawal_num_epochs,
+                                );
                             }
                             ParsedExecutionRequest::Valid(ExecutionRequest::ProtocolParam(
                                 param_request,
@@ -1092,6 +1091,14 @@ impl ConsensusState {
                     warn!("failed to parse execution request entry: {e}");
                 }
             }
+        }
+
+        // Withdrawal pushes that landed mid sequence (a refund was queued)
+        // deferred their subtree sync; collapse them into one rebuild. Runs
+        // before process_deposits so its refund pushes append onto an accurate
+        // tree.
+        if withdrawal_tree_stale {
+            self.rebuild_withdrawal_tree();
         }
 
         // Queue the decoded protocol param changes in one subtree rebuild.
@@ -1211,6 +1218,7 @@ impl ConsensusState {
             request,
             withdrawal_epoch,
             WithdrawalKind::Validator,
+            false,
         );
     }
 
@@ -1223,15 +1231,30 @@ impl ConsensusState {
             request,
             withdrawal_epoch,
             WithdrawalKind::DepositRefund,
+            false,
         );
     }
 
+    /// rebuilds the withdrawal subtree from the current queue in a single pass.
+    /// pairs with the deferred push mode to collapse a batch of mid sequence
+    /// pushes into one rebuild.
+    pub fn rebuild_withdrawal_tree(&mut self) {
+        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
+    }
+
+    /// Push an entry onto the withdrawal queue and sync the SSZ tree.
+    ///
+    /// With `defer_rebuild` set, a push that would need a full subtree rebuild
+    /// skips it and returns true instead; the caller must run
+    /// `rebuild_withdrawal_tree` once the batch is done. The tree is stale in
+    /// between, so this must not escape a single processing pass.
     fn push_withdrawal_request_with_kind(
         &mut self,
         request: WithdrawalRequest,
         withdrawal_epoch: u64,
         kind: WithdrawalKind,
-    ) {
+        defer_rebuild: bool,
+    ) -> bool {
         #[cfg(feature = "prom")]
         let start = std::time::Instant::now();
 
@@ -1246,13 +1269,18 @@ impl ConsensusState {
         // lands before the refunds, so it is an end-append only when no refunds are
         // queued; otherwise the combined sequence shifts and must be rebuilt. A
         // refund always appends at the very end.
+        let mut rebuild_deferred = false;
         if kind == WithdrawalKind::Validator
             && self
                 .withdrawal_queue
                 .back(WithdrawalKind::DepositRefund)
                 .is_some()
         {
-            self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
+            if defer_rebuild {
+                rebuild_deferred = true;
+            } else {
+                self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
+            }
         } else {
             let item = self
                 .withdrawal_queue
@@ -1264,6 +1292,8 @@ impl ConsensusState {
 
         #[cfg(feature = "prom")]
         histogram!("ssz_push_withdrawal_request_micros").record(start.elapsed().as_micros() as f64);
+
+        rebuild_deferred
     }
 
     pub fn push_withdrawal(&mut self, request: PendingWithdrawal) {
@@ -1301,9 +1331,23 @@ impl ConsensusState {
         request: WithdrawalRequest,
         withdrawal_num_epochs: u64,
     ) {
+        if self.apply_withdrawal_request_deferred(request, withdrawal_num_epochs) {
+            self.rebuild_withdrawal_tree();
+        }
+    }
+
+    /// Deferred variant of `apply_withdrawal_request` for batch processing.
+    /// Returns true when the enqueued entry landed mid sequence and the
+    /// withdrawal subtree is stale; the caller must run
+    /// `rebuild_withdrawal_tree` once after the batch.
+    pub(crate) fn apply_withdrawal_request_deferred(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_num_epochs: u64,
+    ) -> bool {
         let Some(mut account) = self.get_account(&request.validator_pubkey).cloned() else {
             // No such validator. Drop the request.
-            return;
+            return false;
         };
 
         let pubkey = request.validator_pubkey;
@@ -1311,7 +1355,7 @@ impl ConsensusState {
 
         // The request is authorized only by the validator's own withdrawal address.
         if request.source_address != withdrawal_credentials {
-            return;
+            return false;
         }
 
         // A full exit is already in progress: an active exit still serving this
@@ -1321,7 +1365,7 @@ impl ConsensusState {
             account.status,
             ValidatorStatus::SubmittedExitRequest | ValidatorStatus::FullPayoutPending
         ) {
-            return;
+            return false;
         }
 
         let current_epoch = self.get_epoch();
@@ -1341,16 +1385,19 @@ impl ConsensusState {
         }
 
         // Enqueue a payout. The balance is not changed here. It is reduced at payout
-        // and re clamped against the balance at that time.
-        let enqueue = |state: &mut Self, amount: u64| {
-            state.push_withdrawal_request(
+        // and re clamped against the balance at that time. Returns whether the
+        // subtree rebuild was deferred.
+        let enqueue = |state: &mut Self, amount: u64| -> bool {
+            state.push_withdrawal_request_with_kind(
                 WithdrawalRequest {
                     source_address: withdrawal_credentials,
                     validator_pubkey: pubkey,
                     amount,
                 },
                 withdrawal_epoch,
-            );
+                WithdrawalKind::Validator,
+                true,
+            )
         };
 
         match account.status {
@@ -1359,10 +1406,10 @@ impl ConsensusState {
                     // Full exit. Respect the minimum validator count: skip if removing
                     // this validator would drop the active set below the floor.
                     if !self.can_accept_active_validator_exit() {
-                        return;
+                        return false;
                     }
                     let Ok(public_key) = PublicKey::decode(&pubkey[..]) else {
-                        return;
+                        return false;
                     };
                     self.push_removed_validator(public_key);
                     self.increment_pending_active_validator_exits();
@@ -1371,16 +1418,16 @@ impl ConsensusState {
                     account.status = ValidatorStatus::SubmittedExitRequest;
                     self.set_account(pubkey, account);
                     // Full exit marker: amount 0. The payout pays the live balance.
-                    enqueue(self, 0);
+                    enqueue(self, 0)
                 } else {
                     // Partial. Keep the remaining balance at or above the minimum. The
                     // enqueue gate only enforces that the result is positive.
                     let withdrawable = account.balance.saturating_sub(self.get_minimum_stake());
                     let amount = request.amount.min(withdrawable);
                     if amount == 0 {
-                        return;
+                        return false;
                     }
-                    enqueue(self, amount);
+                    enqueue(self, amount)
                 }
             }
             ValidatorStatus::Inactive => {
@@ -1392,18 +1439,18 @@ impl ConsensusState {
                     // rejoining the validator while the payout is pending.
                     account.status = ValidatorStatus::FullPayoutPending;
                     self.set_account(pubkey, account);
-                    enqueue(self, 0);
+                    enqueue(self, 0)
                 } else {
                     let amount = request.amount.min(account.balance);
                     if amount == 0 {
-                        return;
+                        return false;
                     }
-                    enqueue(self, amount);
+                    enqueue(self, amount)
                 }
             }
             // SubmittedExitRequest and FullPayoutPending are handled by the early
             // return above.
-            _ => {}
+            _ => false,
         }
     }
 

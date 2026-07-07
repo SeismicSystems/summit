@@ -201,6 +201,48 @@ fn submitted_exit_request_skips() {
     assert!(due(&state).is_empty());
 }
 
+// Applying a batch of withdrawal requests through the deferred path plus one
+// rebuild_withdrawal_tree must land in the exact same ssz root as applying the
+// same requests one at a time, where every mid sequence push rebuilt the
+// subtree immediately. A queued refund forces every validator push to land mid
+// sequence, so this exercises the deferred (stale tree) branch.
+#[test]
+fn deferred_withdrawal_push_matches_per_push() {
+    let refund = || WithdrawalRequest {
+        source_address: creds(9),
+        validator_pubkey: [0u8; 32],
+        amount: 7,
+    };
+    let seed = |state: &mut ConsensusState| {
+        for i in 1u8..=3 {
+            state.set_account([i; 32], create_test_validator_account(i as u64, 100));
+        }
+        state.push_refund_withdrawal_request(refund(), WITHDRAWAL_EPOCHS);
+    };
+
+    let mut per_push = withdrawal_state();
+    let mut deferred = withdrawal_state();
+    seed(&mut per_push);
+    seed(&mut deferred);
+
+    for i in 1u8..=3 {
+        per_push.apply_withdrawal_request(request([i; 32], creds(i), 40), WITHDRAWAL_EPOCHS);
+        assert!(
+            deferred.apply_withdrawal_request_deferred(
+                request([i; 32], creds(i), 40),
+                WITHDRAWAL_EPOCHS
+            ),
+            "push {i} lands mid sequence, so its rebuild must be deferred"
+        );
+    }
+
+    // The deferred pushes left the subtree stale until the batch rebuild.
+    assert_ne!(deferred.ssz_tree().root(), per_push.ssz_tree().root());
+    deferred.rebuild_withdrawal_tree();
+    assert_eq!(deferred.ssz_tree().root(), per_push.ssz_tree().root());
+    assert_eq!(due(&deferred), due(&per_push));
+}
+
 // A validator already awaiting its full payout ignores further requests.
 #[test]
 fn full_payout_pending_skips() {

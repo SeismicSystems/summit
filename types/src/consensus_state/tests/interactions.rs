@@ -259,8 +259,9 @@ fn stale_topup_with_mismatched_consensus_key_is_refunded_not_rebound() {
     assert_eq!(account.balance, 100);
     assert_eq!(account.consensus_public_key, replacement_bls.public_key());
 
-    // The stale deposit was refunded (untaxed) to its own withdrawal address, not
-    // rebound to the replacement account.
+    // The stale deposit was refunded to its own withdrawal address (in full,
+    // since the invalid deposit tax defaults to zero), not rebound to the
+    // replacement account.
     let block = state.emit_withdrawal_payouts(WITHDRAWAL_EPOCHS);
     assert_eq!(block.len(), 1);
     assert_eq!(block[0].amount, 40);
