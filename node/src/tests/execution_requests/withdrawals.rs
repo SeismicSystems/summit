@@ -58,12 +58,19 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
             .try_into()
             .expect("failed to convert genesis hash");
 
-        let (deposit1, _, _) =
-            common::create_deposit_request(n as u64, min_stake, common::get_domain(), None, None);
+        let (deposit1, _, _) = common::create_deposit_request(
+            n as u64,
+            min_stake,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
         let (deposit2, _, _) = common::create_deposit_request(
             (n + 1) as u64,
             min_stake,
             common::get_domain(),
+            None,
             None,
             None,
         );
@@ -101,7 +108,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
         let withdrawal_epoch =
             (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
         let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
-        let stop_height = withdrawal_height + 1;
+        let stop_height = withdrawal_height + 2;
 
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests_deposit_1);
@@ -110,7 +117,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
-            .with_stop_at(41)
+            .with_stop_at(stop_height)
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
@@ -183,9 +190,6 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
         }
 
         let withdrawals = engine_client_network.get_withdrawals();
-        let withdrawal_epoch =
-            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing grouped withdrawal entry");
@@ -207,7 +211,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
                 .verify_consensus(None, Some(stop_height))
                 .is_ok()
         );
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -278,8 +282,14 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
             .expect("failed to convert genesis hash");
 
         // Create a single deposit request using the helper
-        let (test_deposit, _, _) =
-            common::create_deposit_request(n as u64, min_stake, common::get_domain(), None, None);
+        let (test_deposit, _, _) = common::create_deposit_request(
+            n as u64,
+            min_stake,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
 
         let withdrawal_address = Address::from_slice(&test_deposit.withdrawal_credentials[12..32]);
         let test_withdrawal1 = common::create_withdrawal_request(
@@ -307,7 +317,10 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // the account doesn't exist yet.
         let deposit_block_height = 5;
         let withdrawal_block_height = 11;
-        let stop_height = withdrawal_block_height + DEFAULT_BLOCKS_PER_EPOCH + 1;
+        let withdrawal_epoch =
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let stop_height = withdrawal_height + 2;
         let mut execution_requests_map = HashMap::new();
         execution_requests_map.insert(deposit_block_height, requests1);
         execution_requests_map.insert(withdrawal_block_height, requests2);
@@ -315,7 +328,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
 
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_execution_requests(execution_requests_map)
-            .with_stop_at(41) // we stop at 41 because of the epoch+1 hold period before executing withdrawls
+            .with_stop_at(stop_height) // stop after the epoch+1 hold period on withdrawals
             .build();
         let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
 
@@ -417,9 +430,6 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
         // Make sure that test_withdrawal2 was ignored, only test_withdraw1 should be submitted
         // to the execution layer.
         assert_eq!(withdrawals.len(), 1);
-        let withdrawal_epoch =
-            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
-        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
         let withdrawals = withdrawals
             .get(&withdrawal_height)
             .expect("missing withdrawal");
@@ -435,7 +445,7 @@ fn test_partial_withdrawal_balance_below_minimum_stake() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -617,7 +627,7 @@ fn test_duplicate_withdrawal_blocked() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -798,7 +808,7 @@ fn test_withdrawal_wrong_source_address_rejected() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -977,7 +987,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
@@ -1046,8 +1056,14 @@ fn test_withdrawal_during_onboarding_aborts() {
             .expect("failed to convert genesis hash");
 
         // Create a deposit request for a new validator
-        let (test_deposit, _, _) =
-            common::create_deposit_request(n as u64, min_stake, common::get_domain(), None, None);
+        let (test_deposit, _, _) = common::create_deposit_request(
+            n as u64,
+            min_stake,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
 
         let new_validator_pubkey: [u8; 32] = test_deposit.node_pubkey.as_ref().try_into().unwrap();
 
@@ -1188,7 +1204,203 @@ fn test_withdrawal_during_onboarding_aborts() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
+fn test_minimum_validator_count_blocks_excess_active_validator_exits() {
+    // The default minimum validator count is 3. With 4 active genesis validators,
+    // two same-block full exits should only admit the first exit.
+    let n = 4;
+    let min_stake = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(44);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let addresses: Vec<Address> = (0..n).map(|i| Address::from([i as u8 + 1; 20])).collect();
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        let withdrawal_a = common::create_withdrawal_request(
+            addresses[0],
+            validators[0].0.as_ref().try_into().unwrap(),
+            min_stake,
+        );
+        let withdrawal_b = common::create_withdrawal_request(
+            addresses[1],
+            validators[1].0.as_ref().try_into().unwrap(),
+            min_stake,
+        );
+        let requests = common::execution_requests_to_requests(vec![
+            ExecutionRequest::Withdrawal(withdrawal_a.clone()),
+            ExecutionRequest::Withdrawal(withdrawal_b.clone()),
+        ]);
+
+        let withdrawal_block_height = 3;
+        let withdrawal_epoch =
+            (withdrawal_block_height / DEFAULT_BLOCKS_PER_EPOCH) + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let withdrawal_height = (withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let stop_height = withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(withdrawal_block_height, requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+
+        let mut consensus_state_queries = HashMap::new();
+        let mut validator_uids = vec![String::new(); n as usize];
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            validator_uids[idx] = uid.clone();
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 1 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(withdrawals.len(), 1, "only one full exit should be queued");
+        let epoch_withdrawals = withdrawals
+            .get(&withdrawal_height)
+            .expect("missing accepted full-exit withdrawal");
+        assert_eq!(epoch_withdrawals.len(), 1);
+        assert_eq!(epoch_withdrawals[0].amount, min_stake);
+        assert_eq!(epoch_withdrawals[0].address, withdrawal_a.source_address);
+        assert_ne!(epoch_withdrawals[0].address, withdrawal_b.source_address);
+
+        let state_query = consensus_state_queries
+            .get(&1)
+            .expect("second validator should still be running");
+        let first_account = state_query
+            .get_validator_account(validators[0].0.clone())
+            .await;
+        assert!(
+            first_account.is_none(),
+            "first full exit should be accepted and completed"
+        );
+
+        let second_account = state_query
+            .get_validator_account(validators[1].0.clone())
+            .await
+            .expect("second full exit should be skipped by the minimum validator floor");
+        assert_eq!(second_account.status, ValidatorStatus::Active);
+        assert_eq!(second_account.balance, min_stake);
+
+        for validator in validators.iter().skip(1) {
+            let account = state_query
+                .get_validator_account(validator.0.clone())
+                .await
+                .expect("remaining validator should stay active");
+            assert_eq!(account.status, ValidatorStatus::Active);
+            assert_eq!(account.balance, min_stake);
+        }
+
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &[validator_uids[0].as_str()])
+                .is_ok()
+        );
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -1420,7 +1632,8 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[last_idx]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[last_idx])
+            .await;
 
         context.auditor().state()
     })
@@ -1613,7 +1826,261 @@ fn test_grouped_withdrawal_on_last_block_of_epoch_only_requeues_deferred_request
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[idx_a, idx_b]).await;
+        common::assert_state_root_consensus_synced(
+            &context,
+            &consensus_state_queries,
+            &[idx_a, idx_b],
+        )
+        .await;
+
+        context.auditor().state()
+    })
+}
+
+#[test_traced("INFO")]
+fn test_duplicate_last_block_exit_does_not_consume_active_exit_budget() {
+    // Regression test: a validator submitting DUPLICATE exit (full-withdrawal) requests
+    // for itself on the last block of an epoch must not consume the active-exit budget
+    // tracked by `pending_active_validator_exits`, and must not starve a different
+    // validator's legitimate exit submitted in the same block.
+    //
+    // With 5 genesis validators and the default minimum_validator_count of 3, the
+    // active-exit budget for an epoch is 5 - 3 = 2. The last block of epoch 0 carries a
+    // single grouped type-0x01 entry containing three withdrawal requests, in order:
+    //   [A, A, B]   (validator A duplicated, then validator B)
+    //
+    // Correct behavior: A's duplicate is deduplicated (A is exiting only once), B is
+    // admitted, and both A and B are deferred and exit exactly once at the next epoch
+    // boundary -> exactly 2 withdrawals, one for A and one for B.
+    //
+    // Buggy behavior (deferred last-block path never marks the account
+    // `has_pending_withdrawal`, so duplicates bypass the dedup guard and each one
+    // increments `pending_active_validator_exits`): A's two copies exhaust the budget,
+    // the floor guard then skips B, and only A exits -> a single withdrawal. B is griefed
+    // into staying active even though its own exit was valid and within the budget.
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(43);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let addresses: Vec<Address> = (0..n).map(|i| Address::from([i as u8; 20])).collect();
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // A (the malicious duplicate submitter) and B (the legitimate victim).
+        let idx_a = validators.len() - 2;
+        let idx_b = validators.len() - 1;
+
+        let withdrawal_a = common::create_withdrawal_request(
+            addresses[idx_a],
+            validators[idx_a].0.as_ref().try_into().unwrap(),
+            min_stake,
+        );
+        let withdrawal_b = common::create_withdrawal_request(
+            addresses[idx_b],
+            validators[idx_b].0.as_ref().try_into().unwrap(),
+            min_stake,
+        );
+
+        // A is submitted twice ahead of B, so under the bug A's duplicate consumes the
+        // last remaining exit slot before B is reached.
+        let grouped_requests = common::execution_requests_to_requests(vec![
+            ExecutionRequest::Withdrawal(withdrawal_a.clone()),
+            ExecutionRequest::Withdrawal(withdrawal_a.clone()),
+            ExecutionRequest::Withdrawal(withdrawal_b.clone()),
+        ]);
+
+        let withdrawal_block_height = DEFAULT_BLOCKS_PER_EPOCH - 1; // block 9
+        let deferred_withdrawal_epoch = 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS;
+        let deferred_withdrawal_height =
+            (deferred_withdrawal_epoch + 1) * DEFAULT_BLOCKS_PER_EPOCH - 1;
+        let stop_height = deferred_withdrawal_height + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(withdrawal_block_height, grouped_requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+
+        let mut consensus_state_queries = HashMap::new();
+        let mut withdrawn_validator_uids = Vec::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            if idx == idx_a || idx == idx_b {
+                withdrawn_validator_uids.push(uid.clone());
+            }
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // Only the three surviving validators keep finalizing past the exit.
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n - 2 {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let withdrawals = engine_client_network.get_withdrawals();
+        assert_eq!(
+            withdrawals.len(),
+            1,
+            "expected a single deferred withdrawal height"
+        );
+
+        let deferred_epoch_withdrawals = withdrawals
+            .get(&deferred_withdrawal_height)
+            .expect("missing deferred withdrawal height");
+
+        // Both A and B must exit exactly once. Under the bug, A's duplicate consumes the
+        // budget and B is skipped, leaving only a single withdrawal.
+        assert_eq!(
+            deferred_epoch_withdrawals.len(),
+            2,
+            "both A and B must exit; B must not be starved by A's duplicate exit request"
+        );
+
+        let a_count = deferred_epoch_withdrawals
+            .iter()
+            .filter(|w| w.address == withdrawal_a.source_address && w.amount == min_stake)
+            .count();
+        let b_count = deferred_epoch_withdrawals
+            .iter()
+            .filter(|w| w.address == withdrawal_b.source_address && w.amount == min_stake)
+            .count();
+        assert_eq!(a_count, 1, "A's duplicate exit must be deduplicated to one");
+        assert_eq!(b_count, 1, "B's legitimate exit must be admitted");
+
+        // A and B should be removed; the other three validators must stay active.
+        let survivor_query = consensus_state_queries
+            .get(&0)
+            .expect("a surviving validator should still be running");
+        assert!(
+            survivor_query
+                .get_validator_account(validators[idx_a].0.clone())
+                .await
+                .is_none(),
+            "validator A should be removed after its exit"
+        );
+        assert!(
+            survivor_query
+                .get_validator_account(validators[idx_b].0.clone())
+                .await
+                .is_none(),
+            "validator B should be removed after its exit"
+        );
+        for idx in 0..(n as usize - 2) {
+            let account = survivor_query
+                .get_validator_account(validators[idx].0.clone())
+                .await
+                .expect("surviving validator should remain active");
+            assert_eq!(account.status, ValidatorStatus::Active);
+            assert_eq!(account.balance, min_stake);
+        }
+
+        let skip_refs: Vec<&str> = withdrawn_validator_uids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            engine_client_network
+                .verify_consensus_skip(None, Some(stop_height), &skip_refs)
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus_synced(
+            &context,
+            &consensus_state_queries,
+            &[idx_a, idx_b],
+        )
+        .await;
 
         context.auditor().state()
     })
@@ -1835,7 +2302,7 @@ fn test_stake_bounds_skips_zero_balance_validator() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0]).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[0]).await;
 
         context.auditor().state()
     })
@@ -2059,7 +2526,470 @@ fn test_withdrawal_overflow_rescheduled_to_next_epoch() {
                 .verify_consensus_skip(None, Some(stop_height), &skip_refs)
                 .is_ok()
         );
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[0, 1, 2, 3]).await;
+        common::assert_state_root_consensus_synced(
+            &context,
+            &consensus_state_queries,
+            &[0, 1, 2, 3],
+        )
+        .await;
+
+        context.auditor().state()
+    })
+}
+
+/// A withdrawal targeting a joining validator (activation scheduled for the
+/// next epoch) that lands in the last block of the current epoch is deferred
+/// to the next epoch. The validator joins for one epoch and exits in the next,
+/// so the finalized header deltas match the live committee at every boundary.
+///
+/// Setup (DEFAULT_BLOCKS_PER_EPOCH = 10, VALIDATOR_NUM_WARM_UP_EPOCHS = 2):
+///  - 5 genesis validators @ 32 ETH (= min_stake).
+///  - Block 5: brand-new validator deposit at 32 ETH.
+///  - Block 8 (penultimate of epoch 0): deposit processed, joining_epoch = 2.
+///  - Block 19 (last block of epoch 1): user submits a withdrawal targeting
+///    the joining validator.
+///
+/// Assertions (run one block past epoch 2's last block so both boundaries have
+/// run and the deferred withdrawal has replayed):
+///  - Epoch 1's finalized header lists the joining validator in
+///    `added_validators`.
+///  - Epoch 2's finalized header lists the validator in `removed_validators`
+///    (the deferred withdrawal replays at the start of epoch 2 and stages the
+///    exit, which the last-block proposer captures into the header).
+///  - Live state shows the validator as Inactive after epoch 2's boundary,
+///    confirming the lifecycle: Joining → Active (epoch 2) → Inactive (epoch 3).
+#[test_traced("INFO")]
+fn test_joining_validator_withdrawal_on_last_block_keeps_header_consistent() {
+    let n: u32 = 5;
+    let min_stake = 32_000_000_000;
+    let new_validator_amount = min_stake;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Brand-new validator deposit at block 5. Processed at block 8
+        // (penultimate of epoch 0) → joining_epoch = 0 + VALIDATOR_NUM_WARM_UP_EPOCHS = 2.
+        let (new_deposit, new_validator_private_key, _) = common::create_deposit_request(
+            n as u64,
+            new_validator_amount,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
+        let new_validator_pubkey = new_validator_private_key.public_key();
+        let new_validator_pubkey_bytes: [u8; 32] =
+            new_validator_pubkey.as_ref().try_into().unwrap();
+        let withdrawal_address =
+            utils::parse_withdrawal_credentials(new_deposit.withdrawal_credentials).unwrap();
+        let deposit_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(new_deposit)]);
+
+        // Withdrawal for the joining validator, landing on the LAST block of
+        // epoch 1. The validator's activation is scheduled for epoch 2, so the
+        // last-block header captures them in added_validators[2].
+        let withdrawal = common::create_withdrawal_request(
+            withdrawal_address,
+            new_validator_pubkey_bytes,
+            new_validator_amount,
+        );
+        let withdrawal_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Withdrawal(withdrawal)]);
+
+        let deposit_block_height = 5;
+        let last_block_epoch_1 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 1);
+        let last_block_epoch_2 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 2);
+        // Stop one block past the end of epoch 2 so both epoch boundaries have
+        // run: validator is activated at block 19 and (with the fix) exited at
+        // block 29 via the replayed deferred withdrawal.
+        let stop_height = last_block_epoch_2 + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(deposit_block_height, deposit_requests);
+        execution_requests_map.insert(last_block_epoch_1, withdrawal_requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+
+        let mut public_keys = HashSet::new();
+        let mut finalizer_mailboxes = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let mut mailbox = finalizer_mailboxes.get(&0).unwrap().clone();
+
+        // Epoch 1's finalized header lists the joining validator in
+        // added_validators, matching the validator that live state activates
+        // at the epoch boundary.
+        let header_epoch_1 = mailbox
+            .get_finalized_header(1)
+            .await
+            .expect("missing finalized header for epoch 1");
+        let added_epoch_1 = header_epoch_1.header().added_validators();
+        assert!(
+            added_epoch_1
+                .iter()
+                .any(|av| av.node_key == new_validator_pubkey),
+            "epoch 1 header must include the joining validator in added_validators, \
+             but added_validators = {added_epoch_1:?}"
+        );
+
+        // Epoch 2's finalized header lists the validator in removed_validators:
+        // the deferred withdrawal replays at the start of epoch 2 and stages
+        // the (now-active) validator for exit, which the last-block proposer
+        // captures into the header.
+        let header_epoch_2 = mailbox
+            .get_finalized_header(2)
+            .await
+            .expect("missing finalized header for epoch 2");
+        let removed_epoch_2 = header_epoch_2.header().removed_validators();
+        assert!(
+            removed_epoch_2.contains(&new_validator_pubkey),
+            "epoch 2 header must include the joining validator in removed_validators \
+             (the deferred withdrawal replays in epoch 2 and exits the activated validator), \
+             but removed_validators = {removed_epoch_2:?}"
+        );
+
+        // Full lifecycle landed in live state: activated at the epoch-1
+        // boundary, exited at the epoch-2 boundary.
+        let new_account = mailbox
+            .get_validator_account(new_validator_pubkey.clone())
+            .await
+            .expect("validator account should still exist after the exit");
+        assert_eq!(
+            new_account.status,
+            ValidatorStatus::Inactive,
+            "validator must be Inactive after the epoch 2 boundary; live state status was {:?}",
+            new_account.status
+        );
+
+        context.auditor().state()
+    })
+}
+
+/// A withdrawal that cancels a joining validator's pending activation via the
+/// inline cancel path (NOT on the last block of an epoch) transitions the
+/// account's status to `Inactive`. The validator is never activated, so
+/// `get_active_or_joining_validators`, the `joining_validators` log/metric,
+/// and RPC queries all reflect a definitively cancelled validator during the
+/// window before withdrawal completion removes the account.
+///
+/// Setup (DEFAULT_BLOCKS_PER_EPOCH = 10, VALIDATOR_NUM_WARM_UP_EPOCHS = 2,
+/// VALIDATOR_WITHDRAWAL_NUM_EPOCHS = 2):
+///  - 5 genesis validators @ 32 ETH (= min_stake).
+///  - Block 5: brand-new validator deposit at 32 ETH.
+///  - Block 8 (penultimate of epoch 0): deposit processed → status = Joining,
+///    joining_epoch = 2.
+///  - Block 15 (mid-epoch 1, not a last block): user submits a withdrawal
+///    targeting the joining validator. This hits the inline-cancel path
+///    (joining_epoch (2) > current_epoch (1), not last block).
+///
+/// Assertions (stop at block 20 — well before withdrawal completion at the end
+/// of epoch 3 = block 39):
+///  - The validator account still exists (withdrawal hasn't completed yet).
+///  - balance is zero and `has_pending_withdrawal` is set.
+///  - account.status == Inactive.
+#[test_traced("INFO")]
+fn test_joining_validator_withdrawal_inline_cancel_clears_status() {
+    let n: u32 = 5;
+    let min_stake = 32_000_000_000;
+    let new_validator_amount = min_stake;
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(1);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Brand-new validator deposit at block 5. Processed at block 8
+        // (penultimate of epoch 0) → joining_epoch = 2.
+        let (new_deposit, new_validator_private_key, _) = common::create_deposit_request(
+            n as u64,
+            new_validator_amount,
+            common::get_domain(),
+            None,
+            None,
+            None,
+        );
+        let new_validator_pubkey = new_validator_private_key.public_key();
+        let new_validator_pubkey_bytes: [u8; 32] =
+            new_validator_pubkey.as_ref().try_into().unwrap();
+        let withdrawal_address =
+            utils::parse_withdrawal_credentials(new_deposit.withdrawal_credentials).unwrap();
+        let deposit_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(new_deposit)]);
+
+        // Withdrawal for the joining validator at block 15 (mid-epoch 1, NOT a
+        // last block). joining_epoch (2) > current_epoch (1) and the request
+        // is not on the last block of the epoch, so the inline-cancel branch
+        // fires: `remove_added_validator(2, pk)`.
+        let withdrawal = common::create_withdrawal_request(
+            withdrawal_address,
+            new_validator_pubkey_bytes,
+            new_validator_amount,
+        );
+        let withdrawal_requests =
+            common::execution_requests_to_requests(vec![ExecutionRequest::Withdrawal(withdrawal)]);
+
+        let deposit_block_height = 5;
+        let withdrawal_block_height = 15;
+        // Stop one block past the end of epoch 1. Well before the withdrawal
+        // completes (end of epoch 3 = block 39), so the account is still
+        // present and we can observe its status mid-flight.
+        let last_block_epoch_1 = last_block_in_epoch(DEFAULT_BLOCKS_PER_EPOCH, 1);
+        let stop_height = last_block_epoch_1 + 1;
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(deposit_block_height, deposit_requests);
+        execution_requests_map.insert(withdrawal_block_height, withdrawal_requests);
+
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+        let initial_state = get_initial_state(genesis_hash, &validators, None, None, min_stake);
+
+        let mut public_keys = HashSet::new();
+        let mut finalizer_mailboxes = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            let mut success = false;
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("finalizer_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height >= stop_height {
+                        height_reached.insert(metric.to_string());
+                    }
+                }
+
+                if height_reached.len() as u32 == n {
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        let mailbox = finalizer_mailboxes.get(&0).unwrap();
+
+        // The withdrawal completes 2 epochs after submission (end of epoch 3 =
+        // block 39), at which point the account is removed. We stop at block
+        // 20 so the account is still present and reflects post-cancel state.
+        let new_account = mailbox
+            .get_validator_account(new_validator_pubkey.clone())
+            .await
+            .expect(
+                "validator account should still exist mid-flight \
+                 (withdrawal completes only at end of epoch 3)",
+            );
+
+        // Balance moved out and pending withdrawal flagged.
+        assert_eq!(
+            new_account.balance, 0,
+            "balance must be zeroed after the withdrawal cancels the joining validator"
+        );
+        assert!(
+            new_account.has_pending_withdrawal,
+            "has_pending_withdrawal must be set after the cancel"
+        );
+
+        // The cancel path transitions the account to Inactive, so the
+        // validator is excluded from `get_active_or_joining_validators` and
+        // related queries during the window before withdrawal completion
+        // removes the account.
+        assert_eq!(
+            new_account.status,
+            ValidatorStatus::Inactive,
+            "after cancelling the pending activation, status must be Inactive; \
+             live state status was {:?}",
+            new_account.status
+        );
 
         context.auditor().state()
     })

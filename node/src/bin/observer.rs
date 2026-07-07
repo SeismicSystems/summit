@@ -189,8 +189,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None, None).await.unwrap();
+                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                            // a coordinated shutdown (graceful stop or committee exit) returns
+                            // ok; a genuine core task failure returns err and must fail the
+                            // scenario instead of being masked as a clean node exit.
+                            if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                                eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                                std::process::exit(1);
+                            }
                         });
 
                         let stop_fut = stop_rx.recv().fuse();
@@ -201,7 +207,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every validator here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
@@ -296,10 +306,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(|ctx| async move {
-                        run_node_local(ctx, observer_flags, None, None)
+                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        // the observer is a required participant: a genuine core task failure
+                        // (err) must fail the scenario rather than be masked as a clean exit.
+                        if let Err(e) = run_node_local(ctx, observer_flags, None, None)
                             .await
-                            .unwrap();
+                            .unwrap()
+                        {
+                            eprintln!("observer core task failed: {e:?}; failing scenario");
+                            std::process::exit(1);
+                        }
                     });
 
                     let stop_fut = observer_stop_rx.recv().fuse();
@@ -310,7 +326,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                         }
                         _ = node_handle.fuse() => {
-                            println!("Observer handle completed");
+                            // The observer is a required participant; its handle completing
+                            // without a stop signal means it went down unexpectedly, so
+                            // fail the scenario.
+                            eprintln!("Observer handle completed unexpectedly; failing scenario");
+                            std::process::exit(1);
                         }
                     }
                 });
@@ -383,8 +403,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 from_hex_formatted(&master_key_hex).expect("invalid hex in master node key");
             let master_priv_key = PrivateKey::decode(&master_key_bytes[..])
                 .expect("failed to decode master private key");
-            let observer_pubkey =
-                derive_child_public(master_priv_key.public_key(), OBSERVER_DERIVE_IDX);
+            // Observer child keys are separated by domain (#335) under the chain
+            // bound domain chain_domain(config_digest). That is the same domain the
+            // live P2P observer signer and the validators' authorized observer set
+            // use, so this matches their derived set (not the raw genesis namespace).
+            let observer_genesis = Genesis::load_from_file(&e2e_genesis_path_str)
+                .expect("failed to load genesis for observer domain");
+            let observer_domain = summit_types::chain_domain(observer_genesis.config_digest());
+            let observer_pubkey = derive_child_public(
+                master_priv_key.public_key(),
+                observer_domain.as_slice(),
+                OBSERVER_DERIVE_IDX,
+            );
 
             let val_rpc_port = get_node_flags(0, &e2e_genesis_path_str).rpc_port;
             let checkpoint_res = fetch_latest_checkpoint(val_rpc_port)
@@ -419,7 +449,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .expect("failed to decode finalized header");
 
-            let signers = &finalized_header.finalization.certificate.signers;
+            let signers = &finalized_header.finalization().certificate.signers;
             let signer_count = signers.count();
             let expected_quorum = 2 * active_validators.len() / 3 + 1;
             assert!(
@@ -447,7 +477,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!(
                 "    latest finalized block (epoch {}, view {}) has {} signers, none of which is the observer",
-                finalized_header.header.epoch, finalized_header.header.view, signer_count
+                finalized_header.header().epoch(), finalized_header.header().view(), signer_count
             );
 
             println!("Test completed successfully!");
@@ -467,7 +497,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Waiting for node index {} to join...", idx);
         match node_runtime.thread.join() {
             Ok(_) => println!("Node index {} thread joined successfully", idx),
-            Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
+            // A join failure means the node panicked or was killed: a required
+            // participant going down unexpectedly, so fail the scenario.
+            Err(e) => {
+                eprintln!("Node index {} thread join failed: {:?}", idx, e);
+                std::process::exit(1);
+            }
         }
     }
 
@@ -501,6 +536,11 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         prom_port: (28600 + (node * 10)) as u16,
         prom_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
+        admin_rpc_port: (3031 + (node * 10)) as u16,
+        rpc_max_request_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_max_response_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_request_timeout_secs: summit_rpc::DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
+        rpc_max_batch_size: summit_rpc::DEFAULT_RPC_MAX_BATCH_SIZE,
         worker_threads: Some(2),
         log_level: "debug".into(),
         db_prefix: format!("{node}"),
@@ -510,9 +550,13 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         bench_block_dir: None,
         checkpoint_path: None,
         checkpoint_or_default: false,
+        weak_subjectivity_epoch: None,
+        weak_subjectivity_header_digest: None,
+        unsafe_skip_checkpoint_verification: false,
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,
         observer: None,
+        finalizer_pending_notarized_max: 1000,
     }
 }

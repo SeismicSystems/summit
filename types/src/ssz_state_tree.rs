@@ -1,17 +1,22 @@
 //! Two-level SSZ binary Merkle tree for ConsensusState.
 //!
-//! The top-level tree has 32 leaf slots (17 used, depth 5). Scalar fields
-//! occupy leaves 0–10. Collection roots occupy leaves 11–16.
+//! The top-level tree has 32 leaf slots (28 used, depth 5). Scalar fields and
+//! collection roots are assigned to fixed leaf indices — see the field-index
+//! and `*_ROOT` constants below for the authoritative layout. Each collection
+//! root (validator accounts, deposit/withdrawal queues, protocol-param changes,
+//! added/removed validators, pending execution requests) is
+//! `mix_in_length(subtree_root, count)`.
 //!
 //! The validator accounts collection uses a dedicated subtree (`SszTree`)
-//! where each validator occupies 8 contiguous leaves (one per field),
-//! forming a depth-3 per-validator sub-subtree. This enables field-level
-//! Merkle proofs (e.g., proving just the balance) in addition to whole-
-//! account proofs.
+//! where each validator occupies 16 contiguous leaves (9 fields incl. the node
+//! pubkey/map key, padded to a depth-4 per-validator sub-subtree). This enables
+//! field-level Merkle proofs (e.g., proving just the balance) in addition to
+//! whole-account proofs, and binds the validator's identity (node pubkey) into
+//! the root and its proofs.
 //!
 //! Validator slot assignment is purely positional: the i-th entry in
 //! `BTreeMap<[u8; 32], ValidatorAccount>` iteration order occupies
-//! leaves `[i*8 .. i*8+7]`. The subtree is rebuilt from scratch on
+//! leaves `[i*16 .. i*16+15]`. The subtree is rebuilt from scratch on
 //! every mutation for determinism.
 
 use crate::PublicKey;
@@ -19,10 +24,9 @@ use crate::account::ValidatorAccount;
 use crate::execution_request::DepositRequest;
 use crate::header::AddedValidator;
 use crate::protocol_params::ProtocolParam;
-use crate::ssz_hash::{SszHashTreeRoot, hash_fixed_bytes_64, hash_fixed_bytes_96};
+use crate::ssz_hash::{SszHashTreeRoot, hash_byte_list, hash_fixed_bytes_64, hash_fixed_bytes_96};
 use crate::ssz_tree::{SszTree, mix_in_length};
-use crate::withdrawal::PendingWithdrawal;
-use crate::withdrawal::WithdrawalQueue;
+use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -51,9 +55,15 @@ pub const TREASURY_ADDRESS: usize = 18;
 pub const MAX_DEPOSITS_PER_EPOCH: usize = 19;
 pub const MAX_WITHDRAWALS_PER_EPOCH: usize = 20;
 pub const OBSERVERS_PER_VALIDATOR: usize = 21;
+pub const PENDING_EXECUTION_REQUESTS_ROOT: usize = 22;
+pub const PENDING_CHECKPOINT: usize = 23;
+pub const DYNAMIC_EPOCH_SCHEDULE: usize = 24;
+pub const MINIMUM_VALIDATOR_COUNT: usize = 25;
+pub const PENDING_ACTIVE_VALIDATOR_EXITS: usize = 26;
+pub const INVALID_DEPOSIT_TAX: usize = 27;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 22;
+pub const NUM_TOP_LEAVES: usize = 28;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -65,9 +75,13 @@ pub const VALIDATOR_FIELD_HAS_PENDING_DEPOSIT: usize = 4;
 pub const VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL: usize = 5;
 pub const VALIDATOR_FIELD_JOINING_EPOCH: usize = 6;
 pub const VALIDATOR_FIELD_LAST_DEPOSIT_INDEX: usize = 7;
+/// The node public key — the `BTreeMap` key the account belongs to. Committed as
+/// a leaf so the validator's identity is bound into the root and its proofs.
+pub const VALIDATOR_FIELD_NODE_PUBKEY: usize = 8;
 
-/// Number of SSZ fields per ValidatorAccount (8 fields = depth-3 subtree).
-pub const VALIDATOR_FIELDS_PER_ACCOUNT: usize = 8;
+/// Leaves per validator: 9 fields padded to the next power of two (16 leaves,
+/// depth-4 subtree). Leaves 9–15 are zero padding.
+pub const VALIDATOR_FIELDS_PER_ACCOUNT: usize = 16;
 
 // --- Deposit field indices (within each deposit's 8-leaf subtree) ---
 
@@ -92,9 +106,9 @@ pub const WITHDRAWAL_FIELD_AMOUNT: usize = 3;
 pub const WITHDRAWAL_FIELD_PUBKEY: usize = 4;
 pub const WITHDRAWAL_FIELD_BALANCE_DEDUCTION: usize = 5;
 pub const WITHDRAWAL_FIELD_EPOCH: usize = 6;
-// leaf 7 is unused (zero hash padding for 7-field container in 8-leaf subtree)
+pub const WITHDRAWAL_FIELD_KIND: usize = 7;
 
-/// Number of SSZ leaves per PendingWithdrawal (7 fields → 8 leaves, depth-3 subtree).
+/// Number of SSZ leaves per PendingWithdrawal (8 fields → 8 leaves, depth-3 subtree).
 pub const WITHDRAWAL_FIELDS_PER_ITEM: usize = 8;
 
 // --- Protocol parameter field indices (within each param's 2-leaf subtree) ---
@@ -109,14 +123,18 @@ pub const PROTOCOL_PARAM_FIELDS_PER_ITEM: usize = 2;
 
 pub const ADDED_VALIDATOR_FIELD_NODE_KEY: usize = 0;
 pub const ADDED_VALIDATOR_FIELD_CONSENSUS_KEY: usize = 1;
+/// The activation epoch — the `BTreeMap` key this scheduled addition belongs to.
+/// Committed per item so the epoch is bound even though the value list is flattened.
+pub const ADDED_VALIDATOR_FIELD_EPOCH: usize = 2;
 
-/// Number of SSZ leaves per AddedValidator (2 fields = depth-1 subtree).
-pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 2;
+/// Number of SSZ leaves per AddedValidator: 3 fields padded to the next power of
+/// two (4 leaves, depth-2 subtree). Leaf 3 is zero padding.
+pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 4;
 
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
 pub struct SszStateTree {
-    /// Top-level tree: 32 leaves (depth 5), 17 used.
+    /// Top-level tree: 32 leaves (depth 5), 28 used.
     top: SszTree,
 
     /// Validator accounts subtree. Rebuilt from BTreeMap on every mutation.
@@ -151,6 +169,10 @@ pub struct SszStateTree {
     /// Removed validators subtree.
     removed_validator_tree: SszTree,
     removed_validator_count: usize,
+
+    /// Pending execution requests subtree (one leaf per deferred request blob).
+    pending_execution_request_tree: SszTree,
+    pending_execution_request_count: usize,
 }
 
 impl SszStateTree {
@@ -172,6 +194,8 @@ impl SszStateTree {
             added_validator_count: 0,
             removed_validator_tree: SszTree::new(1),
             removed_validator_count: 0,
+            pending_execution_request_tree: SszTree::new(1),
+            pending_execution_request_count: 0,
         }
     }
 
@@ -232,6 +256,43 @@ impl SszStateTree {
             .set_leaf(OBSERVERS_PER_VALIDATOR, value.hash_tree_root());
     }
 
+    /// Set the pending-checkpoint leaf to the checkpoint digest (the value that
+    /// becomes the boundary `checkpoint_hash`), or the zero hash when absent. A
+    /// single scalar leaf — no subtree or proof support, since the pending
+    /// checkpoint only needs to be bound into the root, not proven on-chain. The
+    /// digest already commits the checkpoint data via SHA-256.
+    pub fn set_pending_checkpoint_digest(&mut self, digest: Option<[u8; 32]>) {
+        self.top
+            .set_leaf(PENDING_CHECKPOINT, digest.unwrap_or([0u8; 32]));
+    }
+
+    /// Set the dynamic-epoch-schedule leaf to the SSZ byte-list root of the
+    /// encoded `DynamicEpocher`. A single scalar leaf — no subtree or proof
+    /// support, since the schedule only needs to be bound into the root, not
+    /// proven on-chain. Because the epocher uses interior mutability and can be
+    /// changed (epoch advance, length update) without going through a
+    /// `ConsensusState` setter, this is refreshed at `capture_state_root` (and in
+    /// `rebuild`) rather than maintained incrementally.
+    pub fn set_dynamic_epoch_schedule(&mut self, encoded_schedule: &[u8]) {
+        self.top
+            .set_leaf(DYNAMIC_EPOCH_SCHEDULE, hash_byte_list(encoded_schedule));
+    }
+
+    pub fn set_minimum_validator_count(&mut self, value: u64) {
+        self.top
+            .set_leaf(MINIMUM_VALIDATOR_COUNT, value.hash_tree_root());
+    }
+
+    pub fn set_pending_active_validator_exits(&mut self, value: u64) {
+        self.top
+            .set_leaf(PENDING_ACTIVE_VALIDATOR_EXITS, value.hash_tree_root());
+    }
+
+    pub fn set_invalid_deposit_tax(&mut self, value: u64) {
+        self.top
+            .set_leaf(INVALID_DEPOSIT_TAX, value.hash_tree_root());
+    }
+
     pub fn set_treasury_address(&mut self, address: &Address) {
         self.top
             .set_leaf(TREASURY_ADDRESS, address.hash_tree_root());
@@ -258,25 +319,33 @@ impl SszStateTree {
 
     /// Rebuild the validator subtree from the full validator accounts map.
     ///
-    /// Each validator occupies 8 contiguous leaves (one per field) in the subtree,
-    /// forming a depth-3 per-validator sub-subtree. Slot assignment is purely
-    /// positional: the i-th entry in BTreeMap iteration order occupies leaves
-    /// `[i*8 .. i*8+7]`.
+    /// Each validator occupies 16 contiguous leaves (8 fields incl. the
+    /// `node_pubkey` map key, plus zero padding) in the subtree, forming a
+    /// depth-4 per-validator sub-subtree. Slot assignment is purely positional:
+    /// the i-th entry in BTreeMap iteration order occupies leaves
+    /// `[i*16 .. i*16+15]`.
     pub fn rebuild_validators(&mut self, accounts: &BTreeMap<[u8; 32], ValidatorAccount>) {
         let count = accounts.len();
         let leaf_count = (count * VALIDATOR_FIELDS_PER_ACCOUNT).max(1);
         let mut tree = SszTree::new(leaf_count);
-        for (i, account) in accounts.values().enumerate() {
-            Self::set_validator_fields(&mut tree, i, account);
+        for (i, (node_pubkey, account)) in accounts.iter().enumerate() {
+            Self::set_validator_fields(&mut tree, i, node_pubkey, account);
         }
         self.validator_tree = tree;
         self.validator_count = count;
         self.update_validator_collection_root();
     }
 
-    /// Set the 8 field leaves for validator at positional slot `i`.
-    fn set_validator_fields(tree: &mut SszTree, slot: usize, account: &ValidatorAccount) {
+    /// Set the validator's 9 field leaves (node-pubkey key + 8 account fields,
+    /// padded to a 16-leaf depth-4 subtree) at positional slot `i`.
+    fn set_validator_fields(
+        tree: &mut SszTree,
+        slot: usize,
+        node_pubkey: &[u8; 32],
+        account: &ValidatorAccount,
+    ) {
         let base = slot * VALIDATOR_FIELDS_PER_ACCOUNT;
+        tree.set_leaf(base + VALIDATOR_FIELD_NODE_PUBKEY, *node_pubkey);
         tree.set_leaf(
             base + VALIDATOR_FIELD_CONSENSUS_PUBKEY,
             account.consensus_public_key.hash_tree_root(),
@@ -315,17 +384,27 @@ impl SszStateTree {
     ///
     /// The validator must already exist at the given `slot`. Only the changed
     /// leaves are rehashed — O(8 · log n) instead of O(N · 8) for a full rebuild.
-    pub fn update_validator_at_slot(&mut self, slot: usize, account: &ValidatorAccount) {
-        Self::set_validator_fields(&mut self.validator_tree, slot, account);
+    pub fn update_validator_at_slot(
+        &mut self,
+        slot: usize,
+        node_pubkey: &[u8; 32],
+        account: &ValidatorAccount,
+    ) {
+        Self::set_validator_fields(&mut self.validator_tree, slot, node_pubkey, account);
         self.update_validator_collection_root();
     }
 
     /// Insert a new validator at positional `slot`, shifting existing validators right.
     ///
     /// Grows the tree if needed. Copies shifted validators' subtree nodes via memmove
-    /// (no rehash), then writes the new validator's 8 field leaves and rehashes only
+    /// (no rehash), then writes the new validator's 9 field leaves and rehashes only
     /// the new slot's subtree plus upper ancestors. O(N) memcpy + O(N/8) SHA256.
-    pub fn insert_validator_at_slot(&mut self, slot: usize, account: &ValidatorAccount) {
+    pub fn insert_validator_at_slot(
+        &mut self,
+        slot: usize,
+        node_pubkey: &[u8; 32],
+        account: &ValidatorAccount,
+    ) {
         let new_count = self.validator_count + 1;
         let needed = new_count * VALIDATOR_FIELDS_PER_ACCOUNT;
         self.validator_tree.grow(needed);
@@ -335,10 +414,10 @@ impl SszStateTree {
         self.validator_tree
             .shift_blocks_right(slot, to_shift, VALIDATOR_FIELDS_PER_ACCOUNT);
 
-        // Write new validator's 8 field leaves (no per-leaf rehash)
-        Self::set_validator_fields_no_rehash(&mut self.validator_tree, slot, account);
+        // Write new validator's field leaves (no per-leaf rehash)
+        Self::set_validator_fields_no_rehash(&mut self.validator_tree, slot, node_pubkey, account);
 
-        // Rehash only the new validator's subtree (3 internal levels above its 8 leaves)
+        // Rehash only the new validator's subtree (4 internal levels above its 16 leaves)
         self.validator_tree
             .rehash_block(slot, VALIDATOR_FIELDS_PER_ACCOUNT);
 
@@ -404,9 +483,16 @@ impl SszStateTree {
         self.update_validator_collection_root();
     }
 
-    /// Set the 8 field leaves without triggering per-leaf rehash.
-    fn set_validator_fields_no_rehash(tree: &mut SszTree, slot: usize, account: &ValidatorAccount) {
+    /// Set the validator's 9 field leaves (node-pubkey key + 8 account fields)
+    /// without triggering per-leaf rehash.
+    fn set_validator_fields_no_rehash(
+        tree: &mut SszTree,
+        slot: usize,
+        node_pubkey: &[u8; 32],
+        account: &ValidatorAccount,
+    ) {
         let base = slot * VALIDATOR_FIELDS_PER_ACCOUNT;
+        tree.set_leaf_no_rehash(base + VALIDATOR_FIELD_NODE_PUBKEY, *node_pubkey);
         tree.set_leaf_no_rehash(
             base + VALIDATOR_FIELD_CONSENSUS_PUBKEY,
             account.consensus_public_key.hash_tree_root(),
@@ -608,7 +694,10 @@ impl SszStateTree {
             base + WITHDRAWAL_FIELD_EPOCH,
             withdrawal.epoch.hash_tree_root(),
         );
-        // leaf 7 remains zero (SSZ padding for 7-field container in 8-leaf subtree)
+        tree.set_leaf(
+            base + WITHDRAWAL_FIELD_KIND,
+            withdrawal.kind.hash_tree_root(),
+        );
     }
 
     /// Incrementally update the tree after a withdrawal's fields changed (merge case).
@@ -785,6 +874,8 @@ impl SszStateTree {
             ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
             ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
             ProtocolParam::ObserversPerValidator(v) => (7u64, v.hash_tree_root()),
+            ProtocolParam::MinimumValidatorCount(v) => (8u64, v.hash_tree_root()),
+            ProtocolParam::InvalidDepositTax(v) => (9u64, v.hash_tree_root()),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value_hash);
@@ -804,15 +895,19 @@ impl SszStateTree {
 
     /// Rebuild added validators subtree (flattened across all epochs).
     ///
-    /// Each added validator occupies 2 contiguous leaves (node_key, consensus_key),
-    /// forming a depth-1 per-item sub-subtree, enabling field-level proofs.
+    /// Each added validator occupies 4 contiguous leaves (node_key, consensus_key,
+    /// epoch map key, and zero padding), forming a depth-2 per-item sub-subtree,
+    /// enabling field-level proofs.
     pub fn rebuild_added_validators(&mut self, validators: &BTreeMap<u64, Vec<AddedValidator>>) {
-        let items: Vec<&AddedValidator> = validators.values().flat_map(|v| v.iter()).collect();
+        let items: Vec<(u64, &AddedValidator)> = validators
+            .iter()
+            .flat_map(|(epoch, v)| v.iter().map(move |av| (*epoch, av)))
+            .collect();
         let count = items.len();
         let leaf_count = (count * ADDED_VALIDATOR_FIELDS_PER_ITEM).max(1);
         let mut tree = SszTree::new(leaf_count);
-        for (i, av) in items.iter().enumerate() {
-            Self::set_added_validator_fields(&mut tree, i, av);
+        for (i, (epoch, av)) in items.iter().enumerate() {
+            Self::set_added_validator_fields(&mut tree, i, *epoch, av);
         }
         self.added_validator_tree = tree;
         self.added_validator_count = count;
@@ -820,7 +915,12 @@ impl SszStateTree {
     }
 
     /// Set the 2 field leaves for added validator at positional slot `i`.
-    fn set_added_validator_fields(tree: &mut SszTree, slot: usize, av: &AddedValidator) {
+    fn set_added_validator_fields(
+        tree: &mut SszTree,
+        slot: usize,
+        epoch: u64,
+        av: &AddedValidator,
+    ) {
         let base = slot * ADDED_VALIDATOR_FIELDS_PER_ITEM;
         tree.set_leaf(
             base + ADDED_VALIDATOR_FIELD_NODE_KEY,
@@ -830,6 +930,7 @@ impl SszStateTree {
             base + ADDED_VALIDATOR_FIELD_CONSENSUS_KEY,
             av.consensus_key.hash_tree_root(),
         );
+        tree.set_leaf(base + ADDED_VALIDATOR_FIELD_EPOCH, epoch.hash_tree_root());
     }
 
     fn update_added_validator_collection_root(&mut self) {
@@ -854,6 +955,28 @@ impl SszStateTree {
         self.removed_validator_tree = tree;
         self.removed_validator_count = count;
         self.update_removed_validator_collection_root();
+    }
+
+    /// Rebuild the pending-execution-requests subtree. Each deferred request is an
+    /// opaque byte blob hashed as an SSZ byte list; the collection root mixes in the
+    /// request count. Binds deferred deposits/withdrawals/exits into the state root.
+    pub fn rebuild_pending_execution_requests(&mut self, requests: &[alloy_primitives::Bytes]) {
+        let count = requests.len();
+        let capacity = count.max(1);
+        let mut tree = SszTree::new(capacity);
+        for (i, req) in requests.iter().enumerate() {
+            tree.set_leaf(i, hash_byte_list(req));
+        }
+        self.pending_execution_request_tree = tree;
+        self.pending_execution_request_count = count;
+        self.update_pending_execution_request_collection_root();
+    }
+
+    fn update_pending_execution_request_collection_root(&mut self) {
+        let subtree_root = self.pending_execution_request_tree.root();
+        let collection_root = mix_in_length(subtree_root, self.pending_execution_request_count);
+        self.top
+            .set_leaf(PENDING_EXECUTION_REQUESTS_ROOT, collection_root);
     }
 
     fn update_removed_validator_collection_root(&mut self) {
@@ -895,6 +1018,12 @@ impl SszStateTree {
         max_deposits_per_epoch: u64,
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
+        pending_execution_requests: &[alloy_primitives::Bytes],
+        pending_checkpoint_digest: Option<[u8; 32]>,
+        dynamic_epoch_schedule: &[u8],
+        minimum_validator_count: u64,
+        pending_active_validator_exits: u64,
+        invalid_deposit_tax: u64,
     ) {
         *self = Self::new();
 
@@ -915,6 +1044,9 @@ impl SszStateTree {
         self.set_max_deposits_per_epoch(max_deposits_per_epoch);
         self.set_max_withdrawals_per_epoch(max_withdrawals_per_epoch);
         self.set_observers_per_validator(observers_per_validator);
+        self.set_minimum_validator_count(minimum_validator_count);
+        self.set_pending_active_validator_exits(pending_active_validator_exits);
+        self.set_invalid_deposit_tax(invalid_deposit_tax);
 
         // Validators
         self.rebuild_validators(validator_accounts);
@@ -925,6 +1057,9 @@ impl SszStateTree {
         self.rebuild_protocol_params(protocol_param_changes);
         self.rebuild_added_validators(added_validators);
         self.rebuild_removed_validators(removed_validators);
+        self.rebuild_pending_execution_requests(pending_execution_requests);
+        self.set_pending_checkpoint_digest(pending_checkpoint_digest);
+        self.set_dynamic_epoch_schedule(dynamic_epoch_schedule);
     }
 
     // --- Proof generation ---
@@ -1032,22 +1167,43 @@ impl SszStateTree {
         })
     }
 
+    /// Generate a field-level proof for a validator identified by node pubkey,
+    /// bound to that pubkey via a companion proof of the item's node-pubkey leaf.
+    ///
+    /// Unlike [`Self::generate_validator_field_proof`], the returned
+    /// [`KeyedFieldProof`] lets a trustless consumer confirm the field belongs
+    /// to the requested validator rather than to some other account under the
+    /// same root. Verify with
+    /// `proof.verify(root, pubkey, VALIDATOR_FIELDS_PER_ACCOUNT, VALIDATOR_FIELD_NODE_PUBKEY)`.
+    pub fn generate_validator_keyed_field_proof(
+        &self,
+        pubkey: &[u8; 32],
+        field_index: usize,
+        keys: &[[u8; 32]],
+    ) -> Option<KeyedFieldProof> {
+        let field = self.generate_validator_field_proof(pubkey, field_index, keys)?;
+        let key = self.generate_validator_field_proof(pubkey, VALIDATOR_FIELD_NODE_PUBKEY, keys)?;
+        Some(KeyedFieldProof { field, key })
+    }
+
     /// Build a proof for the whole validator at positional `slot`.
     ///
     /// Returns (gindex, node_value, branch) where the node is the
-    /// per-validator subtree root (3 levels above the field leaves).
+    /// per-validator subtree root (4 levels above the field leaves).
     fn validator_account_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
         let sd = self.validator_tree.depth();
-        // Per-validator root is at depth (sd - 3) in the subtree.
-        // Its 1-based tree index is: capacity / 8 + slot
+        // Per-validator root is at depth (sd - 4) in the subtree (16 leaves/item).
+        // Its 1-based tree index is: capacity / VALIDATOR_FIELDS_PER_ACCOUNT + slot
         let node_index = self.validator_tree.capacity() / VALIDATOR_FIELDS_PER_ACCOUNT + slot;
         let node_value = self.validator_tree.get_node(node_index);
 
-        // Generalized index: top_gindex << (sd - 2) | slot
-        // (sd - 2 = (sd - 3) levels in subtree + 1 for mix_in_length)
+        // Generalized index: descend from the top leaf to the per-validator subtree
+        // root, which sits `log_block` levels above the field leaves. That is
+        // `(sd - log_block)` subtree levels + 1 for the mix_in_length node.
+        let log_block = VALIDATOR_FIELDS_PER_ACCOUNT.ilog2() as usize;
         let td = self.top.depth();
         let top_gindex = (1u64 << td) + VALIDATOR_ACCOUNTS_ROOT as u64;
-        let gindex = (top_gindex << (sd - 2)) | (slot as u64);
+        let gindex = (top_gindex << (sd - log_block + 1)) | (slot as u64);
 
         // Branch: subtree proof from internal node + mix_in_length sibling + top proof
         let mut branch = self.validator_tree.generate_proof_from_node(node_index);
@@ -1221,6 +1377,26 @@ impl SszStateTree {
     ) -> Option<SszProof> {
         let &(epoch_slot, item_slot) = self.withdrawal_pubkey_index.get(pubkey)?;
         self.generate_withdrawal_field_proof(epoch_slot, item_slot, field_index)
+    }
+
+    /// Generate a field-level proof for a withdrawal identified by pubkey,
+    /// bound to that pubkey via a companion proof of the item's pubkey leaf.
+    ///
+    /// Unlike [`Self::generate_withdrawal_field_proof_by_key`], the returned
+    /// [`KeyedFieldProof`] lets a trustless consumer confirm the field belongs
+    /// to the requested pubkey rather than to some other withdrawal under the
+    /// same root. Verify with
+    /// `proof.verify(root, pubkey, WITHDRAWAL_FIELDS_PER_ITEM, WITHDRAWAL_FIELD_PUBKEY)`.
+    pub fn generate_withdrawal_keyed_field_proof_by_key(
+        &self,
+        pubkey: &[u8; 32],
+        field_index: usize,
+    ) -> Option<KeyedFieldProof> {
+        let &(epoch_slot, item_slot) = self.withdrawal_pubkey_index.get(pubkey)?;
+        let field = self.generate_withdrawal_field_proof(epoch_slot, item_slot, field_index)?;
+        let key =
+            self.generate_withdrawal_field_proof(epoch_slot, item_slot, WITHDRAWAL_FIELD_PUBKEY)?;
+        Some(KeyedFieldProof { field, key })
     }
 
     /// Internal helper: produce (gindex, node_value, branch) for a whole-withdrawal proof.
@@ -1419,9 +1595,9 @@ impl SszStateTree {
 
     /// Generate a proof for an added validator at a given flattened index (whole item).
     ///
-    /// The proof leaf is the per-item subtree root (internal node 1 level
-    /// above the field leaves). The branch is 1 element shorter than a
-    /// field-level proof.
+    /// The proof leaf is the per-item subtree root (internal node 2 levels
+    /// above the field leaves, since each item is a depth-2 / 4-leaf subtree).
+    /// The branch is 2 elements shorter than a field-level proof.
     pub fn generate_added_validator_proof(&self, index: usize) -> Option<SszProof> {
         if index >= self.added_validator_count {
             return None;
@@ -1481,9 +1657,12 @@ impl SszStateTree {
             self.added_validator_tree.capacity() / ADDED_VALIDATOR_FIELDS_PER_ITEM + slot;
         let node_value = self.added_validator_tree.get_node(node_index);
 
+        // Descend to the per-item subtree root, `log_block` levels above the field
+        // leaves: `(sd - log_block)` subtree levels + 1 for the mix_in_length node.
+        let log_block = ADDED_VALIDATOR_FIELDS_PER_ITEM.ilog2() as usize;
         let td = self.top.depth();
         let top_gindex = (1u64 << td) + ADDED_VALIDATORS_ROOT as u64;
-        let gindex = (top_gindex << sd) | (slot as u64);
+        let gindex = (top_gindex << (sd - log_block + 1)) | (slot as u64);
 
         let mut branch = self
             .added_validator_tree
@@ -1558,12 +1737,96 @@ impl SszProof {
     }
 }
 
+/// A field-level proof bound to the collection item it belongs to.
+///
+/// A bare [`SszProof`] for a single field authenticates only that *some*
+/// positional leaf exists under the root — it does not prove the field belongs
+/// to the requested key (pubkey). For by-pubkey field proofs
+/// (`withdrawal_field:`/`validator_field:`) the selector is resolved to a
+/// position *server-side*, so a malicious provider could answer with the same
+/// field from a *different* item under the same root and the branch would still
+/// verify. `KeyedFieldProof` closes that gap by carrying a second proof of the
+/// item's key leaf; [`KeyedFieldProof::verify`] checks both leaves authenticate
+/// against the root, that the key leaf equals the requested key, that the key
+/// proof addresses the canonical key field within its item (not just any field
+/// that happens to hash to the key), and that the field and key leaves belong to
+/// the *same* collection item.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyedFieldProof {
+    /// Proof of the requested field leaf.
+    pub field: SszProof,
+    /// Proof of the item's key (pubkey) leaf, binding `field` to the request.
+    pub key: SszProof,
+}
+
+impl KeyedFieldProof {
+    /// Verify that `field` is bound to `expected_key` under `state_root`.
+    ///
+    /// `fields_per_item` is the number of leaves per collection item (a power of
+    /// two: [`WITHDRAWAL_FIELDS_PER_ITEM`] for withdrawals,
+    /// [`VALIDATOR_FIELDS_PER_ACCOUNT`] for validator accounts). `key_field_index`
+    /// is the canonical key-field selector within an item
+    /// ([`WITHDRAWAL_FIELD_PUBKEY`] for withdrawals,
+    /// [`VALIDATOR_FIELD_NODE_PUBKEY`] for validator accounts). Returns `true`
+    /// only when all of the following hold:
+    /// 1. both `field` and `key` authenticate against `state_root`,
+    /// 2. the key leaf equals `hash_tree_root(expected_key)` (for a 32-byte key
+    ///    this is the key itself),
+    /// 3. the key proof addresses the canonical key field within its item (its
+    ///    field-selector bits equal `key_field_index`), so the binding cannot
+    ///    rest on some other field that merely happens to hash to the key, and
+    /// 4. `field` and `key` resolve to the same item — i.e. their generalized
+    ///    indices agree once the low `log2(fields_per_item)` field-selector bits
+    ///    are dropped.
+    pub fn verify(
+        &self,
+        state_root: &[u8; 32],
+        expected_key: &[u8; 32],
+        fields_per_item: usize,
+        key_field_index: usize,
+    ) -> bool {
+        if !fields_per_item.is_power_of_two() {
+            return false;
+        }
+        if !self.field.verify(state_root) || !self.key.verify(state_root) {
+            return false;
+        }
+        if self.key.leaf != expected_key.hash_tree_root() {
+            return false;
+        }
+        // The bottom `log2(fields_per_item)` bits of a gindex are the field
+        // selector within the item. Require the key proof to address the
+        // canonical key field, not just any field whose leaf equals the key.
+        if (self.key.gindex & (fields_per_item as u64 - 1)) != key_field_index as u64 {
+            return false;
+        }
+        // Shifting those selector bits off yields the item's subtree-root
+        // gindex. Equal item roots ⟺ same item.
+        let shift = fields_per_item.ilog2();
+        (self.field.gindex >> shift) == (self.key.gindex >> shift)
+    }
+}
+
+/// A single entry in a `GenerateStateProof` response.
+///
+/// `key` is `Some` only for by-pubkey field proofs, where it carries the item's
+/// key-leaf proof so the consumer can bind the field to the requested pubkey via
+/// [`KeyedFieldProof::verify`]. For scalar, whole-item, and index-addressed
+/// proofs it is `None` and `field` stands alone.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StateProofEntry {
+    /// Proof of the requested leaf (field, scalar, or whole-item root).
+    pub field: SszProof,
+    /// For by-pubkey field requests, proof of the item's key leaf.
+    pub key: Option<SszProof>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
-    use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
+    use crate::withdrawal::{PendingWithdrawal, WithdrawalKind, WithdrawalQueue};
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
     use commonware_cryptography::Signer;
@@ -1793,12 +2056,18 @@ mod tests {
         inc.set_max_deposits_per_epoch(3);
         inc.set_max_withdrawals_per_epoch(16);
         inc.set_observers_per_validator(5);
+        inc.set_minimum_validator_count(3);
+        inc.set_pending_active_validator_exits(0);
+        inc.set_invalid_deposit_tax(0);
         inc.rebuild_validators(&accounts);
         inc.rebuild_deposits(&VecDeque::new());
         inc.rebuild_withdrawals(&WithdrawalQueue::default());
         inc.rebuild_protocol_params(&[]);
         inc.rebuild_added_validators(&BTreeMap::new());
         inc.rebuild_removed_validators(&[]);
+        inc.rebuild_pending_execution_requests(&[]);
+        inc.set_pending_checkpoint_digest(None);
+        inc.set_dynamic_epoch_schedule(&[]);
 
         // Build via rebuild
         let mut rb = SszStateTree::new();
@@ -1825,9 +2094,88 @@ mod tests {
             3,
             16,
             5,
+            &[],
+            None,
+            &[],
+            3,
+            0,
+            0,
         );
 
         assert_eq!(inc.root(), rb.root());
+    }
+
+    #[test]
+    fn pending_execution_requests_affect_root() {
+        let mut tree = SszStateTree::new();
+        tree.rebuild_pending_execution_requests(&[]);
+        let empty_root = tree.root();
+
+        // Adding a deferred request changes the state root.
+        tree.rebuild_pending_execution_requests(&[alloy_primitives::Bytes::from(vec![1u8, 2, 3])]);
+        let one_root = tree.root();
+        assert_ne!(
+            empty_root, one_root,
+            "a pending execution request must be bound into the state root"
+        );
+
+        // Changing only the request contents changes the root.
+        tree.rebuild_pending_execution_requests(&[alloy_primitives::Bytes::from(vec![4u8, 5, 6])]);
+        assert_ne!(
+            one_root,
+            tree.root(),
+            "different pending request contents must produce a different root"
+        );
+
+        // Clearing returns to the empty-collection root.
+        tree.rebuild_pending_execution_requests(&[]);
+        assert_eq!(empty_root, tree.root());
+    }
+
+    #[test]
+    fn pending_checkpoint_affects_root() {
+        let mut tree = SszStateTree::new();
+        tree.set_pending_checkpoint_digest(None);
+        let none_root = tree.root();
+
+        // Setting a pending checkpoint binds its digest into the root.
+        tree.set_pending_checkpoint_digest(Some([0xAB; 32]));
+        let some_root = tree.root();
+        assert_ne!(
+            none_root, some_root,
+            "a pending checkpoint must be bound into the state root"
+        );
+
+        // A different digest produces a different root.
+        tree.set_pending_checkpoint_digest(Some([0xCD; 32]));
+        assert_ne!(
+            some_root,
+            tree.root(),
+            "a different pending-checkpoint digest must produce a different root"
+        );
+
+        // Clearing returns to the no-checkpoint root.
+        tree.set_pending_checkpoint_digest(None);
+        assert_eq!(none_root, tree.root());
+    }
+
+    #[test]
+    fn dynamic_epoch_schedule_affects_root() {
+        let mut tree = SszStateTree::new();
+        tree.set_dynamic_epoch_schedule(&[1, 2, 3]);
+        let root_a = tree.root();
+
+        // A different encoded schedule must produce a different root.
+        tree.set_dynamic_epoch_schedule(&[1, 2, 4]);
+        assert_ne!(
+            root_a,
+            tree.root(),
+            "a different epoch schedule must produce a different root"
+        );
+
+        // The same encoded schedule reproduces the same root.
+        tree.set_dynamic_epoch_schedule(&[1, 2, 3]);
+        assert_eq!(root_a, tree.root());
     }
 
     #[test]
@@ -1859,6 +2207,12 @@ mod tests {
             &Address::ZERO,
             3,
             16,
+            0,
+            &[],
+            None,
+            &[],
+            3,
+            0,
             0,
         );
 
@@ -1968,6 +2322,7 @@ mod tests {
             pubkey: pk1,
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -1979,6 +2334,7 @@ mod tests {
             pubkey: pk2,
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -1990,6 +2346,7 @@ mod tests {
             pubkey: pk3,
             balance_deduction: 3_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         });
 
         let mut tree = SszStateTree::new();
@@ -2039,6 +2396,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         let mut tree = SszStateTree::new();
         tree.rebuild_withdrawals(&queue);
@@ -2238,6 +2596,7 @@ mod tests {
             pubkey: pk1,
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2249,6 +2608,7 @@ mod tests {
             pubkey: pk2,
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         queue.push(PendingWithdrawal {
             inner: Withdrawal {
@@ -2260,6 +2620,7 @@ mod tests {
             pubkey: pk3,
             balance_deduction: 3_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         });
 
         let mut tree = SszStateTree::new();
@@ -2311,6 +2672,125 @@ mod tests {
     }
 
     #[test]
+    fn withdrawal_keyed_field_proof_binds_to_requested_pubkey() {
+        let pk1 = [1u8; 32];
+        let pk2 = [2u8; 32];
+        let mut queue = WithdrawalQueue::default();
+        // Two withdrawals in the same epoch with DIFFERENT amounts.
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([0x11; 20]),
+                amount: 1_000_000_000,
+            },
+            pubkey: pk1,
+            balance_deduction: 1_000_000_000,
+            epoch: 1,
+            kind: WithdrawalKind::Validator,
+        });
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 1,
+                validator_index: 1,
+                address: Address::from([0x22; 20]),
+                amount: 2_000_000_000,
+            },
+            pubkey: pk2,
+            balance_deduction: 2_000_000_000,
+            epoch: 1,
+            kind: WithdrawalKind::Validator,
+        });
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_withdrawals(&queue);
+        tree.set_epoch(5);
+        let root = tree.root();
+
+        // The honest keyed proof for pk1's amount binds to pk1.
+        let keyed1 = tree
+            .generate_withdrawal_keyed_field_proof_by_key(&pk1, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        assert!(
+            keyed1.verify(
+                &root,
+                &pk1,
+                WITHDRAWAL_FIELDS_PER_ITEM,
+                WITHDRAWAL_FIELD_PUBKEY
+            ),
+            "honest keyed proof should bind to its own pubkey"
+        );
+        assert_eq!(keyed1.field.leaf, 1_000_000_000u64.hash_tree_root());
+
+        // It must NOT verify against a different requested pubkey.
+        assert!(
+            !keyed1.verify(
+                &root,
+                &pk2,
+                WITHDRAWAL_FIELDS_PER_ITEM,
+                WITHDRAWAL_FIELD_PUBKEY
+            ),
+            "keyed proof must not verify against a different pubkey"
+        );
+
+        // Substitution attack: a malicious provider answers a by-pk1 request
+        // with pk2's amount field. The bare positional field proof still
+        // verifies against the root (this is the vulnerability), ...
+        let pk2_amount = tree
+            .generate_withdrawal_field_proof_by_key(&pk2, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        assert!(
+            pk2_amount.verify(&root),
+            "pk2's positional amount proof verifies against the root unaided"
+        );
+        assert_eq!(pk2_amount.leaf, 2_000_000_000u64.hash_tree_root());
+
+        // ... but pairing it with any key proof cannot bind it to pk1: the only
+        // key leaf equal to pk1 lives in pk1's item, whose gindex differs from
+        // pk2's field gindex, so the same-item check fails.
+        let pk1_key = tree
+            .generate_withdrawal_field_proof_by_key(&pk1, WITHDRAWAL_FIELD_PUBKEY)
+            .unwrap();
+        let forged = KeyedFieldProof {
+            field: pk2_amount,
+            key: pk1_key,
+        };
+        assert!(
+            !forged.verify(
+                &root,
+                &pk1,
+                WITHDRAWAL_FIELDS_PER_ITEM,
+                WITHDRAWAL_FIELD_PUBKEY
+            ),
+            "substituted field from a different withdrawal must not bind to pk1"
+        );
+
+        // Canonical-selector hardening: a `key` proof addressing a NON-pubkey
+        // field must be rejected even when its leaf equals the requested key and
+        // it sits in the same item as `field`. Use pk1's amount field as the
+        // stand-in key and request a key equal to that field's leaf: the leaf
+        // and same-item checks both pass, so only the selector check rejects it.
+        let pk1_amount = tree
+            .generate_withdrawal_field_proof_by_key(&pk1, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        let amount_leaf: [u8; 32] = 1_000_000_000u64.hash_tree_root();
+        assert_eq!(pk1_amount.leaf, amount_leaf);
+        let mis_selected = KeyedFieldProof {
+            field: pk1_amount.clone(),
+            key: pk1_amount,
+        };
+        assert!(
+            !mis_selected.verify(
+                &root,
+                &amount_leaf,
+                WITHDRAWAL_FIELDS_PER_ITEM,
+                WITHDRAWAL_FIELD_PUBKEY
+            ),
+            "a key proof addressing a non-pubkey field must be rejected by the selector check"
+        );
+    }
+
+    #[test]
     fn withdrawal_item_proof_leaf_matches_hash_tree_root() {
         let withdrawal = PendingWithdrawal {
             inner: Withdrawal {
@@ -2322,6 +2802,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let mut queue = WithdrawalQueue::default();
         queue.push(withdrawal.clone());
@@ -2352,6 +2833,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         });
         let mut tree = SszStateTree::new();
         tree.rebuild_withdrawals(&queue);
@@ -2376,6 +2858,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w2 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2387,6 +2870,7 @@ mod tests {
             pubkey: [2u8; 32],
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w3 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2398,6 +2882,7 @@ mod tests {
             pubkey: [3u8; 32],
             balance_deduction: 3_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         };
 
         // Incremental: push one by one
@@ -2436,6 +2921,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w2 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2447,6 +2933,7 @@ mod tests {
             pubkey: [2u8; 32],
             balance_deduction: 2_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w3 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2458,6 +2945,7 @@ mod tests {
             pubkey: [3u8; 32],
             balance_deduction: 3_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         };
 
         // Start with full rebuild of 3 items
@@ -2506,6 +2994,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
 
         let mut queue = WithdrawalQueue::default();
@@ -2524,6 +3013,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 5_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         inc.update_withdrawal(&updated);
 
@@ -2548,6 +3038,7 @@ mod tests {
             pubkey: [1u8; 32],
             balance_deduction: 1_000_000_000,
             epoch: 1,
+            kind: WithdrawalKind::Validator,
         };
         let w3 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2559,6 +3050,7 @@ mod tests {
             pubkey: [3u8; 32],
             balance_deduction: 3_000_000_000,
             epoch: 3,
+            kind: WithdrawalKind::Validator,
         };
         let w2 = PendingWithdrawal {
             inner: Withdrawal {
@@ -2570,6 +3062,7 @@ mod tests {
             pubkey: [2u8; 32],
             balance_deduction: 2_000_000_000,
             epoch: 2,
+            kind: WithdrawalKind::Validator,
         };
 
         let mut inc = SszStateTree::new();
@@ -2654,11 +3147,12 @@ mod tests {
         let account_proof = tree.generate_validator_proof(&pk, &keys).unwrap();
         let field_proof = tree.generate_validator_field_proof(&pk, 0, &keys).unwrap();
 
-        // Field proof branch is 3 elements longer (depth-3 per-validator subtree)
+        // Field proof branch is 4 elements longer (depth-4 per-validator subtree:
+        // 9 fields incl. node pubkey, padded to 16 leaves)
         assert_eq!(
             field_proof.branch.len(),
-            account_proof.branch.len() + 3,
-            "field branch should be 3 longer than account branch"
+            account_proof.branch.len() + 4,
+            "field branch should be 4 longer than account branch"
         );
     }
 
@@ -2673,9 +3167,21 @@ mod tests {
         let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
         let proof = tree.generate_validator_proof(&pk, &keys).unwrap();
 
-        // The proof leaf should be hash_tree_root(account), computed from the
-        // internal node which is the root of the 8-field subtree
-        assert_eq!(proof.leaf, acc.hash_tree_root());
+        // The whole-account proof leaf is the per-validator subtree root: the 8
+        // account fields plus the node pubkey (field 8), merkleized over 16 leaves.
+        // (No longer equal to ValidatorAccount::hash_tree_root, which omits the key.)
+        let expected = crate::ssz_tree::merkleize(&[
+            acc.consensus_public_key.hash_tree_root(),
+            acc.withdrawal_credentials.hash_tree_root(),
+            acc.balance.hash_tree_root(),
+            acc.status.hash_tree_root(),
+            acc.has_pending_deposit.hash_tree_root(),
+            acc.has_pending_withdrawal.hash_tree_root(),
+            acc.joining_epoch.hash_tree_root(),
+            acc.last_deposit_index.hash_tree_root(),
+            pk,
+        ]);
+        assert_eq!(proof.leaf, expected);
     }
 
     #[test]
@@ -2713,6 +3219,16 @@ mod tests {
         tree
     }
 
+    /// Expected per-item leaf for an added validator: node key, consensus key, and
+    /// the activation epoch, merkleized over 4 leaves (matches the SSZ subtree root).
+    fn added_validator_entry_root(epoch: u64, av: &AddedValidator) -> [u8; 32] {
+        crate::ssz_tree::merkleize(&[
+            av.node_key.hash_tree_root(),
+            av.consensus_key.hash_tree_root(),
+            epoch.hash_tree_root(),
+        ])
+    }
+
     // ── Insert / remove tests ──────────────────────────────────────────
 
     /// Insert N validators one-by-one and compare against full rebuild.
@@ -2725,7 +3241,7 @@ mod tests {
         for (pk, acc) in &validators {
             accounts.insert(*pk, acc.clone());
             let slot = accounts.keys().position(|k| k == pk).unwrap();
-            inc_tree.insert_validator_at_slot(slot, acc);
+            inc_tree.insert_validator_at_slot(slot, pk, acc);
         }
 
         let ref_tree = rebuild_tree(&accounts);
@@ -2794,7 +3310,7 @@ mod tests {
             let slot = accounts.keys().position(|k| k == &new_pk).unwrap();
 
             let mut tree = rebuild_tree(&base_accounts);
-            tree.insert_validator_at_slot(slot, &new_acc);
+            tree.insert_validator_at_slot(slot, &new_pk, &new_acc);
 
             let ref_tree = rebuild_tree(&accounts);
             assert_eq!(
@@ -2930,7 +3446,7 @@ mod tests {
             let mut modified_accounts = accounts.clone();
             modified_accounts.insert(new_pk, new_acc.clone());
             let slot = modified_accounts.keys().position(|k| k == &new_pk).unwrap();
-            modified.insert_validator_at_slot(slot, &new_acc);
+            modified.insert_validator_at_slot(slot, &new_pk, &new_acc);
 
             assert_ne!(
                 modified.root(),
@@ -2966,7 +3482,7 @@ mod tests {
 
             let mut modified = tree.clone();
             modified.remove_validator_at_slot(slot);
-            modified.insert_validator_at_slot(slot, &acc);
+            modified.insert_validator_at_slot(slot, &pk, &acc);
 
             assert_eq!(
                 modified.root(),
@@ -2994,12 +3510,12 @@ mod tests {
         // Insert A
         modified_accounts.insert(pk_a, acc_a.clone());
         let slot_a = modified_accounts.keys().position(|k| k == &pk_a).unwrap();
-        modified.insert_validator_at_slot(slot_a, &acc_a);
+        modified.insert_validator_at_slot(slot_a, &pk_a, &acc_a);
 
         // Insert B
         modified_accounts.insert(pk_b, acc_b.clone());
         let slot_b = modified_accounts.keys().position(|k| k == &pk_b).unwrap();
-        modified.insert_validator_at_slot(slot_b, &acc_b);
+        modified.insert_validator_at_slot(slot_b, &pk_b, &acc_b);
 
         // Verify intermediate state matches rebuild
         let ref_tree = rebuild_tree(&modified_accounts);
@@ -3038,12 +3554,12 @@ mod tests {
         let (new_pk, mut new_acc) = make_validator(42);
         accounts.insert(new_pk, new_acc.clone());
         let slot = accounts.keys().position(|k| k == &new_pk).unwrap();
-        tree.insert_validator_at_slot(slot, &new_acc);
+        tree.insert_validator_at_slot(slot, &new_pk, &new_acc);
 
         // Update its balance
         new_acc.balance = 64_000_000_000;
         accounts.insert(new_pk, new_acc.clone());
-        tree.update_validator_at_slot(slot, &new_acc);
+        tree.update_validator_at_slot(slot, &new_pk, &new_acc);
 
         let ref_tree = rebuild_tree(&accounts);
         assert_eq!(
@@ -3064,7 +3580,7 @@ mod tests {
             let (pk, acc) = make_validator(i);
             accounts.insert(pk, acc.clone());
             let slot = accounts.keys().position(|k| k == &pk).unwrap();
-            inc_tree.insert_validator_at_slot(slot, &acc);
+            inc_tree.insert_validator_at_slot(slot, &pk, &acc);
 
             let ref_tree = rebuild_tree(&accounts);
             assert_eq!(
@@ -3086,7 +3602,7 @@ mod tests {
             let (pk, acc) = make_validator(i);
             accounts.insert(pk, acc.clone());
             let slot = accounts.keys().position(|k| k == &pk).unwrap();
-            tree.insert_validator_at_slot(slot, &acc);
+            tree.insert_validator_at_slot(slot, &pk, &acc);
         }
 
         // Remove 2nd
@@ -3102,7 +3618,7 @@ mod tests {
             let (pk, acc) = make_validator(i);
             accounts.insert(pk, acc.clone());
             let slot = accounts.keys().position(|k| k == &pk).unwrap();
-            tree.insert_validator_at_slot(slot, &acc);
+            tree.insert_validator_at_slot(slot, &pk, &acc);
         }
 
         // Remove first
@@ -3121,7 +3637,7 @@ mod tests {
             let (pk, acc) = make_validator(i);
             accounts.insert(pk, acc.clone());
             let slot = accounts.keys().position(|k| k == &pk).unwrap();
-            tree.insert_validator_at_slot(slot, &acc);
+            tree.insert_validator_at_slot(slot, &pk, &acc);
         }
 
         let ref_tree = rebuild_tree(&accounts);
@@ -3146,7 +3662,7 @@ mod tests {
         let (new_pk, new_acc) = make_validator(42);
         accounts.insert(new_pk, new_acc.clone());
         let slot = accounts.keys().position(|k| k == &new_pk).unwrap();
-        tree.insert_validator_at_slot(slot, &new_acc);
+        tree.insert_validator_at_slot(slot, &new_pk, &new_acc);
 
         let root = tree.root();
         let keys: Vec<[u8; 32]> = accounts.keys().copied().collect();
@@ -3209,12 +3725,15 @@ mod tests {
         tree.rebuild_added_validators(&added);
         let root = tree.root();
 
-        // Flattened items
-        let items: Vec<AddedValidator> = added.values().flat_map(|v| v.iter().cloned()).collect();
+        // Flattened items, carrying each item's activation epoch.
+        let items: Vec<(u64, AddedValidator)> = added
+            .iter()
+            .flat_map(|(epoch, v)| v.iter().cloned().map(move |av| (*epoch, av)))
+            .collect();
 
-        for i in 0..items.len() {
+        for (i, (epoch, av)) in items.iter().enumerate() {
             let proof = tree.generate_added_validator_proof(i).unwrap();
-            assert_eq!(proof.leaf, items[i].hash_tree_root());
+            assert_eq!(proof.leaf, added_validator_entry_root(*epoch, av));
             assert!(proof.verify(&root), "added validator proof {i} failed");
         }
 
@@ -3269,7 +3788,7 @@ mod tests {
         let proof = tree
             .generate_added_validator_proof_by_key(target_key, &added)
             .unwrap();
-        assert_eq!(proof.leaf, added[&3][1].hash_tree_root());
+        assert_eq!(proof.leaf, added_validator_entry_root(3, &added[&3][1]));
         assert!(proof.verify(&root));
 
         // Unknown key returns None
@@ -3395,19 +3914,20 @@ mod tests {
             }
         }
 
-        // Field proof branch is 1 element longer than whole-item proof
+        // Field proof branch is 2 elements longer than whole-item proof
+        // (depth-2 per-item subtree: 3 fields incl. epoch, padded to 4 leaves)
         let item_proof = tree.generate_added_validator_proof(0).unwrap();
         let field_proof = tree
             .generate_added_validator_field_proof(0, ADDED_VALIDATOR_FIELD_NODE_KEY)
             .unwrap();
         assert_eq!(
             field_proof.branch.len(),
-            item_proof.branch.len() + 1,
-            "field branch should be 1 longer than item branch"
+            item_proof.branch.len() + 2,
+            "field branch should be 2 longer than item branch"
         );
 
-        // Out of bounds
-        assert!(tree.generate_added_validator_field_proof(0, 2).is_none());
+        // Out of bounds (fields 0..=2 are valid: node_key, consensus_key, epoch)
+        assert!(tree.generate_added_validator_field_proof(0, 4).is_none());
         assert!(
             tree.generate_added_validator_field_proof(count, 0)
                 .is_none()
@@ -3427,7 +3947,7 @@ mod tests {
         tree.rebuild_added_validators(&added);
 
         let proof = tree.generate_added_validator_proof(0).unwrap();
-        assert_eq!(proof.leaf, av.hash_tree_root());
+        assert_eq!(proof.leaf, added_validator_entry_root(1, &av));
     }
 
     #[test]

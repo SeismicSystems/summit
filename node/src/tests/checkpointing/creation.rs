@@ -201,7 +201,7 @@ fn test_checkpoint_created() {
             .await
             .expect("failed to get finalized header");
         assert_eq!(
-            finalized_header.header.checkpoint_hash.as_ref(),
+            finalized_header.header().checkpoint_hash().as_ref(),
             checkpoint.digest.as_ref(),
             "checkpoint_hash in header should match checkpoint digest"
         );
@@ -213,7 +213,7 @@ fn test_checkpoint_created() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });
@@ -417,7 +417,7 @@ fn test_previous_header_hash_matches() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });

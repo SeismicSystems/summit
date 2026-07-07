@@ -47,12 +47,15 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         }
     }
 
-    /// Log a database error and initiate graceful shutdown.
-    fn handle_db_error(&self, e: impl std::fmt::Display, op: &str) {
+    /// Log a database error, initiate graceful shutdown, and return the error so callers
+    /// can propagate it and fence any consensus-critical side effects that must not run on
+    /// state that failed to persist.
+    fn handle_db_error(&self, e: impl std::fmt::Display, op: &str) -> anyhow::Error {
         error!(target: "critical", %e, op, "fatal database error, initiating shutdown");
         #[cfg(feature = "prom")]
         metrics::counter!("critical_errors_total", "reason" => "fatal_db_error", "severity" => "critical").increment(1);
         self.cancellation_token.cancel();
+        anyhow::anyhow!("fatal database error in {op}: {e}")
     }
 
     fn pad_key(key: &[u8]) -> FixedBytes<64> {
@@ -99,15 +102,16 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         }
     }
 
-    async fn set_latest_consensus_state_epoch(&mut self, epoch: u64) {
+    async fn set_latest_consensus_state_epoch(&mut self, epoch: u64) -> anyhow::Result<()> {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
         if let Err(e) = self
             .store
             .apply_batch([(key, Some(Value::U64(epoch)))].into())
             .await
         {
-            self.handle_db_error(e, "set_latest_consensus_state_epoch");
+            return Err(self.handle_db_error(e, "set_latest_consensus_state_epoch"));
         }
+        Ok(())
     }
 
     // FinalizedHeader epoch tracking operations
@@ -123,15 +127,16 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         }
     }
 
-    async fn set_latest_finalized_header_epoch(&mut self, epoch: u64) {
+    async fn set_latest_finalized_header_epoch(&mut self, epoch: u64) -> anyhow::Result<()> {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
         if let Err(e) = self
             .store
             .apply_batch([(key, Some(Value::U64(epoch)))].into())
             .await
         {
-            self.handle_db_error(e, "set_latest_finalized_header_epoch");
+            return Err(self.handle_db_error(e, "set_latest_finalized_header_epoch"));
         }
+        Ok(())
     }
 
     // Checkpoint epoch tracking operations
@@ -147,34 +152,39 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         }
     }
 
-    async fn set_latest_checkpoint_epoch(&mut self, epoch: u64) {
+    async fn set_latest_checkpoint_epoch(&mut self, epoch: u64) -> anyhow::Result<()> {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
         if let Err(e) = self
             .store
             .apply_batch([(key, Some(Value::U64(epoch)))].into())
             .await
         {
-            self.handle_db_error(e, "set_latest_checkpoint_epoch");
+            return Err(self.handle_db_error(e, "set_latest_checkpoint_epoch"));
         }
+        Ok(())
     }
 
     // ConsensusState blob operations
-    pub async fn store_consensus_state(&mut self, epoch: u64, state: &ConsensusState) {
+    pub async fn store_consensus_state(
+        &mut self,
+        epoch: u64,
+        state: &ConsensusState,
+    ) -> anyhow::Result<()> {
         let key = Self::make_consensus_state_key(epoch);
         if let Err(e) = self
             .store
             .apply_batch([(key, Some(Value::ConsensusState(Box::new(state.clone()))))].into())
             .await
         {
-            self.handle_db_error(e, "store_consensus_state");
-            return;
+            return Err(self.handle_db_error(e, "store_consensus_state"));
         }
 
         // Update the latest epoch tracker
         let current_latest = self.get_latest_consensus_state_epoch().await;
         if epoch >= current_latest {
-            self.set_latest_consensus_state_epoch(epoch).await;
+            self.set_latest_consensus_state_epoch(epoch).await?;
         }
+        Ok(())
     }
 
     pub async fn get_consensus_state(&self, epoch: u64) -> Option<ConsensusState> {
@@ -218,7 +228,7 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         epoch: u64,
         checkpoint: &Checkpoint,
         last_block: Block,
-    ) {
+    ) -> anyhow::Result<()> {
         let key = Self::make_checkpoint_key(epoch);
         if let Err(e) = self
             .store
@@ -234,15 +244,15 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
             )
             .await
         {
-            self.handle_db_error(e, "store_finalized_checkpoint");
-            return;
+            return Err(self.handle_db_error(e, "store_finalized_checkpoint"));
         }
 
         // Update the latest checkpoint epoch tracker
         let current_latest = self.get_latest_checkpoint_epoch().await;
         if epoch >= current_latest {
-            self.set_latest_checkpoint_epoch(epoch).await;
+            self.set_latest_checkpoint_epoch(epoch).await?;
         }
+        Ok(())
     }
 
     #[allow(unused)]
@@ -269,22 +279,22 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
         &mut self,
         epoch: u64,
         header: &FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>,
-    ) {
+    ) -> anyhow::Result<()> {
         let key = Self::make_finalized_header_key(epoch);
         if let Err(e) = self
             .store
             .apply_batch([(key, Some(Value::FinalizedHeader(Box::new(header.clone()))))].into())
             .await
         {
-            self.handle_db_error(e, "store_finalized_header");
-            return;
+            return Err(self.handle_db_error(e, "store_finalized_header"));
         }
 
         // Update the latest finalized header epoch tracker
         let current_latest = self.get_latest_finalized_header_epoch().await;
         if epoch >= current_latest {
-            self.set_latest_finalized_header_epoch(epoch).await;
+            self.set_latest_finalized_header_epoch(epoch).await?;
         }
+        Ok(())
     }
 
     #[allow(unused)]
@@ -311,10 +321,11 @@ impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     }
 
     // Commit all pending changes to the database
-    pub async fn commit(&mut self) {
+    pub async fn commit(&mut self) -> anyhow::Result<()> {
         if let Err(e) = self.store.commit().await {
-            self.handle_db_error(e, "commit");
+            return Err(self.handle_db_error(e, "commit"));
         }
+        Ok(())
     }
 }
 
@@ -482,8 +493,10 @@ mod tests {
             assert!(db.get_latest_consensus_state().await.is_none());
 
             // Store the consensus state
-            db.store_consensus_state(42, &consensus_state).await;
-            db.commit().await;
+            db.store_consensus_state(42, &consensus_state)
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Retrieve the consensus state
             let retrieved = db.get_consensus_state(42).await;
@@ -500,8 +513,8 @@ mod tests {
             // Store a newer state
             let mut newer_state = ConsensusState::default();
             newer_state.set_latest_height(100);
-            db.store_consensus_state(100, &newer_state).await;
-            db.commit().await;
+            db.store_consensus_state(100, &newer_state).await.unwrap();
+            db.commit().await.unwrap();
 
             // Should return the most recent state
             let latest = db.get_latest_consensus_state().await;
@@ -525,27 +538,26 @@ mod tests {
                 create_test_db_with_context::<_, MinPk>("test_finalized_header", context).await;
 
             // Create a test header
-            let header = summit_types::Header::compute_digest(
-                [1u8; 32].into(),                    // parent
-                100,                                 // height
-                1234567890,                          // timestamp
-                0,                                   // epoch
-                1,                                   // view
-                [2u8; 32].into(),                    // payload_hash
-                [3u8; 32].into(),                    // execution_request_hash
-                [4u8; 32].into(),                    // checkpoint_hash
-                [5u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(42u64), // block_value
-                Vec::new(),                          // added_validators
-                Vec::new(),                          // removed_validators
-                [0u8; 32],                           // parent_beacon_block_root
+            let header = summit_types::Header::new(
+                [1u8; 32].into(), // parent
+                100,              // height
+                1234567890,       // timestamp
+                0,                // epoch
+                1,                // view
+                [2u8; 32].into(), // payload_hash
+                [3u8; 32].into(), // execution_request_hash
+                [4u8; 32].into(), // checkpoint_hash
+                [5u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
+                [0u8; 32],        // parent_beacon_block_root
             );
 
             // Create finalization proof
             let proposal = Proposal {
-                round: Round::new(Epoch::new(header.epoch), View::new(header.view)),
-                parent: View::new(header.height),
-                payload: header.digest,
+                round: Round::new(Epoch::new(header.epoch()), View::new(header.view())),
+                parent: View::new(header.height()),
+                payload: header.get_digest(),
             };
             let finalized = Finalization {
                 proposal,
@@ -554,46 +566,48 @@ mod tests {
                     signature: create_dummy_signature().into(), // Valid dummy signature for test
                 },
             };
-            let finalized_header = summit_types::FinalizedHeader::new(header.clone(), finalized, 3);
+            let finalized_header =
+                summit_types::FinalizedHeader::new_unchecked(header.clone(), finalized, 3);
 
             // Test that no header exists initially
             assert!(db.get_finalized_header(100).await.is_none());
 
             // Store the finalized header at height 100
-            db.store_finalized_header(100, &finalized_header).await;
-            db.commit().await;
+            db.store_finalized_header(100, &finalized_header)
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Retrieve the finalized header
             let retrieved = db.get_finalized_header(100).await;
             assert!(retrieved.is_some());
             let retrieved = retrieved.unwrap();
-            assert_eq!(retrieved.header.height, header.height);
-            assert_eq!(retrieved.header.digest, header.digest);
-            assert_eq!(retrieved.header.timestamp, header.timestamp);
+            assert_eq!(retrieved.header().height(), header.height());
+            assert_eq!(retrieved.header().get_digest(), header.get_digest());
+            assert_eq!(retrieved.header().timestamp(), header.timestamp());
 
             // Test that non-existent header returns None
             assert!(db.get_finalized_header(200).await.is_none());
 
             // Store another header at different height
-            let header2 = summit_types::Header::compute_digest(
-                [5u8; 32].into(),                    // parent
-                200,                                 // height
-                1234567900,                          // timestamp
-                0,                                   // epoch
-                2,                                   // view
-                [6u8; 32].into(),                    // payload_hash
-                [7u8; 32].into(),                    // execution_request_hash
-                [8u8; 32].into(),                    // checkpoint_hash
-                [9u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(84u64), // block_value
-                Vec::new(),                          // added_validators
-                Vec::new(),                          // removed_validators
-                [0u8; 32],                           // parent_beacon_block_root
+            let header2 = summit_types::Header::new(
+                [5u8; 32].into(), // parent
+                200,              // height
+                1234567900,       // timestamp
+                0,                // epoch
+                2,                // view
+                [6u8; 32].into(), // payload_hash
+                [7u8; 32].into(), // execution_request_hash
+                [8u8; 32].into(), // checkpoint_hash
+                [9u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
+                [0u8; 32],        // parent_beacon_block_root
             );
             let proposal2 = Proposal {
-                round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
-                parent: View::new(header2.height),
-                payload: header2.digest,
+                round: Round::new(Epoch::new(header2.epoch()), View::new(header2.view())),
+                parent: View::new(header2.height()),
+                payload: header2.get_digest(),
             };
             let finalized2 = Finalization {
                 proposal: proposal2,
@@ -603,23 +617,25 @@ mod tests {
                 },
             };
             let finalized_header2 =
-                summit_types::FinalizedHeader::new(header2.clone(), finalized2, 3);
-            db.store_finalized_header(200, &finalized_header2).await;
-            db.commit().await;
+                summit_types::FinalizedHeader::new_unchecked(header2.clone(), finalized2, 3);
+            db.store_finalized_header(200, &finalized_header2)
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Both headers should be accessible
             let h1 = db.get_finalized_header(100).await.unwrap();
             let h2 = db.get_finalized_header(200).await.unwrap();
-            assert_eq!(h1.header.height, 100);
-            assert_eq!(h2.header.height, 200);
-            assert_ne!(h1.header.digest, h2.header.digest);
+            assert_eq!(h1.header().height(), 100);
+            assert_eq!(h2.header().height(), 200);
+            assert_ne!(h1.header().get_digest(), h2.header().get_digest());
 
             // Test get_most_recent_finalized_header returns the latest header
             let most_recent = db.get_most_recent_finalized_header().await;
             assert!(most_recent.is_some());
             let most_recent = most_recent.unwrap();
-            assert_eq!(most_recent.header.height, 200);
-            assert_eq!(most_recent.header.digest, header2.digest);
+            assert_eq!(most_recent.header().height(), 200);
+            assert_eq!(most_recent.header().get_digest(), header2.get_digest());
         });
     }
 
@@ -638,25 +654,24 @@ mod tests {
             assert!(db.get_most_recent_finalized_header().await.is_none());
 
             // Store headers out of order
-            let header1 = summit_types::Header::compute_digest(
-                [1u8; 32].into(),                    // parent
-                100,                                 // height
-                1234567890,                          // timestamp
-                0,                                   // epoch
-                1,                                   // view
-                [2u8; 32].into(),                    // payload_hash
-                [3u8; 32].into(),                    // execution_request_hash
-                [4u8; 32].into(),                    // checkpoint_hash
-                [5u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(42u64), // block_value
-                Vec::new(),                          // added_validators
-                Vec::new(),                          // removed_validators
-                [0u8; 32],                           // parent_beacon_block_root
+            let header1 = summit_types::Header::new(
+                [1u8; 32].into(), // parent
+                100,              // height
+                1234567890,       // timestamp
+                0,                // epoch
+                1,                // view
+                [2u8; 32].into(), // payload_hash
+                [3u8; 32].into(), // execution_request_hash
+                [4u8; 32].into(), // checkpoint_hash
+                [5u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
+                [0u8; 32],        // parent_beacon_block_root
             );
             let proposal1 = Proposal {
-                round: Round::new(Epoch::new(header1.epoch), View::new(header1.view)),
-                parent: View::new(header1.height),
-                payload: header1.digest,
+                round: Round::new(Epoch::new(header1.epoch()), View::new(header1.view())),
+                parent: View::new(header1.height()),
+                payload: header1.get_digest(),
             };
 
             let finalized1 = Finalization {
@@ -667,27 +682,26 @@ mod tests {
                 },
             };
             let finalized_header1 =
-                summit_types::FinalizedHeader::new(header1.clone(), finalized1, 3);
+                summit_types::FinalizedHeader::new_unchecked(header1.clone(), finalized1, 3);
 
-            let header3 = summit_types::Header::compute_digest(
-                [7u8; 32].into(),                     // parent
-                300,                                  // height
-                1234567920,                           // timestamp
-                0,                                    // epoch
-                3,                                    // view
-                [8u8; 32].into(),                     // payload_hash
-                [9u8; 32].into(),                     // execution_request_hash
-                [10u8; 32].into(),                    // checkpoint_hash
-                [11u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(126u64), // block_value
-                Vec::new(),                           // added_validators
-                Vec::new(),                           // removed_validators
-                [0u8; 32],                            // parent_beacon_block_root
+            let header3 = summit_types::Header::new(
+                [7u8; 32].into(),  // parent
+                300,               // height
+                1234567920,        // timestamp
+                0,                 // epoch
+                3,                 // view
+                [8u8; 32].into(),  // payload_hash
+                [9u8; 32].into(),  // execution_request_hash
+                [10u8; 32].into(), // checkpoint_hash
+                [11u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),        // added_validators
+                Vec::new(),        // removed_validators
+                [0u8; 32],         // parent_beacon_block_root
             );
             let proposal3 = Proposal {
-                round: Round::new(Epoch::new(header3.epoch), View::new(header3.view)),
-                parent: View::new(header3.height),
-                payload: header3.digest,
+                round: Round::new(Epoch::new(header3.epoch()), View::new(header3.view())),
+                parent: View::new(header3.height()),
+                payload: header3.get_digest(),
             };
 
             let finalized3 = Finalization {
@@ -698,27 +712,26 @@ mod tests {
                 },
             };
             let finalized_header3 =
-                summit_types::FinalizedHeader::new(header3.clone(), finalized3, 3);
+                summit_types::FinalizedHeader::new_unchecked(header3.clone(), finalized3, 3);
 
-            let header2 = summit_types::Header::compute_digest(
-                [5u8; 32].into(),                    // parent
-                200,                                 // height
-                1234567900,                          // timestamp
-                0,                                   // epoch
-                2,                                   // view
-                [6u8; 32].into(),                    // payload_hash
-                [7u8; 32].into(),                    // execution_request_hash
-                [8u8; 32].into(),                    // checkpoint_hash
-                [9u8; 32].into(),                    // prev_epoch_header_hash
-                alloy_primitives::U256::from(84u64), // block_value
-                Vec::new(),                          // added_validators
-                Vec::new(),                          // removed_validators
-                [0u8; 32],                           // parent_beacon_block_root
+            let header2 = summit_types::Header::new(
+                [5u8; 32].into(), // parent
+                200,              // height
+                1234567900,       // timestamp
+                0,                // epoch
+                2,                // view
+                [6u8; 32].into(), // payload_hash
+                [7u8; 32].into(), // execution_request_hash
+                [8u8; 32].into(), // checkpoint_hash
+                [9u8; 32].into(), // prev_epoch_header_hash
+                Vec::new(),       // added_validators
+                Vec::new(),       // removed_validators
+                [0u8; 32],        // parent_beacon_block_root
             );
             let proposal2 = Proposal {
-                round: Round::new(Epoch::new(header2.epoch), View::new(header2.view)),
-                parent: View::new(header2.height),
-                payload: header2.digest,
+                round: Round::new(Epoch::new(header2.epoch()), View::new(header2.view())),
+                parent: View::new(header2.height()),
+                payload: header2.get_digest(),
             };
 
             let finalized2 = Finalization {
@@ -729,42 +742,48 @@ mod tests {
                 },
             };
             let finalized_header2 =
-                summit_types::FinalizedHeader::new(header2.clone(), finalized2, 3);
+                summit_types::FinalizedHeader::new_unchecked(header2.clone(), finalized2, 3);
 
             // Store headers in non-sequential order: 100, 300, 200
-            db.store_finalized_header(100, &finalized_header1).await;
-            db.commit().await;
+            db.store_finalized_header(100, &finalized_header1)
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Most recent should be height 100
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height, 100);
-            assert_eq!(most_recent.header.digest, header1.digest);
+            assert_eq!(most_recent.header().height(), 100);
+            assert_eq!(most_recent.header().get_digest(), header1.get_digest());
 
             // Store height 300
-            db.store_finalized_header(300, &finalized_header3).await;
-            db.commit().await;
+            db.store_finalized_header(300, &finalized_header3)
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Most recent should now be height 300
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height, 300);
-            assert_eq!(most_recent.header.digest, header3.digest);
+            assert_eq!(most_recent.header().height(), 300);
+            assert_eq!(most_recent.header().get_digest(), header3.get_digest());
 
             // Store height 200 (lower than current max)
-            db.store_finalized_header(200, &finalized_header2).await;
-            db.commit().await;
+            db.store_finalized_header(200, &finalized_header2)
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Most recent should still be height 300
             let most_recent = db.get_most_recent_finalized_header().await.unwrap();
-            assert_eq!(most_recent.header.height, 300);
-            assert_eq!(most_recent.header.digest, header3.digest);
+            assert_eq!(most_recent.header().height(), 300);
+            assert_eq!(most_recent.header().get_digest(), header3.get_digest());
 
             // Verify all headers are still individually accessible
             let h1 = db.get_finalized_header(100).await.unwrap();
             let h2 = db.get_finalized_header(200).await.unwrap();
             let h3 = db.get_finalized_header(300).await.unwrap();
-            assert_eq!(h1.header.height, 100);
-            assert_eq!(h2.header.height, 200);
-            assert_eq!(h3.header.height, 300);
+            assert_eq!(h1.header().height(), 100);
+            assert_eq!(h2.header().height(), 200);
+            assert_eq!(h3.header().height(), 300);
         });
     }
 
@@ -794,8 +813,9 @@ mod tests {
 
             // Store finalized checkpoint for epoch 0
             db.store_finalized_checkpoint(0, &finalized_checkpoint1, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Retrieve finalized checkpoint
             let retrieved_finalized = db.get_finalized_checkpoint(0).await;
@@ -810,8 +830,9 @@ mod tests {
 
             // Store checkpoint for epoch 1
             db.store_finalized_checkpoint(1, &finalized_checkpoint2, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Both checkpoints should be accessible
             let (checkpoint0, _) = db.get_finalized_checkpoint(0).await.unwrap();
@@ -850,8 +871,9 @@ mod tests {
 
             // Store checkpoints out of order: 5, then 3, then 7
             db.store_finalized_checkpoint(5, &checkpoint5, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Latest should be epoch 5
             let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
@@ -859,8 +881,9 @@ mod tests {
 
             // Store epoch 3 (older than current latest)
             db.store_finalized_checkpoint(3, &checkpoint3, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Latest should still be epoch 5, not 3
             let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
@@ -868,8 +891,9 @@ mod tests {
 
             // Store epoch 7 (newer than current latest)
             db.store_finalized_checkpoint(7, &checkpoint7, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Latest should now be epoch 7
             let (latest, _) = db.get_latest_finalized_checkpoint().await.0.unwrap();
@@ -905,16 +929,18 @@ mod tests {
 
             // Store first checkpoint for epoch 2
             db.store_finalized_checkpoint(2, &checkpoint1, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             let (retrieved, _) = db.get_finalized_checkpoint(2).await.unwrap();
             assert_eq!(retrieved.digest, checkpoint1.digest);
 
             // Overwrite with second checkpoint for the same epoch 2
             db.store_finalized_checkpoint(2, &checkpoint2, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // Should now return the second checkpoint
             let (retrieved, _) = db.get_finalized_checkpoint(2).await.unwrap();
@@ -950,16 +976,19 @@ mod tests {
 
             // Store checkpoints for epochs 0, 2, and 5 (skipping 1, 3, 4)
             db.store_finalized_checkpoint(0, &checkpoint0, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             db.store_finalized_checkpoint(2, &checkpoint2, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             db.store_finalized_checkpoint(5, &checkpoint5, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
 
             // All stored checkpoints should be retrievable
             let (cp0, _) = db.get_finalized_checkpoint(0).await.unwrap();

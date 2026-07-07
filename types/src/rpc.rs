@@ -56,6 +56,12 @@ pub struct FinalizedHeaderRes {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FinalizedHeaderDigestRes {
+    pub epoch: u64,
+    pub digest: [u8; 32],
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StateRootResponse {
     pub root: [u8; 32],
     /// The EL block number at capture time. The root appears on-chain in EL block
@@ -69,7 +75,22 @@ pub struct StateProofResponse {
     /// The EL block number at capture time. The root appears on-chain in EL block
     /// `el_block_number + 1` — query that block's timestamp via the beacon roots contract.
     pub el_block_number: u64,
-    pub proofs: Vec<crate::ssz_state_tree::SszProof>,
+    pub results: Vec<StateProofResult>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StateProofResult {
+    pub key: String,
+    pub proof: Option<crate::ssz_state_tree::SszProof>,
+    /// For by-pubkey field requests (`withdrawal_field:`/`validator_field:`),
+    /// a companion proof of the item's key (pubkey) leaf. A trustless consumer
+    /// MUST verify this alongside `proof` (see
+    /// [`crate::ssz_state_tree::KeyedFieldProof::verify`]) to confirm the field
+    /// belongs to the requested pubkey rather than to some other item under the
+    /// same root. `None` for scalar, whole-item, and index-addressed proofs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_proof: Option<crate::ssz_state_tree::SszProof>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

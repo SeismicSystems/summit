@@ -67,7 +67,7 @@ fn test_added_validators_at_epoch_boundary() {
 
         // Create a deposit request for a new validator
         let (test_deposit, _, _) =
-            common::create_deposit_request(10, min_stake, common::get_domain(), None, None);
+            common::create_deposit_request(10, min_stake, common::get_domain(), None, None, None);
 
         let new_validator_node_key = test_deposit.node_pubkey.clone();
         let new_validator_consensus_key = test_deposit.consensus_pubkey.clone();
@@ -182,7 +182,7 @@ fn test_added_validators_at_epoch_boundary() {
         // Verify the header contains the new validator in added_validators
         // The new validator's joining_epoch = 2, and at block 19 (last block of epoch 1),
         // the header should include validators joining in epoch 2 (next_epoch).
-        let added_validators = &finalized_header.header.added_validators;
+        let added_validators = finalized_header.header().added_validators();
 
         // Assert that added_validators contains the new validator
         assert!(
@@ -218,7 +218,7 @@ fn test_added_validators_at_epoch_boundary() {
                 .is_ok()
         );
 
-        common::assert_state_root_consensus(&finalizer_mailboxes).await;
+        common::assert_state_root_consensus_synced(&context, &finalizer_mailboxes, &[]).await;
 
         context.auditor().state()
     });
@@ -405,7 +405,7 @@ fn test_removed_validators_at_epoch_boundary() {
             .expect("Failed to get finalized header for last block of epoch 0");
 
         // Verify the header contains the withdrawing validator in removed_validators
-        let removed_validators = &finalized_header.header.removed_validators;
+        let removed_validators = finalized_header.header().removed_validators();
 
         // Assert that removed_validators contains the withdrawing validator
         assert!(
@@ -431,7 +431,8 @@ fn test_removed_validators_at_epoch_boundary() {
         );
 
         // Skip the withdrawn validator since its finalizer shuts down after exit
-        common::assert_state_root_consensus_skip(
+        common::assert_state_root_consensus_synced(
+            &context,
             &finalizer_mailboxes,
             &[withdrawing_validator_idx],
         )

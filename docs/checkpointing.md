@@ -110,7 +110,7 @@ Checkpoints and headers are stored in a single QMDB store using prefixed keys an
 
 ## Checkpoint Verification
 
-Checkpoint verification allows a node to trustlessly validate a checkpoint received from an untrusted source. This is essential for secure bootstrapping without replaying the entire chain.
+Checkpoint verification allows a node to validate that a checkpoint is internally signed, contiguous from local genesis, fresh, and passes through an independently trusted weak-subjectivity anchor. The finalized-header chain by itself is not enough to bootstrap from an untrusted source: operators must supply a recent trusted finalized-header digest and epoch from outside the checkpoint bundle.
 
 ### Verification Scheme
 
@@ -119,20 +119,27 @@ To verify a checkpoint for epoch `n`, a verifier needs:
 1. **Genesis state**: The initial validator set and their BLS public keys
 2. **Finalized headers**: Headers for epochs `0` through `n`
 3. **Checkpoint**: The checkpoint for epoch `n`
+4. **Weak-subjectivity anchor**: A trusted finalized-header `epoch` and `digest` obtained independently of the checkpoint bundle
 
 ### Verification Steps
 
 1. **Verify Header Chain**:
    - For each epoch `i` from `0` to `n`:
+     - Verify the header links to the previous epoch header (or genesis for epoch `0`)
      - Verify the BLS multi-signature using the known validator set for epoch `i`
      - Extract `added_validators` and `removed_validators` from the header
      - Update the validator set for epoch `i+1`
 
-2. **Verify Checkpoint Hash**:
+2. **Verify Weak-Subjectivity Anchor**:
+   - Check `finalized_headers[trusted_epoch].header.digest == trusted_digest`
+   - Reject if the trusted epoch is not included in the supplied header chain
+   - Reject if the terminal checkpoint epoch is more than 5 epochs after the trusted epoch
+
+3. **Verify Checkpoint Hash**:
    - Compute the checkpoint digest
    - Verify it matches `checkpoint_hash` in header `n`
 
-3. **Verify Validator Set Consistency**:
+4. **Verify Validator Set Consistency**:
    - The checkpoint's `validator_accounts` should match the accumulated validator set changes
 
 ### Header Fields for Verification
@@ -186,7 +193,17 @@ checkpoint_dir/
 
 ### Checkpoint Verification on Startup
 
-When the `finalized_headers/` directory is present, the node loads the checkpoint artifacts from disk first, then verifies the checkpoint during startup after loading genesis by calling `verify_checkpoint_chain` with the genesis state, the loaded headers, and the checkpoint. This allows the node to trustlessly validate a checkpoint received from an untrusted source.
+When the `finalized_headers/` directory is present, the node loads the checkpoint artifacts from disk first, then verifies the checkpoint during startup after loading genesis. Verified checkpoint imports require an independently configured weak-subjectivity anchor:
+
+```
+--checkpoint-path ./checkpoint_dir \
+--weak-subjectivity-epoch 7421 \
+--weak-subjectivity-header-digest 0x8f4c...
+```
+
+The header digest is the finalized header's `header.digest` for the trusted epoch. It can be queried from a trusted node with `getFinalizedHeaderDigest(epoch)`.
+
+The checkpoint's terminal epoch must be within 5 epochs of `--weak-subjectivity-epoch`.
 
 If the `finalized_headers/` directory is absent, verification is skipped and the node trusts the checkpoint as-is.
 

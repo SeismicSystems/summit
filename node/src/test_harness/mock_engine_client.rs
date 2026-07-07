@@ -350,8 +350,12 @@ impl MockEngineState {
 
         ExecutionPayloadV3 {
             payload_inner: payload_v2,
-            blob_gas_used: 100_000,
-            excess_blob_gas: 50_000,
+            // The synthetic payload has no transactions, so no blob gas is
+            // consumed. Summit rejects blob-bearing payloads at verify time
+            // (see `handle_verify`), so this must stay 0 for mock blocks to
+            // pass verification.
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
         }
     }
 }
@@ -366,16 +370,16 @@ impl EngineClient for MockEngineClient {
         suggested_fee_recipient: Address,
         _parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] height: u64,
-    ) -> Option<PayloadId> {
+    ) -> Result<Option<PayloadId>, summit_types::EngineClientError> {
         let mut state = self.state.lock().unwrap();
 
         if state.should_fail {
-            return None;
+            return Ok(None);
         }
 
         if let Some(stop_at) = self.stop_at {
             if stop_at < state.next_block_number {
-                return None;
+                return Ok(None);
             }
         }
 
@@ -384,7 +388,7 @@ impl EngineClient for MockEngineClient {
             .canonical_blocks
             .contains_key(&fork_choice_state.head_block_hash)
         {
-            return None;
+            return Ok(None);
         }
 
         // Generate unique payload ID
@@ -425,33 +429,39 @@ impl EngineClient for MockEngineClient {
         // Store for later retrieval
         state.building_payloads.insert(payload_id, envelope);
 
-        Some(payload_id)
+        Ok(Some(payload_id))
     }
 
-    async fn get_payload(&mut self, payload_id: PayloadId) -> ExecutionPayloadEnvelopeV4 {
+    async fn get_payload(
+        &mut self,
+        payload_id: PayloadId,
+    ) -> Result<ExecutionPayloadEnvelopeV4, summit_types::EngineClientError> {
         let state = self.state.lock().unwrap();
 
-        state
+        Ok(state
             .building_payloads
             .get(&payload_id)
             .cloned()
-            .expect("Payload ID not found")
+            .expect("Payload ID not found"))
     }
 
-    async fn check_payload(&mut self, block: &Block) -> PayloadStatus {
+    async fn check_payload(
+        &mut self,
+        block: &Block,
+    ) -> Result<PayloadStatus, summit_types::EngineClientError> {
         let mut state = self.state.lock().unwrap();
 
         if let Some(override_status) = state.check_payload_overrides.pop_front() {
-            return override_status;
+            return Ok(override_status);
         }
 
         if state.force_invalid {
-            return PayloadStatus::new(
+            return Ok(PayloadStatus::new(
                 PayloadStatusEnum::Invalid {
                     validation_error: "Mock: Forced invalid".to_string(),
                 },
                 None,
-            );
+            ));
         }
 
         let block_hash = block.payload.payload_inner.payload_inner.block_hash;
@@ -466,7 +476,7 @@ impl EngineClient for MockEngineClient {
                 None,
             );
             state.known_blocks.insert(block_hash, status.clone());
-            return status;
+            return Ok(status);
         }
 
         // Block is valid - store both status and block data
@@ -475,14 +485,17 @@ impl EngineClient for MockEngineClient {
         state
             .validated_blocks
             .insert(block_hash, block.payload.clone());
-        status
+        Ok(status)
     }
 
-    async fn commit_hash(&mut self, fork_choice_state: ForkchoiceState) -> ForkchoiceUpdated {
+    async fn commit_hash(
+        &mut self,
+        fork_choice_state: ForkchoiceState,
+    ) -> Result<ForkchoiceUpdated, summit_types::EngineClientError> {
         let mut state = self.state.lock().unwrap();
 
         if let Some(override_response) = state.commit_hash_overrides.pop_front() {
-            return override_response;
+            return Ok(override_response);
         }
 
         // Update current head
@@ -533,13 +546,13 @@ impl EngineClient for MockEngineClient {
             }
         }
 
-        ForkchoiceUpdated {
+        Ok(ForkchoiceUpdated {
             payload_status: PayloadStatus::new(
                 PayloadStatusEnum::Valid,
                 Some(fork_choice_state.head_block_hash),
             ),
             payload_id: None,
-        }
+        })
     }
 }
 
@@ -777,8 +790,9 @@ mod tests {
                 0,
             )
             .await
+            .unwrap()
             .unwrap();
-        let envelope = client.get_payload(payload_id).await;
+        let envelope = client.get_payload(payload_id).await.unwrap();
         let block = envelope.envelope_inner.execution_payload;
 
         // Commit the block
@@ -788,7 +802,7 @@ mod tests {
             finalized_block_hash: FixedBytes::from(genesis_hash),
         };
 
-        client.commit_hash(new_fork_choice).await;
+        client.commit_hash(new_fork_choice).await.unwrap();
 
         // Should now be at height 1
         assert_eq!(client.get_chain_height(), 1);
@@ -847,8 +861,9 @@ mod tests {
                 0,
             )
             .await
+            .unwrap()
             .unwrap();
-        let envelope = client1.get_payload(payload_id).await;
+        let envelope = client1.get_payload(payload_id).await.unwrap();
         let block1 = envelope.envelope_inner.execution_payload.clone();
 
         let fork_choice1 = ForkchoiceState {
@@ -857,7 +872,7 @@ mod tests {
             finalized_block_hash: FixedBytes::from([0u8; 32]),
         };
 
-        client1.commit_hash(fork_choice1).await;
+        client1.commit_hash(fork_choice1).await.unwrap();
 
         // Now clients are diverged
         assert_eq!(client1.get_chain_height(), 1);
@@ -872,7 +887,6 @@ mod tests {
             1000,
             block1.clone(),
             Vec::new(),
-            U256::from(1_000_000_000_000_000_000u64),
             0,
             1,
             None,
@@ -883,11 +897,11 @@ mod tests {
         );
 
         // Client2 checks the payload (validates it)
-        let validation_result = client2.check_payload(&block_for_validation).await;
+        let validation_result = client2.check_payload(&block_for_validation).await.unwrap();
         assert!(matches!(validation_result.status, PayloadStatusEnum::Valid));
 
         // Client2 commits to this fork choice (accepting the block)
-        client2.commit_hash(fork_choice1).await;
+        client2.commit_hash(fork_choice1).await.unwrap();
 
         // Now they should be in consensus again
         assert_eq!(client2.get_chain_height(), 1);
@@ -932,8 +946,9 @@ mod tests {
                     round,
                 )
                 .await
+                .unwrap()
                 .unwrap();
-            let envelope = producer.get_payload(payload_id.clone()).await;
+            let envelope = producer.get_payload(payload_id.clone()).await.unwrap();
             let new_block = envelope.envelope_inner.execution_payload.clone();
 
             let new_fork_choice = ForkchoiceState {
@@ -943,7 +958,7 @@ mod tests {
             };
 
             // Producer commits the block
-            producer.commit_hash(new_fork_choice).await;
+            producer.commit_hash(new_fork_choice).await.unwrap();
 
             // Simulate network propagation - all other clients get the block via Engine API
             for mut client in [client1.clone(), client2.clone(), client3.clone()] {
@@ -955,7 +970,6 @@ mod tests {
                         (round * 1000) as u64,
                         new_block.clone(),
                         Vec::new(),
-                        U256::from(1_000_000_000_000_000_000u64),
                         1,
                         round as u64,
                         None,
@@ -966,11 +980,12 @@ mod tests {
                     );
 
                     // Client validates the block
-                    let validation_result = client.check_payload(&block_for_validation).await;
+                    let validation_result =
+                        client.check_payload(&block_for_validation).await.unwrap();
                     assert!(matches!(validation_result.status, PayloadStatusEnum::Valid));
 
                     // Client commits to this fork choice (accepting the block)
-                    client.commit_hash(new_fork_choice).await;
+                    client.commit_hash(new_fork_choice).await.unwrap();
                 }
             }
 
@@ -1023,10 +1038,11 @@ mod tests {
                 0,
             )
             .await
+            .unwrap()
             .unwrap();
 
         // Get the payload and modify it to include the withdrawal
-        let mut envelope = client1.get_payload(payload_id).await;
+        let mut envelope = client1.get_payload(payload_id).await.unwrap();
         envelope
             .envelope_inner
             .execution_payload
@@ -1048,7 +1064,7 @@ mod tests {
             finalized_block_hash: FixedBytes::from(genesis_hash),
         };
 
-        client1.commit_hash(new_fork_choice).await;
+        client1.commit_hash(new_fork_choice).await.unwrap();
 
         // Simulate network propagation to client2
         let block_for_validation = Block::compute_digest(
@@ -1057,7 +1073,6 @@ mod tests {
             1000,
             block.clone(),
             Vec::new(),
-            alloy_primitives::U256::from(1_000_000_000_000_000_000u64),
             0,
             1,
             None,
@@ -1067,8 +1082,8 @@ mod tests {
             [0u8; 32],  // parent_beacon_block_root
         );
 
-        client2.check_payload(&block_for_validation).await;
-        client2.commit_hash(new_fork_choice).await;
+        client2.check_payload(&block_for_validation).await.unwrap();
+        client2.commit_hash(new_fork_choice).await.unwrap();
 
         // Test that network.get_withdrawals() returns the withdrawal
         let withdrawals = network.get_withdrawals();
@@ -1111,8 +1126,9 @@ mod tests {
                 0,
             )
             .await
+            .unwrap()
             .unwrap();
-        let envelope_a = client1.get_payload(payload_id_a).await;
+        let envelope_a = client1.get_payload(payload_id_a).await.unwrap();
         let block_a = envelope_a.envelope_inner.execution_payload.clone();
 
         // Client2 builds block B (different from A due to client_id in hash)
@@ -1127,8 +1143,9 @@ mod tests {
                 0,
             )
             .await
+            .unwrap()
             .unwrap();
-        let envelope_b = client2.get_payload(payload_id_b).await;
+        let envelope_b = client2.get_payload(payload_id_b).await.unwrap();
         let block_b = envelope_b.envelope_inner.execution_payload.clone();
 
         // Blocks should be different
@@ -1143,7 +1160,7 @@ mod tests {
             safe_block_hash: FixedBytes::from(genesis_hash),
             finalized_block_hash: FixedBytes::from(genesis_hash),
         };
-        client1.commit_hash(fork_choice_a).await;
+        client1.commit_hash(fork_choice_a).await.unwrap();
 
         // Client2 commits block B
         let fork_choice_b = ForkchoiceState {
@@ -1151,7 +1168,7 @@ mod tests {
             safe_block_hash: FixedBytes::from(genesis_hash),
             finalized_block_hash: FixedBytes::from(genesis_hash),
         };
-        client2.commit_hash(fork_choice_b).await;
+        client2.commit_hash(fork_choice_b).await.unwrap();
 
         // Now consensus should fail - clients have different blocks at height 1
         assert!(network.verify_consensus(None, None).is_err());

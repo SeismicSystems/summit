@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 22 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 22–31 are unused (zero-filled).
+32 leaf slots (depth 5), 28 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 28–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -62,6 +62,12 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 19 | `max_deposits_per_epoch` | Scalar |
 | 20 | `max_withdrawals_per_epoch` | Scalar |
 | 21 | `observers_per_validator` | Scalar |
+| 22 | `pending_execution_requests` | Collection root |
+| 23 | `pending_checkpoint` | Scalar (checkpoint digest, or zero when absent) |
+| 24 | `dynamic_epoch_schedule` | Scalar (SSZ byte-list root of the encoded `DynamicEpocher`) |
+| 25 | `minimum_validator_count` | Scalar |
+| 26 | `pending_active_validator_exits` | Scalar |
+| 27 | `invalid_deposit_tax` | Scalar |
 
 ### Collection Subtrees
 
@@ -69,7 +75,7 @@ Each collection leaf in the top-level tree holds `mix_in_length(subtree.root(), 
 
 #### Validator Accounts
 
-Each validator occupies 8 contiguous leaves (depth-3 per-validator subtree):
+Each validator occupies 16 contiguous leaves (depth-4 per-validator subtree): 9 fields padded to the next power of two. `node_pubkey` is the `BTreeMap` key (the validator's identity) — committing it as a leaf binds the key into the root and into validator proofs. Leaves 9–15 are zero padding.
 
 | Field Index | Field |
 |-------------|-------|
@@ -81,8 +87,10 @@ Each validator occupies 8 contiguous leaves (depth-3 per-validator subtree):
 | 5 | `has_pending_withdrawal` |
 | 6 | `joining_epoch` |
 | 7 | `last_deposit_index` |
+| 8 | `node_pubkey` (map key) |
+| 9–15 | (zero padding) |
 
-Slot assignment is positional: the i-th entry in `BTreeMap` iteration order occupies leaves `[i*8 .. i*8+7]`. The subtree capacity is always a power of 2, growing/shrinking as validators are added/removed.
+Slot assignment is positional: the i-th entry in `BTreeMap` iteration order occupies leaves `[i*16 .. i*16+15]`. The subtree capacity is always a power of 2, growing/shrinking as validators are added/removed.
 
 #### Deposit Queue
 
@@ -115,7 +123,7 @@ epoch_N_subtree:
   8 leaves per withdrawal (same field layout as below)
 ```
 
-Each withdrawal occupies 8 leaves (7 fields + 1 zero padding):
+Each withdrawal occupies 8 leaves (8 fields):
 
 | Field Index | Field |
 |-------------|-------|
@@ -126,7 +134,7 @@ Each withdrawal occupies 8 leaves (7 fields + 1 zero padding):
 | 4 | `pubkey` |
 | 5 | `balance_deduction` |
 | 6 | `epoch` |
-| 7 | (zero padding) |
+| 7 | `kind` |
 
 A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by validator pubkey.
 
@@ -136,21 +144,36 @@ A `HashMap<pubkey, (epoch_slot, item_slot)>` index enables O(1) proof lookup by 
 
 #### Added Validators
 
-2 leaves per item (node_key + consensus_key), flattened across all epochs.
+4 leaves per item (depth-2 subtree): 3 fields — `node_key` (0), `consensus_key` (1), `epoch` (2) — padded to 4 (leaf 3 is zero). Items are flattened across all epochs, so the `epoch` field commits each item's activation epoch (the `BTreeMap` key), which would otherwise be lost by the flattening.
 
 #### Removed Validators
 
 1 leaf per item (validator pubkey hash).
 
+#### Pending Execution Requests
+
+1 leaf per item. Each deferred request is an opaque byte blob hashed as an SSZ
+byte list: packed into 32-byte chunks (final chunk zero-padded), merkleized, then
+`mix_in_length(chunks_root, byte_len)`. The collection root is
+`mix_in_length(subtree.root(), request_count)`, like the other collections.
+
+#### Dynamic Epoch Schedule
+
+A single scalar leaf, not a collection. The leaf is the SSZ byte-list root of the
+encoded `DynamicEpocher` (same `hash_byte_list` encoding as a pending execution
+request). Because the epocher uses interior mutability and can change without a
+`ConsensusState` setter, this leaf is refreshed at `capture_state_root` (and in
+`rebuild`) rather than maintained incrementally.
+
 ## Leaf Encoding
 
 All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 
-- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum/maximum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, validator_index, balance_deduction.
+- **`u64`**: Little-endian encoded, zero-padded to 32 bytes. Used by: epoch, view, latest_height, balance, amount, index, joining_epoch, last_deposit_index, next_withdrawal_index, minimum/maximum_stake, allowed_timestamp_future_ms, max_deposits_per_epoch, max_withdrawals_per_epoch, minimum_validator_count, pending_active_validator_exits, validator_index, balance_deduction.
 - **`u32`**: Little-endian encoded, zero-padded to 32 bytes. Used by: observers_per_validator.
 - **`bool`**: `0x01` or `0x00`, zero-padded to 32 bytes. Used by: has_pending_deposit, has_pending_withdrawal.
 - **`ValidatorStatus` (enum)**: Single byte (Active=0, Inactive=1, SubmittedExitRequest=2, Joining=3), zero-padded to 32 bytes.
-- **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal).
+- **`[u8; 32]`**: Used directly as the leaf value. Used by: head_digest, epoch_genesis_hash, forkchoice hashes, withdrawal_credentials (deposit), pubkey (withdrawal), pending_checkpoint (the checkpoint digest, or the zero hash when no checkpoint is pending).
 - **`Address` (20 bytes)**: Zero-padded to 32 bytes. Used by: withdrawal_credentials (validator), address (withdrawal), treasury_address.
 - **Ed25519 public key (32 bytes)**: Used directly as the leaf value. Used by: node_pubkey (deposit), node_key (added validator), removed validator pubkeys.
 - **BLS public key (48 bytes)**: `SHA256(bytes[0..32] || pad(bytes[32..48]))` — 2 chunks hashed. Used by: consensus_pubkey (validator, deposit), consensus_key (added validator).
@@ -160,6 +183,8 @@ All leaf values are 32 bytes, produced by SSZ `hash_tree_root`:
 ## Tree Updates
 
 Every mutation to `ConsensusState` has a corresponding SSZ tree update. Updates are organized into tiers by optimization strategy.
+
+One exception: the `dynamic_epoch_schedule` leaf is not driven by a `ConsensusState` setter. The `DynamicEpocher` uses interior mutability and can change (epoch advance, length update) without a `&mut ConsensusState` call, so its leaf is recomputed in `capture_state_root` (and `rebuild`) instead.
 
 ### Tier 1: Scalar Fields — O(1)
 
@@ -179,7 +204,11 @@ Single top-level leaf write + rehash of the 5-level path to root.
 | `set_max_deposits_per_epoch()` | `ssz_tree.set_max_deposits_per_epoch()` |
 | `set_max_withdrawals_per_epoch()` | `ssz_tree.set_max_withdrawals_per_epoch()` |
 | `set_observers_per_validator()` | `ssz_tree.set_observers_per_validator()` |
+| `set_minimum_validator_count()` | `ssz_tree.set_minimum_validator_count()` |
+| `increment_pending_active_validator_exits()` / `reset_pending_active_validator_exits()` | `ssz_tree.set_pending_active_validator_exits()` |
 | `set_next_withdrawal_index()` | `ssz_tree.set_next_withdrawal_index()` |
+| `set_pending_checkpoint()` | `ssz_tree.set_pending_checkpoint_digest()` |
+| `take_pending_checkpoint()` | `ssz_tree.set_pending_checkpoint_digest(None)` |
 | `set_forkchoice_head()` | `ssz_tree.set_forkchoice_head_block_hash()` |
 | `set_forkchoice_safe_and_finalized()` | Two setter calls (safe + finalized) |
 | `set_forkchoice()` | Three setter calls (head + safe + finalized) |
@@ -232,6 +261,8 @@ Protocol parameters, added validators, and removed validators always rebuild the
 | `push_removed_validator()` | `rebuild_removed_validators()` |
 | `set_removed_validators()` | `rebuild_removed_validators()` |
 | `clear_removed_validators()` | `rebuild_removed_validators()` |
+| `push_pending_execution_request()` | `rebuild_pending_execution_requests()` |
+| `take_pending_execution_requests()` | `rebuild_pending_execution_requests()` |
 
 ### Tier 6: Queue Pop — Full Rebuild
 
@@ -303,7 +334,7 @@ The proof branch concatenates sibling hashes from multiple tree levels:
 
 Proofs can target different levels of the tree:
 
-- **Whole-account proof**: The leaf is the per-validator subtree root (internal node 3 levels above field leaves). Shorter branch.
+- **Whole-account proof**: The leaf is the per-validator subtree root (internal node 4 levels above field leaves). Shorter branch.
 - **Field-level proof**: The leaf is an individual field (e.g., just the balance). Longer branch but proves a single field.
 
 The same applies to deposits and withdrawals — both whole-item and field-level proofs are supported.
@@ -346,6 +377,8 @@ pub fn capture_state_root(&mut self, el_block_number: u64) {
 
 This is called after `execute_block` in the finalizer. The frozen `proof_tree` is used for all subsequent proof generation (via RPC), while the live `ssz_tree` continues to be mutated by finalization operations. The snapshot includes the sorted validator keys (needed for positional index lookups) and the withdrawal pubkey index (stored inside the `SszStateTree`).
 
+At an epoch boundary the finalized last block applies transition mutations *after* `execute_block` — protocol-parameter changes, committee updates, the epoch increment, the epoch-genesis hash, and added/removed-validator cleanup. So `capture_state_root()` is called a second time, after those mutations complete, before any aux data is exposed for the next block. This guarantees the first block of the new epoch advertises a `parent_beacon_block_root` that commits to the post-transition consensus state (the committee and parameters that authorize it), rather than the pre-transition snapshot from `execute_block`. The re-capture also re-freezes the `proof_tree`, so RPC proofs served after the boundary verify against the same post-transition root.
+
 The state root appears on-chain in EL block `proof_el_block_number + 1`.
 
 ## RPC API
@@ -371,19 +404,56 @@ The state root appears on-chain in EL block `el_block_number + 1`.
 
 ### `getStateProof`
 
-Takes a list of key strings and returns the state root, EL block number, and an `SszProof` for each key.
+Takes a list of key strings and returns the state root, EL block number, and one result for each key. Each result echoes the requested key and contains either an `SszProof` or an error for a key that is absent or out of range.
+
+> **Binding for by-pubkey field proofs.** A bare `SszProof` for a single field
+> (`validator_field:`/`withdrawal_field:`) proves only that *some* positional
+> leaf exists under the root — it does **not** prove the field belongs to the
+> requested pubkey, since the pubkey→position mapping happens server-side. A
+> malicious provider or intermediary could answer a by-pubkey request with the
+> same field from a *different* item under the same root. For these requests the
+> result therefore also carries a `key_proof`: a companion `SszProof` of the
+> item's key (pubkey) leaf. A trustless consumer **must** verify both, check
+> that `key_proof.leaf` equals the requested pubkey, check that `key_proof`
+> addresses the canonical pubkey field within its item (its field-selector bits
+> equal the pubkey field index, so the binding cannot rest on some other field
+> that merely hashes to the key), and check that the two leaves resolve to the
+> same item (their generalized indices agree once the low `log2(fields_per_item)`
+> field-selector bits are dropped — 3 bits for withdrawals, 4 for validator
+> accounts). See `KeyedFieldProof::verify` in
+> `types/src/ssz_state_tree.rs`. The `key_proof` field is absent for scalar,
+> whole-item, and index-addressed proofs.
 
 ```json
 // Request
-{"jsonrpc":"2.0","method":"getStateProof","params":[["epoch","validator:0xABCD..."]],"id":1}
+{"jsonrpc":"2.0","method":"getStateProof","params":[["epoch","validator:0xABCD...","deposit:999999"]],"id":1}
 
 // Response
 {
   "root": "0x...",
   "el_block_number": 42,
-  "proofs": [
-    { "gindex": 32, "leaf": "0x...", "branch": ["0x...", ...] },
-    { "gindex": 1408, "leaf": "0x...", "branch": ["0x...", ...] }
+  "results": [
+    {
+      "key": "epoch",
+      "proof": { "gindex": 32, "leaf": "0x...", "branch": ["0x...", ...] },
+      "error": null
+    },
+    {
+      "key": "validator:0xABCD...",
+      "proof": { "gindex": 1408, "leaf": "0x...", "branch": ["0x...", ...] },
+      "error": null
+    },
+    {
+      "key": "validator_field:0xABCD...:balance",
+      "proof": { "gindex": 22528, "leaf": "0x...", "branch": ["0x...", ...] },
+      "key_proof": { "gindex": 22536, "leaf": "0xABCD...", "branch": ["0x...", ...] },
+      "error": null
+    },
+    {
+      "key": "deposit:999999",
+      "proof": null,
+      "error": "key is absent or out of range"
+    }
   ]
 }
 ```
@@ -406,8 +476,10 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | `allowed_timestamp_future_ms` | Allowed timestamp future (ms) |
 | `treasury_address` | Treasury address |
 | `max_deposits_per_epoch` | Max validator deposits per epoch |
-| `max_withdrawals_per_epoch` | Max validator withdrawals per epoch |
+| `max_withdrawals_per_epoch` | Max total withdrawals per epoch (validator exits + deposit refunds) |
 | `observers_per_validator` | Observer keys authorized per validator |
+| `minimum_validator_count` | Minimum active validator count exits must preserve |
+| `pending_active_validator_exits` | Accepted active validator exits pending epoch transition |
 | `next_withdrawal_index` | Next withdrawal index |
 | `forkchoice_head_block_hash` | Forkchoice head hash |
 | `forkchoice_safe_block_hash` | Forkchoice safe hash |
@@ -418,7 +490,7 @@ Keys are human-readable strings parsed by `types/src/ssz_tree_key.rs`:
 | Key Format | Example | Proves |
 |------------|---------|--------|
 | `validator:<pubkey>` | `validator:0xABCD...` | Whole account |
-| `validator_field:<pubkey>:<field>` | `validator_field:0xABCD...:balance` | Single field |
+| `validator_field:<pubkey>:<field>` | `validator_field:0xABCD...:balance` | Single field (response includes a `key_proof` binding — see above) |
 
 Validator field names: `consensus_pubkey`, `withdrawal_credentials`, `balance`, `status`, `has_pending_deposit`, `has_pending_withdrawal`, `joining_epoch`, `last_deposit_index`.
 
@@ -436,7 +508,7 @@ Deposit field names: `node_pubkey`, `consensus_pubkey`, `withdrawal_credentials`
 | Key Format | Example | Proves |
 |------------|---------|--------|
 | `withdrawal:<pubkey>` | `withdrawal:0xABCD...` | Whole withdrawal |
-| `withdrawal_field:<pubkey>:<field>` | `withdrawal_field:0xABCD...:amount` | Single field |
+| `withdrawal_field:<pubkey>:<field>` | `withdrawal_field:0xABCD...:amount` | Single field (response includes a `key_proof` binding — see above) |
 
 Withdrawal field names: `index`, `validator_index`, `address`, `amount`, `pubkey`, `balance_deduction`, `epoch`.
 

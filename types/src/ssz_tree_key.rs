@@ -76,6 +76,13 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "observers_per_validator" => {
             Ok(SszStateKey::Scalar(ssz_state_tree::OBSERVERS_PER_VALIDATOR))
         }
+        "minimum_validator_count" => {
+            Ok(SszStateKey::Scalar(ssz_state_tree::MINIMUM_VALIDATOR_COUNT))
+        }
+        "pending_active_validator_exits" => Ok(SszStateKey::Scalar(
+            ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS,
+        )),
+        "invalid_deposit_tax" => Ok(SszStateKey::Scalar(ssz_state_tree::INVALID_DEPOSIT_TAX)),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"
@@ -162,6 +169,9 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
 
 fn parse_validator_field_name(name: &str) -> Result<usize, String> {
     match name {
+        // The account's map key (node ed25519 pubkey), committed as a leaf so a
+        // proof binds the account value to the pubkey it belongs to.
+        "node_pubkey" | "node_public_key" => Ok(ssz_state_tree::VALIDATOR_FIELD_NODE_PUBKEY),
         "consensus_pubkey" | "consensus_public_key" => {
             Ok(ssz_state_tree::VALIDATOR_FIELD_CONSENSUS_PUBKEY)
         }
@@ -200,6 +210,7 @@ fn parse_withdrawal_field_name(name: &str) -> Result<usize, String> {
         "pubkey" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_PUBKEY),
         "balance_deduction" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION),
         "epoch" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
+        "kind" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_KIND),
         _ => Err(format!("unknown withdrawal field: {name}")),
     }
 }
@@ -216,16 +227,28 @@ fn parse_added_validator_field_name(name: &str) -> Result<usize, String> {
     match name {
         "node_key" => Ok(ssz_state_tree::ADDED_VALIDATOR_FIELD_NODE_KEY),
         "consensus_key" => Ok(ssz_state_tree::ADDED_VALIDATOR_FIELD_CONSENSUS_KEY),
+        // The scheduled-activation map key (target epoch), committed as a leaf so
+        // a proof binds the addition to the epoch it activates in.
+        "epoch" => Ok(ssz_state_tree::ADDED_VALIDATOR_FIELD_EPOCH),
         _ => Err(format!("unknown added_validator field: {name}")),
     }
 }
 
 fn parse_hex_pubkey(hex_str: &str) -> Result<[u8; 32], String> {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid hex: {e}"))?;
-    bytes
-        .try_into()
-        .map_err(|_| "pubkey must be exactly 32 bytes".to_string())
+    // a 32 byte pubkey is exactly 64 hex characters. validate the encoded length
+    // before decoding: parse_key runs on unauthenticated, caller supplied
+    // descriptors at the public rpc boundary, and hex::decode (const_hex) would
+    // otherwise allocate and decode a heap buffer sized to half the input before
+    // any length check, letting a large malformed key force avoidable allocation
+    // and decode work. reject the wrong length first, then decode straight into
+    // the fixed array with no intermediate heap allocation.
+    if hex_str.len() != 64 {
+        return Err("pubkey must be exactly 32 bytes (64 hex characters)".to_string());
+    }
+    let mut pubkey = [0u8; 32];
+    hex::decode_to_slice(hex_str, &mut pubkey).map_err(|e| format!("invalid hex: {e}"))?;
+    Ok(pubkey)
 }
 
 #[cfg(test)]
@@ -240,6 +263,18 @@ mod tests {
         assert_eq!(
             parse_key("forkchoice_finalized_block_hash").unwrap(),
             SszStateKey::Scalar(10)
+        );
+        assert_eq!(
+            parse_key("minimum_validator_count").unwrap(),
+            SszStateKey::Scalar(ssz_state_tree::MINIMUM_VALIDATOR_COUNT)
+        );
+        assert_eq!(
+            parse_key("pending_active_validator_exits").unwrap(),
+            SszStateKey::Scalar(ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS)
+        );
+        assert_eq!(
+            parse_key("invalid_deposit_tax").unwrap(),
+            SszStateKey::Scalar(ssz_state_tree::INVALID_DEPOSIT_TAX)
         );
     }
 
@@ -267,6 +302,21 @@ mod tests {
     #[test]
     fn parse_deposit_key_invalid() {
         assert!(parse_key("deposit:abc").is_err());
+    }
+
+    #[test]
+    fn parse_pubkey_rejects_wrong_length_before_decoding() {
+        // a pubkey descriptor that is valid hex but not 64 characters must be
+        // rejected on the length check, without decoding a large heap buffer.
+        let oversized = format!("validator:0x{}", "01".repeat(4096)); // 8192 hex chars
+        assert!(parse_key(&oversized).is_err());
+
+        // too short is rejected the same way.
+        assert!(parse_key("validator:0x0101").is_err());
+
+        // the valid 64 character form still parses.
+        let valid = "validator:0x0101010101010101010101010101010101010101010101010101010101010101";
+        assert_eq!(parse_key(valid).unwrap(), SszStateKey::Validator([1u8; 32]));
     }
 
     #[test]
@@ -441,6 +491,7 @@ mod tests {
                 ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION,
             ),
             ("epoch", ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
+            ("kind", ssz_state_tree::WITHDRAWAL_FIELD_KIND),
         ];
         for (name, expected_idx) in fields {
             let key_str = format!("withdrawal_field:0x{pk_hex}:{name}");
@@ -525,6 +576,28 @@ mod tests {
     #[test]
     fn parse_added_validator_field_unknown_errors() {
         assert!(parse_key("added_validator_field:0:nonexistent").is_err());
+    }
+
+    #[test]
+    fn parse_added_validator_epoch_key_field() {
+        // The activation-epoch map key is now committed and addressable.
+        let key = parse_key("added_validator_field:2:epoch").unwrap();
+        assert_eq!(
+            key,
+            SszStateKey::AddedValidatorField(2, ssz_state_tree::ADDED_VALIDATOR_FIELD_EPOCH)
+        );
+    }
+
+    #[test]
+    fn parse_validator_node_pubkey_key_field() {
+        // The node-pubkey map key is now committed and addressable as a field, so
+        // a consumer can prove the account value is bound to the pubkey it keyed.
+        let hex_key = "validator_field:0x0101010101010101010101010101010101010101010101010101010101010101:node_pubkey";
+        let SszStateKey::ValidatorField(pubkey, field_index) = parse_key(hex_key).unwrap() else {
+            panic!("expected ValidatorField");
+        };
+        assert_eq!(pubkey, [1u8; 32]);
+        assert_eq!(field_index, ssz_state_tree::VALIDATOR_FIELD_NODE_PUBKEY);
     }
 
     #[test]

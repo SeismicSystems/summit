@@ -1211,22 +1211,27 @@ mod tests {
                 actors.push(actor);
             }
 
-            // Create block at height 1
+            // Create the epoch-terminal block. With BLOCKS_PER_EPOCH = 20, height
+            // 19 is the last block of epoch 0; the mock derives the header view
+            // from the height, so the block's header view is 19. The header/round
+            // binding only permits a finalization view to differ from the header
+            // view for the epoch-terminal block (a same-digest reproposal), which
+            // is exactly the cross-view scenario this test exercises.
             let parent = Sha256::hash(b"");
-            let block = B::new::<Sha256>(parent, Height::new(1), 1);
+            let block = B::new::<Sha256>(parent, Height::new(19), 19);
             let commitment = block.digest();
 
-            // Both validators verify the block
+            // Both validators verify the block at its original view (19).
             actors[0]
-                .verified(Round::new(Epoch::new(0), View::new(1)), block.clone())
+                .verified(Round::new(Epoch::new(0), View::new(19)), block.clone())
                 .await;
             actors[1]
-                .verified(Round::new(Epoch::new(0), View::new(1)), block.clone())
+                .verified(Round::new(Epoch::new(0), View::new(19)), block.clone())
                 .await;
 
-            // Validator 0: Finalize with view 1
+            // Validator 0: finalize at the block's own view (19) — exact match.
             let proposal_v1 = Proposal {
-                round: Round::new(Epoch::new(0), View::new(1)),
+                round: Round::new(Epoch::new(0), View::new(19)),
                 parent: View::new(0),
                 payload: commitment,
             };
@@ -1239,11 +1244,12 @@ mod tests {
                 .report(Activity::Finalization(finalization_v1.clone()))
                 .await;
 
-            // Validator 1: Finalize with view 2 (simulates receiving finalization from different view)
-            // This could happen during epoch transitions where the same block gets finalized
-            // with different views by different validators.
+            // Validator 1: finalize the same terminal block via a same-digest
+            // reproposal certified in a later view (21). Header view 19 < 21 and
+            // the block is epoch-terminal, so the binding accepts it. (A
+            // non-terminal block finalized at a mismatched view would be rejected.)
             let proposal_v2 = Proposal {
-                round: Round::new(Epoch::new(0), View::new(2)), // Different view
+                round: Round::new(Epoch::new(0), View::new(21)), // Later view (reproposal)
                 parent: View::new(0),
                 payload: commitment, // Same block
             };
@@ -1260,29 +1266,33 @@ mod tests {
             context.sleep(Duration::from_millis(100)).await;
 
             // Verify both validators stored the block correctly
-            let block0 = actors[0].get_block(1).await.unwrap();
-            let block1 = actors[1].get_block(1).await.unwrap();
+            let block0 = actors[0].get_block(19).await.unwrap();
+            let block1 = actors[1].get_block(19).await.unwrap();
             assert_eq!(block0, block);
             assert_eq!(block1, block);
 
             // Verify both validators have finalizations stored
-            let fin0 = actors[0].get_finalization(Height::new(1)).await.unwrap();
-            let fin1 = actors[1].get_finalization(Height::new(1)).await.unwrap();
+            let fin0 = actors[0].get_finalization(Height::new(19)).await.unwrap();
+            let fin1 = actors[1].get_finalization(Height::new(19)).await.unwrap();
 
             // Verify the finalizations have the expected different views
             assert_eq!(fin0.proposal.payload, block.digest());
-            assert_eq!(fin0.round().view(), View::new(1));
+            assert_eq!(fin0.round().view(), View::new(19));
             assert_eq!(fin1.proposal.payload, block.digest());
-            assert_eq!(fin1.round().view(), View::new(2));
+            assert_eq!(fin1.round().view(), View::new(21));
 
             // Both validators can retrieve block by height
             assert_eq!(
-                actors[0].get_info(Identifier::Height(Height::new(1))).await,
-                Some((Height::new(1), commitment))
+                actors[0]
+                    .get_info(Identifier::Height(Height::new(19)))
+                    .await,
+                Some((Height::new(19), commitment))
             );
             assert_eq!(
-                actors[1].get_info(Identifier::Height(Height::new(1))).await,
-                Some((Height::new(1), commitment))
+                actors[1]
+                    .get_info(Identifier::Height(Height::new(19)))
+                    .await,
+                Some((Height::new(19), commitment))
             );
 
             // Test that a validator receiving BOTH finalizations handles it correctly
@@ -1295,13 +1305,13 @@ mod tests {
                 .await;
             context.sleep(Duration::from_millis(100)).await;
 
-            // Validator 0 should still have the original finalization (v1)
-            let fin0_after = actors[0].get_finalization(Height::new(1)).await.unwrap();
-            assert_eq!(fin0_after.round().view(), View::new(1));
+            // Validator 0 should still have the original finalization (view 19)
+            let fin0_after = actors[0].get_finalization(Height::new(19)).await.unwrap();
+            assert_eq!(fin0_after.round().view(), View::new(19));
 
-            // Validator 1 should still have the original finalization (v2)
-            let fin1_after = actors[1].get_finalization(Height::new(1)).await.unwrap();
-            assert_eq!(fin1_after.round().view(), View::new(2));
+            // Validator 1 should still have the original finalization (view 21)
+            let fin1_after = actors[1].get_finalization(Height::new(19)).await.unwrap();
+            assert_eq!(fin1_after.round().view(), View::new(21));
         })
     }
 
@@ -1372,6 +1382,77 @@ mod tests {
                 .await
                 .expect("block should be cached after broadcast");
             assert_eq!(fetched, block);
+        });
+    }
+
+    /// A targeted forward (the application relay's translation of Commonware's
+    /// `Plan::Forward`, e.g. for `ForwardingPolicy::SilentVoters`) must deliver
+    /// the block to exactly the requested peers: the target receives it without
+    /// any full broadcast having happened, and a non-recipient does not.
+    #[test_traced("WARN")]
+    fn test_forward_targeted_block_delivery() {
+        let runner = deterministic::Runner::timed(Duration::from_secs(60));
+        runner.start(|mut context| async move {
+            use futures::FutureExt as _;
+
+            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+
+            let mut manager = oracle.manager();
+            manager
+                .track(0, ordered::Set::try_from(participants.clone()).unwrap())
+                .await;
+
+            let mut actors = Vec::new();
+            for (i, validator) in participants.iter().enumerate() {
+                let (_application, actor, _processed_height) = setup_validator(
+                    context.with_label(&format!("validator_{i}")),
+                    &mut oracle,
+                    validator.clone(),
+                    ConstantProvider::new(schemes[i].clone()),
+                )
+                .await;
+                actors.push(actor);
+            }
+
+            setup_network_links(&mut oracle, &participants, LINK).await;
+
+            let parent = Sha256::hash(b"");
+            let block = B::new::<Sha256>(parent, Height::new(1), 1);
+            let commitment = block.digest();
+            let round = Round::new(Epoch::zero(), View::new(1));
+
+            // The target and a bystander both wait for the block.
+            let mut target = actors[1].clone();
+            let mut bystander = actors[2].clone();
+            let target_rx = target.subscribe(None, commitment).await;
+            let bystander_rx = bystander.subscribe(None, commitment).await;
+
+            // The source caches the block locally WITHOUT broadcasting it
+            // (Message::Verified only populates the cache).
+            let mut source = actors[0].clone();
+            source.verified(round, block.clone()).await;
+
+            // Forward only to the target.
+            source
+                .forward(round, commitment, vec![participants[1].clone()])
+                .await;
+
+            // The target receives the block via the targeted send.
+            let received = target_rx.await.unwrap();
+            assert_eq!(received.digest(), commitment);
+            assert_eq!(received.height, Height::new(1));
+
+            // The bystander was not a recipient and must not have the block.
+            context.sleep(Duration::from_millis(100)).await;
+            assert!(
+                bystander_rx.now_or_never().is_none(),
+                "targeted forward must not reach non-recipients"
+            );
         });
     }
 }

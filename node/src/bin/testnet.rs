@@ -18,6 +18,7 @@ use std::{
 use alloy_node_bindings::Reth;
 use clap::Parser;
 use commonware_runtime::{Metrics as _, Runner as _, Spawner as _, tokio};
+use futures::future::try_join_all;
 use summit::args::{RunFlags, run_node_local};
 
 #[derive(Parser, Debug)]
@@ -163,8 +164,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // for reader in read_threads {
             //     reader.join().unwrap();
             // }
-            if let Err(e) = futures::future::try_join_all(consensus_handles).await {
-                tracing::error!("Failed: {:?}", e);
+            match try_join_all(consensus_handles).await {
+                Ok(results) => {
+                    // Each node returns its supervise outcome; a core task failure means
+                    // a node went down, so fail the process instead of only logging it.
+                    for (idx, result) in results.into_iter().enumerate() {
+                        if let Err(e) = result {
+                            tracing::error!(node = idx, ?e, "node core task failed");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                // A node handle panicked or was cancelled: surface it as a failure.
+                Err(e) => {
+                    tracing::error!("node task panicked or was cancelled: {:?}", e);
+                    std::process::exit(1);
+                }
             }
 
             // Due to how alloy node_bindings work we have to do this to prevent the reth_instances from being dropped and shutdown by the compiler
@@ -187,6 +202,11 @@ fn get_node_flags(node: usize) -> RunFlags {
         prom_port: (28600 + (node * 10)) as u16,
         prom_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
+        admin_rpc_port: (3031 + (node * 10)) as u16,
+        rpc_max_request_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_max_response_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_request_timeout_secs: summit_rpc::DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
+        rpc_max_batch_size: summit_rpc::DEFAULT_RPC_MAX_BATCH_SIZE,
         worker_threads: Some(2),
         log_level: "debug".into(),
         db_prefix: format!("{node}"),
@@ -196,9 +216,13 @@ fn get_node_flags(node: usize) -> RunFlags {
         bench_block_dir: None,
         checkpoint_path: None,
         checkpoint_or_default: false,
+        weak_subjectivity_epoch: None,
+        weak_subjectivity_header_digest: None,
+        unsafe_skip_checkpoint_verification: false,
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,
         observer: None,
+        finalizer_pending_notarized_max: 1000,
     }
 }

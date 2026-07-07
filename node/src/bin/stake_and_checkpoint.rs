@@ -15,9 +15,9 @@ use alloy::providers::ProviderBuilder;
 use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256};
 use clap::Parser;
-use commonware_cryptography::Sha256;
-use commonware_cryptography::{Hasher, Signer, bls12381, ed25519::PrivateKey};
+use commonware_cryptography::{Signer, bls12381, ed25519::PrivateKey};
 use commonware_runtime::{Clock, Runner as _, Spawner as _, tokio as cw_tokio};
+use commonware_utils::from_hex_formatted;
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::http_client::HttpClientBuilder;
 use ssz::Decode;
@@ -33,9 +33,9 @@ use std::{
 use summit::args::{RunFlags, run_node_local};
 use summit::test_harness::transactions::send_deposit_transaction;
 use summit_rpc::SummitApiClient;
-use summit_types::PROTOCOL_VERSION;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state::ConsensusState;
+use summit_types::deposit_signature_domain;
 use summit_types::execution_request::DepositRequest;
 use summit_types::genesis::Genesis;
 use summit_types::reth::Reth;
@@ -98,6 +98,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
     genesis.blocks_per_epoch = E2E_BLOCKS_PER_EPOCH;
+    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+        .expect("bad eth_genesis_hash")
+        .try_into()
+        .expect("bad eth_genesis_hash");
 
     // Write modified genesis for nodes to use
     fs::create_dir_all(&data_dir_path).expect("Failed to create data directory");
@@ -195,8 +199,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None, None).await.unwrap();
+                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                            // a coordinated shutdown (graceful stop or committee exit) returns
+                            // ok; a genuine core task failure returns err and must fail the
+                            // scenario instead of being masked as a clean node exit.
+                            if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                                eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                                std::process::exit(1);
+                            }
                         });
 
                         // Wait for stop signal or node completion
@@ -208,7 +218,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every node here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
@@ -272,8 +286,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 index: 0, // not included in the signature
             };
 
-            let protocol_version_digest = Sha256::hash(&PROTOCOL_VERSION.to_le_bytes());
-            let message = deposit_request.as_message(protocol_version_digest);
+            let deposit_domain = deposit_signature_domain(genesis_hash, b"_SUMMIT");
+            let message = deposit_request.as_message(deposit_domain);
 
             // Sign with node (ed25519) key
             let node_signature = ed25519_private_key.sign(&[], &message);
@@ -420,7 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             //    executor.start(|node_context| async move {
             //        let flags = get_node_flags(source_node);
-            //        let node_handle = node_context.clone().spawn(|ctx| async move {
+            //        let node_handle = node_context.clone().spawn(move |ctx| async move {
             //            run_node_with_runtime(ctx, flags, None).await.unwrap();
             //        });
 
@@ -523,8 +537,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(|ctx| async move {
-                        run_node_local(ctx, flags, Some(checkpoint_state), None).await.unwrap();
+                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        // the checkpoint restarted node is a required participant: a genuine
+                        // core task failure (err) must fail the scenario, not be masked.
+                        if let Err(e) =
+                            run_node_local(ctx, flags, Some(checkpoint_state), None).await.unwrap()
+                        {
+                            eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                            std::process::exit(1);
+                        }
                     });
 
                     // Wait for stop signal or node completion
@@ -536,7 +557,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                         }
                         _ = node_handle.fuse() => {
-                            println!("Node {} handle completed", x);
+                            // The checkpoint-restart node is a required participant; its
+                            // handle completing without a stop signal means it went down
+                            // unexpectedly, so fail the scenario.
+                            eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                            std::process::exit(1);
                         }
                     }
                 });
@@ -571,8 +596,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             loop {
                 let mut all_ready = true;
-                //for idx in 0..num_nodes {
-                // Skip node0
+                // node0 is intentionally stopped for checkpoint copying, so it is
+                // excluded from this progress check; its expected clean shutdown is
+                // asserted by the thread join below (a join failure fails the
+                // scenario), and the checkpoint-restart participant is asserted to
+                // sync above. Every other required node must reach the target height.
                 for idx in 1..num_nodes {
                     let rpc_port = get_node_flags(idx as usize, &e2e_genesis_path_str).rpc_port;
                     match get_latest_height(rpc_port).await {
@@ -612,12 +640,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Join all node threads outside of async context to avoid runtime drop issues
     println!("Waiting for all nodes to shut down...");
 
-    // Join the stopped node0 first if it exists
+    // Join the stopped node0 first if it exists. A thread join failure means the
+    // node panicked or was killed: that is a required participant going down
+    // unexpectedly, so fail the scenario instead of logging and continuing.
     if let Some(node0) = node_runtimes.1 {
         println!("Joining node0 thread...");
         match node0.thread.join() {
             Ok(_) => println!("Node0 thread joined successfully"),
-            Err(e) => println!("Node0 thread join failed: {:?}", e),
+            Err(e) => {
+                eprintln!("Node0 thread join failed: {:?}", e);
+                std::process::exit(1);
+            }
         }
     }
 
@@ -626,7 +659,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Waiting for node index {} to join...", idx);
         match node_runtime.thread.join() {
             Ok(_) => println!("Node index {} thread joined successfully", idx),
-            Err(e) => println!("Node index {} thread join failed: {:?}", idx, e),
+            Err(e) => {
+                eprintln!("Node index {} thread join failed: {:?}", idx, e);
+                std::process::exit(1);
+            }
         }
     }
 
@@ -687,6 +723,11 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         prom_port: (28600 + (node * 10)) as u16,
         prom_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
+        admin_rpc_port: (3031 + (node * 10)) as u16,
+        rpc_max_request_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_max_response_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_request_timeout_secs: summit_rpc::DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
+        rpc_max_batch_size: summit_rpc::DEFAULT_RPC_MAX_BATCH_SIZE,
         worker_threads: Some(2),
         log_level: "debug".into(),
         db_prefix: format!("{node}"),
@@ -696,10 +737,14 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         bench_block_dir: None,
         checkpoint_path: None,
         checkpoint_or_default: false,
+        weak_subjectivity_epoch: None,
+        weak_subjectivity_header_digest: None,
+        unsafe_skip_checkpoint_verification: false,
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,
         observer: None,
+        finalizer_pending_notarized_max: 1000,
     }
 }
 

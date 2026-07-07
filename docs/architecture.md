@@ -43,10 +43,11 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
  │                          │                                        │                                                
  │  • Propose(round, parent)│────────subscribe parent────────────────┤                                                
  │  • Verify(round, payload)│────────notify_at_height────────────────┤                                                
+ │  • Certify(round, blk)   │                                        │                                                
  │  • Broadcast(payload)    │────────get_aux_data────────────────────┤                                                
  │                          │                                        │                                                
  │  Implements:             │                                        │                                                
- │  - Automaton trait       │                                        │                                                
+ │  - CertifiableAutomaton  │                                        │                                                
  │  - Relay trait           │                                        │                                                
  │                          │                                        │                                                
  │  application/src/actor.rs│                                        │                                                
@@ -102,6 +103,7 @@ Summit is a modular consensus client implementing the Simplex protocol for EVM-b
              │                                                                                                        
              │ start_building_block(forkchoice, timestamp, withdrawals)                                               
              │ get_payload(payload_id)                                                                                
+             │ check_payload(block)                                                                                   
              │ commit_hash(forkchoice)                                                                                
              ▼                                                                                                        
      ┌──────────────────┐                                                                                             
@@ -184,13 +186,13 @@ Manages block synchronization and network state
 
 ### 4. Application (`application/`)
 
-Manages consensus state and validator set
+Implements the consensus interface — bridges Simplex's `Automaton`/`Relay`/`CertifiableAutomaton` traits with block production, structural validation, and payload validity gating.
 
 **Key Responsibilities:**
 - Propose blocks when selected as leader
-- Validate blocks received from network
-- Coordinate with execution client via Engine API
-- Maintain block cache for pending/finalized blocks
+- Validate received blocks structurally (`Automaton::verify`)
+- Gate certification on execution-payload validity (`CertifiableAutomaton::certify` calls `check_payload` against Reth)
+- Broadcast proposed blocks to peers (`Relay`)
 
 ### 5. Orchestrator (`orchestrator/`)
 
@@ -209,18 +211,20 @@ Coordinates consensus activities
 1. **Leader Selection**: Leader election is handled by the current Simplex instance
 2. **Block Building**: Application requests block from execution client via Engine API
 3. **Block Proposal**: Application broadcasts proposed block to network
-4. **Block Validation**: Application of peer validators validate block
-5. **Optimistic Execution**: Syncer sends notarized blocks to the finalizer for optimistic execution
-6. **Finalization**: Syncer sends finalized blocks to the finalizer for finalization
+4. **Structural Validation**: Peer validators run `Automaton::verify` and vote on notarization
+5. **Certification**: After notarization, peer validators run `CertifiableAutomaton::certify`, which calls `check_payload` against Reth; a 2f+1 quorum certifies the block
+6. **Optimistic Execution**: Syncer sends notarized blocks to the finalizer; finalizer calls `check_payload` and builds a fork state for blocks whose certify has not yet completed locally
+7. **Finalization**: Syncer sends finalized blocks to the finalizer; finalizer reuses the pre-built fork state when available, otherwise re-validates via `check_payload` (catch-up / sync)
 
 
 ### Block Reception Flow
 
 1. **Block Reception**: Syncer receives block from network
-2. **Block Caching**: Block stored in cache for validation
-3. **Block Validation**: Execution client validates block via Engine API
-5. **Optimistic Execution**: Finalizer optimistically executes notarized block
-5. **Block Finalization**: Finalizer applies finalized block
+2. **Block Caching**: Block stored in cache
+3. **Structural Validation**: Application validates block via `Automaton::verify`
+4. **Certification**: Application validates execution payload via `CertifiableAutomaton::certify` → `check_payload`
+5. **Optimistic Execution**: Finalizer optimistically executes notarized block (re-checks `check_payload` for blocks whose certify has not run locally; discards fork state if INVALID)
+6. **Block Finalization**: Finalizer applies finalized block; shuts down if a finalized block's payload is rejected by local Reth
 
 
 ### Synchronization Flow

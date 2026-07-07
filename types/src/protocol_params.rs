@@ -14,6 +14,17 @@ pub const MAX_WITHDRAWALS_PER_EPOCH_MIN: u64 = 1;
 pub const MAX_WITHDRAWALS_PER_EPOCH_MAX: u64 = 256;
 pub const MIN_OBSERVERS_PER_VALIDATOR: u64 = 0;
 pub const MAX_OBSERVERS_PER_VALIDATOR: u64 = 256;
+pub const MIN_MINIMUM_VALIDATOR_COUNT: u64 = 1;
+pub const DEFAULT_MINIMUM_VALIDATOR_COUNT: u64 = 3;
+// Bounds on the genesis `max_message_size_bytes`. The floor must be large enough
+// to carry the largest legitimate P2P message (full blocks dominate; checkpoints
+// scale with validator count); below it, large-block sync stalls. The ceiling
+// bounds per-message allocation (anti-DoS) and stays well under `u32::MAX`, which
+// is the hard limit imposed by the `as u32` conversion at the p2p config boundary.
+pub const MAX_MESSAGE_SIZE_BYTES_MIN: u64 = 1 << 20; // 1 MiB
+pub const MAX_MESSAGE_SIZE_BYTES_MAX: u64 = 1 << 30; // 1 GiB
+pub const MIN_INVALID_DEPOSIT_TAX: u64 = 0;
+pub const MAX_INVALID_DEPOSIT_TAX: u64 = 100;
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {
@@ -25,6 +36,109 @@ pub enum ProtocolParam {
     MaxDepositsPerEpoch(u64),
     MaxWithdrawalsPerEpoch(u64),
     ObserversPerValidator(u64),
+    MinimumValidatorCount(u64),
+    InvalidDepositTax(u64),
+}
+
+/// A protocol-parameter value that fell outside its allowed bounds.
+///
+/// This is the single source of truth for per-parameter value bounds, shared by
+/// every site that validates a [`ProtocolParam`]: the execution-request parse path
+/// ([`TryFrom<ProtocolParamRequest>`](ProtocolParam), the codec decode path
+/// ([`Read`]), and genesis validation. Each caller maps it into its own error
+/// type — [`reason`](Self::reason) yields the `&'static str` the codec layer
+/// requires, while [`Display`](std::fmt::Display) carries the offending value for
+/// the human-facing (anyhow / genesis) paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParamBoundsError {
+    EpochLength(u64),
+    AllowedTimestampFuture(u64),
+    MaxDepositsPerEpoch(u64),
+    MaxWithdrawalsPerEpoch(u64),
+    ObserversPerValidator(u64),
+}
+
+impl ParamBoundsError {
+    /// Stable, value-free reason string. Required by [`commonware_codec::Error::Invalid`],
+    /// which only accepts `&'static str` and so cannot carry the offending value.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::EpochLength(_) => "epoch length out of bounds",
+            Self::AllowedTimestampFuture(_) => "allowed timestamp future out of bounds",
+            Self::MaxDepositsPerEpoch(_) => "max deposits per epoch out of bounds",
+            Self::MaxWithdrawalsPerEpoch(_) => "max withdrawals per epoch out of bounds",
+            Self::ObserversPerValidator(_) => "observers per validator out of bounds",
+        }
+    }
+}
+
+impl std::fmt::Display for ParamBoundsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EpochLength(v) => write!(
+                f,
+                "epoch length {v} must be between {MIN_EPOCH_LENGTH} and {MAX_EPOCH_LENGTH}"
+            ),
+            Self::AllowedTimestampFuture(v) => write!(
+                f,
+                "allowed timestamp future {v}ms must be between {MIN_ALLOWED_TIMESTAMP_FUTURE_MS} and {MAX_ALLOWED_TIMESTAMP_FUTURE_MS}"
+            ),
+            Self::MaxDepositsPerEpoch(v) => write!(
+                f,
+                "max deposits per epoch {v} must not exceed {MAX_MAX_DEPOSITS_PER_EPOCH}"
+            ),
+            Self::MaxWithdrawalsPerEpoch(v) => write!(
+                f,
+                "max withdrawals per epoch {v} must be between {MAX_WITHDRAWALS_PER_EPOCH_MIN} and {MAX_WITHDRAWALS_PER_EPOCH_MAX}"
+            ),
+            Self::ObserversPerValidator(v) => write!(
+                f,
+                "observers per validator {v} must not exceed {MAX_OBSERVERS_PER_VALIDATOR}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ParamBoundsError {}
+
+impl ProtocolParam {
+    /// Validate this parameter's value against its protocol bounds.
+    ///
+    /// The authoritative per-parameter bounds check. Every construction site
+    /// ([`TryFrom<ProtocolParamRequest>`](ProtocolParam), [`Read`], genesis) calls
+    /// this so the numeric bounds live in exactly one place. Variants without a
+    /// scalar bound ([`MinimumStake`](Self::MinimumStake),
+    /// [`MaximumStake`](Self::MaximumStake), [`TreasuryAddress`](Self::TreasuryAddress))
+    /// always pass — the stake-interval invariant is cross-field and is enforced in
+    /// `ConsensusState`.
+    pub fn validate(&self) -> Result<(), ParamBoundsError> {
+        match *self {
+            ProtocolParam::EpochLength(v)
+                if !(MIN_EPOCH_LENGTH..=MAX_EPOCH_LENGTH).contains(&v) =>
+            {
+                Err(ParamBoundsError::EpochLength(v))
+            }
+            ProtocolParam::AllowedTimestampFuture(v)
+                if !(MIN_ALLOWED_TIMESTAMP_FUTURE_MS..=MAX_ALLOWED_TIMESTAMP_FUTURE_MS)
+                    .contains(&v) =>
+            {
+                Err(ParamBoundsError::AllowedTimestampFuture(v))
+            }
+            ProtocolParam::MaxDepositsPerEpoch(v) if v > MAX_MAX_DEPOSITS_PER_EPOCH => {
+                Err(ParamBoundsError::MaxDepositsPerEpoch(v))
+            }
+            ProtocolParam::MaxWithdrawalsPerEpoch(v)
+                if !(MAX_WITHDRAWALS_PER_EPOCH_MIN..=MAX_WITHDRAWALS_PER_EPOCH_MAX)
+                    .contains(&v) =>
+            {
+                Err(ParamBoundsError::MaxWithdrawalsPerEpoch(v))
+            }
+            ProtocolParam::ObserversPerValidator(v) if v > MAX_OBSERVERS_PER_VALIDATOR => {
+                Err(ParamBoundsError::ObserversPerValidator(v))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl TryFrom<ProtocolParamRequest> for ProtocolParam {
@@ -63,18 +177,9 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                     ));
                 }
                 let bytes: [u8; 8] = request.param.as_slice().try_into()?;
-                let epoch_length = u64::from_le_bytes(bytes);
-                if epoch_length < MIN_EPOCH_LENGTH {
-                    return Err(anyhow!(
-                        "Epoch length {epoch_length} is below minimum {MIN_EPOCH_LENGTH}"
-                    ));
-                }
-                if epoch_length > MAX_EPOCH_LENGTH {
-                    return Err(anyhow!(
-                        "Epoch length {epoch_length} exceeds maximum {MAX_EPOCH_LENGTH}"
-                    ));
-                }
-                Ok(ProtocolParam::EpochLength(epoch_length))
+                let param = ProtocolParam::EpochLength(u64::from_le_bytes(bytes));
+                param.validate().map_err(|e| anyhow!("{e}"))?;
+                Ok(param)
             }
             0x03 => {
                 if request.param.len() != 8 {
@@ -84,20 +189,9 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                     ));
                 }
                 let bytes: [u8; 8] = request.param.as_slice().try_into()?;
-                let allowed_timestamp_future = u64::from_le_bytes(bytes);
-                if allowed_timestamp_future < MIN_ALLOWED_TIMESTAMP_FUTURE_MS {
-                    return Err(anyhow!(
-                        "Allowed timestamp future {allowed_timestamp_future}ms is below minimum {MIN_ALLOWED_TIMESTAMP_FUTURE_MS}ms"
-                    ));
-                }
-                if allowed_timestamp_future > MAX_ALLOWED_TIMESTAMP_FUTURE_MS {
-                    return Err(anyhow!(
-                        "Allowed timestamp future {allowed_timestamp_future}ms exceeds maximum {MAX_ALLOWED_TIMESTAMP_FUTURE_MS}ms"
-                    ));
-                }
-                Ok(ProtocolParam::AllowedTimestampFuture(
-                    allowed_timestamp_future,
-                ))
+                let param = ProtocolParam::AllowedTimestampFuture(u64::from_le_bytes(bytes));
+                param.validate().map_err(|e| anyhow!("{e}"))?;
+                Ok(param)
             }
             0x04 => {
                 if request.param.len() != 20 {
@@ -117,13 +211,9 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                     ));
                 }
                 let bytes: [u8; 8] = request.param.as_slice().try_into()?;
-                let max_deposits_per_epoch = u64::from_le_bytes(bytes);
-                if max_deposits_per_epoch > MAX_MAX_DEPOSITS_PER_EPOCH {
-                    return Err(anyhow!(
-                        "Max joining per epoch {max_deposits_per_epoch} exceeds maximum {MAX_MAX_DEPOSITS_PER_EPOCH}"
-                    ));
-                }
-                Ok(ProtocolParam::MaxDepositsPerEpoch(max_deposits_per_epoch))
+                let param = ProtocolParam::MaxDepositsPerEpoch(u64::from_le_bytes(bytes));
+                param.validate().map_err(|e| anyhow!("{e}"))?;
+                Ok(param)
             }
             0x06 => {
                 if request.param.len() != 8 {
@@ -133,20 +223,9 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                     ));
                 }
                 let bytes: [u8; 8] = request.param.as_slice().try_into()?;
-                let max_withdrawals_per_epoch = u64::from_le_bytes(bytes);
-                if max_withdrawals_per_epoch < MAX_WITHDRAWALS_PER_EPOCH_MIN {
-                    return Err(anyhow!(
-                        "Max withdrawals per epoch {max_withdrawals_per_epoch} is below minimum {MAX_WITHDRAWALS_PER_EPOCH_MIN}"
-                    ));
-                }
-                if max_withdrawals_per_epoch > MAX_WITHDRAWALS_PER_EPOCH_MAX {
-                    return Err(anyhow!(
-                        "Max withdrawals per epoch {max_withdrawals_per_epoch} exceeds maximum {MAX_WITHDRAWALS_PER_EPOCH_MAX}"
-                    ));
-                }
-                Ok(ProtocolParam::MaxWithdrawalsPerEpoch(
-                    max_withdrawals_per_epoch,
-                ))
+                let param = ProtocolParam::MaxWithdrawalsPerEpoch(u64::from_le_bytes(bytes));
+                param.validate().map_err(|e| anyhow!("{e}"))?;
+                Ok(param)
             }
             0x07 => {
                 if request.param.len() != 8 {
@@ -156,15 +235,43 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                     ));
                 }
                 let bytes: [u8; 8] = request.param.as_slice().try_into()?;
-                let observers_per_validator = u64::from_le_bytes(bytes);
-                if observers_per_validator > MAX_OBSERVERS_PER_VALIDATOR {
+                let param = ProtocolParam::ObserversPerValidator(u64::from_le_bytes(bytes));
+                param.validate().map_err(|e| anyhow!("{e}"))?;
+                Ok(param)
+            }
+            0x08 => {
+                if request.param.len() != 8 {
                     return Err(anyhow!(
-                        "Observers per validator {observers_per_validator} exceeds maximum {MAX_OBSERVERS_PER_VALIDATOR}"
+                        "Failed to parse minimum validator count protocol param, invalid length {}",
+                        request.param.len()
                     ));
                 }
-                Ok(ProtocolParam::ObserversPerValidator(
-                    observers_per_validator,
+                let bytes: [u8; 8] = request.param.as_slice().try_into()?;
+                let minimum_validator_count = u64::from_le_bytes(bytes);
+                if minimum_validator_count < MIN_MINIMUM_VALIDATOR_COUNT {
+                    return Err(anyhow!(
+                        "Minimum validator count {minimum_validator_count} is below minimum {MIN_MINIMUM_VALIDATOR_COUNT}"
+                    ));
+                }
+                Ok(ProtocolParam::MinimumValidatorCount(
+                    minimum_validator_count,
                 ))
+            }
+            0x09 => {
+                if request.param.len() != 8 {
+                    return Err(anyhow!(
+                        "Failed to parse invalid deposit tax protocol param, invalid length {}",
+                        request.param.len()
+                    ));
+                }
+                let bytes: [u8; 8] = request.param.as_slice().try_into()?;
+                let invalid_deposit_tax = u64::from_le_bytes(bytes);
+                if invalid_deposit_tax > MAX_INVALID_DEPOSIT_TAX {
+                    return Err(anyhow!(
+                        "Invalid deposit tax {invalid_deposit_tax} exceeds maximum {MAX_INVALID_DEPOSIT_TAX}"
+                    ));
+                }
+                Ok(ProtocolParam::InvalidDepositTax(invalid_deposit_tax))
             }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
@@ -182,7 +289,9 @@ impl EncodeSize for ProtocolParam {
             | ProtocolParam::AllowedTimestampFuture(_)
             | ProtocolParam::MaxDepositsPerEpoch(_)
             | ProtocolParam::MaxWithdrawalsPerEpoch(_)
-            | ProtocolParam::ObserversPerValidator(_) => 1 + 8, // 1 byte tag + 8 byte value
+            | ProtocolParam::ObserversPerValidator(_)
+            | ProtocolParam::MinimumValidatorCount(_)
+            | ProtocolParam::InvalidDepositTax(_) => 1 + 8, // 1 byte tag + 8 byte value
             ProtocolParam::TreasuryAddress(_) => 1 + 20, // 1 byte tag + 20 byte address
         }
     }
@@ -223,6 +332,14 @@ impl Write for ProtocolParam {
                 buf.put_u8(0x07);
                 buf.put_u64(*value);
             }
+            ProtocolParam::MinimumValidatorCount(value) => {
+                buf.put_u8(0x08);
+                buf.put_u64(*value);
+            }
+            ProtocolParam::InvalidDepositTax(value) => {
+                buf.put_u8(0x09);
+                buf.put_u64(*value);
+            }
         }
     }
 }
@@ -243,25 +360,19 @@ impl Read for ProtocolParam {
             }
             0x02 => {
                 let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-                if !(MIN_EPOCH_LENGTH..=MAX_EPOCH_LENGTH).contains(&value) {
-                    return Err(Error::Invalid(
-                        "ProtocolParam",
-                        "epoch length out of bounds",
-                    ));
-                }
-                Ok(ProtocolParam::EpochLength(value))
+                let param = ProtocolParam::EpochLength(value);
+                param
+                    .validate()
+                    .map_err(|e| Error::Invalid("ProtocolParam", e.reason()))?;
+                Ok(param)
             }
             0x03 => {
                 let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-                if !(MIN_ALLOWED_TIMESTAMP_FUTURE_MS..=MAX_ALLOWED_TIMESTAMP_FUTURE_MS)
-                    .contains(&value)
-                {
-                    return Err(Error::Invalid(
-                        "ProtocolParam",
-                        "allowed timestamp future out of bounds",
-                    ));
-                }
-                Ok(ProtocolParam::AllowedTimestampFuture(value))
+                let param = ProtocolParam::AllowedTimestampFuture(value);
+                param
+                    .validate()
+                    .map_err(|e| Error::Invalid("ProtocolParam", e.reason()))?;
+                Ok(param)
             }
             0x04 => {
                 let mut bytes = [0u8; 20];
@@ -271,34 +382,47 @@ impl Read for ProtocolParam {
             }
             0x05 => {
                 let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-                if value > MAX_MAX_DEPOSITS_PER_EPOCH {
-                    return Err(Error::Invalid(
-                        "ProtocolParam",
-                        "max deposits per epoch out of bounds",
-                    ));
-                }
-                Ok(ProtocolParam::MaxDepositsPerEpoch(value))
+                let param = ProtocolParam::MaxDepositsPerEpoch(value);
+                param
+                    .validate()
+                    .map_err(|e| Error::Invalid("ProtocolParam", e.reason()))?;
+                Ok(param)
             }
             0x06 => {
                 let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-                if !(MAX_WITHDRAWALS_PER_EPOCH_MIN..=MAX_WITHDRAWALS_PER_EPOCH_MAX).contains(&value)
-                {
-                    return Err(Error::Invalid(
-                        "ProtocolParam",
-                        "max withdrawals per epoch out of bounds",
-                    ));
-                }
-                Ok(ProtocolParam::MaxWithdrawalsPerEpoch(value))
+                let param = ProtocolParam::MaxWithdrawalsPerEpoch(value);
+                param
+                    .validate()
+                    .map_err(|e| Error::Invalid("ProtocolParam", e.reason()))?;
+                Ok(param)
             }
             0x07 => {
                 let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
-                if value > MAX_OBSERVERS_PER_VALIDATOR {
+                let param = ProtocolParam::ObserversPerValidator(value);
+                param
+                    .validate()
+                    .map_err(|e| Error::Invalid("ProtocolParam", e.reason()))?;
+                Ok(param)
+            }
+            0x08 => {
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+                if value < MIN_MINIMUM_VALIDATOR_COUNT {
                     return Err(Error::Invalid(
                         "ProtocolParam",
-                        "observers per validator out of bounds",
+                        "minimum validator count out of bounds",
                     ));
                 }
-                Ok(ProtocolParam::ObserversPerValidator(value))
+                Ok(ProtocolParam::MinimumValidatorCount(value))
+            }
+            0x09 => {
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+                if !(MIN_INVALID_DEPOSIT_TAX..=MAX_INVALID_DEPOSIT_TAX).contains(&value) {
+                    return Err(Error::Invalid(
+                        "ProtocolParam",
+                        "invalid deposit tax out of bounds",
+                    ));
+                }
+                Ok(ProtocolParam::InvalidDepositTax(value))
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }
@@ -466,6 +590,7 @@ mod tests {
             ProtocolParam::MaximumStake(200),
             ProtocolParam::MinimumStake(0),
             ProtocolParam::MaximumStake(u64::MAX),
+            ProtocolParam::MinimumValidatorCount(3),
         ];
 
         for param in params {
@@ -619,6 +744,47 @@ mod tests {
         }
     }
 
+    /// All three construction paths share `ProtocolParam::validate`, so an
+    /// out-of-bounds value must be rejected identically by the validator itself,
+    /// the execution-request parse path, and the codec decode path. This guards
+    /// against the centralized validator silently loosening any one path.
+    #[test]
+    fn all_entry_points_reject_same_out_of_bounds_value() {
+        let below_min = MIN_EPOCH_LENGTH - 1;
+        let above_max = MAX_EPOCH_LENGTH + 1;
+
+        for bad in [below_min, above_max] {
+            // 1. The param validator directly.
+            assert!(ProtocolParam::EpochLength(bad).validate().is_err());
+
+            // 2. The execution-request parse path.
+            let request = ProtocolParamRequest {
+                param_id: 0x02,
+                param: bad.to_le_bytes().to_vec(),
+            };
+            assert!(ProtocolParam::try_from(request).is_err());
+
+            // 3. The codec decode path.
+            let mut buf = BytesMut::new();
+            buf.put_u8(0x02);
+            buf.put_u64(bad);
+            assert!(ProtocolParam::read(&mut buf.as_ref()).is_err());
+        }
+
+        // A within-bounds value passes all three.
+        let good = MIN_EPOCH_LENGTH;
+        assert!(ProtocolParam::EpochLength(good).validate().is_ok());
+        let request = ProtocolParamRequest {
+            param_id: 0x02,
+            param: good.to_le_bytes().to_vec(),
+        };
+        assert!(ProtocolParam::try_from(request).is_ok());
+        let mut buf = BytesMut::new();
+        buf.put_u8(0x02);
+        buf.put_u64(good);
+        assert!(ProtocolParam::read(&mut buf.as_ref()).is_ok());
+    }
+
     #[test]
     fn test_observers_per_validator_encode_decode() {
         let param = ProtocolParam::ObserversPerValidator(7);
@@ -668,6 +834,101 @@ mod tests {
     }
 
     #[test]
+    fn test_minimum_validator_count_encode_decode() {
+        let param = ProtocolParam::MinimumValidatorCount(3);
+
+        let mut buf = BytesMut::new();
+        param.write(&mut buf);
+
+        assert_eq!(buf.len(), param.encode_size());
+        assert_eq!(buf.len(), 9);
+        assert_eq!(buf[0], 0x08);
+
+        let decoded = ProtocolParam::read(&mut buf.as_ref()).unwrap();
+        match decoded {
+            ProtocolParam::MinimumValidatorCount(v) => assert_eq!(v, 3),
+            _ => panic!("Expected MinimumValidatorCount variant"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_minimum_validator_count() {
+        let request = ProtocolParamRequest {
+            param_id: 0x08,
+            param: 5u64.to_le_bytes().to_vec(),
+        };
+        let param = ProtocolParam::try_from(request).unwrap();
+        match param {
+            ProtocolParam::MinimumValidatorCount(v) => assert_eq!(v, 5),
+            _ => panic!("Expected MinimumValidatorCount variant"),
+        }
+    }
+
+    #[test]
+    fn test_minimum_validator_count_rejects_zero() {
+        let request = ProtocolParamRequest {
+            param_id: 0x08,
+            param: 0u64.to_le_bytes().to_vec(),
+        };
+        assert!(ProtocolParam::try_from(request).is_err());
+
+        let mut buf = BytesMut::new();
+        buf.put_u8(0x08);
+        buf.put_u64(0);
+        assert!(ProtocolParam::read(&mut buf.as_ref()).is_err());
+    }
+
+    #[test]
+    fn test_invalid_deposit_tax_encode_decode() {
+        let param = ProtocolParam::InvalidDepositTax(25);
+
+        let mut buf = BytesMut::new();
+        param.write(&mut buf);
+
+        assert_eq!(buf.len(), param.encode_size());
+        assert_eq!(buf.len(), 9);
+        assert_eq!(buf[0], 0x09);
+
+        let decoded = ProtocolParam::read(&mut buf.as_ref()).unwrap();
+        match decoded {
+            ProtocolParam::InvalidDepositTax(v) => assert_eq!(v, 25),
+            _ => panic!("Expected InvalidDepositTax variant"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_invalid_deposit_tax_bounds() {
+        for tax in [MIN_INVALID_DEPOSIT_TAX, 25, MAX_INVALID_DEPOSIT_TAX] {
+            let request = ProtocolParamRequest {
+                param_id: 0x09,
+                param: tax.to_le_bytes().to_vec(),
+            };
+            let param = ProtocolParam::try_from(request).unwrap();
+            match param {
+                ProtocolParam::InvalidDepositTax(v) => assert_eq!(v, tax),
+                _ => panic!("Expected InvalidDepositTax variant"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_from_invalid_deposit_tax_above_maximum() {
+        let request = ProtocolParamRequest {
+            param_id: 0x09,
+            param: (MAX_INVALID_DEPOSIT_TAX + 1).to_le_bytes().to_vec(),
+        };
+        assert!(ProtocolParam::try_from(request).is_err());
+    }
+
+    #[test]
+    fn test_decode_invalid_deposit_tax_out_of_bounds() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(0x09);
+        buf.put_u64(MAX_INVALID_DEPOSIT_TAX + 1);
+        assert!(ProtocolParam::read(&mut buf.as_ref()).is_err());
+    }
+
+    #[test]
     fn test_decode_truncated_input_returns_err() {
         // Empty buffer — must not panic.
         let empty: &[u8] = &[];
@@ -677,7 +938,7 @@ mod tests {
         ));
 
         // Tag only, no payload.
-        for tag in 0x00u8..=0x07 {
+        for tag in 0x00u8..=0x09 {
             let mut buf = BytesMut::new();
             buf.put_u8(tag);
             assert!(

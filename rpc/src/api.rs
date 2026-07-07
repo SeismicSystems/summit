@@ -1,7 +1,7 @@
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
-    EpochBoundsResponse, FinalizedHeaderRes, PendingWithdrawalResponse, PublicKeysResponse,
-    StateProofResponse, StateRootResponse, ValidatorAccountResponse,
+    EpochBoundsResponse, FinalizedHeaderDigestRes, FinalizedHeaderRes, PendingWithdrawalResponse,
+    PublicKeysResponse, StateProofResponse, StateRootResponse, ValidatorAccountResponse,
 };
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
@@ -26,6 +26,9 @@ pub trait SummitApi {
     #[method(name = "getFinalizedHeader")]
     async fn get_finalized_header(&self, epoch: u64) -> RpcResult<FinalizedHeaderRes>;
 
+    #[method(name = "getFinalizedHeaderDigest")]
+    async fn get_finalized_header_digest(&self, epoch: u64) -> RpcResult<FinalizedHeaderDigestRes>;
+
     #[method(name = "getLatestHeight")]
     async fn get_latest_height(&self) -> RpcResult<u64>;
 
@@ -40,13 +43,6 @@ pub trait SummitApi {
         &self,
         public_key: String,
     ) -> RpcResult<ValidatorAccountResponse>;
-
-    #[method(name = "getDepositSignature")]
-    async fn get_deposit_signature(
-        &self,
-        amount: u64,
-        address: String,
-    ) -> RpcResult<DepositTransactionResponse>;
 
     #[method(name = "getMinimumStake")]
     async fn get_minimum_stake(&self) -> RpcResult<u64>;
@@ -90,6 +86,22 @@ pub trait SummitPermissionedApi {
 
     #[method(name = "isPaused")]
     async fn is_paused(&self) -> RpcResult<bool>;
+}
+
+/// Admin-only RPC surface. Must be served on a localhost-bound listener.
+///
+/// `getDepositSignature` uses the node's local validator private keys to sign
+/// caller-supplied deposit data. It is disabled on observer nodes
+/// (`--observer`), whose live P2P identity is a derived child key rather than
+/// the master node key this method signs for.
+#[rpc(server, client)]
+pub trait SummitAdminApi {
+    #[method(name = "getDepositSignature")]
+    async fn get_deposit_signature(
+        &self,
+        amount: u64,
+        address: String,
+    ) -> RpcResult<DepositTransactionResponse>;
 }
 
 #[rpc(server, client)]

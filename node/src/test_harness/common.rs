@@ -1,8 +1,7 @@
-use commonware_cryptography::{Hasher, Sha256, Signer, bls12381};
+use commonware_cryptography::{Signer, bls12381};
 use commonware_math::algebra::Random;
 use std::num::NonZeroU64;
 
-use crate::engine::PROTOCOL_VERSION;
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
 use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
@@ -34,10 +33,15 @@ use summit_types::execution_request::{
 use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::MultisigScheme;
-use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey};
+use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey, deposit_signature_domain};
 use tokio::sync::mpsc;
 
 pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 10;
+
+/// State-root convergence polling (see `assert_state_root_consensus_synced`).
+/// Virtual time, so the cap costs only scheduler steps, not wall-clock.
+const STATE_ROOT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const STATE_ROOT_MAX_POLLS: usize = 600; // ~5 min of virtual time
 
 pub const GENESIS_HASH: &str = "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616";
 
@@ -279,10 +283,45 @@ pub fn run_until_height(
         }
 
         // Verify all validators share the same state root
-        assert_state_root_consensus(&consensus_state_queries).await;
+        assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     })
+}
+
+/// Wait until every active (non-skipped) validator has captured state at the same
+/// `el_block_number`, then assert their state roots agree.
+///
+/// Validators finalize asynchronously and can be a block apart when sampled, so
+/// comparing their "current" state roots directly is a height race (it compares
+/// state at different heights and spuriously fails). This drives the deterministic
+/// runtime forward with virtual sleeps until heights converge, then compares.
+/// Bounded, so a genuine non-convergence (e.g. a stuck validator) still surfaces
+/// via the follow-up assertion, which reports the per-validator block numbers.
+pub async fn assert_state_root_consensus_synced<E: Clock>(
+    context: &E,
+    queries: &HashMap<usize, FinalizerMailbox<MultisigScheme, Block>>,
+    skip: &[usize],
+) {
+    // Normal convergence takes a block or two (a straggler finalizing one more
+    // block); the cap is a generous safety bound after which we fall through to
+    // the assertion so a genuinely non-converging cluster fails (with block
+    // numbers) rather than hanging forever.
+    for _ in 0..STATE_ROOT_MAX_POLLS {
+        let mut blocks = std::collections::HashSet::new();
+        for (&idx, mailbox) in queries.iter() {
+            if skip.contains(&idx) {
+                continue;
+            }
+            let (_root, el_block_number) = mailbox.get_state_root().await;
+            blocks.insert(el_block_number);
+        }
+        if blocks.len() <= 1 {
+            break;
+        }
+        context.sleep(STATE_ROOT_POLL_INTERVAL).await;
+    }
+    assert_state_root_consensus_skip(queries, skip).await;
 }
 
 /// Assert that all validators share the same state trie root.
@@ -322,7 +361,11 @@ pub async fn assert_state_root_consensus_skip(
 }
 
 pub fn get_domain() -> Digest {
-    Sha256::hash(&PROTOCOL_VERSION.to_le_bytes())
+    let genesis_hash = from_hex_formatted(GENESIS_HASH).expect("failed to decode genesis hash");
+    let genesis_hash: [u8; 32] = genesis_hash
+        .try_into()
+        .expect("failed to convert genesis hash");
+    deposit_signature_domain(genesis_hash, b"_SUMMIT")
 }
 
 pub fn get_initial_state(
@@ -350,6 +393,8 @@ pub fn get_initial_state(
             Address::ZERO,
             10,
             16,
+            0,
+            3,
             0,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
@@ -441,7 +486,7 @@ pub fn extract_validator_id(metric: &str) -> Option<String> {
 /// # Arguments
 /// * `index` - The deposit index value used for generating deterministic keys and in the signature
 /// * `amount` - The deposit amount in gwei
-/// * `domain` - The domain value used in the signature (typically genesis hash)
+/// * `domain` - The domain value used in the signature
 /// * `private_key` - Optional ED25519 private key to use; if None, generates deterministic key from index
 /// * `withdrawal_credentials` - Optional withdrawal credentials; if None, generates Eth1 format credentials
 ///
@@ -455,6 +500,7 @@ pub fn create_deposit_request(
     amount: u64,
     domain: Digest,
     private_key: Option<PrivateKey>,
+    consensus_key: Option<bls12381::PrivateKey>,
     withdrawal_credentials: Option<[u8; 32]>,
 ) -> (DepositRequest, PrivateKey, bls12381::PrivateKey) {
     let withdrawal_credentials = if let Some(withdrawal_credentials) = withdrawal_credentials {
@@ -479,8 +525,14 @@ pub fn create_deposit_request(
     };
     let node_pubkey = ed25519_private_key.public_key();
 
-    // Generate consensus (BLS) key
-    let bls_private_key = bls12381::PrivateKey::random(&mut rng);
+    // Generate consensus (BLS) key. Top-up deposits for an existing
+    // validator must carry that validator's stored BLS key, so callers can
+    // pass `Some(key_stores[i].consensus_key.clone())` explicitly.
+    let bls_private_key = if let Some(consensus_key) = consensus_key {
+        consensus_key
+    } else {
+        bls12381::PrivateKey::random(&mut rng)
+    };
     let consensus_pubkey = bls_private_key.public_key();
 
     let mut deposit = DepositRequest {
@@ -631,10 +683,16 @@ where
         oracle,
         partition_prefix,
         genesis_hash,
+        // Tests have no full Genesis here; all harness nodes share `genesis_hash`,
+        // so use it as the config digest to keep their derived chain domain
+        // consistent.
+        config_digest: genesis_hash,
+        max_message_size_bytes: 100 * 1024 * 1024,
         namespace,
         key_store,
         participants,
         mailbox_size: 1024,
+        finalizer_pending_notarized_max: 1000,
         deque_size: 10,
         backfill_quota: Quota::per_second(NonZeroU32::new(512).unwrap()),
         leader_timeout: Duration::from_secs(1),
@@ -651,6 +709,8 @@ where
         checkpoint_last_block: None,
         checkpoint_finalized_header: None,
         blocks_per_epoch: DEFAULT_BLOCKS_PER_EPOCH,
+        force_verifier_only: false,
+        observer_network_key: None,
     }
 }
 

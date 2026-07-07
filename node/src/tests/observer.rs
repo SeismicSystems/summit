@@ -69,12 +69,31 @@ fn test_observer_reaches_end_height() {
 
         // Derive the observer's p2p identity from validator[0]'s master key.
         let master_priv_key = validator_key_stores[0].node_key.clone();
+        let master_consensus_key = validator_key_stores[0].consensus_key.clone();
         let master_pub_key = master_priv_key.public_key();
-        let observer_signer = ExtPrivateKey::derive_child_signer(&master_priv_key, observer_index);
+        // Observer keys are derived under the chain bound domain
+        // chain_domain(config_digest), the same domain the finalizer authorizes
+        // observers under (#335). The harness uses genesis_hash as the
+        // config_digest (see get_default_engine_config), so derive against
+        // chain_domain(genesis_hash) to match the validators' authorized set.
+        let observer_config_digest: [u8; 32] = from_hex_formatted(common::GENESIS_HASH)
+            .expect("genesis hash hex")
+            .try_into()
+            .expect("genesis hash len");
+        let observer_domain = summit_types::chain_domain(observer_config_digest);
+        let observer_signer = ExtPrivateKey::derive_child_signer(
+            &master_priv_key,
+            observer_domain.as_slice(),
+            observer_index,
+        );
         let observer_pubkey = observer_signer.public_key();
         assert_eq!(
             observer_pubkey,
-            derive_child_public(master_pub_key.clone(), observer_index),
+            derive_child_public(
+                master_pub_key.clone(),
+                observer_domain.as_slice(),
+                observer_index
+            ),
             "signer and public-only derivation must agree"
         );
 
@@ -118,18 +137,15 @@ fn test_observer_reaches_end_height() {
             engine.start(pending, recovered, resolver, orchestrator, broadcast);
         }
 
-        // Build the observer engine: ExtPrivateKey signer + throwaway BLS key.
-        // Its node pubkey (derived) is NOT in the validator `participants` list,
-        // so Simplex won't treat it as a participant; it follows the chain only.
+        // Build the observer engine from a validator keystore. The observer must
+        // still run verifier-only consensus even though the BLS key can sign.
         let observer_uid = format!("observer_{observer_pubkey}");
         let observer_engine_client = engine_client_network.create_client(observer_uid.clone());
-        let mut observer_rng = StdRng::seed_from_u64(n_validators as u64 + 100);
-        let observer_consensus_key = bls12381::PrivateKey::random(&mut observer_rng);
         let observer_key_store = KeyStore {
             node_key: observer_signer,
-            consensus_key: observer_consensus_key,
+            consensus_key: master_consensus_key,
         };
-        let observer_config = get_default_engine_config(
+        let mut observer_config = get_default_engine_config(
             observer_engine_client,
             SimulatedOracle::new(oracle.clone()),
             observer_uid.clone(),
@@ -139,6 +155,7 @@ fn test_observer_reaches_end_height() {
             validators.clone(),
             initial_state.clone(),
         );
+        observer_config.force_verifier_only = true;
         let observer_engine = Engine::new(context.with_label(&observer_uid), observer_config).await;
         let (pending, recovered, resolver, orchestrator, broadcast) =
             registrations.remove(&observer_pubkey).unwrap();
@@ -187,6 +204,202 @@ fn test_observer_reaches_end_height() {
                 .any(|m| m.starts_with(&observer_metric_prefix)),
             "observer node did not reach stop_height"
         );
+
+        context.auditor().state()
+    });
+}
+
+#[test_traced("INFO")]
+fn test_observer_backfills_from_parent_validator() {
+    // Regression test for the resolver self-exclusion bug: production startup
+    // hands the engine the master keystore while p2p runs as the derived child
+    // key, so the resolver treated the parent validator's key as "me" and
+    // excluded the parent from backfill. Mirror that wiring here (master
+    // keystore + observer_network_key override, unlike the test above which
+    // puts the child signer in the keystore), late-join the observer, and link
+    // it ONLY to its parent validator — the sole possible backfill source.
+    let n_validators: u32 = 4;
+    let observers_per_validator: u32 = 1;
+    let observer_index: u32 = 0;
+
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 1.0,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let total_nodes = n_validators + 1;
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(total_nodes as usize * 10),
+            },
+        );
+        let join_height = DEFAULT_BLOCKS_PER_EPOCH / 2;
+        let stop_height = 2 * DEFAULT_BLOCKS_PER_EPOCH;
+        network.start();
+
+        // Generate validator key material.
+        let mut validator_key_stores = Vec::new();
+        let mut validators = Vec::new();
+        for i in 0..n_validators {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            validators.push((node_key.public_key(), consensus_key.public_key()));
+            validator_key_stores.push(KeyStore {
+                node_key,
+                consensus_key,
+            });
+        }
+        validators.sort_by(|a, b| a.0.cmp(&b.0));
+        validator_key_stores.sort_by(|a, b| a.node_key.public_key().cmp(&b.node_key.public_key()));
+        let validator_pubkeys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+
+        // The observer runs from the parent validator's master keystore (as in
+        // production) with a child-derived p2p identity.
+        let parent_key_store = KeyStore {
+            node_key: validator_key_stores[0].node_key.clone(),
+            consensus_key: validator_key_stores[0].consensus_key.clone(),
+        };
+        let parent_pubkey = parent_key_store.node_key.public_key();
+        // Observer keys are derived under the chain bound domain
+        // chain_domain(config_digest), the same domain the finalizer authorizes
+        // observers under (#335). The harness uses genesis_hash as the
+        // config_digest (see get_default_engine_config), so derive against
+        // chain_domain(genesis_hash) to match the validators' authorized set.
+        let observer_config_digest: [u8; 32] = from_hex_formatted(common::GENESIS_HASH)
+            .expect("genesis hash hex")
+            .try_into()
+            .expect("genesis hash len");
+        let observer_domain = summit_types::chain_domain(observer_config_digest);
+        let observer_pubkey = derive_child_public(
+            parent_pubkey.clone(),
+            observer_domain.as_slice(),
+            observer_index,
+        );
+
+        // Register all nodes, but link the observer ONLY to its parent.
+        let mut all_pubkeys = validator_pubkeys.clone();
+        all_pubkeys.push(observer_pubkey.clone());
+        let mut registrations = common::register_validators(&oracle, &all_pubkeys).await;
+        common::link_validators(&mut oracle, &validator_pubkeys, link.clone(), None).await;
+        common::join_validator(
+            &mut oracle,
+            &observer_pubkey,
+            std::slice::from_ref(&parent_pubkey),
+            link.clone(),
+        )
+        .await;
+
+        // Shared genesis + engine client network.
+        let genesis_hash = from_hex_formatted(common::GENESIS_HASH).expect("genesis hash hex");
+        let genesis_hash: [u8; 32] = genesis_hash.try_into().expect("genesis hash len");
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_stop_at(stop_height)
+            .build();
+        let mut initial_state =
+            get_initial_state(genesis_hash, &validators, None, None, 32_000_000_000);
+        initial_state.set_observers_per_validator(observers_per_validator);
+
+        // Start the validators.
+        for key_store in validator_key_stores.into_iter() {
+            let public_key = key_store.node_key.public_key();
+            let uid = format!("validator_{public_key}");
+            let engine_client = engine_client_network.create_client(uid.clone());
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                String::from("_SUMMIT"),
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+
+            let engine = Engine::new(context.with_label(&uid), config).await;
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // Let the validators advance past join_height so the observer has
+        // history it can only obtain via resolver backfill from its parent.
+        let max_polls = 300;
+        let mut polls = 0;
+        loop {
+            let metrics = context.encode();
+            let advanced = metrics
+                .lines()
+                .filter(|l| l.starts_with("validator_"))
+                .filter(|l| {
+                    let mut parts = l.split_whitespace();
+                    let metric = parts.next().unwrap();
+                    let value = parts.next().unwrap();
+                    metric.ends_with("finalizer_height")
+                        && value.parse::<u64>().unwrap() >= join_height
+                })
+                .count();
+            if advanced as u32 >= n_validators {
+                break;
+            }
+            polls += 1;
+            assert!(polls < max_polls, "validators never reached join height");
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // Late-join the observer with production-style wiring: master keystore,
+        // verifier-only consensus, child key as the effective network identity.
+        let observer_uid = format!("observer_{observer_pubkey}");
+        let observer_engine_client = engine_client_network.create_client(observer_uid.clone());
+        let mut observer_config = get_default_engine_config(
+            observer_engine_client,
+            SimulatedOracle::new(oracle.clone()),
+            observer_uid.clone(),
+            genesis_hash,
+            String::from("_SUMMIT"),
+            parent_key_store,
+            validators.clone(),
+            initial_state.clone(),
+        );
+        observer_config.force_verifier_only = true;
+        observer_config.observer_network_key = Some(observer_pubkey.clone());
+        let observer_engine = Engine::new(context.with_label(&observer_uid), observer_config).await;
+        let (pending, recovered, resolver, orchestrator, broadcast) =
+            registrations.remove(&observer_pubkey).unwrap();
+        observer_engine.start(pending, recovered, resolver, orchestrator, broadcast);
+
+        // The observer must backfill the missed blocks from its parent — the
+        // only peer it is linked to — and reach stop_height.
+        let observer_height_metric = format!("{observer_uid}_finalizer_height");
+        let mut polls = 0;
+        loop {
+            let metrics = context.encode();
+            let observer_done = metrics.lines().any(|l| {
+                let mut parts = l.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+                metric.ends_with(&observer_height_metric)
+                    && value.parse::<u64>().unwrap() >= stop_height
+            });
+            if observer_done {
+                break;
+            }
+            polls += 1;
+            assert!(
+                polls < max_polls,
+                "observer did not catch up via its parent validator: \
+                 resolver likely excluded the parent as self"
+            );
+            context.sleep(Duration::from_secs(1)).await;
+        }
 
         context.auditor().state()
     });

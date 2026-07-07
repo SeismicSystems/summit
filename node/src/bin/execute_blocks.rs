@@ -98,16 +98,24 @@ async fn main() -> Result<()> {
             .start_building_block(forkchoice, 0, vec![], Default::default(), None)
             .await;
         match result {
-            Some(payload_id) => {
-                let payload = client.get_payload(payload_id).await;
+            Ok(Some(payload_id)) => {
+                let envelope = match client.get_payload(payload_id).await {
+                    Ok(envelope) => envelope,
+                    Err(e) => {
+                        eprintln!("get_payload failed: {e}");
+                        break;
+                    }
+                };
                 block_number = u64::from_le_bytes(payload_id.0.into());
 
-                let block_hash = payload
+                let block_hash = envelope
+                    .envelope_inner
                     .execution_payload
                     .payload_inner
                     .payload_inner
                     .block_hash;
-                let parent_hash = payload
+                let parent_hash = envelope
+                    .envelope_inner
                     .execution_payload
                     .payload_inner
                     .payload_inner
@@ -124,11 +132,16 @@ async fn main() -> Result<()> {
 
                 // use block number as view
                 let summit_block =
-                    execution_payload_envelope_to_block(payload, parent_digest, block_number);
+                    execution_payload_envelope_to_block(envelope, parent_digest, block_number);
 
                 // Check payload with Reth
-                let payload_status = client.check_payload(&summit_block).await;
-                println!("  Payload status: {:?}", payload_status);
+                match client.check_payload(&summit_block).await {
+                    Ok(status) => println!("  Payload status: {:?}", status),
+                    Err(e) => {
+                        eprintln!("check_payload failed: {e}");
+                        break;
+                    }
+                }
 
                 println!("forkchoice: {:?}", block_hash);
                 forkchoice = ForkchoiceState {
@@ -137,12 +150,19 @@ async fn main() -> Result<()> {
                     finalized_block_hash: block_hash,
                 };
 
-                client.commit_hash(forkchoice).await;
+                if let Err(e) = client.commit_hash(forkchoice).await {
+                    eprintln!("commit_hash failed: {e}");
+                    break;
+                }
                 println!("  Committed block {} to Reth", block_number);
             }
-            None => {
+            Ok(None) => {
                 // this also happens when there are no more blocks
                 eprintln!("failed to load block");
+                break;
+            }
+            Err(e) => {
+                eprintln!("start_building_block failed: {e}");
                 break;
             }
         }
@@ -169,7 +189,6 @@ fn execution_payload_envelope_to_block(
         timestamp,
         execution_payload,
         execution_requests,
-        payload.envelope_inner.block_value,
         0, // epoch
         view,
         None,                    // checkpoint_hash

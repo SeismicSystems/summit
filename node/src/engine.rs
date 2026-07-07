@@ -1,4 +1,6 @@
-use crate::config::EngineConfig;
+use crate::config::{
+    EngineConfig, FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD, FINALIZER_DRAIN_INTERVAL,
+};
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::scheme::Scheme;
@@ -14,7 +16,7 @@ use commonware_storage::archive::immutable;
 use commonware_utils::acknowledgement::Exact;
 use commonware_utils::{NZU64, NZUsize};
 use futures::FutureExt;
-use futures::future::try_join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
@@ -28,6 +30,7 @@ use summit_application::ApplicationConfig;
 use summit_finalizer::actor::Finalizer;
 use summit_finalizer::{FinalizerConfig, FinalizerMailbox, ProtocolConsts};
 use summit_syncer::{SyncCheckpoint, SyncStart};
+use summit_types::consensus_state_query::ConsensusStateQuery;
 use summit_types::dynamic_epocher::DynamicEpocher;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::{MultisigScheme, SummitSchemeProvider};
@@ -52,6 +55,12 @@ const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
 const FREEZER_TABLE_INITIAL_SIZE: u32 = 1024 * 1024; // 100mb
 const MAX_REPAIR: NonZero<usize> = NZUsize!(10);
+
+/// Initial expected per-peer latency assumed by the backfill resolver's
+/// peer-performance tracking before any responses are observed.
+const BACKFILL_INITIAL_EXPECTED: Duration = Duration::from_secs(1);
+/// Delay before re-queuing a backfill fetch after a timeout or failed send.
+const BACKFILL_FETCH_RETRY_TIMEOUT: Duration = Duration::from_millis(1500);
 
 //
 // Onboarding config
@@ -94,6 +103,7 @@ pub struct Engine<
     syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
     finalizer: Finalizer<E, C, O, S, MinPk>,
     pub finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
+    pub finalizer_state_query: ConsensusStateQuery<MultisigScheme>,
     orchestrator: summit_orchestrator::Actor<
         E,
         O,
@@ -105,6 +115,7 @@ pub struct Engine<
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: usize,
+    fetch_timeout: Duration,
     sync_start: SyncStart,
     checkpoint: Option<SyncCheckpoint<Block, MultisigScheme>>,
     cancellation_token: CancellationToken,
@@ -124,24 +135,44 @@ where
     pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
         let blocks_per_epoch = cfg.blocks_per_epoch;
 
+        // The key this node identifies itself by: the derived child key in
+        // observer mode (the live P2P identity), the master node key otherwise.
+        // Using the master key on an observer would make the resolver exclude
+        // the parent validator as "self" and skip it as a backfill source.
+        let node_public_key = cfg
+            .observer_network_key
+            .clone()
+            .unwrap_or_else(|| cfg.key_store.node_key.public_key());
+
+        // Live consensus + p2p domain, bound to immutable chain identity (the
+        // genesis config digest + protocol version) so consensus certificates
+        // and peer handshakes cannot verify across deployments that merely reuse
+        // the same namespace and validator keys. The finalizer keeps the raw
+        // namespace because deposit_signature_domain folds in the genesis hash
+        // itself.
+        let consensus_domain = summit_types::chain_domain(cfg.config_digest).to_vec();
+
         let page_cache = CacheRef::from_pooler(
             &context,
             NonZero::new(BUFFER_POOL_PAGE_SIZE).unwrap(),
             BUFFER_POOL_CAPACITY,
         );
 
-        let encoded = cfg.key_store.consensus_key.encode();
-        let private_scalar = group::Private::decode(&mut encoded.as_ref())
-            .expect("failed to extract scalar from private key");
-        let scheme_provider: SummitSchemeProvider =
-            SummitSchemeProvider::new(private_scalar, cfg.namespace.as_bytes().to_vec());
+        let scheme_provider = if cfg.force_verifier_only {
+            SummitSchemeProvider::verifier_only(consensus_domain.clone())
+        } else {
+            let encoded = cfg.key_store.consensus_key.encode();
+            let private_scalar = group::Private::decode(&mut encoded.as_ref())
+                .expect("failed to extract scalar from private key");
+            SummitSchemeProvider::new(private_scalar, consensus_domain.clone())
+        };
 
         let cancellation_token = CancellationToken::new();
         #[cfg(feature = "permissioned")]
         let paused = Arc::new(AtomicBool::new(false));
 
         // create finalizer
-        let (finalizer, initial_state, finalizer_mailbox) = Finalizer::new(
+        let (finalizer, initial_state, finalizer_mailbox, finalizer_state_query) = Finalizer::new(
             context.with_label("finalizer"),
             FinalizerConfig {
                 mailbox_size: cfg.mailbox_size,
@@ -154,10 +185,18 @@ where
                 },
                 page_cache: page_cache.clone(),
                 genesis_hash: cfg.genesis_hash,
+                namespace: cfg.namespace.as_bytes().to_vec(),
+                // Observer child keys are derived and authorized under the same
+                // chain bound domain the live P2P observer signer uses, not the
+                // raw namespace (which stays for the deposit signature domain).
+                observer_domain: consensus_domain.clone(),
                 initial_state: cfg.initial_state,
                 protocol_version: PROTOCOL_VERSION,
-                node_public_key: cfg.key_store.node_key.public_key().clone(),
+                node_public_key: node_public_key.clone(),
                 cancellation_token: cancellation_token.clone(),
+                drain_interval: FINALIZER_DRAIN_INTERVAL,
+                buffered_blocks_warn_threshold: FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD,
+                pending_notarized_max: cfg.finalizer_pending_notarized_max,
                 _variant_marker: PhantomData,
             },
         )
@@ -173,8 +212,10 @@ where
                 mailbox_size: cfg.mailbox_size,
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
+                max_message_size_bytes: cfg.max_message_size_bytes,
                 epocher: epocher.clone(),
                 cancellation_token: cancellation_token.clone(),
+                leader_timeout: cfg.leader_timeout,
                 #[cfg(feature = "permissioned")]
                 paused: paused.clone(),
             },
@@ -185,7 +226,7 @@ where
         let (buffer, buffer_mailbox) = buffered::Engine::new(
             context.with_label("buffer"),
             buffered::Config {
-                public_key: cfg.key_store.node_key.public_key(),
+                public_key: node_public_key.clone(),
                 mailbox_size: cfg.mailbox_size,
                 deque_size: cfg.deque_size,
                 priority: true,
@@ -277,7 +318,7 @@ where
             partition_prefix: cfg.partition_prefix.clone(),
             mailbox_size: cfg.mailbox_size,
             view_retention_timeout: ViewDelta::new(cfg.activity_timeout),
-            namespace: cfg.namespace.as_bytes().to_vec(),
+            namespace: consensus_domain.clone(),
             prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
             page_cache: page_cache.clone(),
             replay_buffer: REPLAY_BUFFER,
@@ -305,7 +346,7 @@ where
                 application: application_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 syncer_mailbox: syncer_mailbox.clone(),
-                namespace: cfg.namespace.as_bytes().to_vec(),
+                namespace: consensus_domain.clone(),
                 muxer_size: cfg.mailbox_size,
                 mailbox_size: cfg.mailbox_size,
                 epocher: epocher.clone(),
@@ -352,16 +393,40 @@ where
             syncer_mailbox,
             finalizer,
             finalizer_mailbox,
+            finalizer_state_query,
             orchestrator,
             orchestrator_mailbox,
             oracle: cfg.oracle,
-            node_public_key: cfg.key_store.node_key.public_key(),
+            node_public_key,
             mailbox_size: cfg.mailbox_size,
+            fetch_timeout: cfg.fetch_timeout,
             sync_start,
             checkpoint,
             cancellation_token,
             #[cfg(feature = "permissioned")]
             paused,
+        }
+    }
+
+    /// Configuration for the backfill resolver.
+    ///
+    /// The active-request timeout must come from [`EngineConfig::fetch_timeout`]: the
+    /// resolver drops in-flight requests when the timeout fires, so responses arriving
+    /// later are discarded and backfill never completes if the timeout is shorter than
+    /// what peers need to serve finalized history.
+    pub(crate) fn backfill_resolver_config(
+        &self,
+    ) -> summit_syncer::resolver::p2p::Config<PublicKey, O, O> {
+        summit_syncer::resolver::p2p::Config {
+            public_key: self.node_public_key.clone(),
+            provider: self.oracle.clone(),
+            blocker: self.oracle.clone(),
+            mailbox_size: self.mailbox_size,
+            initial: BACKFILL_INITIAL_EXPECTED,
+            timeout: self.fetch_timeout,
+            fetch_retry_timeout: BACKFILL_FETCH_RETRY_TIMEOUT,
+            priority_requests: false,
+            priority_responses: false,
         }
     }
 
@@ -390,7 +455,7 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-    ) -> Handle<()> {
+    ) -> Handle<anyhow::Result<()>> {
         self.context.clone().spawn(|_| {
             self.run(
                 pending_network,
@@ -427,7 +492,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-    ) {
+    ) -> anyhow::Result<()> {
+        // Build the backfill resolver config before actors take ownership of engine fields
+        let resolver_config = self.backfill_resolver_config();
+
         // start the application
         let app_handle = self
             .application
@@ -436,17 +504,6 @@ where
         let buffer_handle = self.buffer.start(broadcast_network);
 
         // Initialize resolver for backfill
-        let resolver_config = summit_syncer::resolver::p2p::Config {
-            public_key: self.node_public_key.clone(),
-            provider: self.oracle.clone(),
-            blocker: self.oracle.clone(),
-            mailbox_size: self.mailbox_size,
-            initial: Duration::from_secs(1),
-            timeout: Duration::from_secs(2),
-            fetch_retry_timeout: Duration::from_millis(1500),
-            priority_requests: false,
-            priority_responses: false,
-        };
         let (resolver_rx, resolver) =
             summit_syncer::resolver::p2p::init(&self.context, resolver_config, backfill_network);
 
@@ -464,30 +521,60 @@ where
             self.orchestrator
                 .start(pending_network, recovered_network, resolver_network);
 
-        // Wait for either all actors to finish or cancellation signal
-        let actors_fut = try_join_all(vec![
-            app_handle,
-            buffer_handle,
-            finalizer_handle,
-            syncer_handle,
-            orchestrator_handle,
-        ])
-        .fuse();
-        let cancellation_fut = self.cancellation_token.cancelled().fuse();
-        futures::pin_mut!(actors_fut, cancellation_fut);
+        // Supervise actors with first-completion semantics: any actor finishing —
+        // cleanly or not — without a coordinated cancellation is a failure. A join
+        // that waits for all actors would leave the engine pending on a single
+        // clean Ok(()) exit, keeping the node half-alive with a dead service.
+        let mut actors: FuturesUnordered<_> = [
+            ("application", app_handle),
+            ("buffer", buffer_handle),
+            ("finalizer", finalizer_handle),
+            ("syncer", syncer_handle),
+            ("orchestrator", orchestrator_handle),
+        ]
+        .into_iter()
+        .map(|(name, handle)| handle.map(move |result| (name, result)))
+        .collect();
 
-        futures::select! {
-            result = actors_fut => {
-                if let Err(e) = result {
-                    error!(?e, "engine failed");
-                } else {
-                    warn!("engine stopped");
-                }
-            }
+        let cancellation_fut = self.cancellation_token.cancelled().fuse();
+        futures::pin_mut!(cancellation_fut);
+
+        futures::select_biased! {
+            // Cancellation is polled first: a fatal-error self-cancel or committee
+            // exit makes the cancelling actor finish in the same instant, and must
+            // not be misclassified as an unexpected exit.
             _ = cancellation_fut => {
                 info!("cancellation triggered, waiting for actors to finish");
-                if let Err(e) = actors_fut.await {
-                    error!(?e, "engine failed during graceful shutdown");
+                let mut failure = None;
+                while let Some((name, result)) = actors.next().await {
+                    if let Err(e) = result {
+                        error!(?e, actor = name, "actor failed during graceful shutdown");
+                        failure.get_or_insert(anyhow::anyhow!(
+                            "consensus engine actor {name} failed during graceful shutdown: {e}"
+                        ));
+                    }
+                }
+                // Cancellation is an intentional shutdown (fatal-error self-cancel or
+                // committee exit). The node still comes down via the supervisor; this is
+                // not a panic, so report it as a clean stop.
+                failure.map_or(Ok(()), Err)
+            }
+            completed = actors.next() => {
+                let (name, result) = completed.expect("actor set is non-empty");
+                // Bring the siblings down too; actual teardown is the process exit
+                // triggered when this error reaches the node supervisor.
+                self.cancellation_token.cancel();
+                match result {
+                    Err(e) => {
+                        error!(?e, actor = name, "engine failed: a tracked actor returned an error");
+                        Err(anyhow::anyhow!("consensus engine actor {name} failed: {e}"))
+                    }
+                    Ok(()) => {
+                        warn!(actor = name, "engine stopped: a tracked actor exited unexpectedly");
+                        Err(anyhow::anyhow!(
+                            "consensus engine actor {name} exited unexpectedly"
+                        ))
+                    }
                 }
             }
         }

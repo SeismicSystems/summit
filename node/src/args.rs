@@ -1,7 +1,7 @@
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, MESSAGE_BACKLOG, PENDING_CHANNEL,
-        RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, FINALIZER_PENDING_NOTARIZED_MAX,
+        MESSAGE_BACKLOG, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
     keys::KeySubCmd,
@@ -10,18 +10,21 @@ use clap::{Args, Parser, Subcommand};
 use commonware_codec::Read;
 use commonware_cryptography::{Signer, certificate::Scheme};
 use commonware_p2p::{Ingress, authenticated};
-use commonware_runtime::{Handle, Metrics as _, Runner, Spawner as _, tokio};
-use summit_rpc::{PathSender, start_rpc_server, start_rpc_server_for_genesis};
+use commonware_runtime::{Handle, Metrics as _, Runner, Spawner, tokio};
+use summit_rpc::{
+    DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_MAX_BATCH_SIZE, DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
+    PathSender, RpcBodyLimits, start_rpc_server, start_rpc_server_for_genesis,
+};
 use tokio_util::sync::CancellationToken;
 
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_utils::from_hex_formatted;
-use futures::{channel::oneshot, future::try_join_all};
+use futures::{FutureExt, channel::oneshot};
 use governor::Quota;
 use ssz::Decode;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     num::{NonZeroU32, NonZeroU64},
     path::Path,
     str::FromStr as _,
@@ -47,7 +50,7 @@ use summit_types::{
     account::{ValidatorAccount, ValidatorStatus},
     bls12381,
 };
-use summit_types::{Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
+use summit_types::{Digest, Genesis, PrivateKey, PublicKey, Validator, utils::get_expanded_path};
 use summit_types::{consensus_state::ConsensusState, scheme::MultisigScheme};
 use tracing::{Level, error, info, warn};
 
@@ -109,6 +112,30 @@ pub struct RunFlags {
     #[arg(long, default_value_t = 3030)]
     pub rpc_port: u16,
 
+    /// Port for the localhost-only admin RPC server (handles validator-key
+    /// signing methods like `getDepositSignature`).
+    #[arg(long, default_value_t = 3031)]
+    pub admin_rpc_port: u16,
+
+    /// Maximum JSON-RPC request body size, in bytes.
+    #[arg(long, default_value_t = DEFAULT_RPC_BODY_LIMIT_BYTES)]
+    pub rpc_max_request_body_size: u32,
+
+    /// Maximum JSON-RPC response body size, in bytes.
+    #[arg(long, default_value_t = DEFAULT_RPC_BODY_LIMIT_BYTES)]
+    pub rpc_max_response_body_size: u32,
+
+    /// Maximum time, in seconds, a single RPC request may hold its connection
+    /// permit (HTTP body read plus method dispatch) before it is timed out.
+    /// Bounds slow/partial-body clients that would otherwise occupy permits.
+    #[arg(long, default_value_t = DEFAULT_RPC_REQUEST_TIMEOUT_SECS)]
+    pub rpc_request_timeout_secs: u64,
+
+    /// Maximum number of calls allowed in a single JSON-RPC batch request.
+    /// Bounds batch fan-out into expensive methods. `0` disables batching.
+    #[arg(long, default_value_t = DEFAULT_RPC_MAX_BATCH_SIZE)]
+    pub rpc_max_batch_size: u32,
+
     /// Number of tokio worker threads (defaults to number of logical CPUs)
     #[arg(long)]
     pub worker_threads: Option<usize>,
@@ -138,6 +165,33 @@ pub struct RunFlags {
     #[arg(long)]
     pub checkpoint_or_default: bool,
 
+    /// Trusted finalized-header epoch used as the weak-subjectivity anchor for checkpoint verification
+    #[arg(
+        long,
+        requires = "checkpoint_path",
+        requires = "weak_subjectivity_header_digest"
+    )]
+    pub weak_subjectivity_epoch: Option<u64>,
+
+    /// Trusted finalized-header digest used as the weak-subjectivity anchor for checkpoint verification
+    #[arg(
+        long,
+        requires = "checkpoint_path",
+        requires = "weak_subjectivity_epoch"
+    )]
+    pub weak_subjectivity_header_digest: Option<String>,
+
+    /// Import a checkpoint WITHOUT verifying it against a finalized-header chain.
+    ///
+    /// UNSAFE: the imported consensus state is trusted entirely from the supplied
+    /// checkpoint artifact. By default, checkpoint startup requires a checkpoint
+    /// directory containing finalized_headers/ together with
+    /// --weak-subjectivity-epoch and --weak-subjectivity-header-digest. Set this
+    /// flag to bypass that requirement (e.g. to import a standalone checkpoint
+    /// file). Only use it when the checkpoint source is fully trusted.
+    #[arg(long, requires = "checkpoint_path")]
+    pub unsafe_skip_checkpoint_verification: bool,
+
     /// IP address for this node (optional, will use genesis if not provided)
     #[arg(long)]
     pub ip: Option<String>,
@@ -155,6 +209,10 @@ pub struct RunFlags {
     /// The value is a derivation index that produces a distinct identity from the base node key.
     #[arg(long)]
     pub observer: Option<u32>,
+
+    /// Hard cap on unique deferred notarized blocks while the execution layer is SYNCING.
+    #[arg(long, default_value_t = FINALIZER_PENDING_NOTARIZED_MAX)]
+    pub finalizer_pending_notarized_max: usize,
 }
 
 impl Command {
@@ -164,26 +222,6 @@ impl Command {
 
             Command::Keys(cmd) => cmd.exec(),
         }
-    }
-
-    fn has_file(path: &str) -> bool {
-        let path_buf = get_expanded_path(path).expect("Invalid filepath");
-        path_buf.exists()
-            || !std::fs::read_to_string(&path_buf)
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-    }
-
-    fn check_sender(path: String, tx: oneshot::Sender<()>) -> PathSender {
-        let sender = match Self::has_file(&path) {
-            true => {
-                let _ = tx.send(());
-                None
-            }
-            false => Some(tx),
-        };
-        PathSender::new(path, sender)
     }
 
     pub fn run_node(&self, flags: &RunFlags) {
@@ -226,29 +264,82 @@ impl Command {
     }
 }
 
-async fn run_node_inner(
-    context: tokio::Context,
-    flags: RunFlags,
-    key_store: KeyStore<PrivateKey>,
-    loaded: LoadedCheckpoint<MultisigScheme>,
-) {
-    let context = context.with_label("summit_cw");
-    let (genesis_tx, genesis_rx) = oneshot::channel();
+/// How the configured genesis path looks at startup. Extracted from
+/// [`acquire_genesis`] so the present-but-invalid decision can be exercised
+/// directly in tests — the live path calls `std::process::exit` on that case,
+/// which can't be asserted against in-process.
+enum GenesisPathState {
+    /// A valid genesis file is already present at the path.
+    Valid(Box<Genesis>),
+    /// A file exists at the path but does not parse/validate.
+    InvalidPresent(String),
+    /// No file at the path; first-boot provisioning is required.
+    Absent,
+}
 
+/// Classify the configured genesis path without side effects (no exit, no RPC).
+fn classify_genesis_path(genesis_path: &str) -> GenesisPathState {
+    let present = get_expanded_path(genesis_path)
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    if !present {
+        return GenesisPathState::Absent;
+    }
+    match Genesis::load_from_file(genesis_path) {
+        Ok(genesis) => GenesisPathState::Valid(Box::new(genesis)),
+        Err(e) => GenesisPathState::InvalidPresent(e.to_string()),
+    }
+}
+
+/// Resolve the node's genesis, provisioning it over the first-boot RPC if needed.
+///
+/// Behavior is decided by the state of the configured genesis path:
+/// - **Absent:** start the genesis provisioning RPC and wait for a valid genesis to
+///   be installed (`send_genesis` validates and atomically renames into place).
+/// - **Present and valid:** return it immediately; the provisioning RPC is never
+///   exposed once a usable genesis exists.
+/// - **Present but invalid** (empty, partial, or malformed): exit with a clear
+///   error. We do not fall back to provisioning when a file already occupies the
+///   path, and we do not silently crash-loop on every restart — the operator must
+///   remove or replace the file to recover.
+async fn acquire_genesis(context: &tokio::Context, flags: &RunFlags) -> Genesis {
+    let genesis_path = flags.genesis_path.clone();
+
+    match classify_genesis_path(&genesis_path) {
+        GenesisPathState::Valid(genesis) => return *genesis,
+        GenesisPathState::InvalidPresent(e) => {
+            error!(
+                "existing genesis file '{genesis_path}' is invalid: {e}; remove or replace it to recover"
+            );
+            std::process::exit(1);
+        }
+        GenesisPathState::Absent => {}
+    }
+
+    // First boot: no usable genesis yet. Wait for the provisioning RPC to install
+    // one. Because `send_genesis` validates and atomically renames, once the signal
+    // fires the file at the path is guaranteed to parse and validate.
+    let (genesis_tx, genesis_rx) = oneshot::channel();
     let cancel_token = CancellationToken::new();
     let cloned_token = cancel_token.clone();
-
-    let genesis_path = flags.genesis_path.clone();
     let genesis_key_store_path = flags.key_store_path.clone();
     let genesis_rpc_port = flags.rpc_port;
+    let rpc_body_limits = RpcBodyLimits {
+        max_request_body_size: flags.rpc_max_request_body_size,
+        max_response_body_size: flags.rpc_max_response_body_size,
+        request_timeout: std::time::Duration::from_secs(flags.rpc_request_timeout_secs),
+        max_batch_size: flags.rpc_max_batch_size,
+    };
+    let rpc_genesis_path = genesis_path.clone();
     let _rpc_handle = context
         .with_label("rpc_genesis")
         .spawn(move |_context| async move {
-            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
+            let genesis_sender = PathSender::new(rpc_genesis_path, Some(genesis_tx));
             if let Err(e) = start_rpc_server_for_genesis(
                 genesis_sender,
                 genesis_key_store_path,
                 genesis_rpc_port,
+                rpc_body_limits,
                 cloned_token,
             )
             .await
@@ -257,12 +348,151 @@ async fn run_node_inner(
             }
         });
 
-    // Wait for genesis if needed
+    // Wait for genesis, then shut down the provisioning RPC.
     let _ = genesis_rx.await;
-    // Shut down the genesis rpc server after receiving the genesis file
     cancel_token.cancel();
 
-    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+    Genesis::load_from_file(&genesis_path).expect("genesis file should be valid after provisioning")
+}
+
+#[cfg(test)]
+mod genesis_path_tests {
+    use super::*;
+
+    #[test]
+    fn classify_absent_when_file_missing() {
+        let path = std::env::temp_dir().join("summit_classify_genesis_absent.toml");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(
+            classify_genesis_path(path.to_str().unwrap()),
+            GenesisPathState::Absent
+        ));
+    }
+
+    #[test]
+    fn classify_invalid_present_for_malformed_file() {
+        // Regression: an already-present but unparseable genesis file must be
+        // classified as InvalidPresent (rejected), never as Absent — otherwise
+        // startup would wrongly re-open first-boot provisioning over a stale or
+        // corrupt file instead of surfacing the error.
+        let path = std::env::temp_dir().join("summit_classify_genesis_invalid.toml");
+        std::fs::write(&path, b"definitely : not [valid genesis").unwrap();
+        let state = classify_genesis_path(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(state, GenesisPathState::InvalidPresent(_)));
+    }
+
+    #[test]
+    fn classify_valid_for_example_genesis() {
+        // The shipped example genesis must classify as a valid, present genesis.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../example_genesis.toml");
+        assert!(matches!(
+            classify_genesis_path(path),
+            GenesisPathState::Valid(_)
+        ));
+    }
+
+    #[test]
+    fn listener_family_follows_ipv4_dialable() {
+        // An IPv4 advertised address must bind the IPv4 wildcard so peers that
+        // dial the signed record reach the listener.
+        let dialable: SocketAddr = "203.0.113.10:18551".parse().unwrap();
+        let listen = wildcard_listen_for(dialable, 26000);
+        assert_eq!(listen, "0.0.0.0:26000".parse::<SocketAddr>().unwrap());
+        assert!(listen.is_ipv4());
+    }
+
+    #[test]
+    fn listener_family_follows_ipv6_dialable() {
+        // Regression: an IPv6 advertised address (genesis ip_address, --ip, or an
+        // IPv6 public-IP result) must bind the IPv6 wildcard, not IPv4 `0.0.0.0`.
+        // Otherwise the node signs and gossips an IPv6 discovery record it never
+        // listens on.
+        let dialable: SocketAddr = "[2001:db8::10]:18551".parse().unwrap();
+        let listen = wildcard_listen_for(dialable, 26000);
+        assert_eq!(listen, "[::]:26000".parse::<SocketAddr>().unwrap());
+        assert!(listen.is_ipv6());
+    }
+}
+
+/// How checkpoint startup should treat the supplied artifacts. Extracted as a
+/// pure decision so the policy can be unit-tested without the side effects
+/// (signature verification, process exit) of the live startup path — mirrors the
+/// [`GenesisPathState`] pattern above.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CheckpointStartupDecision {
+    /// No checkpoint supplied; start from genesis (or the local DB).
+    NoCheckpoint,
+    /// A checkpoint and a finalized-headers chain are present; verify the
+    /// checkpoint against the chain before installing it.
+    Verify,
+    /// A checkpoint was supplied without a finalized-headers chain and the
+    /// operator opted into importing it unverified.
+    SkipUnsafe,
+    /// A checkpoint was supplied without a finalized-headers chain and
+    /// verification was not waived; refuse to start.
+    RefuseUnverified,
+}
+
+/// Decide how to treat checkpoint artifacts at startup.
+///
+/// Requiring a finalized-headers chain by default is what closes the
+/// unauthenticated-import hole (#214): once the chain is present, the
+/// signature-verified terminal header authenticates every byte of the checkpoint
+/// through the checkpoint-hash binding, so the decoded consensus state cannot be
+/// tampered with. A bare checkpoint with no chain is refused unless the operator
+/// explicitly waives verification.
+pub(crate) fn classify_checkpoint_startup(
+    has_checkpoint: bool,
+    has_headers_chain: bool,
+    unsafe_skip_verification: bool,
+) -> CheckpointStartupDecision {
+    match (has_checkpoint, has_headers_chain) {
+        (false, _) => CheckpointStartupDecision::NoCheckpoint,
+        (true, true) => CheckpointStartupDecision::Verify,
+        (true, false) if unsafe_skip_verification => CheckpointStartupDecision::SkipUnsafe,
+        (true, false) => CheckpointStartupDecision::RefuseUnverified,
+    }
+}
+
+/// Bind a supplied `last_block` to the verified chain terminal's finalized block
+/// digest. `last_block` and the finalized-headers chain are loaded from
+/// independent files, so a checkpoint directory could otherwise pair a verified
+/// checkpoint with an unrelated block. Returns `Err` with a descriptive message
+/// on mismatch; `Ok` when the block matches or none was supplied.
+pub(crate) fn check_last_block_binding(
+    last_block_digest: Option<Digest>,
+    committed_digest: Digest,
+) -> Result<(), String> {
+    match last_block_digest {
+        Some(d) if d != committed_digest => Err(format!(
+            "checkpoint last_block does not match the verified terminal header's \
+             finalized block (last_block {d:?}, verified terminal {committed_digest:?})"
+        )),
+        _ => Ok(()),
+    }
+}
+
+async fn run_node_inner(
+    context: tokio::Context,
+    flags: RunFlags,
+    key_store: KeyStore<PrivateKey>,
+    mut loaded: LoadedCheckpoint<MultisigScheme>,
+) {
+    let context = context.with_label("summit_cw");
+
+    // Initialize telemetry first, before genesis acquisition. First-boot
+    // provisioning can block in acquire_genesis waiting for the genesis RPC, so the
+    // subscriber must already be installed or those logs (and the RPC's own
+    // "listening" line) are silently dropped.
+    let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
+    let critical_log_dir = flags
+        .critical_log_dir
+        .as_ref()
+        .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
+    let _critical_log_guard = crate::telemetry::init(log_level, critical_log_dir.as_deref());
+
+    let genesis = acquire_genesis(&context, &flags).await;
 
     let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
     committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
@@ -275,18 +505,95 @@ async fn run_node_inner(
         "loaded genesis configuration"
     );
 
-    // Verify checkpoint if finalized headers chain was provided
-    if let (Some(raw_checkpoint), Some(headers_chain)) =
-        (&loaded.raw_checkpoint, &loaded.finalized_headers_chain)
-    {
-        checkpoint::verify_checkpoint_chain(&genesis, headers_chain, raw_checkpoint)
+    // Decide how to treat the supplied checkpoint artifacts. By default a
+    // checkpoint MUST be verified against a finalized-headers chain; see
+    // classify_checkpoint_startup.
+    let weak_subjectivity = weak_subjectivity_from_flags(&flags);
+    // The signature-verified chain terminal, used below to complete the
+    // checkpoint from the verified history rather than an unverified file.
+    let mut verified_terminal_header: Option<FinalizedHeader<MultisigScheme>> = None;
+    match classify_checkpoint_startup(
+        loaded.raw_checkpoint.is_some(),
+        loaded.finalized_headers_chain.is_some(),
+        flags.unsafe_skip_checkpoint_verification,
+    ) {
+        CheckpointStartupDecision::NoCheckpoint => {}
+        CheckpointStartupDecision::Verify => {
+            let raw_checkpoint = loaded
+                .raw_checkpoint
+                .as_ref()
+                .expect("raw_checkpoint present on the verify path");
+            let headers_chain = loaded
+                .finalized_headers_chain
+                .as_ref()
+                .expect("finalized-headers chain present on the verify path");
+            let weak_subjectivity = weak_subjectivity.as_ref().expect(
+                "checkpoint verification requires --weak-subjectivity-epoch and \
+                 --weak-subjectivity-header-digest when finalized_headers/ is present",
+            );
+            checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+                &genesis,
+                headers_chain,
+                raw_checkpoint,
+                Some(weak_subjectivity),
+            )
             .expect("checkpoint verification failed");
-        info!(
-            epochs_verified = headers_chain.len(),
-            "checkpoint verified successfully"
-        );
-    } else if loaded.raw_checkpoint.is_some() {
-        warn!("checkpoint loaded without finalized headers chain - skipping verification");
+            info!(
+                epochs_verified = headers_chain.len(),
+                weak_subjectivity_epoch = weak_subjectivity.epoch,
+                "checkpoint verified successfully"
+            );
+
+            // Bind the optional last_block artifact to the verified chain. The
+            // chain terminal is a signature-verified FinalizedHeader whose
+            // finalization commits to the terminal block's digest; a supplied
+            // last_block must be exactly that block (so a directory cannot pair a
+            // verified checkpoint with an unrelated block). Then hand the verified
+            // terminal to the syncer as the finalization, rather than the
+            // separately-loaded, unverified top-level finalized_header artifact.
+            let terminal = headers_chain
+                .last()
+                .expect("verified finalized-header chain is non-empty");
+            if let Err(e) = check_last_block_binding(
+                loaded.last_block.as_ref().map(|b| b.digest()),
+                terminal.finalization().proposal.payload,
+            ) {
+                error!("{e}; refusing to start");
+                std::process::exit(1);
+            }
+            verified_terminal_header = Some(terminal.clone());
+        }
+        CheckpointStartupDecision::RefuseUnverified => {
+            // A checkpoint was supplied with no finalized-headers chain to verify
+            // it against. Refuse (matching the genesis path's error+exit rather
+            // than crash-looping on a panic); the operator must supply a verifiable
+            // checkpoint or explicitly waive verification.
+            error!(
+                "refusing to import an unverified checkpoint: supply a checkpoint directory \
+                 with finalized_headers/ plus --weak-subjectivity-epoch and \
+                 --weak-subjectivity-header-digest, or pass \
+                 --unsafe-skip-checkpoint-verification to import without verification (NOT recommended)"
+            );
+            std::process::exit(1);
+        }
+        CheckpointStartupDecision::SkipUnsafe => {
+            if weak_subjectivity.is_some() {
+                warn!(
+                    "--weak-subjectivity-* ignored: no finalized_headers chain present and \
+                     --unsafe-skip-checkpoint-verification was set; skipping verification"
+                );
+            }
+            warn!(
+                "UNSAFE: checkpoint imported without verification \
+                 (--unsafe-skip-checkpoint-verification)"
+            );
+        }
+    }
+
+    // On the verified path, complete the checkpoint from the signature-verified
+    // chain terminal rather than the unverified top-level finalized_header file.
+    if let Some(terminal) = verified_terminal_header {
+        loaded.finalized_header = Some(terminal);
     }
 
     let initial_state = get_initial_state(&genesis, &committee, loaded.consensus_state);
@@ -329,14 +636,6 @@ async fn run_node_inner(
         network_committee.sort();
     }
 
-    // Configure telemetry with optional critical file logger
-    let log_level = Level::from_str(&flags.log_level).expect("Invalid log level");
-    let critical_log_dir = flags
-        .critical_log_dir
-        .as_ref()
-        .map(|p| get_expanded_path(p).expect("Invalid critical log directory path"));
-    let _critical_log_guard = crate::telemetry::init(log_level, critical_log_dir.as_deref());
-
     // Start prometheus endpoint (merges Summit + commonware runtime metrics)
     #[cfg(feature = "prom")]
     {
@@ -368,12 +667,20 @@ async fn run_node_inner(
                 .collect()
         };
 
-    let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
-    let namespace = genesis.namespace.as_bytes();
+    let listen = wildcard_listen_for(our_ip, flags.port);
+    // Bind the live p2p authentication domain to immutable chain identity so a
+    // peer from a different deployment that reuses this namespace and the same
+    // node keys cannot authenticate against us.
+    let p2p_domain = summit_types::chain_domain(genesis.config_digest());
+    let namespace = p2p_domain.as_slice();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
     let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
-        let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, index);
+        let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, namespace, index);
+        // The observer's network identity is exactly this P2P signer's public
+        // key; capture it here so the engine and resolver reuse the same derived
+        // key rather than deriving it a second time (which could drift).
+        let observer_network_key = Some(signer.public_key());
         let mut p2p_cfg = authenticated::discovery::Config::recommended(
             signer,
             namespace,
@@ -394,6 +701,7 @@ async fn run_node_inner(
             initial_state,
             loaded.last_block,
             loaded.finalized_header,
+            observer_network_key,
         )
         .await
     } else {
@@ -418,13 +726,18 @@ async fn run_node_inner(
             initial_state,
             loaded.last_block,
             loaded.finalized_header,
+            None,
         )
         .await
     };
 
-    // Wait for any task to error
-    if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
-        error!(?e, "task failed");
+    // Bring the whole node down as soon as any core task exits; a failed core task exits
+    // non-zero so an external supervisor restarts the node.
+    if supervise_node_tasks(&context, p2p, engine, rpc_handle)
+        .await
+        .is_err()
+    {
+        std::process::exit(1);
     }
 }
 
@@ -433,7 +746,7 @@ pub fn run_node_local(
     flags: RunFlags,
     checkpoint: Option<ConsensusState>,
     checkpoint_parent_block: Option<Block>,
-) -> Handle<()> {
+) -> Handle<anyhow::Result<()>> {
     context.spawn(async move |context| {
         let key_store = expect_key_store(&flags.key_store_path);
         run_node_local_inner(
@@ -443,7 +756,7 @@ pub fn run_node_local(
             checkpoint,
             checkpoint_parent_block,
         )
-        .await;
+        .await
     })
 }
 
@@ -453,38 +766,10 @@ async fn run_node_local_inner(
     key_store: KeyStore<PrivateKey>,
     checkpoint: Option<ConsensusState>,
     checkpoint_parent_block: Option<Block>,
-) {
+) -> anyhow::Result<()> {
     let context = context.with_label("summit_cw");
 
-    let (genesis_tx, genesis_rx) = oneshot::channel();
-
-    let cancel_token = CancellationToken::new();
-    let cloned_token = cancel_token.clone();
-    let genesis_rpc_port = flags.rpc_port;
-    let genesis_path = flags.genesis_path.clone();
-    let genesis_key_store_path = flags.key_store_path.clone();
-    let _rpc_handle = context
-        .with_label("rpc_genesis")
-        .spawn(move |_context| async move {
-            let genesis_sender = Command::check_sender(genesis_path, genesis_tx);
-            if let Err(e) = start_rpc_server_for_genesis(
-                genesis_sender,
-                genesis_key_store_path,
-                genesis_rpc_port,
-                cloned_token,
-            )
-            .await
-            {
-                error!("RPC server failed: {}", e);
-            }
-        });
-
-    // Wait for genesis if needed
-    let _ = genesis_rx.await;
-    // Shut down the genesis rpc server after receiving the genesis file
-    cancel_token.cancel();
-
-    let genesis = Genesis::load_from_file(&flags.genesis_path).expect("Can not find genesis file");
+    let genesis = acquire_genesis(&context, &flags).await;
 
     let mut committee: Vec<Validator> = genesis.get_validators().expect("Failed to get validators");
     committee.sort_by(|lhs, rhs| lhs.node_public_key.cmp(&rhs.node_public_key));
@@ -546,12 +831,20 @@ async fn run_node_local_inner(
                 .collect()
         };
 
-    let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), flags.port);
-    let namespace = genesis.namespace.as_bytes();
+    let listen = wildcard_listen_for(our_ip, flags.port);
+    // Bind the live p2p authentication domain to immutable chain identity so a
+    // peer from a different deployment that reuses this namespace and the same
+    // node keys cannot authenticate against us.
+    let p2p_domain = summit_types::chain_domain(genesis.config_digest());
+    let namespace = p2p_domain.as_slice();
     let max_message_size = genesis.max_message_size_bytes as u32;
 
     let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
-        let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, index);
+        let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, namespace, index);
+        // The observer's network identity is exactly this P2P signer's public
+        // key; capture it here so the engine and resolver reuse the same derived
+        // key rather than deriving it a second time (which could drift).
+        let observer_network_key = Some(signer.public_key());
         let mut p2p_cfg = authenticated::discovery::Config::local(
             signer,
             namespace,
@@ -572,6 +865,7 @@ async fn run_node_local_inner(
             initial_state,
             checkpoint_parent_block,
             None,
+            observer_network_key,
         )
         .await
     } else {
@@ -596,6 +890,7 @@ async fn run_node_local_inner(
             initial_state,
             checkpoint_parent_block,
             None,
+            None,
         )
         .await
     };
@@ -617,9 +912,75 @@ async fn run_node_local_inner(
         MetricServer::new(config).serve(stop_signal).await.unwrap();
     }
 
-    // Wait for any task to error
-    if let Err(e) = try_join_all(vec![p2p, engine, rpc_handle]).await {
-        error!(?e, "task failed");
+    // bring the node down as soon as any core task exits, then return so the runtime
+    // tears down cleanly and destructors run. unlike the production path we do not
+    // process::exit here: this entrypoint runs inside a caller managed runtime/thread
+    // (testnet and the e2e scenario binaries), and an abrupt exit would skip the caller's
+    // shutdown, e.g. orphaning the child reth processes the scenarios spawn. instead we
+    // propagate the supervise outcome so the caller can decide: a coordinated shutdown
+    // (graceful stop or committee exit) returns ok, while a genuine core task failure
+    // returns err so the caller can fail the scenario instead of masking a dead node.
+    let result = supervise_node_tasks(&context, p2p, engine, rpc_handle).await;
+    if let Err(e) = &result {
+        error!(?e, "node core task failed; shutting down node runtime");
+    }
+    result
+}
+
+/// Supervise the core node tasks (P2P, consensus engine, RPC): as soon as any of them
+/// exits, bring the whole node down.
+///
+/// The engine handle carries `anyhow::Result<()>` (a tracked-actor failure or panic
+/// is surfaced as `Err` by `Engine::run`), so we can tell a clean stop from a failure:
+/// - clean engine stop (e.g. this validator left the committee) -> `Ok(())`;
+/// - engine failure / panic, or P2P/RPC exiting (they should run for the node's lifetime)
+///   -> `Err`.
+///
+/// The caller turns `Err` into a non-zero `exit`.
+///
+/// A requested runtime stop (`context.stopped()` — SIGTERM, or a harness calling
+/// `node_context.stop()` to take a node down on purpose) is an intentional, clean
+/// shutdown: during it the P2P/RPC/engine tasks all wind down to `Ok`, so it must NOT be
+/// treated as a failure. The stop-signal arm is checked first (`select_biased!`) so it
+/// wins the race against those tasks completing.
+async fn supervise_node_tasks<Sp: Spawner>(
+    context: &Sp,
+    p2p: Handle<()>,
+    engine: Handle<anyhow::Result<()>>,
+    rpc: Handle<()>,
+) -> anyhow::Result<()> {
+    let stopped = context.stopped().fuse();
+    let p2p = p2p.fuse();
+    let engine = engine.fuse();
+    let rpc = rpc.fuse();
+    futures::pin_mut!(stopped, p2p, engine, rpc);
+    futures::select_biased! {
+        _ = stopped => {
+            info!("runtime stop requested; shutting down node");
+            Ok(())
+        }
+        res = engine => match res {
+            Ok(Ok(())) => {
+                warn!("consensus engine stopped cleanly; shutting down node");
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                error!(%e, "consensus engine failed; shutting down node");
+                Err(e)
+            }
+            Err(e) => {
+                error!(?e, "consensus engine task panicked; shutting down node");
+                Err(anyhow::anyhow!("consensus engine task panicked: {e:?}"))
+            }
+        },
+        res = p2p => {
+            error!(?res, "p2p network task exited unexpectedly; shutting down node");
+            Err(anyhow::anyhow!("p2p network task exited unexpectedly: {res:?}"))
+        }
+        res = rpc => {
+            error!(?res, "rpc task exited unexpectedly; shutting down node");
+            Err(anyhow::anyhow!("rpc task exited unexpectedly: {res:?}"))
+        }
     }
 }
 
@@ -635,7 +996,8 @@ async fn start_network_and_engine<S, EC>(
     initial_state: ConsensusState,
     checkpoint_last_block: Option<Block>,
     checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
-) -> (Handle<()>, Handle<()>, Handle<()>)
+    observer_network_key: Option<PublicKey>,
+) -> (Handle<anyhow::Result<()>>, Handle<()>, Handle<()>)
 where
     S: Signer<PublicKey = PublicKey>,
     EC: EngineClient,
@@ -644,7 +1006,19 @@ where
         authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
 
     let oracle = DiscoveryOracle::new(oracle);
-    let config = EngineConfig::get_engine_config(
+
+    // In observer mode the node's identity is this derived child key, not the
+    // master node key: the engine identifies itself by it (resolver
+    // self-exclusion, broadcast attribution, finalizer self-lookup), and the
+    // RPC server reports it instead of the keystore identity and disables
+    // keystore-signing methods. It is the public key of the live P2P signer,
+    // which the caller derives under the chain bound domain
+    // chain_domain(config_digest) and passes in, so the reported key, the live
+    // P2P identity, and the validators' authorized observer set are all derived
+    // once under the same domain and cannot drift.
+    let observer_node_key = observer_network_key.as_ref().map(|pk| pk.to_string());
+
+    let mut config = EngineConfig::get_engine_config(
         engine_client,
         oracle,
         key_store,
@@ -654,8 +1028,11 @@ where
         initial_state,
         checkpoint_last_block,
         checkpoint_finalized_header,
+        flags.finalizer_pending_notarized_max,
     )
     .unwrap();
+    config.force_verifier_only = flags.observer.is_some();
+    config.observer_network_key = observer_network_key;
 
     let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
     let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
@@ -671,11 +1048,13 @@ where
 
     let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
 
+    let genesis_hash = config.genesis_hash;
+    let namespace = config.namespace.as_bytes().to_vec();
     let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
     #[cfg(feature = "permissioned")]
     let paused = engine.paused.clone();
 
-    let finalizer_mailbox = engine.finalizer_mailbox.clone();
+    let finalizer_state_query = engine.finalizer_state_query.clone();
     let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
     let p2p = network.start();
@@ -683,13 +1062,25 @@ where
     // Start RPC server
     let key_store_path = flags.key_store_path;
     let rpc_port = flags.rpc_port;
+    let admin_rpc_port = flags.admin_rpc_port;
+    let rpc_body_limits = RpcBodyLimits {
+        max_request_body_size: flags.rpc_max_request_body_size,
+        max_response_body_size: flags.rpc_max_response_body_size,
+        request_timeout: std::time::Duration::from_secs(flags.rpc_request_timeout_secs),
+        max_batch_size: flags.rpc_max_batch_size,
+    };
     let stop_signal = context.stopped();
     let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
         if let Err(e) = start_rpc_server(
-            finalizer_mailbox,
+            finalizer_state_query,
             key_store_path,
+            genesis_hash,
+            namespace,
             rpc_port,
+            admin_rpc_port,
+            rpc_body_limits,
             stop_signal,
+            observer_node_key,
             #[cfg(feature = "permissioned")]
             paused,
         )
@@ -733,6 +1124,8 @@ fn get_initial_state(
             genesis.max_deposits_per_epoch,
             genesis.max_withdrawals_per_epoch,
             genesis.observers_per_validator,
+            genesis.minimum_validator_count,
+            genesis.invalid_deposit_tax,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for validator in genesis_committee {
@@ -758,8 +1151,58 @@ fn get_initial_state(
             };
             state.set_account(pubkey_bytes, account);
         }
+        // ConsensusState::new froze the proof snapshot over an empty validator
+        // set before these genesis accounts were inserted, and set_account only
+        // touches the live tree. Re-freeze so get_state_root / proof_tree commit
+        // to the genesis committee from the very first block, rather than staying
+        // stale until the first execute_block capture_state_root.
+        state.rebuild_ssz_tree();
         state
     })
+}
+
+fn weak_subjectivity_from_flags(
+    flags: &RunFlags,
+) -> Option<checkpoint::WeakSubjectivityHeaderDigest> {
+    match (
+        flags.weak_subjectivity_epoch,
+        flags.weak_subjectivity_header_digest.as_ref(),
+    ) {
+        (Some(epoch), Some(header_digest)) => Some(checkpoint::WeakSubjectivityHeaderDigest {
+            epoch,
+            header_digest: parse_digest_arg(header_digest, "--weak-subjectivity-header-digest"),
+        }),
+        (None, None) => None,
+        _ => panic!(
+            "--weak-subjectivity-epoch and --weak-subjectivity-header-digest must be supplied together"
+        ),
+    }
+}
+
+fn parse_digest_arg(value: &str, arg_name: &str) -> summit_types::Digest {
+    let bytes = from_hex_formatted(value)
+        .unwrap_or_else(|| panic!("{arg_name} must be a 32-byte hex digest"));
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .unwrap_or_else(|_| panic!("{arg_name} must be a 32-byte hex digest"));
+    bytes.into()
+}
+
+/// Returns the wildcard listen address whose family matches the node's
+/// advertised (dialable) address.
+///
+/// Commonware signs and gossips `dialable` as this node's peer record, and
+/// peers dial that address. The listener must therefore accept the same address
+/// family, or peers learn a valid IPv6 record the node never listens on (it
+/// would only ever bind IPv4 `0.0.0.0`). An IPv4 dialable binds `0.0.0.0`; an
+/// IPv6 dialable binds `[::]`, which on dual-stack hosts also accepts
+/// IPv4-mapped connections.
+fn wildcard_listen_for(dialable: SocketAddr, port: u16) -> SocketAddr {
+    let host = match dialable.ip() {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    };
+    SocketAddr::new(host, port)
 }
 
 async fn get_node_ip(
@@ -788,15 +1231,15 @@ async fn get_node_ip(
     }
 }
 
-struct LoadedCheckpoint<S: Scheme> {
-    consensus_state: Option<ConsensusState>,
-    last_block: Option<Block>,
-    finalized_header: Option<FinalizedHeader<S>>,
-    raw_checkpoint: Option<Checkpoint>,
-    finalized_headers_chain: Option<Vec<FinalizedHeader<S>>>,
+pub(crate) struct LoadedCheckpoint<S: Scheme> {
+    pub(crate) consensus_state: Option<ConsensusState>,
+    pub(crate) last_block: Option<Block>,
+    pub(crate) finalized_header: Option<FinalizedHeader<S>>,
+    pub(crate) raw_checkpoint: Option<Checkpoint>,
+    pub(crate) finalized_headers_chain: Option<Vec<FinalizedHeader<S>>>,
 }
 
-fn read_checkpoint<S: Scheme>(
+pub(crate) fn read_checkpoint<S: Scheme>(
     checkpoint_path: &String,
     checkpoint_or_default: bool,
 ) -> LoadedCheckpoint<S>
@@ -919,5 +1362,91 @@ where
         }
     } else {
         panic!("Could not find checkpoint");
+    }
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    use super::*;
+    use commonware_runtime::deterministic;
+
+    // The node must come down as soon as any core task exits. A clean
+    // engine stop (Ok) returns `Ok(())` (exit 0); an engine failure (Err) returns `Err`
+    // (exit non-zero).
+    #[test]
+    fn supervise_returns_ok_on_clean_engine_stop() {
+        let executor = deterministic::Runner::from(deterministic::Config::default());
+        executor.start(|context| async move {
+            let p2p = context
+                .with_label("p2p")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let rpc = context
+                .with_label("rpc")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            // Engine returns Ok immediately, simulating a clean stop (e.g. committee exit).
+            let engine = context
+                .with_label("engine")
+                .spawn(|_| async move { Ok::<(), anyhow::Error>(()) });
+
+            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            assert!(
+                outcome.is_ok(),
+                "a clean engine stop must not trigger a non-zero exit, got {outcome:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn supervise_returns_err_on_engine_failure() {
+        let executor = deterministic::Runner::from(deterministic::Config::default());
+        executor.start(|context| async move {
+            let p2p = context
+                .with_label("p2p")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let rpc = context
+                .with_label("rpc")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            // Engine surfaces a tracked-actor failure as Err — the node must exit non-zero.
+            let engine = context.with_label("engine").spawn(|_| async move {
+                Err::<(), anyhow::Error>(anyhow::anyhow!("tracked actor failed"))
+            });
+
+            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            assert!(
+                outcome.is_err(),
+                "an engine failure must trigger a non-zero exit, got {outcome:?}"
+            );
+        });
+    }
+
+    // Regression: a harness/operator stopping the runtime on purpose (e.g.
+    // stake-and-checkpoint stops a node to copy its Reth dir) must be a CLEAN shutdown,
+    // not a failure — even though P2P/RPC tasks wind down to Ok during it. All three core
+    // tasks run forever here, so the only way to return is via the runtime-stop signal.
+    #[test]
+    fn supervise_returns_ok_on_runtime_stop() {
+        let executor = deterministic::Runner::from(deterministic::Config::default());
+        executor.start(|context| async move {
+            let p2p = context
+                .with_label("p2p")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let rpc = context
+                .with_label("rpc")
+                .spawn(|_| async move { futures::future::pending::<()>().await });
+            let engine = context
+                .with_label("engine")
+                .spawn(|_| async move { futures::future::pending::<anyhow::Result<()>>().await });
+            // Request a runtime stop from a background task so `context.stopped()` resolves.
+            let stopper = context.clone();
+            context
+                .with_label("stopper")
+                .spawn(move |_| async move { stopper.stop(0, None).await });
+
+            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            assert!(
+                outcome.is_ok(),
+                "an intentional runtime stop must be a clean shutdown, got {outcome:?}"
+            );
+        });
     }
 }

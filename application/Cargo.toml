@@ -15,6 +15,7 @@ commonware-cryptography.workspace = true
 commonware-runtime.workspace = true
 commonware-macros.workspace = true
 commonware-utils.workspace = true
+commonware-codec.workspace = true
 
 futures.workspace = true
 governor.workspace = true
@@ -30,7 +31,12 @@ metrics = { version = "0.24.0", optional = true }
 # commonware depends on it, so we have to build it anyway.
 prometheus-client = "0.22.3"
 
+[dev-dependencies]
+alloy-primitives.workspace = true
+alloy-rpc-types-engine.workspace = true
+commonware-codec.workspace = true
+
 [features]
 prom = ["metrics"]
-bench = []
+bench = ["summit-types/bench"]
 permissioned = []

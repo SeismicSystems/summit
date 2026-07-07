@@ -146,8 +146,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .with_catch_panics(true);
                     let executor = cw_tokio::Runner::new(cfg);
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(|ctx| async move {
-                            run_node_local(ctx, flags, None, None).await.unwrap();
+                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                            // a coordinated shutdown (graceful stop or committee exit) returns
+                            // ok; a genuine core task failure returns err and must fail the
+                            // scenario instead of being masked as a clean node exit.
+                            if let Err(e) = run_node_local(ctx, flags, None, None).await.unwrap() {
+                                eprintln!("node {x} core task failed: {e:?}; failing scenario");
+                                std::process::exit(1);
+                            }
                         });
                         let stop_fut = stop_rx.recv().fuse();
                         pin_mut!(stop_fut);
@@ -157,7 +163,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 node_context.stop(0, Some(Duration::from_secs(30))).await.unwrap();
                             }
                             _ = node_handle.fuse() => {
-                                println!("Node {} handle completed", x);
+                                // Every node here is a required participant; its handle
+                                // completing without a stop signal means it went down
+                                // unexpectedly, so fail the scenario.
+                                eprintln!("Node {} handle completed unexpectedly; failing scenario", x);
+                                std::process::exit(1);
                             }
                         }
                     });
@@ -200,10 +210,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("  root: 0x{}", alloy::hex::encode(proof_resp.root));
             println!("  el_block_number: {}", proof_resp.el_block_number);
-            println!("  proofs returned: {}", proof_resp.proofs.len());
-            for (i, proof) in proof_resp.proofs.iter().enumerate() {
-                println!("  proof[{i}]: gindex={}, leaf=0x{}, branch_len={}",
-                    proof.gindex, alloy::hex::encode(proof.leaf), proof.branch.len());
+            println!("  results returned: {}", proof_resp.results.len());
+            for (i, result) in proof_resp.results.iter().enumerate() {
+                match &result.proof {
+                    Some(proof) => println!(
+                        "  result[{i}] {}: gindex={}, leaf=0x{}, branch_len={}",
+                        result.key,
+                        proof.gindex,
+                        alloy::hex::encode(proof.leaf),
+                        proof.branch.len()
+                    ),
+                    None => println!(
+                        "  result[{i}] {}: missing ({})",
+                        result.key,
+                        result.error.as_deref().unwrap_or("unknown error")
+                    ),
+                }
             }
 
             // Build alloy provider with a funded wallet (for contract deploy)
@@ -290,7 +312,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let verify_selector = &keccak256(
                 "verify(uint256,uint256,bytes32,bytes32[])"
             )[..4];
-            for (i, proof) in proof_resp.proofs.iter().enumerate() {
+            for (i, result) in proof_resp.results.iter().enumerate() {
+                let proof = result
+                    .proof
+                    .as_ref()
+                    .expect("scalar state proof should be present");
                 let calldata = encode_verify(
                     timestamp,
                     proof.gindex,
@@ -327,10 +353,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .expect("getStateProof (validator) failed");
             println!("  root: 0x{}", alloy::hex::encode(val_proof_resp.root));
-            println!("  proofs returned: {}", val_proof_resp.proofs.len());
-            assert!(
-                !val_proof_resp.proofs.is_empty(),
-                "No proofs returned for validator"
+            println!("  results returned: {}", val_proof_resp.results.len());
+            assert_eq!(
+                val_proof_resp.results.len(),
+                1,
+                "Expected one result for validator"
             );
 
             // Wait for the target block to exist (might be a newer capture)
@@ -350,7 +377,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Block not found");
             let val_timestamp = val_block.header.timestamp;
 
-            let vp = &val_proof_resp.proofs[0];
+            let vp = val_proof_resp.results[0]
+                .proof
+                .as_ref()
+                .expect("No proof returned for validator");
             {
                 let calldata = encode_verify(
                     val_timestamp,
@@ -399,12 +429,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .expect("getStateProof (balance field) failed");
             println!("  root: 0x{}", alloy::hex::encode(balance_proof_resp.root));
-            assert!(
-                !balance_proof_resp.proofs.is_empty(),
-                "No proofs returned for balance field"
+            assert_eq!(
+                balance_proof_resp.results.len(),
+                1,
+                "Expected one result for balance field"
             );
 
-            let bp = &balance_proof_resp.proofs[0];
+            let bp = balance_proof_resp.results[0]
+                .proof
+                .as_ref()
+                .expect("No proof returned for balance field");
             println!(
                 "  gindex={}, leaf=0x{}, branch_len={}",
                 bp.gindex,
@@ -476,6 +510,84 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // ---------------------------------------------------------------
+            // TEST E: A by-pubkey field proof MUST bind to the requested pubkey
+            // ---------------------------------------------------------------
+            // A bare positional field proof only shows the leaf exists under the
+            // root, not that it belongs to the requested validator. The response
+            // must carry a companion `key_proof` of the item's node-pubkey leaf;
+            // we reject the proof unless it binds to the requested pubkey.
+            println!("\nTEST E: by-pubkey field proof is bound to the requested pubkey");
+
+            use summit_types::ssz_state_tree::{
+                KeyedFieldProof, VALIDATOR_FIELD_NODE_PUBKEY, VALIDATOR_FIELDS_PER_ACCOUNT,
+            };
+
+            let key_proof = balance_proof_resp.results[0]
+                .key_proof
+                .as_ref()
+                .expect("by-pubkey field proof returned no key_proof binding");
+
+            // Verify the key-leaf proof on-chain against the same root.
+            {
+                let calldata = encode_verify(
+                    bal_timestamp,
+                    key_proof.gindex,
+                    &key_proof.leaf,
+                    &key_proof.branch,
+                    verify_selector,
+                );
+                let call_tx = TransactionRequest::default()
+                    .with_to(verifier_address)
+                    .with_input(Bytes::from(calldata));
+                let result = provider
+                    .call(call_tx)
+                    .await
+                    .expect("verify (key_proof) call failed");
+                let returned_root: [u8; 32] = result[..32]
+                    .try_into()
+                    .expect("verify response not 32 bytes");
+                assert_eq!(
+                    returned_root, balance_proof_resp.root,
+                    "verify returned wrong root for key_proof"
+                );
+            }
+
+            // Reconstruct the requested pubkey and require the full binding:
+            // both leaves authenticate under the root, the key leaf equals the
+            // requested pubkey, and field+key resolve to the same account.
+            let mut requested_pubkey = [0u8; 32];
+            alloy::hex::decode_to_slice(VALIDATOR0_PUBKEY_HEX, &mut requested_pubkey)
+                .expect("VALIDATOR0_PUBKEY_HEX is not 32 bytes");
+            let keyed = KeyedFieldProof {
+                field: bp.clone(),
+                key: key_proof.clone(),
+            };
+            assert!(
+                keyed.verify(
+                    &balance_proof_resp.root,
+                    &requested_pubkey,
+                    VALIDATOR_FIELDS_PER_ACCOUNT,
+                    VALIDATOR_FIELD_NODE_PUBKEY
+                ),
+                "balance field proof is not bound to the requested validator pubkey"
+            );
+            println!("  binding OK: balance field is bound to the requested validator");
+
+            // Negative: the same field proof must NOT verify as a different pubkey.
+            let mut other_pubkey = requested_pubkey;
+            other_pubkey[0] ^= 0xff;
+            assert!(
+                !keyed.verify(
+                    &balance_proof_resp.root,
+                    &other_pubkey,
+                    VALIDATOR_FIELDS_PER_ACCOUNT,
+                    VALIDATOR_FIELD_NODE_PUBKEY
+                ),
+                "balance field proof wrongly verified against a different pubkey"
+            );
+            println!("  binding rejects substituted pubkey as expected");
+
+            // ---------------------------------------------------------------
             // Done
             // ---------------------------------------------------------------
             println!("\nAll tests passed!");
@@ -497,7 +609,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Waiting for node {idx} to join...");
         match node_runtime.thread.join() {
             Ok(_) => println!("Node {idx} thread joined successfully"),
-            Err(e) => println!("Node {idx} thread join failed: {e:?}"),
+            // A join failure means the node panicked or was killed: a required
+            // participant going down unexpectedly, so fail the scenario.
+            Err(e) => {
+                eprintln!("Node {idx} thread join failed: {e:?}");
+                std::process::exit(1);
+            }
         }
     }
 
@@ -547,6 +664,11 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         prom_port: (28600 + (node * 10)) as u16,
         prom_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
+        admin_rpc_port: (3031 + (node * 10)) as u16,
+        rpc_max_request_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_max_response_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        rpc_request_timeout_secs: summit_rpc::DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
+        rpc_max_batch_size: summit_rpc::DEFAULT_RPC_MAX_BATCH_SIZE,
         worker_threads: Some(2),
         log_level: "debug".into(),
         db_prefix: format!("{node}"),
@@ -556,9 +678,13 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         bench_block_dir: None,
         checkpoint_path: None,
         checkpoint_or_default: false,
+        weak_subjectivity_epoch: None,
+        weak_subjectivity_header_digest: None,
+        unsafe_skip_checkpoint_verification: false,
         ip: None,
         bootstrappers: None,
         critical_log_dir: None,
         observer: None,
+        finalizer_pending_notarized_max: 1000,
     }
 }

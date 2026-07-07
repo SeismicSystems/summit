@@ -2,7 +2,6 @@ use crate::keys::read_keys_from_keystore;
 use anyhow::{Context, Result};
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381;
-use commonware_utils::from_hex_formatted;
 use governor::Quota;
 use std::{num::NonZeroU32, time::Duration};
 use summit_types::Block;
@@ -18,6 +17,16 @@ pub const RESOLVER_CHANNEL: u64 = 2;
 pub const BROADCASTER_CHANNEL: u64 = 3;
 pub const BACKFILLER_CHANNEL: u64 = 4;
 pub const MAILBOX_SIZE: usize = 16384;
+/// How often the finalizer retries applying blocks that were deferred because
+/// the execution layer returned `SYNCING`. See [`summit_finalizer::FinalizerConfig`].
+pub const FINALIZER_DRAIN_INTERVAL: Duration = Duration::from_secs(5);
+/// Soft threshold on the finalizer's SYNCING buffer above which a warn log is
+/// emitted (edge-triggered, once per crossing). No cap is enforced.
+/// See [`summit_finalizer::FinalizerConfig`].
+pub const FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD: usize = 100;
+/// Hard cap on unique deferred notarized blocks while the execution layer is
+/// SYNCING. Reaching this limit triggers graceful shutdown.
+pub const FINALIZER_PENDING_NOTARIZED_MAX: usize = 1000;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const FETCH_CONCURRENT: usize = 8;
@@ -34,6 +43,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub key_store: KeyStore<S>,
     pub participants: Vec<(PublicKey, bls12381::PublicKey)>,
     pub mailbox_size: usize,
+    pub finalizer_pending_notarized_max: usize,
     pub backfill_quota: Quota,
     pub deque_size: usize,
 
@@ -52,12 +62,23 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
 
     pub namespace: String,
     pub genesis_hash: [u8; 32],
+    /// Digest of the immutable genesis configuration ([`Genesis::config_digest`]),
+    /// used to derive the chain-bound live P2P + consensus domain.
+    pub config_digest: [u8; 32],
+    pub max_message_size_bytes: u32,
 
     /// Initial state given to the finalizer. All other processes should get initial state from the finalizer not the config
     pub initial_state: ConsensusState,
     pub checkpoint_last_block: Option<Block>,
     pub checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
     pub blocks_per_epoch: u64,
+    pub force_verifier_only: bool,
+    /// The derived child key used as the live P2P identity when the node runs
+    /// with `--observer`; `None` on validator nodes. When set, the engine
+    /// identifies itself by this key everywhere (resolver self-exclusion,
+    /// broadcast attribution, finalizer self-lookup) instead of the master
+    /// node key in `key_store`.
+    pub observer_network_key: Option<PublicKey>,
 }
 
 impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C, S, O> {
@@ -72,6 +93,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
         initial_state: ConsensusState,
         checkpoint_last_block: Option<Block>,
         checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
+        finalizer_pending_notarized_max: usize,
     ) -> Result<Self> {
         Ok(Self {
             engine_client,
@@ -80,6 +102,7 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             participants,
             oracle,
             mailbox_size: MAILBOX_SIZE,
+            finalizer_pending_notarized_max,
             backfill_quota: Quota::per_second(NonZeroU32::new(BACKFILL_QUOTA).unwrap()),
             deque_size: DEQUE_SIZE,
             leader_timeout: Duration::from_millis(genesis.leader_timeout_ms),
@@ -93,14 +116,15 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             fetch_concurrent: FETCH_CONCURRENT,
             fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(FETCH_RATE_P2P).unwrap()),
             namespace: genesis.namespace.clone(),
-            genesis_hash: from_hex_formatted(&genesis.eth_genesis_hash)
-                .map(|hash_bytes| hash_bytes.try_into())
-                .expect("bad eth_genesis_hash")
-                .expect("bad eth_genesis_hash"),
+            genesis_hash: genesis.genesis_hash(),
+            config_digest: genesis.config_digest(),
+            max_message_size_bytes: genesis.max_message_size_bytes as u32,
             initial_state,
             checkpoint_last_block,
             checkpoint_finalized_header,
             blocks_per_epoch: genesis.blocks_per_epoch,
+            force_verifier_only: false,
+            observer_network_key: None,
         })
     }
 }

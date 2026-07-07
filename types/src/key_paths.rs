@@ -67,6 +67,7 @@ impl KeyPaths {
     /// Read the node private key from file (using anyhow::Result for compatibility)
     pub fn read_node_key_from_file(&self) -> Result<PrivateKey> {
         let path = self.node_key_path()?;
+        warn_if_permissions_too_open(&path);
         let encoded_pk = std::fs::read_to_string(&path)
             .context(format!("Failed to read node key from {:?}", path))?;
         let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for node key")?;
@@ -77,6 +78,7 @@ impl KeyPaths {
     /// Read the BLS private key from file (using anyhow::Result for compatibility)
     pub fn read_bls_key_from_file(&self) -> Result<BlsPrivateKey> {
         let path = self.consensus_key_path()?;
+        warn_if_permissions_too_open(&path);
         let encoded_pk = std::fs::read_to_string(&path)
             .context(format!("Failed to read BLS key from {:?}", path))?;
         let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for BLS key")?;
@@ -84,3 +86,25 @@ impl KeyPaths {
         Ok(pk)
     }
 }
+
+/// Warn (Unix only) when a private-key file is readable or writable by group or
+/// other. We warn rather than reject so an existing validator with legacy file
+/// modes is not taken offline on restart; `chmod 600` clears it. On non-Unix
+/// platforms this is a no-op.
+#[cfg(unix)]
+fn warn_if_permissions_too_open(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let mode = metadata.permissions().mode();
+        if mode & 0o077 != 0 {
+            tracing::warn!(
+                path = %path.display(),
+                mode = format!("{:o}", mode & 0o7777),
+                "private key file is accessible by group/other; tighten it with `chmod 600`"
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_permissions_too_open(_path: &std::path::Path) {}

@@ -3,21 +3,36 @@ use crate::checkpoint::Checkpoint;
 use crate::dynamic_epocher::DynamicEpocher;
 use crate::execution_request::{DepositRequest, WithdrawalRequest};
 use crate::header::AddedValidator;
-use crate::protocol_params::ProtocolParam;
+use crate::protocol_params::{
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_INVALID_DEPOSIT_TAX, MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+    ProtocolParam,
+};
 use crate::ssz_state_tree::SszStateTree;
-use crate::withdrawal::{PendingWithdrawal, WithdrawalQueue};
+use crate::withdrawal::{PendingWithdrawal, WithdrawalKind, WithdrawalQueue};
 use crate::{Digest, PublicKey};
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, EncodeSize, Error, Read, ReadExt, Write};
+use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Write};
 use commonware_cryptography::{bls12381, sha256};
 #[cfg(feature = "prom")]
 use metrics::histogram;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+const INVALID_STAKE_INTERVAL: &str =
+    "validator_minimum_stake must be less than or equal to validator_maximum_stake";
+
+fn validate_stake_interval(minimum_stake: u64, maximum_stake: u64) -> Result<(), Error> {
+    if minimum_stake <= maximum_stake {
+        Ok(())
+    } else {
+        Err(Error::Invalid("ConsensusState", INVALID_STAKE_INTERVAL))
+    }
+}
+
+#[derive(Debug)]
 pub struct ConsensusState {
     pub(crate) epoch: u64,
     pub(crate) view: u64,
@@ -42,6 +57,9 @@ pub struct ConsensusState {
     pub(crate) max_deposits_per_epoch: u64,
     pub(crate) max_withdrawals_per_epoch: u64,
     pub(crate) observers_per_validator: u32,
+    pub(crate) minimum_validator_count: u64,
+    pub(crate) pending_active_validator_exits: u64,
+    pub(crate) invalid_deposit_tax: u64,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -51,22 +69,36 @@ pub struct ConsensusState {
     /// Frozen snapshot of `ssz_tree` at `capture_state_root()` time.
     /// Proofs are generated from this tree so they verify against the on-chain root.
     /// Not serialized — rebuilt alongside `ssz_tree`.
-    pub(crate) proof_tree: SszStateTree,
+    pub(crate) proof_tree: Arc<SszStateTree>,
 
     /// Frozen snapshot of validator pubkeys (sorted) at `capture_state_root()` time.
     /// Needed for positional index lookups when generating validator proofs.
-    pub(crate) proof_validator_keys: Vec<[u8; 32]>,
+    pub(crate) proof_validator_keys: Arc<Vec<[u8; 32]>>,
 
     // Withdrawal proof lookup is handled by the pubkey index stored in SszStateTree itself.
     // The frozen proof_tree contains the withdrawal_pubkey_index from capture time.
-    /// Snapshot of `ssz_tree.root()` captured after block execution.
-    /// Not serialized — set via `capture_state_root()` in the finalizer after `execute_block`.
-    /// Survives finalization mutations (which change the live tree but not this field).
+    /// Snapshot of `ssz_tree.root()` captured for the next block's parent root.
+    /// Not serialized — set via `capture_state_root()` after block execution, and
+    /// re-captured after epoch-boundary finalization mutations.
     pub(crate) state_root: [u8; 32],
 
     /// The EL (Reth) block number at the time `capture_state_root()` was called.
     /// The state root appears on-chain in EL block `proof_el_block_number + 1`.
     pub(crate) proof_el_block_number: u64,
+
+    /// Serialized snapshot of this `ConsensusState` taken at `capture_state_root()`
+    /// time, with the snapshot's own `captured_bytes` cleared to prevent recursion.
+    /// On restart, decoding the inner state and reading its `proof_tree` yields the
+    /// capture-time proof tree exactly, so a restarted validator agrees with uninterrupted peers on
+    /// `state_root` (and hence on `parent_beacon_block_root`).
+    /// `None` only before the first `capture_state_root` call.
+    pub(crate) captured_bytes: Option<Vec<u8>>,
+}
+
+impl Clone for ConsensusState {
+    fn clone(&self) -> Self {
+        self.clone_with_epocher(self.epocher.snapshot())
+    }
 }
 
 impl Default for ConsensusState {
@@ -88,15 +120,22 @@ impl Default for ConsensusState {
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
             validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
-            allowed_timestamp_future_ms: 50,
+            // Must stay within the protocol-parameter bound (see ProtocolParam::validate
+            // and the decode guard in read_cfg); genesis would reject anything below
+            // MIN_ALLOWED_TIMESTAMP_FUTURE_MS, so the default sits at that floor.
+            allowed_timestamp_future_ms: MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            minimum_validator_count: DEFAULT_MINIMUM_VALIDATOR_COUNT,
+            pending_active_validator_exits: 0,
+            invalid_deposit_tax: 0,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
-            proof_validator_keys: Vec::new(),
+            proof_tree: Arc::new(SszStateTree::default()),
+            proof_validator_keys: Arc::new(Vec::new()),
+            captured_bytes: None,
 
             state_root: [0u8; 32],
             proof_el_block_number: 0,
@@ -107,6 +146,56 @@ impl Default for ConsensusState {
 }
 
 impl ConsensusState {
+    /// Clones state data while installing the supplied epocher handle.
+    ///
+    /// Most consensus snapshots should use `Clone`, which isolates the epoch
+    /// schedule. This is only for paths that deliberately control how the
+    /// cloned state participates in live epoch schedule propagation.
+    pub fn clone_with_epocher(&self, epocher: DynamicEpocher) -> Self {
+        Self {
+            epoch: self.epoch,
+            view: self.view,
+            latest_height: self.latest_height,
+            head_digest: self.head_digest,
+            deposit_queue: self.deposit_queue.clone(),
+            withdrawal_queue: self.withdrawal_queue.clone(),
+            validator_accounts: self.validator_accounts.clone(),
+            protocol_param_changes: self.protocol_param_changes.clone(),
+            pending_checkpoint: self.pending_checkpoint.clone(),
+            added_validators: self.added_validators.clone(),
+            removed_validators: self.removed_validators.clone(),
+            pending_execution_requests: self.pending_execution_requests.clone(),
+            forkchoice: self.forkchoice,
+            epoch_genesis_hash: self.epoch_genesis_hash,
+            validator_minimum_stake: self.validator_minimum_stake,
+            validator_maximum_stake: self.validator_maximum_stake,
+            allowed_timestamp_future_ms: self.allowed_timestamp_future_ms,
+            treasury_address: self.treasury_address,
+            max_deposits_per_epoch: self.max_deposits_per_epoch,
+            max_withdrawals_per_epoch: self.max_withdrawals_per_epoch,
+            observers_per_validator: self.observers_per_validator,
+            minimum_validator_count: self.minimum_validator_count,
+            pending_active_validator_exits: self.pending_active_validator_exits,
+            invalid_deposit_tax: self.invalid_deposit_tax,
+            epocher,
+            ssz_tree: self.ssz_tree.clone(),
+            proof_tree: self.proof_tree.clone(),
+            proof_validator_keys: self.proof_validator_keys.clone(),
+            captured_bytes: self.captured_bytes.clone(),
+            state_root: self.state_root,
+            proof_el_block_number: self.proof_el_block_number,
+        }
+    }
+
+    /// Clones state data while retaining the same live epocher handle.
+    ///
+    /// Most consensus snapshots should use `Clone`, which isolates the epoch
+    /// schedule. This is only for actor wiring that intentionally shares the
+    /// canonical epocher across components.
+    pub fn clone_with_shared_epocher(&self) -> Self {
+        self.clone_with_epocher(self.epocher.clone())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         forkchoice: ForkchoiceState,
@@ -118,6 +207,8 @@ impl ConsensusState {
         max_deposits_per_epoch: u64,
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
+        minimum_validator_count: u64,
+        invalid_deposit_tax: u64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -141,10 +232,14 @@ impl ConsensusState {
             max_deposits_per_epoch,
             max_withdrawals_per_epoch,
             observers_per_validator,
+            minimum_validator_count,
+            pending_active_validator_exits: 0,
+            invalid_deposit_tax,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
-            proof_validator_keys: Vec::new(),
+            proof_tree: Arc::new(SszStateTree::default()),
+            proof_validator_keys: Arc::new(Vec::new()),
+            captured_bytes: None,
 
             state_root: [0u8; 32],
             proof_el_block_number: 0,
@@ -201,6 +296,65 @@ impl ConsensusState {
         self.validator_maximum_stake
     }
 
+    /// Returns the minimum stake that *will* apply after the queued protocol-parameter
+    /// changes are drained at the next epoch boundary. If no `MinimumStake` change is
+    /// queued, returns the currently-active value.
+    pub fn prospective_minimum_stake(&self) -> u64 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|p| match p {
+                ProtocolParam::MinimumStake(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(self.validator_minimum_stake)
+    }
+
+    /// Returns the maximum stake that *will* apply after the queued protocol-parameter
+    /// changes are drained at the next epoch boundary. If no `MaximumStake` change is
+    /// queued, returns the currently-active value.
+    pub fn prospective_maximum_stake(&self) -> u64 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|p| match p {
+                ProtocolParam::MaximumStake(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(self.validator_maximum_stake)
+    }
+
+    /// Whether a `MinimumStake` or `MaximumStake` change is queued for application at
+    /// the next epoch boundary.
+    pub fn has_pending_stake_bound_change(&self) -> bool {
+        self.protocol_param_changes.iter().any(|p| {
+            matches!(
+                p,
+                ProtocolParam::MinimumStake(_) | ProtocolParam::MaximumStake(_)
+            )
+        })
+    }
+
+    /// Returns the minimum validator count that *will* apply after the queued
+    /// protocol-parameter changes are drained at the next epoch boundary. If no
+    /// `MinimumValidatorCount` change is queued, returns the currently-active value.
+    ///
+    /// Removals (voluntary exits and stake-bound force-removals) staged this epoch
+    /// only take effect next epoch — at the same boundary a queued
+    /// `MinimumValidatorCount` change applies. Floor checks therefore use this
+    /// prospective value so a same-epoch raise is honored before it is formally
+    /// applied, and a lowering doesn't over-restrict.
+    pub fn prospective_minimum_validator_count(&self) -> u64 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|p| match p {
+                ProtocolParam::MinimumValidatorCount(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(self.minimum_validator_count)
+    }
+
     pub fn set_minimum_stake(&mut self, stake: u64) {
         self.validator_minimum_stake = stake;
         self.ssz_tree.set_validator_minimum_stake(stake);
@@ -247,6 +401,39 @@ impl ConsensusState {
         self.ssz_tree.set_observers_per_validator(value);
     }
 
+    pub fn get_minimum_validator_count(&self) -> u64 {
+        self.minimum_validator_count
+    }
+
+    pub fn set_minimum_validator_count(&mut self, value: u64) {
+        self.minimum_validator_count = value;
+        self.ssz_tree.set_minimum_validator_count(value);
+    }
+
+    pub fn get_pending_active_validator_exits(&self) -> u64 {
+        self.pending_active_validator_exits
+    }
+
+    pub fn increment_pending_active_validator_exits(&mut self) {
+        self.pending_active_validator_exits = self.pending_active_validator_exits.saturating_add(1);
+        self.ssz_tree
+            .set_pending_active_validator_exits(self.pending_active_validator_exits);
+    }
+
+    pub fn reset_pending_active_validator_exits(&mut self) {
+        self.pending_active_validator_exits = 0;
+        self.ssz_tree.set_pending_active_validator_exits(0);
+    }
+
+    pub fn get_invalid_deposit_tax(&self) -> u64 {
+        self.invalid_deposit_tax
+    }
+
+    pub fn set_invalid_deposit_tax(&mut self, value: u64) {
+        self.invalid_deposit_tax = value;
+        self.ssz_tree.set_invalid_deposit_tax(value);
+    }
+
     pub fn get_treasury_address(&self) -> Address {
         self.treasury_address
     }
@@ -267,6 +454,8 @@ impl ConsensusState {
 
     pub fn set_pending_checkpoint(&mut self, checkpoint: Option<Checkpoint>) {
         self.pending_checkpoint = checkpoint;
+        self.ssz_tree
+            .set_pending_checkpoint_digest(self.pending_checkpoint.as_ref().map(|cp| cp.digest.0));
     }
 
     pub fn get_added_validators(&self, epoch: u64) -> Option<&Vec<AddedValidator>> {
@@ -337,13 +526,29 @@ impl ConsensusState {
     }
 
     pub fn take_pending_checkpoint(&mut self) -> Option<Checkpoint> {
-        self.pending_checkpoint.take()
+        let taken = self.pending_checkpoint.take();
+        self.ssz_tree.set_pending_checkpoint_digest(None);
+        taken
     }
 
     pub fn push_protocol_param_change(&mut self, param: ProtocolParam) {
         self.protocol_param_changes.push(param);
         self.ssz_tree
             .rebuild_protocol_params(&self.protocol_param_changes);
+    }
+
+    /// appends a batch of protocol param changes and rebuilds the param subtree
+    /// at most once. rebuild_protocol_params reallocates and reroots the whole
+    /// pending param subtree, so calling push_protocol_param_change per record
+    /// is o(n^2) over a grouped batch. callers that decode several records from
+    /// one block should accumulate them and flush through here instead.
+    pub fn push_protocol_param_changes(&mut self, params: impl IntoIterator<Item = ProtocolParam>) {
+        let before = self.protocol_param_changes.len();
+        self.protocol_param_changes.extend(params);
+        if self.protocol_param_changes.len() != before {
+            self.ssz_tree
+                .rebuild_protocol_params(&self.protocol_param_changes);
+        }
     }
 
     pub fn push_removed_validator(&mut self, pubkey: PublicKey) {
@@ -386,11 +591,20 @@ impl ConsensusState {
     }
 
     pub fn take_pending_execution_requests(&mut self) -> Vec<alloy_primitives::Bytes> {
-        std::mem::take(&mut self.pending_execution_requests)
+        let taken = std::mem::take(&mut self.pending_execution_requests);
+        self.ssz_tree
+            .rebuild_pending_execution_requests(&self.pending_execution_requests);
+        taken
     }
 
     pub fn push_pending_execution_request(&mut self, request: alloy_primitives::Bytes) {
         self.pending_execution_requests.push(request);
+        self.ssz_tree
+            .rebuild_pending_execution_requests(&self.pending_execution_requests);
+    }
+
+    pub fn pending_execution_requests(&self) -> &[alloy_primitives::Bytes] {
+        &self.pending_execution_requests
     }
 
     // Account operations
@@ -411,7 +625,8 @@ impl ConsensusState {
                 .keys()
                 .position(|k| k == &pubkey)
                 .expect("key was just inserted");
-            self.ssz_tree.update_validator_at_slot(slot, &account);
+            self.ssz_tree
+                .update_validator_at_slot(slot, &pubkey, &account);
         } else {
             // Insert into BTreeMap first to determine positional slot
             self.validator_accounts.insert(pubkey, account.clone());
@@ -420,7 +635,8 @@ impl ConsensusState {
                 .keys()
                 .position(|k| k == &pubkey)
                 .expect("key was just inserted");
-            self.ssz_tree.insert_validator_at_slot(slot, &account);
+            self.ssz_tree
+                .insert_validator_at_slot(slot, &pubkey, &account);
         }
 
         #[cfg(feature = "prom")]
@@ -463,8 +679,9 @@ impl ConsensusState {
     }
 
     /// Snapshot the current tree root and freeze a proof-able copy.
-    /// Called after `execute_block` so that subsequent finalization mutations
-    /// don't alter the captured value or the proof tree.
+    /// Called after `execute_block`, and again after epoch-boundary finalization
+    /// mutations, so the captured value matches the root exposed to the next
+    /// block as `parent_beacon_block_root`.
     ///
     /// `el_block_number` is the Reth block number from the execution payload
     /// that was just processed. The state root will appear on-chain in EL
@@ -473,10 +690,26 @@ impl ConsensusState {
         #[cfg(feature = "prom")]
         let start = std::time::Instant::now();
 
+        // Refresh the dynamic-epoch-schedule leaf here: the epocher uses interior
+        // mutability and can change (epoch advance, length update) without going
+        // through a ConsensusState setter, so this commit point is the reliable
+        // place to bind its current value into the root.
+        self.ssz_tree
+            .set_dynamic_epoch_schedule(&self.epocher.encode());
+
         self.state_root = self.ssz_tree.root();
-        self.proof_tree = self.ssz_tree.clone();
-        self.proof_validator_keys = self.validator_accounts.keys().copied().collect();
+        self.proof_tree = Arc::new(self.ssz_tree.clone());
+        self.proof_validator_keys = Arc::new(self.validator_accounts.keys().copied().collect());
         self.proof_el_block_number = el_block_number;
+
+        // Snapshot the entire state so a restart can rebuild `proof_tree`
+        // from the capture-time data fields even after the live state has
+        // been mutated (epoch transitions in particular). Clear the
+        // snapshot's own `captured_bytes` first to prevent recursive nesting.
+        let mut snapshot = self.clone();
+        snapshot.captured_bytes = None;
+        let bytes = commonware_codec::Encode::encode(&snapshot);
+        self.captured_bytes = Some(bytes.to_vec());
 
         #[cfg(feature = "prom")]
         histogram!("ssz_capture_state_root_micros").record(start.elapsed().as_micros() as f64);
@@ -485,13 +718,23 @@ impl ConsensusState {
     /// Returns the frozen tree snapshot for proof generation.
     /// Proofs from this tree verify against the on-chain `parent_beacon_block_root`.
     pub fn proof_tree(&self) -> &SszStateTree {
-        &self.proof_tree
+        self.proof_tree.as_ref()
+    }
+
+    /// Returns a shareable frozen proof tree snapshot.
+    pub fn proof_tree_snapshot(&self) -> Arc<SszStateTree> {
+        Arc::clone(&self.proof_tree)
     }
 
     /// Returns the frozen validator pubkeys (sorted) for proof generation.
     /// Needed for positional index lookups when generating validator proofs.
     pub fn proof_validator_keys(&self) -> &[[u8; 32]] {
-        &self.proof_validator_keys
+        self.proof_validator_keys.as_slice()
+    }
+
+    /// Returns a shareable frozen validator-key snapshot for proof generation.
+    pub fn proof_validator_keys_snapshot(&self) -> Arc<Vec<[u8; 32]>> {
+        Arc::clone(&self.proof_validator_keys)
     }
 
     /// Returns the EL block number at the time the proof tree was captured.
@@ -542,6 +785,26 @@ impl ConsensusState {
         Some(request)
     }
 
+    /// pops the front deposit without touching the ssz tree.
+    ///
+    /// front removal shifts every remaining item, so ssz_tree.pop_deposit
+    /// rebuilds the whole deposit subtree. when draining up to the per epoch
+    /// cap that is one full rebuild per pop, which is o(cap * backlog). callers
+    /// that drain a capped batch should pop through here and call
+    /// rebuild_deposit_tree once after the loop instead. the deposit subtree
+    /// root is stale until that flush, so this must only be used in a sequence
+    /// that ends in rebuild_deposit_tree before the state root is read.
+    pub fn pop_deposit_deferred(&mut self) -> Option<DepositRequest> {
+        self.deposit_queue.pop_front()
+    }
+
+    /// rebuilds the deposit subtree from the current queue in a single pass.
+    /// pairs with pop_deposit_deferred to collapse a capped drain into one
+    /// rebuild.
+    pub fn rebuild_deposit_tree(&mut self) {
+        self.ssz_tree.rebuild_deposits(&self.deposit_queue);
+    }
+
     // Withdrawal queue operations
     pub fn push_withdrawal_request(
         &mut self,
@@ -549,13 +812,43 @@ impl ConsensusState {
         withdrawal_epoch: u64,
         balance_deduction: u64,
     ) {
+        self.push_withdrawal_request_with_kind(
+            request,
+            withdrawal_epoch,
+            balance_deduction,
+            WithdrawalKind::Validator,
+        );
+    }
+
+    pub fn push_refund_withdrawal_request(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_epoch: u64,
+        balance_deduction: u64,
+    ) {
+        self.push_withdrawal_request_with_kind(
+            request,
+            withdrawal_epoch,
+            balance_deduction,
+            WithdrawalKind::DepositRefund,
+        );
+    }
+
+    fn push_withdrawal_request_with_kind(
+        &mut self,
+        request: WithdrawalRequest,
+        withdrawal_epoch: u64,
+        balance_deduction: u64,
+        kind: WithdrawalKind,
+    ) {
         #[cfg(feature = "prom")]
         let start = std::time::Instant::now();
 
         let pubkey = request.validator_pubkey;
-        let is_merge = self.withdrawal_queue.get_withdrawal(&pubkey).is_some();
-        self.withdrawal_queue
-            .push_request(request, withdrawal_epoch, balance_deduction);
+        let is_merge = self
+            .withdrawal_queue
+            .push_request_with_kind(request, withdrawal_epoch, balance_deduction, kind)
+            .expect("withdrawal kind must match existing pending withdrawal");
         // push_request() may increment next_index internally — sync the scalar leaf
         self.ssz_tree
             .set_next_withdrawal_index(self.withdrawal_queue.next_index());
@@ -563,6 +856,16 @@ impl ConsensusState {
             // Fields updated in place — just refresh the existing item's leaves
             self.ssz_tree
                 .update_withdrawal(self.withdrawal_queue.get_withdrawal(&pubkey).unwrap());
+        } else if kind == WithdrawalKind::Validator
+            && self
+                .withdrawal_queue
+                .count_for_epoch_by_kind(withdrawal_epoch, WithdrawalKind::DepositRefund)
+                > 0
+        {
+            // Validator withdrawals are ordered before refund withdrawals in the
+            // combined queue view. If refunds are already scheduled for this
+            // epoch, inserting a validator withdrawal is not an append.
+            self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
         } else {
             // New item appended to the epoch
             self.ssz_tree
@@ -578,7 +881,7 @@ impl ConsensusState {
         let start = std::time::Instant::now();
 
         self.withdrawal_queue.push(request.clone());
-        self.ssz_tree.push_withdrawal(&request);
+        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
 
         #[cfg(feature = "prom")]
         histogram!("ssz_push_withdrawal_micros").record(start.elapsed().as_micros() as f64);
@@ -602,6 +905,26 @@ impl ConsensusState {
         Some(w)
     }
 
+    pub fn pop_withdrawal_by_index(
+        &mut self,
+        withdrawal_epoch: u64,
+        index: u64,
+    ) -> Option<PendingWithdrawal> {
+        #[cfg(feature = "prom")]
+        let start = std::time::Instant::now();
+
+        let w = self
+            .withdrawal_queue
+            .pop_by_index(withdrawal_epoch, index)?;
+        self.ssz_tree
+            .pop_withdrawal(withdrawal_epoch, &w.pubkey, &self.withdrawal_queue);
+
+        #[cfg(feature = "prom")]
+        histogram!("ssz_pop_withdrawal_micros").record(start.elapsed().as_micros() as f64);
+
+        Some(w)
+    }
+
     pub fn get_withdrawal(&self, pubkey: &[u8; 32]) -> Option<&PendingWithdrawal> {
         self.withdrawal_queue.get_withdrawal(pubkey)
     }
@@ -609,6 +932,15 @@ impl ConsensusState {
     /// Get all pending withdrawals for a specific epoch
     pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Vec<&PendingWithdrawal> {
         self.withdrawal_queue.get_for_epoch(epoch)
+    }
+
+    pub fn get_withdrawals_for_epoch_with_total_cap(
+        &self,
+        epoch: u64,
+        max_total: usize,
+    ) -> Vec<&PendingWithdrawal> {
+        self.withdrawal_queue
+            .get_for_epoch_with_total_cap(epoch, max_total)
     }
 
     /// Get the number of pending withdrawals for a specific epoch
@@ -666,6 +998,41 @@ impl ConsensusState {
         peers
     }
 
+    pub fn get_current_epoch_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
+        let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
+            .validator_accounts
+            .iter()
+            .filter(|(_, acc)| acc.status.is_current_epoch_signer())
+            .map(|(v, acc)| {
+                let mut key_bytes = &v[..];
+                let node_public_key =
+                    PublicKey::read(&mut key_bytes).expect("failed to parse public key");
+                let consensus_public_key = acc.consensus_public_key.clone();
+                (node_public_key, consensus_public_key)
+            })
+            .collect();
+        peers.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        peers
+    }
+
+    pub fn current_epoch_active_validator_count(&self) -> u64 {
+        self.validator_accounts
+            .values()
+            .filter(|acc| {
+                matches!(
+                    acc.status,
+                    ValidatorStatus::Active | ValidatorStatus::SubmittedExitRequest
+                )
+            })
+            .count() as u64
+    }
+
+    pub fn can_accept_active_validator_exit(&self) -> bool {
+        self.current_epoch_active_validator_count()
+            .saturating_sub(self.pending_active_validator_exits.saturating_add(1))
+            >= self.prospective_minimum_validator_count()
+    }
+
     pub fn get_active_or_joining_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
         let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
             .validator_accounts
@@ -695,9 +1062,20 @@ impl ConsensusState {
             .collect()
     }
 
-    pub fn apply_protocol_parameter_changes(&mut self) -> bool {
+    pub fn apply_protocol_parameter_changes(&mut self) -> Result<bool, Error> {
+        let prospective_minimum_stake = self.prospective_minimum_stake();
+        let prospective_maximum_stake = self.prospective_maximum_stake();
+        if let Err(err) =
+            validate_stake_interval(prospective_minimum_stake, prospective_maximum_stake)
+        {
+            self.protocol_param_changes.clear();
+            self.ssz_tree
+                .rebuild_protocol_params(&self.protocol_param_changes);
+            return Err(err);
+        }
+
         let mut min_or_max_stake_changed = false;
-        while let Some(param) = self.protocol_param_changes.pop() {
+        for param in self.protocol_param_changes.drain(0..) {
             match param {
                 ProtocolParam::MinimumStake(min_stake) => {
                     self.validator_minimum_stake = min_stake;
@@ -739,12 +1117,23 @@ impl ConsensusState {
                     self.observers_per_validator = value;
                     self.ssz_tree.set_observers_per_validator(value);
                 }
+                ProtocolParam::MinimumValidatorCount(value) => {
+                    self.minimum_validator_count = value;
+                    self.ssz_tree.set_minimum_validator_count(value);
+                }
+                ProtocolParam::InvalidDepositTax(value) => {
+                    if value > MAX_INVALID_DEPOSIT_TAX {
+                        continue;
+                    }
+                    self.invalid_deposit_tax = value;
+                    self.ssz_tree.set_invalid_deposit_tax(value);
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
         self.ssz_tree
             .rebuild_protocol_params(&self.protocol_param_changes);
-        min_or_max_stake_changed
+        Ok(min_or_max_stake_changed)
     }
 
     /// Rebuild the entire SSZ state tree from scratch.
@@ -777,12 +1166,23 @@ impl ConsensusState {
             self.max_deposits_per_epoch,
             self.max_withdrawals_per_epoch,
             self.observers_per_validator,
+            &self.pending_execution_requests,
+            self.pending_checkpoint.as_ref().map(|cp| cp.digest.0),
+            &self.epocher.encode(),
+            self.minimum_validator_count,
+            self.pending_active_validator_exits,
+            self.invalid_deposit_tax,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
-        // after deserialization or bulk reset.
+        // after deserialization or bulk reset. proof_validator_keys is frozen
+        // alongside the proof_tree so positional validator proofs line up with the
+        // committee the snapshot commits to. the decode with capture path overrides
+        // these from the capture time snapshot afterwards, so this is only the
+        // baseline for construction, bulk reset, and capture less restarts.
         self.state_root = self.ssz_tree.root();
-        self.proof_tree = self.ssz_tree.clone();
+        self.proof_tree = Arc::new(self.ssz_tree.clone());
+        self.proof_validator_keys = Arc::new(self.validator_accounts.keys().copied().collect());
 
         #[cfg(feature = "prom")]
         histogram!("ssz_rebuild_tree_micros").record(start.elapsed().as_micros() as f64);
@@ -826,9 +1226,15 @@ impl EncodeSize for ConsensusState {
         + 8 // validator_maximum_stake
         + 8 // allowed_timestamp_future_ms
         + 20 // treasury_address
+        + 8 // proof_el_block_number
+        + 1 // captured_bytes presence flag
+        + self.captured_bytes.as_ref().map_or(0, |b| 4 + b.len())
         + 8 // max_deposits_per_epoch
         + 8 // max_withdrawals_per_epoch
         + 4 // observers_per_validator
+        + 8 // minimum_validator_count
+        + 8 // pending_active_validator_exits
+        + 8 // invalid_deposit_tax
         + self.epocher.encode_size()
     }
 }
@@ -842,7 +1248,14 @@ impl Read for ConsensusState {
         let latest_height = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
 
         let deposit_queue_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut deposit_queue = VecDeque::with_capacity(deposit_queue_len.min(buf.remaining()));
+        // Never pre-size collections from the decoded length prefixes below:
+        // they are attacker-controlled u32s, and `buf.remaining()` is a byte
+        // count rather than an element count, so even a `min(buf.remaining())`
+        // hint over-allocates by `size_of::<T>()` per slot before any element
+        // is validated. Growing on push is safe — each loop reads from `buf`
+        // and bails on the first `EndOfBuffer`, so only genuinely decoded
+        // elements are ever allocated.
+        let mut deposit_queue = VecDeque::new();
         for _ in 0..deposit_queue_len {
             deposit_queue.push_back(DepositRequest::read_cfg(buf, &())?);
         }
@@ -851,8 +1264,7 @@ impl Read for ConsensusState {
 
         let protocol_param_changes_len =
             buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut protocol_param_changes =
-            Vec::with_capacity(protocol_param_changes_len.min(buf.remaining()));
+        let mut protocol_param_changes = Vec::new();
         for _ in 0..protocol_param_changes_len {
             protocol_param_changes.push(crate::protocol_params::ProtocolParam::read_cfg(buf, &())?);
         }
@@ -881,7 +1293,7 @@ impl Read for ConsensusState {
         for _ in 0..added_validators_len {
             let key = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
             let validator_count = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-            let mut validators = Vec::with_capacity(validator_count.min(buf.remaining()));
+            let mut validators = Vec::new();
             for _ in 0..validator_count {
                 let node_key = PublicKey::read_cfg(buf, &())?;
                 let consensus_key = bls12381::PublicKey::read_cfg(buf, &())?;
@@ -895,8 +1307,7 @@ impl Read for ConsensusState {
 
         // Read removed_validators
         let removed_validators_len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut removed_validators =
-            Vec::with_capacity(removed_validators_len.min(buf.remaining()));
+        let mut removed_validators = Vec::new();
         for _ in 0..removed_validators_len {
             removed_validators.push(PublicKey::read_cfg(buf, &())?);
         }
@@ -904,8 +1315,7 @@ impl Read for ConsensusState {
         // Read pending_execution_requests
         let pending_execution_requests_len =
             buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
-        let mut pending_execution_requests =
-            Vec::with_capacity(pending_execution_requests_len.min(buf.remaining()));
+        let mut pending_execution_requests = Vec::new();
         for _ in 0..pending_execution_requests_len {
             let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
             if len > buf.remaining() {
@@ -945,7 +1355,21 @@ impl Read for ConsensusState {
 
         let validator_minimum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         let validator_maximum_stake = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        validate_stake_interval(validator_minimum_stake, validator_maximum_stake)?;
         let allowed_timestamp_future_ms = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Enforce the same bound the runtime protocol-parameter path applies (see
+        // ProtocolParam::validate). An out-of-range window here means a crafted or
+        // tampered checkpoint/state artifact; reject it rather than boot under a
+        // timestamp tolerance that genesis and live updates would refuse.
+        if !(crate::protocol_params::MIN_ALLOWED_TIMESTAMP_FUTURE_MS
+            ..=crate::protocol_params::MAX_ALLOWED_TIMESTAMP_FUTURE_MS)
+            .contains(&allowed_timestamp_future_ms)
+        {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "allowed timestamp future out of bounds",
+            ));
+        }
 
         let mut treasury_address_bytes = [0u8; 20];
         buf.try_copy_to_slice(&mut treasury_address_bytes)
@@ -953,10 +1377,96 @@ impl Read for ConsensusState {
         let treasury_address = Address::from(treasury_address_bytes);
 
         let max_deposits_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Same upper bound the runtime protocol-parameter path applies (see
+        // ProtocolParam::validate). An oversized deposit cap from a crafted or
+        // tampered artifact would let the penultimate-block selector admit more
+        // deposits per epoch than genesis/live updates allow.
+        if max_deposits_per_epoch > crate::protocol_params::MAX_MAX_DEPOSITS_PER_EPOCH {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "max deposits per epoch out of bounds",
+            ));
+        }
         let max_withdrawals_per_epoch = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Enforce the same lower/upper bound the runtime protocol-parameter update
+        // path applies (see ProtocolParam::read_cfg / try_from). Genesis and runtime
+        // updates already range-check this, so an out-of-range value here means a
+        // crafted checkpoint/state artifact or tampered blob. A zero cap would let
+        // the epoch-final selector emit no withdrawals and roll every due exit/refund
+        // forward indefinitely, so reject it at decode rather than trust it.
+        if !(crate::protocol_params::MAX_WITHDRAWALS_PER_EPOCH_MIN
+            ..=crate::protocol_params::MAX_WITHDRAWALS_PER_EPOCH_MAX)
+            .contains(&max_withdrawals_per_epoch)
+        {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "max withdrawals per epoch out of bounds",
+            ));
+        }
         let observers_per_validator = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)?;
+        // Same upper bound the runtime protocol-parameter path applies (see
+        // ProtocolParam::validate). Caps the per-validator observer fan-out an
+        // imported state can request.
+        if observers_per_validator as u64 > crate::protocol_params::MAX_OBSERVERS_PER_VALIDATOR {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "observers per validator out of bounds",
+            ));
+        }
+        let minimum_validator_count = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        if minimum_validator_count == 0 {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "minimum validator count out of bounds",
+            ));
+        }
+        let pending_active_validator_exits = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let current_epoch_active_validator_count = validator_accounts
+            .values()
+            .filter(|account| {
+                matches!(
+                    account.status,
+                    ValidatorStatus::Active | ValidatorStatus::SubmittedExitRequest
+                )
+            })
+            .count() as u64;
+        if pending_active_validator_exits > current_epoch_active_validator_count {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "pending active validator exits exceeds active validator count",
+            ));
+        }
+        let invalid_deposit_tax = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        if invalid_deposit_tax > MAX_INVALID_DEPOSIT_TAX {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "invalid deposit tax out of bounds",
+            ));
+        }
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
+
+        // Trailers added by the proof-snapshot persistence: the only
+        // primitive that isn't derivable from the captured data, plus the
+        // serialized capture-time snapshot itself.
+        let proof_el_block_number = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        let has_captured = buf.try_get_u8().map_err(|_| Error::EndOfBuffer)? != 0;
+        let captured_bytes = if has_captured {
+            let len = buf.try_get_u32().map_err(|_| Error::EndOfBuffer)? as usize;
+            // `len` is an attacker-controlled u32; reject it against the actual
+            // remaining bytes before allocating, so a malformed blob with a huge
+            // captured length fails cheaply instead of pre-allocating `len`
+            // bytes (mirrors the pending_execution_requests guard above).
+            if len > buf.remaining() {
+                return Err(Error::EndOfBuffer);
+            }
+            let mut bytes = vec![0u8; len];
+            buf.try_copy_to_slice(&mut bytes)
+                .map_err(|_| Error::EndOfBuffer)?;
+            Some(bytes)
+        } else {
+            None
+        };
 
         let mut state = Self {
             epoch,
@@ -980,15 +1490,36 @@ impl Read for ConsensusState {
             max_deposits_per_epoch,
             max_withdrawals_per_epoch,
             observers_per_validator,
+            minimum_validator_count,
+            pending_active_validator_exits,
+            invalid_deposit_tax,
             epocher,
             ssz_tree: SszStateTree::default(),
-            proof_tree: SszStateTree::default(),
-            proof_validator_keys: Vec::new(),
+            proof_tree: Arc::new(SszStateTree::default()),
+            proof_validator_keys: Arc::new(Vec::new()),
+            captured_bytes: captured_bytes.clone(),
 
             state_root: [0u8; 32],
-            proof_el_block_number: 0,
+            proof_el_block_number,
         };
+        // Build the live tree from the post-mutation data fields. This sets
+        // `state_root` and `proof_tree` from the *live* tree. We'll override
+        // them below using the capture-time snapshot.
         state.rebuild_ssz_tree();
+
+        if let Some(bytes) = captured_bytes {
+            // Decode the capture-time snapshot. Its own `rebuild_ssz_tree`
+            // runs as part of decode and produces the exact tree that
+            // existed when `capture_state_root` ran. `state_root` and
+            // `proof_validator_keys` are derived from it. Neither is
+            // stored separately in the wire format.
+            let inner = ConsensusState::decode(bytes.as_slice())?;
+            state.proof_tree = inner.proof_tree.clone();
+            state.state_root = state.proof_tree.root();
+            state.proof_validator_keys =
+                Arc::new(inner.validator_accounts.keys().copied().collect());
+        }
+
         Ok(state)
     }
 }
@@ -1077,8 +1608,34 @@ impl Write for ConsensusState {
         // Write observers_per_validator
         buf.put_u32(self.observers_per_validator);
 
+        // Write minimum_validator_count
+        buf.put_u64(self.minimum_validator_count);
+
+        // Write pending_active_validator_exits
+        buf.put_u64(self.pending_active_validator_exits);
+
+        // Write invalid_deposit_tax
+        buf.put_u64(self.invalid_deposit_tax);
+
         // Write epocher
         self.epocher.write(buf);
+
+        // Write proof_el_block_number (not derivable from consensus data —
+        // it's a parameter passed into `capture_state_root`).
+        buf.put_u64(self.proof_el_block_number);
+
+        // Write captured_bytes (serialized capture-time snapshot, used on
+        // Read to rebuild `proof_tree` exactly). `state_root` and
+        // `proof_validator_keys` are derived from the rebuilt tree on Read,
+        // so they don't need separate persistence.
+        match &self.captured_bytes {
+            Some(bytes) => {
+                buf.put_u8(1);
+                buf.put_u32(bytes.len() as u32);
+                buf.put_slice(bytes);
+            }
+            None => buf.put_u8(0),
+        }
     }
 }
 
@@ -1086,7 +1643,7 @@ impl TryFrom<Checkpoint> for ConsensusState {
     type Error = Error;
 
     fn try_from(checkpoint: Checkpoint) -> Result<Self, Self::Error> {
-        ConsensusState::decode(checkpoint.data)
+        Self::try_from(&checkpoint)
     }
 }
 
@@ -1097,10 +1654,11 @@ mod tests {
     use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::execution_request::DepositRequest;
     use crate::ssz_state_tree;
-    use crate::withdrawal::PendingWithdrawal;
+    use crate::withdrawal::{PendingWithdrawal, WithdrawalKind};
 
     use alloy_eips::eip4895::Withdrawal;
     use alloy_primitives::Address;
+    use bytes::BytesMut;
     use commonware_codec::{DecodeExt, Encode, ReadExt};
     use commonware_consensus::types::{Epoch, Epocher, Height};
     use commonware_cryptography::{Signer, bls12381, ed25519};
@@ -1123,6 +1681,52 @@ mod tests {
                 "{n}-byte prefix should not successfully decode",
             );
         }
+    }
+
+    #[test]
+    fn test_decode_huge_deposit_queue_count_does_not_preallocate() {
+        // Regression guard for treating a length prefix as a safe element
+        // count. `deposit_queue_len` is an attacker-controlled u32; the decoder
+        // must reject a bogus count by running out of buffer, not by pre-sizing
+        // a VecDeque from it. (`buf.remaining()` is a byte count, so a
+        // count-derived capacity — even one capped by remaining bytes —
+        // over-allocates by size_of::<DepositRequest>() per slot.) With the
+        // count far exceeding the available bodies, decode must bail cheaply.
+        let mut buf = BytesMut::new();
+        buf.put_u64(0); // epoch
+        buf.put_u64(0); // view
+        buf.put_u64(0); // latest_height
+        buf.put_u32(u32::MAX); // claims ~4 billion deposits
+        // Provide a partial deposit body, then truncate. This leaves a non-zero
+        // `buf.remaining()` at the allocation point, so the original
+        // `with_capacity(len.min(buf.remaining()))` would have over-allocated
+        // `remaining`-many slots here rather than the degenerate zero.
+        buf.put_slice(&[0u8; 48]);
+
+        // DepositRequest::read_cfg runs out of buffer partway through the body;
+        // either way decode must fail cheaply rather than pre-allocate ~4
+        // billion slots.
+        let result = ConsensusState::read(&mut buf.as_ref());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_huge_captured_bytes_len_does_not_preallocate() {
+        // Regression guard for the captured-snapshot trailer: `captured_bytes`
+        // is a length-prefixed Vec<u8>, so a malformed blob with
+        // has_captured = true and a huge length must be rejected against the
+        // remaining bytes before the `vec![0u8; len]` allocation, not after.
+        let mut encoded = ConsensusState::default().encode().to_vec();
+        // A default state has captured_bytes = None, so the encoding ends with
+        // the has_captured presence flag (0). Flip it to 1 and append a u32
+        // length claiming ~4 GiB with no captured body following.
+        let last = encoded.len() - 1;
+        encoded[last] = 1;
+        encoded.extend_from_slice(&u32::MAX.to_be_bytes());
+
+        // Decode must bail cheaply on EndOfBuffer rather than pre-allocate ~4 GiB.
+        let result = ConsensusState::read(&mut encoded.as_slice());
+        assert!(result.is_err());
     }
 
     fn create_test_deposit_request(index: u64, amount: u64) -> DepositRequest {
@@ -1155,6 +1759,7 @@ mod tests {
             pubkey: [index as u8; 32],
             balance_deduction: amount,
             epoch,
+            kind: WithdrawalKind::Validator,
         }
     }
 
@@ -1183,6 +1788,10 @@ mod tests {
         assert_eq!(decoded_state.view, original_state.view);
         assert_eq!(decoded_state.latest_height, original_state.latest_height);
         assert_eq!(
+            decoded_state.invalid_deposit_tax,
+            original_state.invalid_deposit_tax
+        );
+        assert_eq!(
             decoded_state.get_next_withdrawal_index(),
             original_state.get_next_withdrawal_index()
         );
@@ -1202,6 +1811,110 @@ mod tests {
             decoded_state.epoch_genesis_hash,
             original_state.epoch_genesis_hash
         );
+        assert_eq!(
+            decoded_state.get_minimum_validator_count(),
+            DEFAULT_MINIMUM_VALIDATOR_COUNT
+        );
+        assert_eq!(decoded_state.get_pending_active_validator_exits(), 0);
+    }
+
+    #[test]
+    fn active_exit_counter_preserves_minimum_validator_count() {
+        let mut state = ConsensusState::default();
+        state.set_minimum_validator_count(3);
+
+        for i in 0..4 {
+            state.set_account(
+                [i as u8 + 1; 32],
+                create_test_validator_account(i as u64 + 1, 32_000_000_000),
+            );
+        }
+
+        assert!(state.can_accept_active_validator_exit());
+        state.increment_pending_active_validator_exits();
+        assert!(!state.can_accept_active_validator_exit());
+
+        let mut exiting_account = state.get_account(&[1u8; 32]).unwrap().clone();
+        exiting_account.status = ValidatorStatus::SubmittedExitRequest;
+        state.set_account([1u8; 32], exiting_account);
+        assert_eq!(state.current_epoch_active_validator_count(), 4);
+        assert!(!state.can_accept_active_validator_exit());
+
+        let refund = create_test_withdrawal(99, 1, 0);
+        state.push_withdrawal(refund);
+        assert_eq!(state.get_withdrawal_count_for_epoch(0), 1);
+        assert!(!state.can_accept_active_validator_exit());
+
+        state.reset_pending_active_validator_exits();
+        assert!(state.can_accept_active_validator_exit());
+    }
+
+    #[test]
+    fn exit_floor_honors_queued_minimum_validator_count_raise() {
+        // Removals staged this epoch take effect next epoch, at the same boundary
+        // a queued MinimumValidatorCount change applies — so the floor check must
+        // use the prospective value, not the current one.
+        let mut state = ConsensusState::default();
+        state.set_minimum_validator_count(2);
+        for i in 0..3u8 {
+            state.set_account(
+                [i + 1; 32],
+                create_test_validator_account(i as u64 + 1, 32_000_000_000),
+            );
+        }
+
+        // 3 active, floor 2: one exit is acceptable (3 - 1 >= 2).
+        assert!(state.can_accept_active_validator_exit());
+
+        // Queue a raise to floor 3. The prospective floor now governs: 3 - 1 = 2 < 3.
+        state.push_protocol_param_change(ProtocolParam::MinimumValidatorCount(3));
+        assert_eq!(state.prospective_minimum_validator_count(), 3);
+        assert!(!state.can_accept_active_validator_exit());
+
+        // A queued lowering is likewise honored before it is applied.
+        state.protocol_param_changes.clear();
+        state.push_protocol_param_change(ProtocolParam::MinimumValidatorCount(1));
+        assert_eq!(state.prospective_minimum_validator_count(), 1);
+        assert!(state.can_accept_active_validator_exit());
+    }
+
+    #[test]
+    fn test_clone_preserves_epoch_schedule_snapshot() {
+        let state = ConsensusState::new(
+            ForkchoiceState::default(),
+            0,
+            0,
+            NonZeroU64::new(10).unwrap(),
+            10_000,
+            Address::ZERO,
+            3,
+            16,
+            0,
+            0,
+            0,
+        );
+        state.get_epocher().advance_epoch(Epoch::new(0));
+
+        let cloned = state.clone();
+        let cloned_epoch_two_bounds_before = (
+            cloned.get_epocher().first(Epoch::new(2)),
+            cloned.get_epocher().last(Epoch::new(2)),
+        );
+
+        state
+            .get_epocher()
+            .update_length(NonZeroU64::new(20).unwrap())
+            .unwrap();
+        state.get_epocher().advance_epoch(Epoch::new(2));
+
+        assert_eq!(
+            (
+                cloned.get_epocher().first(Epoch::new(2)),
+                cloned.get_epocher().last(Epoch::new(2)),
+            ),
+            cloned_epoch_two_bounds_before,
+            "cloned consensus state must retain the epoch schedule captured at clone time",
+        );
     }
 
     #[test]
@@ -1216,6 +1929,8 @@ mod tests {
             3,
             16,
             0,
+            DEFAULT_MINIMUM_VALIDATOR_COUNT,
+            0,
         );
 
         original_state.set_epoch(7);
@@ -1229,6 +1944,7 @@ mod tests {
         original_state.set_latest_height(42);
         original_state.set_next_withdrawal_index(5);
         original_state.set_epoch_genesis_hash([42u8; 32]);
+        original_state.set_invalid_deposit_tax(25);
 
         let deposit1 = create_test_deposit_request(1, 32000000000);
         let deposit2 = create_test_deposit_request(2, 16000000000);
@@ -1429,6 +2145,145 @@ mod tests {
     }
 
     #[test]
+    fn pending_execution_requests_bind_into_captured_state_root() {
+        let mut state = ConsensusState::default();
+        state.rebuild_ssz_tree();
+        state.capture_state_root(0);
+        let before = state.get_state_root();
+
+        // Buffering a deferred request via the production mutator must change the
+        // captured state root (the mutator keeps the SSZ subtree in sync).
+        state.push_pending_execution_request(alloy_primitives::Bytes::from(vec![0xAAu8; 40]));
+        state.capture_state_root(0);
+        let after = state.get_state_root();
+        assert_ne!(
+            before, after,
+            "pushing a pending execution request must change the captured state root"
+        );
+
+        // Draining them restores the prior (empty-collection) root.
+        let taken = state.take_pending_execution_requests();
+        assert_eq!(taken.len(), 1);
+        state.capture_state_root(0);
+        assert_eq!(
+            state.get_state_root(),
+            before,
+            "draining pending requests must restore the prior state root"
+        );
+    }
+
+    #[test]
+    fn pending_checkpoint_binds_into_captured_state_root() {
+        let mut state = ConsensusState::default();
+        state.rebuild_ssz_tree();
+        state.capture_state_root(0);
+        let before = state.get_state_root();
+
+        // Setting the pending checkpoint via the production mutator binds its digest
+        // into the captured state root.
+        let checkpoint = Checkpoint::new(&state);
+        state.set_pending_checkpoint(Some(checkpoint));
+        state.capture_state_root(0);
+        let after = state.get_state_root();
+        assert_ne!(
+            before, after,
+            "setting a pending checkpoint must change the captured state root"
+        );
+
+        // Taking it restores the prior (no-checkpoint) root.
+        let taken = state.take_pending_checkpoint();
+        assert!(taken.is_some());
+        state.capture_state_root(0);
+        assert_eq!(
+            state.get_state_root(),
+            before,
+            "taking the pending checkpoint must restore the prior state root"
+        );
+    }
+
+    #[test]
+    fn dynamic_epoch_schedule_binds_into_captured_state_root() {
+        use std::num::NonZeroU64;
+
+        let mut state = ConsensusState::default();
+        state.rebuild_ssz_tree();
+        state.capture_state_root(0);
+        let before = state.get_state_root();
+
+        // Mutate the epoch schedule through interior mutability — no `&mut
+        // ConsensusState` setter is involved — and confirm the captured root still
+        // changes, via the refresh in `capture_state_root`.
+        state
+            .get_epocher()
+            .update_length(NonZeroU64::new(20).unwrap())
+            .expect("update_length should succeed");
+        state.capture_state_root(0);
+
+        assert_ne!(
+            before,
+            state.get_state_root(),
+            "an epoch-schedule change must change the captured state root"
+        );
+    }
+
+    /// Changing only a validator-account map key (the node
+    /// pubkey) must change the SSZ state root. The tree commits account values
+    /// positionally without the key, so two states with the same account value
+    /// under different keys must not share a root.
+    #[test]
+    fn validator_account_key_binds_into_state_root() {
+        let account = ValidatorAccount {
+            consensus_public_key: bls12381::PrivateKey::from_seed(1).public_key(),
+            withdrawal_credentials: Address::from([7u8; 20]),
+            balance: 32_000_000_000,
+            status: ValidatorStatus::Active,
+            has_pending_deposit: false,
+            has_pending_withdrawal: false,
+            joining_epoch: 0,
+            last_deposit_index: 0,
+        };
+
+        let root_for_key = |key: [u8; 32]| {
+            let mut state = ConsensusState::default();
+            state.validator_accounts.insert(key, account.clone());
+            state.rebuild_ssz_tree();
+            state.capture_state_root(0);
+            state.get_state_root()
+        };
+
+        assert_ne!(
+            root_for_key([1u8; 32]),
+            root_for_key([2u8; 32]),
+            "changing only the validator-account map key must change the state root"
+        );
+    }
+
+    /// Changing only the scheduled-activation epoch key must
+    /// change the SSZ state root. added_validators is flattened to its values, so
+    /// the same activation under a different epoch must not share a root.
+    #[test]
+    fn added_validator_epoch_key_binds_into_state_root() {
+        let av = AddedValidator {
+            node_key: ed25519::PrivateKey::from_seed(1).public_key(),
+            consensus_key: bls12381::PrivateKey::from_seed(1).public_key(),
+        };
+
+        let root_for_epoch = |epoch: u64| {
+            let mut state = ConsensusState::default();
+            state.add_validator(epoch, av.clone());
+            state.rebuild_ssz_tree();
+            state.capture_state_root(0);
+            state.get_state_root()
+        };
+
+        assert_ne!(
+            root_for_epoch(5),
+            root_for_epoch(6),
+            "changing only the added-validator epoch key must change the state root"
+        );
+    }
+
+    #[test]
     fn test_protocol_param_changes_serialization() {
         let mut state = ConsensusState::default();
 
@@ -1477,6 +2332,128 @@ mod tests {
         let predicted_size = state.encode_size();
         let actual_size = state.encode().len();
         assert_eq!(predicted_size, actual_size);
+    }
+
+    #[test]
+    fn test_decode_rejects_out_of_range_max_withdrawals_per_epoch() {
+        use crate::protocol_params::{
+            MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN,
+        };
+
+        // Honest nodes only ever serialize a cap within [MIN, MAX] — genesis and
+        // runtime updates both range-check it. A decoded state outside that range
+        // can only come from a crafted checkpoint/state artifact or a tampered DB
+        // blob. The finalizer trusts this cap as authoritative (a zero cap silently
+        // drops every due withdrawal), so decoding must reject it rather than let
+        // the node start/restore from it.
+
+        // Valid boundary values must still decode.
+        for valid in [MAX_WITHDRAWALS_PER_EPOCH_MIN, MAX_WITHDRAWALS_PER_EPOCH_MAX] {
+            let mut state = ConsensusState::default();
+            state.max_withdrawals_per_epoch = valid;
+            let encoded = state.encode();
+            let decoded = ConsensusState::read(&mut encoded.as_ref()).unwrap_or_else(|_| {
+                panic!("valid max_withdrawals_per_epoch {valid} should decode")
+            });
+            assert_eq!(decoded.max_withdrawals_per_epoch, valid);
+        }
+
+        // Out-of-range values (0 below MIN, MAX+1 above MAX) must be rejected.
+        for invalid in [0, MAX_WITHDRAWALS_PER_EPOCH_MAX + 1] {
+            let mut state = ConsensusState::default();
+            state.max_withdrawals_per_epoch = invalid;
+            let encoded = state.encode();
+            assert!(
+                ConsensusState::read(&mut encoded.as_ref()).is_err(),
+                "max_withdrawals_per_epoch {invalid} should be rejected on decode"
+            );
+        }
+    }
+
+    #[test]
+    fn test_decode_rejects_out_of_range_max_deposits_per_epoch() {
+        // Genesis and runtime updates cap deposits at MAX_MAX_DEPOSITS_PER_EPOCH;
+        // a decoded cap above it can only come from a crafted/tampered artifact and
+        // would let the penultimate-block selector admit more deposits than policy
+        // allows, so decode must reject it.
+        use crate::protocol_params::{MAX_MAX_DEPOSITS_PER_EPOCH, MIN_MAX_DEPOSITS_PER_EPOCH};
+
+        for valid in [MIN_MAX_DEPOSITS_PER_EPOCH, MAX_MAX_DEPOSITS_PER_EPOCH] {
+            let mut state = ConsensusState::default();
+            state.max_deposits_per_epoch = valid;
+            let encoded = state.encode();
+            let decoded = ConsensusState::read(&mut encoded.as_ref())
+                .unwrap_or_else(|_| panic!("valid max_deposits_per_epoch {valid} should decode"));
+            assert_eq!(decoded.max_deposits_per_epoch, valid);
+        }
+
+        let mut state = ConsensusState::default();
+        state.max_deposits_per_epoch = MAX_MAX_DEPOSITS_PER_EPOCH + 1;
+        let encoded = state.encode();
+        assert!(
+            ConsensusState::read(&mut encoded.as_ref()).is_err(),
+            "oversized max_deposits_per_epoch should be rejected on decode"
+        );
+    }
+
+    #[test]
+    fn test_decode_rejects_out_of_range_allowed_timestamp_future_ms() {
+        // The timestamp tolerance gates block-validity; genesis and runtime updates
+        // bound it to [MIN, MAX]. An out-of-range window from a crafted/tampered
+        // artifact would put a booting node's clock tolerance outside policy.
+        use crate::protocol_params::{
+            MAX_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+        };
+
+        for valid in [
+            MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
+            MAX_ALLOWED_TIMESTAMP_FUTURE_MS,
+        ] {
+            let mut state = ConsensusState::default();
+            state.allowed_timestamp_future_ms = valid;
+            let encoded = state.encode();
+            let decoded = ConsensusState::read(&mut encoded.as_ref()).unwrap_or_else(|_| {
+                panic!("valid allowed_timestamp_future_ms {valid} should decode")
+            });
+            assert_eq!(decoded.allowed_timestamp_future_ms, valid);
+        }
+
+        for invalid in [
+            MIN_ALLOWED_TIMESTAMP_FUTURE_MS - 1,
+            MAX_ALLOWED_TIMESTAMP_FUTURE_MS + 1,
+        ] {
+            let mut state = ConsensusState::default();
+            state.allowed_timestamp_future_ms = invalid;
+            let encoded = state.encode();
+            assert!(
+                ConsensusState::read(&mut encoded.as_ref()).is_err(),
+                "allowed_timestamp_future_ms {invalid} should be rejected on decode"
+            );
+        }
+    }
+
+    #[test]
+    fn test_decode_rejects_out_of_range_observers_per_validator() {
+        // Genesis and runtime updates cap observers at MAX_OBSERVERS_PER_VALIDATOR;
+        // a decoded value above it can only come from a crafted/tampered artifact.
+        use crate::protocol_params::MAX_OBSERVERS_PER_VALIDATOR;
+
+        for valid in [0u32, MAX_OBSERVERS_PER_VALIDATOR as u32] {
+            let mut state = ConsensusState::default();
+            state.observers_per_validator = valid;
+            let encoded = state.encode();
+            let decoded = ConsensusState::read(&mut encoded.as_ref())
+                .unwrap_or_else(|_| panic!("valid observers_per_validator {valid} should decode"));
+            assert_eq!(decoded.observers_per_validator, valid);
+        }
+
+        let mut state = ConsensusState::default();
+        state.observers_per_validator = MAX_OBSERVERS_PER_VALIDATOR as u32 + 1;
+        let encoded = state.encode();
+        assert!(
+            ConsensusState::read(&mut encoded.as_ref()).is_err(),
+            "oversized observers_per_validator should be rejected on decode"
+        );
     }
 
     #[test]
@@ -1766,10 +2743,62 @@ mod tests {
         assert_ne!(state.ssz_tree().root(), r1);
 
         // apply_protocol_parameter_changes consumes them
-        let changed = state.apply_protocol_parameter_changes();
+        let changed = state.apply_protocol_parameter_changes().unwrap();
         assert!(changed);
         assert_eq!(state.get_minimum_stake(), 40_000_000_000);
         assert_eq!(state.get_maximum_stake(), 80_000_000_000);
+
+        let root_before_tax = state.ssz_tree().root();
+        state.push_protocol_param_change(ProtocolParam::InvalidDepositTax(25));
+        assert_ne!(state.ssz_tree().root(), root_before_tax);
+        let changed = state.apply_protocol_parameter_changes().unwrap();
+        assert!(!changed);
+        assert_eq!(state.get_invalid_deposit_tax(), 25);
+
+        state.push_protocol_param_change(ProtocolParam::InvalidDepositTax(101));
+        let changed = state.apply_protocol_parameter_changes().unwrap();
+        assert!(!changed);
+        assert_eq!(state.get_invalid_deposit_tax(), 25);
+    }
+
+    #[test]
+    fn protocol_param_batch_accepts_valid_final_stake_interval() {
+        let mut state = ConsensusState::default();
+        state.push_protocol_param_change(ProtocolParam::MaximumStake(20_000_000_000));
+        state.push_protocol_param_change(ProtocolParam::MinimumStake(10_000_000_000));
+
+        let changed = state.apply_protocol_parameter_changes().unwrap();
+
+        assert!(changed);
+        assert_eq!(state.get_minimum_stake(), 10_000_000_000);
+        assert_eq!(state.get_maximum_stake(), 20_000_000_000);
+    }
+
+    #[test]
+    fn protocol_param_batch_rejects_inverted_final_stake_interval() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+        state.push_protocol_param_change(ProtocolParam::MinimumStake(80_000_000_000));
+
+        let err = state.apply_protocol_parameter_changes().unwrap_err();
+
+        assert!(matches!(err, Error::Invalid("ConsensusState", _)));
+        assert_eq!(state.get_minimum_stake(), 32_000_000_000);
+        assert_eq!(state.get_maximum_stake(), 32_000_000_000);
+        assert_eq!(state.ssz_tree().root(), root_before);
+        assert_eq!(state.protocol_param_changes.len(), 0);
+    }
+
+    #[test]
+    fn consensus_state_decode_rejects_inverted_stake_interval() {
+        let mut state = ConsensusState::default();
+        state.validator_minimum_stake = 80_000_000_000;
+        state.validator_maximum_stake = 32_000_000_000;
+
+        let mut encoded = state.encode();
+        let err = ConsensusState::decode(&mut encoded).unwrap_err();
+
+        assert!(matches!(err, Error::Invalid("ConsensusState", _)));
     }
 
     #[test]
@@ -1913,6 +2942,94 @@ mod tests {
         assert!(proof.verify(&captured_root));
     }
 
+    /// A restart between `capture_state_root` and the next block must preserve
+    /// the captured snapshot: `state_root`, `proof_tree`, `proof_validator_keys`,
+    /// and `proof_el_block_number`. The finalizer captures the root inside
+    /// `execute_block` and only persists ConsensusState *after* the
+    /// epoch-transition mutations run, so the live SSZ tree at persistence
+    /// time differs from the captured one. If `Read` rebuilds the snapshot
+    /// from the post-mutation live fields, restarted validators end up with
+    /// a different aux-data `state_root` than uninterrupted peers — they
+    /// reject each other's proposals on `parent_beacon_block_root`.
+    #[test]
+    fn test_serialization_preserves_captured_proof_snapshot() {
+        // Build state with one validator and capture a snapshot.
+        let mut state = ConsensusState::default();
+        state.set_epoch(5);
+        state.set_account([1u8; 32], create_test_validator_account(1, 32_000_000_000));
+        state.capture_state_root(100);
+
+        let captured_root = state.get_state_root();
+        let captured_proof_root = state.proof_tree().root();
+        let captured_validator_keys = state.proof_validator_keys().to_vec();
+        let captured_el_block = state.get_proof_el_block_number();
+
+        // Mutate the live fields the same way an epoch-boundary apply does:
+        // bump epoch, swap a validator account out. Any live-tree mutation is
+        // sufficient — these specific ones ensure the post-mutation live root
+        // is provably different from the captured one.
+        state.set_epoch(99);
+        state.set_account([2u8; 32], create_test_validator_account(2, 32_000_000_000));
+        assert_ne!(
+            state.ssz_tree().root(),
+            captured_root,
+            "live tree mutations must produce a different root; the captured \
+             snapshot must NOT track them — this is the property the audit \
+             worries restart breaks"
+        );
+        // The frozen snapshot is unaffected by the live mutations: this is
+        // the invariant `capture_state_root` exists to provide, and it's the
+        // invariant the encode/decode roundtrip below must preserve.
+        assert_eq!(
+            state.get_state_root(),
+            captured_root,
+            "post-capture mutations must not touch the frozen state_root"
+        );
+
+        // Persist and restore.
+        let mut encoded = state.encode();
+        let restored = ConsensusState::decode(&mut encoded).expect("decode");
+
+        // Property 1: cross-validator block-validity agreement. A restarted
+        // validator and an uninterrupted peer both need to derive the same
+        // `parent_beacon_block_root` expectation; this is the field they use.
+        assert_eq!(
+            restored.get_state_root(),
+            captured_root,
+            "state_root must equal the pre-mutation captured root after restart, \
+             not the post-mutation live root"
+        );
+
+        // Property 2: proof generation. A restarted validator must be able to
+        // produce proofs that verify against the same on-chain root.
+        assert_eq!(
+            restored.proof_tree().root(),
+            captured_proof_root,
+            "proof_tree must reflect the captured snapshot, not the post-mutation tree"
+        );
+        assert_eq!(
+            restored.proof_validator_keys(),
+            captured_validator_keys.as_slice(),
+            "proof_validator_keys must be the captured snapshot"
+        );
+        assert_eq!(
+            restored.get_proof_el_block_number(),
+            captured_el_block,
+            "proof_el_block_number must be the captured value"
+        );
+
+        // End-to-end: a proof generated by the restored state must verify
+        // against the captured root.
+        let restored_proof = restored
+            .proof_tree()
+            .generate_validator_proof(&[1u8; 32], restored.proof_validator_keys())
+            .unwrap();
+        assert!(
+            restored_proof.verify(&captured_root),
+            "proof generated post-restart must verify against the captured root"
+        );
+    }
+
     #[test]
     fn test_ssz_push_withdrawal_request_keeps_next_index_in_sync() {
         use crate::execution_request::WithdrawalRequest;
@@ -1976,6 +3093,8 @@ mod tests {
             Address::ZERO,
             3,
             16,
+            0,
+            DEFAULT_MINIMUM_VALIDATOR_COUNT,
             0,
         );
 
@@ -2081,7 +3200,7 @@ mod tests {
 
         // --- Simulate epoch transition ---
         // Apply protocol param changes (none in this case)
-        state.apply_protocol_parameter_changes();
+        state.apply_protocol_parameter_changes().unwrap();
 
         // Activate the joining validator
         let mut account = state.get_account(&new_pubkey).unwrap().clone();
@@ -2131,7 +3250,7 @@ mod tests {
 
         // --- Simulate protocol param change ---
         state.push_protocol_param_change(ProtocolParam::MinimumStake(16_000_000_000));
-        state.apply_protocol_parameter_changes();
+        state.apply_protocol_parameter_changes().unwrap();
 
         let param_root = state.ssz_tree().root();
         state.rebuild_ssz_tree();
@@ -2183,6 +3302,225 @@ mod tests {
             root_after,
             state.ssz_tree().root(),
             "incremental reschedule root should match full rebuild"
+        );
+    }
+
+    // A grouped batch of protocol param changes flushed
+    // through push_protocol_param_changes must land in exactly the same state
+    // (queue contents and ssz root) as pushing each record one at a time. the
+    // batch path rebuilds the param subtree once instead of once per record.
+    #[test]
+    fn test_batch_protocol_param_changes_match_per_record() {
+        use crate::protocol_params::ProtocolParam;
+
+        let params = vec![
+            ProtocolParam::MinimumStake(16_000_000_000),
+            ProtocolParam::MaximumStake(64_000_000_000),
+            ProtocolParam::EpochLength(128),
+            ProtocolParam::MaxDepositsPerEpoch(8),
+        ];
+
+        let mut per_record = ConsensusState::default();
+        for param in params.clone() {
+            per_record.push_protocol_param_change(param);
+        }
+
+        let mut batched = ConsensusState::default();
+        batched.push_protocol_param_changes(params.clone());
+
+        assert_eq!(
+            batched.protocol_param_changes.len(),
+            per_record.protocol_param_changes.len(),
+            "batched queue should match per record queue length"
+        );
+        assert_eq!(
+            batched.ssz_tree().root(),
+            per_record.ssz_tree().root(),
+            "batched ssz root should match per record root"
+        );
+
+        // the batch path is equivalent to a full rebuild from the same queue.
+        batched.rebuild_ssz_tree();
+        assert_eq!(
+            batched.ssz_tree().root(),
+            per_record.ssz_tree().root(),
+            "batched root should match a full rebuild"
+        );
+    }
+
+    // Genesis startup builds ConsensusState::new (which
+    // freezes the proof snapshot over an empty validator set), then inserts the
+    // genesis committee via set_account, which only touches the live tree. A
+    // rebuild_ssz_tree after materialization must re-freeze so the exposed
+    // state_root, proof_tree, and proof_validator_keys all commit to the
+    // installed committee, rather than staying stale until the first capture.
+    #[test]
+    fn test_genesis_materialization_refreshes_proof_snapshot() {
+        let mut state = ConsensusState::new(
+            ForkchoiceState::default(),
+            0,
+            0,
+            NonZeroU64::new(10).unwrap(),
+            10_000,
+            Address::ZERO,
+            3,
+            16,
+            0,
+            0,
+            0,
+        );
+
+        // mirror node/src/args.rs genesis materialization.
+        let mut keys: Vec<[u8; 32]> = Vec::new();
+        for i in 0..4u64 {
+            let mut pubkey = [0u8; 32];
+            pubkey[0] = i as u8 + 1;
+            state.set_account(pubkey, create_test_validator_account(i, 32_000_000_000));
+            keys.push(pubkey);
+        }
+        keys.sort();
+
+        // before re freezing, the frozen snapshot still reflects the empty set
+        // that new() captured, so it diverges from the live tree.
+        assert_ne!(
+            state.get_state_root(),
+            state.ssz_tree().root(),
+            "frozen root should be stale before the post genesis rebuild"
+        );
+
+        // the fix: re-freeze after the committee is installed.
+        state.rebuild_ssz_tree();
+
+        assert_eq!(
+            state.get_state_root(),
+            state.ssz_tree().root(),
+            "state_root should commit to the live tree after rebuild"
+        );
+        assert_eq!(
+            state.proof_tree().root(),
+            state.ssz_tree().root(),
+            "proof_tree should commit to the live tree after rebuild"
+        );
+        assert_eq!(
+            state.proof_validator_keys(),
+            keys.as_slice(),
+            "proof_validator_keys should list the genesis committee after rebuild"
+        );
+    }
+
+    // Draining a capped batch of deposits through
+    // pop_deposit_deferred + a single rebuild_deposit_tree must land in the
+    // exact same state (queue length and ssz root) as draining the same count
+    // one pop at a time, where every pop rebuilt the whole remaining subtree.
+    #[test]
+    fn test_deferred_deposit_drain_matches_per_pop() {
+        // backlog larger than the cap so the drain is partial and the remaining
+        // subtree is non trivial.
+        let backlog = 64usize;
+        let cap = 16usize;
+
+        let mut per_pop = ConsensusState::default();
+        let mut deferred = ConsensusState::default();
+        for i in 0..backlog as u64 {
+            let deposit = create_test_deposit_request(i, 32_000_000_000 + i);
+            per_pop.push_deposit(deposit.clone());
+            deferred.push_deposit(deposit);
+        }
+        assert_eq!(
+            per_pop.ssz_tree().root(),
+            deferred.ssz_tree().root(),
+            "states should start identical"
+        );
+
+        // per pop path: rebuild on every pop (the original behaviour).
+        for _ in 0..cap {
+            per_pop.pop_deposit();
+        }
+
+        // deferred path: pop without rebuilding, then rebuild exactly once.
+        for _ in 0..cap {
+            deferred.pop_deposit_deferred();
+        }
+        deferred.rebuild_deposit_tree();
+
+        assert_eq!(
+            deferred.deposit_count(),
+            per_pop.deposit_count(),
+            "both paths should drain the same number of deposits"
+        );
+        assert_eq!(deferred.deposit_count(), backlog - cap);
+        assert_eq!(
+            deferred.ssz_tree().root(),
+            per_pop.ssz_tree().root(),
+            "deferred single rebuild root should match per pop root"
+        );
+
+        // and the deferred root must equal a fresh full rebuild from the queue.
+        deferred.rebuild_ssz_tree();
+        assert_eq!(
+            deferred.ssz_tree().root(),
+            per_pop.ssz_tree().root(),
+            "deferred root should match a full rebuild"
+        );
+    }
+
+    // draining a backlog smaller than the cap must fully empty the queue and
+    // leave a root identical to per pop draining (mirrors the finalizer break
+    // on empty queue).
+    #[test]
+    fn test_deferred_deposit_drain_empties_small_backlog() {
+        let backlog = 5usize;
+        let cap = 16usize;
+
+        let mut per_pop = ConsensusState::default();
+        let mut deferred = ConsensusState::default();
+        for i in 0..backlog as u64 {
+            let deposit = create_test_deposit_request(i, 32_000_000_000 + i);
+            per_pop.push_deposit(deposit.clone());
+            deferred.push_deposit(deposit);
+        }
+
+        let mut drained_any = false;
+        for _ in 0..cap {
+            if per_pop.pop_deposit().is_none() {
+                break;
+            }
+        }
+        for _ in 0..cap {
+            if deferred.pop_deposit_deferred().is_some() {
+                drained_any = true;
+            } else {
+                break;
+            }
+        }
+        if drained_any {
+            deferred.rebuild_deposit_tree();
+        }
+
+        assert_eq!(deferred.deposit_count(), 0);
+        assert_eq!(per_pop.deposit_count(), 0);
+        assert_eq!(
+            deferred.ssz_tree().root(),
+            per_pop.ssz_tree().root(),
+            "empty queue roots should match"
+        );
+    }
+
+    // an empty batch must be a no op: no queue growth and no root change, so the
+    // finalizer can call it unconditionally without forcing a needless rebuild.
+    #[test]
+    fn test_empty_protocol_param_batch_is_noop() {
+        let mut state = ConsensusState::default();
+        let root_before = state.ssz_tree().root();
+        let len_before = state.protocol_param_changes.len();
+
+        state.push_protocol_param_changes(std::iter::empty());
+
+        assert_eq!(len_before, state.protocol_param_changes.len());
+        assert_eq!(
+            root_before,
+            state.ssz_tree().root(),
+            "empty batch should not change the ssz root"
         );
     }
 }

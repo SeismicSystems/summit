@@ -351,6 +351,42 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
         value
     }
 
+    pub async fn get_minimum_validator_count(&self) -> u64 {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetMinimumValidatorCount;
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::MinimumValidatorCount(value) = res else {
+            unreachable!("request and response variants must match");
+        };
+        value
+    }
+
+    pub async fn get_invalid_deposit_tax(&self) -> u64 {
+        let (response, rx) = oneshot::channel();
+        let request = ConsensusStateRequest::GetInvalidDepositTax;
+        let _ = self
+            .sender
+            .clone()
+            .send(FinalizerMessage::QueryState { request, response })
+            .await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::InvalidDepositTax(value) = res else {
+            unreachable!("request and response variants must match");
+        };
+        value
+    }
+
     pub async fn get_epoch_bounds(&self, epoch: u64) -> Option<(u64, u64)> {
         let (response, rx) = oneshot::channel();
         let request = ConsensusStateRequest::GetEpochBounds(epoch);
@@ -454,9 +490,13 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
     pub async fn generate_state_proof(
         &self,
         keys: Vec<summit_types::ssz_tree_key::SszStateKey>,
-    ) -> ([u8; 32], u64, Vec<summit_types::ssz_state_tree::SszProof>) {
+    ) -> (
+        [u8; 32],
+        u64,
+        Vec<Option<summit_types::ssz_state_tree::StateProofEntry>>,
+    ) {
         let (response, rx) = oneshot::channel();
-        let request = ConsensusStateRequest::GenerateStateProof(keys);
+        let request = ConsensusStateRequest::GenerateStateProof(keys, None);
         let _ = self
             .sender
             .clone()

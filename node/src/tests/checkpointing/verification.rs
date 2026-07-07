@@ -18,6 +18,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
+use summit_types::Header;
 use summit_types::PrivateKey;
 use summit_types::checkpoint::{self, CheckpointVerificationError};
 use summit_types::consensus_state::ConsensusState;
@@ -25,12 +26,39 @@ use summit_types::execution_request::ExecutionRequest;
 use summit_types::genesis::{Genesis, GenesisValidator};
 use summit_types::keystore::KeyStore;
 
+/// Returns a clone of `header` with the first byte of `prev_epoch_header_hash`
+/// flipped. The header fields are private, so the value is rebuilt via the
+/// public constructor. Callers must rebind the accompanying finalization's
+/// payload to the returned header's digest (see `rebind_finalization`): the
+/// payload/header binding check runs first in `verify_checkpoint_chain`, so a
+/// header with a stale payload would trip `PayloadDigestMismatch` before the
+/// chain-link check. The chain-link check runs before signature verification,
+/// so `PrevEpochHeaderHashMismatch` still surfaces without a valid signature.
+fn tamper_prev_epoch_header_hash(header: &Header) -> Header {
+    let mut prev = header.prev_epoch_header_hash();
+    prev.0[0] ^= 0xFF;
+    Header::new(
+        header.parent(),
+        header.height(),
+        header.timestamp(),
+        header.epoch(),
+        header.view(),
+        header.payload_hash(),
+        header.execution_request_hash(),
+        header.checkpoint_hash(),
+        prev,
+        header.added_validators().to_vec(),
+        header.removed_validators(),
+        header.parent_beacon_block_root(),
+    )
+}
+
 #[test_traced("INFO")]
 fn test_checkpoint_verification_fixed_committee() {
     // Runs a network for multiple epochs, then fetches all finalized headers
     // and verifies the checkpoint chain cryptographically.
     let n = 5;
-    let num_epochs = 3u64;
+    let num_epochs = checkpoint::WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS + 2;
     let namespace = "_SUMMIT";
     let link = Link {
         latency: Duration::from_millis(80),
@@ -101,6 +129,8 @@ fn test_checkpoint_verification_fixed_committee() {
             max_deposits_per_epoch: 10,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            minimum_validator_count: 3,
+            invalid_deposit_tax: 0,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -127,7 +157,7 @@ fn test_checkpoint_verification_fixed_committee() {
             let uid = format!("validator_{public_key}");
 
             let engine_client = engine_client_network.create_client(uid.clone());
-            let config = get_default_engine_config(
+            let mut config = get_default_engine_config(
                 engine_client,
                 SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
@@ -137,6 +167,11 @@ fn test_checkpoint_verification_fixed_committee() {
                 validators.clone(),
                 initial_state.clone(),
             );
+            // The harness builds the engine config from genesis_hash + namespace,
+            // but these tests verify the produced checkpoint against the full
+            // `genesis`. Align the engine's chain-bound consensus domain with the
+            // verifier by deriving it from the same genesis config digest.
+            config.config_digest = genesis.config_digest();
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
@@ -209,18 +244,111 @@ fn test_checkpoint_verification_fixed_committee() {
         checkpoint::verify_checkpoint_chain(&genesis, &finalized_headers, &raw_checkpoint)
             .expect("checkpoint verification failed");
 
-        // Verify that a tampered signature causes verification to fail
-        let mut tampered_sig_headers = finalized_headers.clone();
-        tampered_sig_headers[1].finalization.proposal.payload.0[0] ^= 0xFF;
-        let err =
-            checkpoint::verify_checkpoint_chain(&genesis, &tampered_sig_headers, &raw_checkpoint)
-                .expect_err("verification should fail with tampered signature");
+        assert!(
+            checkpoint_epoch > checkpoint::WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS,
+            "test needs a checkpoint beyond the weak-subjectivity window"
+        );
+
+        let weak_subjectivity_epoch =
+            checkpoint_epoch - checkpoint::WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS;
+        let weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
+            epoch: weak_subjectivity_epoch,
+            header_digest: finalized_headers[weak_subjectivity_epoch as usize]
+                .header()
+                .get_digest(),
+        };
+        checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            &finalized_headers,
+            &raw_checkpoint,
+            Some(&weak_subjectivity),
+        )
+        .expect("checkpoint verification with weak-subjectivity anchor failed");
+
+        let wrong_weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
+            epoch: weak_subjectivity_epoch,
+            header_digest: [0xFF; 32].into(),
+        };
+        let err = checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            &finalized_headers,
+            &raw_checkpoint,
+            Some(&wrong_weak_subjectivity),
+        )
+        .expect_err("verification should fail with a mismatched weak-subjectivity anchor");
         assert!(
             matches!(
                 err,
-                CheckpointVerificationError::SignatureVerificationFailed { epoch: 1 }
+                CheckpointVerificationError::WeakSubjectivityHeaderDigestMismatch { epoch, .. }
+                    if epoch == weak_subjectivity_epoch
             ),
-            "expected SignatureVerificationFailed for epoch 1, got: {err}"
+            "expected WeakSubjectivityHeaderDigestMismatch for epoch {weak_subjectivity_epoch}, got: {err}"
+        );
+
+        let stale_weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
+            epoch: 0,
+            header_digest: finalized_headers[0].header().get_digest(),
+        };
+        let err = checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            &finalized_headers,
+            &raw_checkpoint,
+            Some(&stale_weak_subjectivity),
+        )
+        .expect_err("verification should fail with a stale weak-subjectivity anchor");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::WeakSubjectivityCheckpointTooOld {
+                    weak_subjectivity_epoch: 0,
+                    ..
+                }
+            ),
+            "expected WeakSubjectivityCheckpointTooOld for epoch 0, got: {err}"
+        );
+
+        let unavailable_weak_subjectivity = checkpoint::WeakSubjectivityHeaderDigest {
+            epoch: checkpoint_epoch + 1,
+            header_digest: [0u8; 32].into(),
+        };
+        let err = checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
+            &genesis,
+            &finalized_headers,
+            &raw_checkpoint,
+            Some(&unavailable_weak_subjectivity),
+        )
+        .expect_err("verification should fail when the weak-subjectivity epoch is unavailable");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::WeakSubjectivityEpochUnavailable { .. }
+            ),
+            "expected WeakSubjectivityEpochUnavailable, got: {err}"
+        );
+
+        // A finalized header whose certificate payload no longer matches its
+        // header fields must be rejected by the digest-binding check. (Fields are
+        // private, so rebuild the entry via `new_unchecked` to simulate a caller
+        // that smuggles in a mismatched header/certificate pair.)
+        let mut tampered_sig_headers = finalized_headers.clone();
+        let victim_header = tampered_sig_headers[1].header().clone();
+        let mut bad_finalization = tampered_sig_headers[1].finalization().clone();
+        let victim_pc = tampered_sig_headers[1].participant_count();
+        bad_finalization.proposal.payload.0[0] ^= 0xFF;
+        tampered_sig_headers[1] = summit_types::FinalizedHeader::new_unchecked(
+            victim_header,
+            bad_finalization,
+            victim_pc,
+        );
+        let err =
+            checkpoint::verify_checkpoint_chain(&genesis, &tampered_sig_headers, &raw_checkpoint)
+                .expect_err("verification should fail with tampered payload");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::PayloadDigestMismatch { epoch: 1 }
+            ),
+            "expected PayloadDigestMismatch for epoch 1, got: {err}"
         );
 
         // Verify that removing a header causes verification to fail
@@ -240,7 +368,62 @@ fn test_checkpoint_verification_fixed_committee() {
             "expected NonContiguousEpochs for epoch 1, got: {err}"
         );
 
-        common::assert_state_root_consensus(&consensus_state_queries).await;
+        // Verify that breaking the epoch-header chain link causes verification
+        // to fail. Tampering `prev_epoch_header_hash` does not invalidate the
+        // signature (which is over `header.digest`), so this exercises the
+        // chain check independently.
+        let mut chain_tampered_headers = finalized_headers.clone();
+        let tampered_header = tamper_prev_epoch_header_hash(chain_tampered_headers[1].header());
+        let mut tampered_finalization = chain_tampered_headers[1].finalization().clone();
+        // Keep the payload bound to the tampered header so the chain-link check
+        // (not the payload-binding check) is the one that fails.
+        tampered_finalization.proposal.payload = tampered_header.get_digest();
+        let tampered_pc = chain_tampered_headers[1].participant_count();
+        chain_tampered_headers[1] = summit_types::FinalizedHeader::new_unchecked(
+            tampered_header,
+            tampered_finalization,
+            tampered_pc,
+        );
+        let err =
+            checkpoint::verify_checkpoint_chain(&genesis, &chain_tampered_headers, &raw_checkpoint)
+                .expect_err("verification should fail with broken chain link");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::PrevEpochHeaderHashMismatch { epoch: 1 }
+            ),
+            "expected PrevEpochHeaderHashMismatch for epoch 1, got: {err}"
+        );
+
+        // Same check for the genesis anchor (epoch 0).
+        let mut genesis_anchor_tampered = finalized_headers.clone();
+        let anchor_tampered_header =
+            tamper_prev_epoch_header_hash(genesis_anchor_tampered[0].header());
+        let mut anchor_tampered_finalization = genesis_anchor_tampered[0].finalization().clone();
+        // Keep the payload bound to the tampered header so the chain-link check
+        // (not the payload-binding check) is the one that fails.
+        anchor_tampered_finalization.proposal.payload = anchor_tampered_header.get_digest();
+        let anchor_tampered_pc = genesis_anchor_tampered[0].participant_count();
+        genesis_anchor_tampered[0] = summit_types::FinalizedHeader::new_unchecked(
+            anchor_tampered_header,
+            anchor_tampered_finalization,
+            anchor_tampered_pc,
+        );
+        let err = checkpoint::verify_checkpoint_chain(
+            &genesis,
+            &genesis_anchor_tampered,
+            &raw_checkpoint,
+        )
+        .expect_err("verification should fail when genesis anchor is broken");
+        assert!(
+            matches!(
+                err,
+                CheckpointVerificationError::PrevEpochHeaderHashMismatch { epoch: 0 }
+            ),
+            "expected PrevEpochHeaderHashMismatch for epoch 0, got: {err}"
+        );
+
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
 
         context.auditor().state()
     });
@@ -322,6 +505,8 @@ fn test_checkpoint_verification_dynamic_committee() {
             max_deposits_per_epoch: 10,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            minimum_validator_count: 3,
+            invalid_deposit_tax: 0,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -338,7 +523,7 @@ fn test_checkpoint_verification_dynamic_committee() {
         // joining_epoch = 0 + VALIDATOR_NUM_WARM_UP_EPOCHS = 2
         // added_validators will appear in epoch 1's finalized header
         let (deposit, _, _) =
-            common::create_deposit_request(10, min_stake, common::get_domain(), None, None);
+            common::create_deposit_request(10, min_stake, common::get_domain(), None, None, None);
         let deposit_requests =
             common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(deposit)]);
 
@@ -373,7 +558,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             let uid = format!("validator_{public_key}");
 
             let engine_client = engine_client_network.create_client(uid.clone());
-            let config = get_default_engine_config(
+            let mut config = get_default_engine_config(
                 engine_client,
                 SimulatedOracle::new(oracle.clone()),
                 uid.clone(),
@@ -383,6 +568,11 @@ fn test_checkpoint_verification_dynamic_committee() {
                 validators.clone(),
                 initial_state.clone(),
             );
+            // The harness builds the engine config from genesis_hash + namespace,
+            // but these tests verify the produced checkpoint against the full
+            // `genesis`. Align the engine's chain-bound consensus domain with the
+            // verifier by deriving it from the same genesis config digest.
+            config.config_digest = genesis.config_digest();
             let engine = Engine::new(context.with_label(&uid), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
@@ -458,11 +648,11 @@ fn test_checkpoint_verification_dynamic_committee() {
         // Verify epoch 1's header has both added and removed validators
         let epoch_1_header = &finalized_headers[1];
         assert!(
-            !epoch_1_header.header.added_validators.is_empty(),
+            !epoch_1_header.header().added_validators().is_empty(),
             "epoch 1 header should have added_validators"
         );
         assert!(
-            !epoch_1_header.header.removed_validators.is_empty(),
+            !epoch_1_header.header().removed_validators().is_empty(),
             "epoch 1 header should have removed_validators"
         );
 
@@ -470,8 +660,12 @@ fn test_checkpoint_verification_dynamic_committee() {
         checkpoint::verify_checkpoint_chain(&genesis, &finalized_headers, &raw_checkpoint)
             .expect("checkpoint verification with dynamic committee failed");
 
-        common::assert_state_root_consensus_skip(&consensus_state_queries, &[withdrawing_idx])
-            .await;
+        common::assert_state_root_consensus_synced(
+            &context,
+            &consensus_state_queries,
+            &[withdrawing_idx],
+        )
+        .await;
 
         context.auditor().state()
     });

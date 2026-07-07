@@ -16,11 +16,11 @@ The changes were made to accommodate every consensus node having 2 keys to parti
    {
      "jsonrpc": "2.0",
      "method": "getDepositSignature",
-     "params": [32000000000, "0x0000000000000000000000000000000000000000"],
+     "params": [32000000000, "0xYourWithdrawalAddressHere"],
      "id": 1
    }
    ```
-   The `amount` should be the staking amount and `address` should be the Ethereum address you want to be able to withdraw to.
+   The `amount` should be the staking amount and `address` should be the Ethereum address you want to be able to withdraw to. **Replace the `address` placeholder with an address you actually control** — withdrawals and exits are only honored from the exact address bound at deposit time, so a stake deposited against an address you cannot sign for is permanently unrecoverable.
 3. Send a signed transaction to the deposit contract with the calldata from the previous step, along with a value equal to the amount being staked (contract address: `0x00000000219ab540356cBB839Cbe05303d7705Fa`, same as Ethereum).
 4. Download the latest checkpoint and load it into the node.
 5. Keep your node running and it will start participating in the next epoch.
@@ -38,6 +38,8 @@ To submit a withdrawal request, a validator must send a transaction to the pre-d
 - 8 bytes big-endian uint64 for the amount
 
 Note that the validator pubkey is the ED25519 key (left-padded with zeros), not the BLS key.
+
+The big-endian amount above applies only to the calldata you submit to the contract. Per EIP-7002, the predeploy re-encodes the amount to **little-endian** in the `request_data` it emits (`source_address(20) ++ validator_pubkey(48) ++ amount(8)`, 76 bytes), and that little-endian form is what Summit's consensus layer parses. The numeric value is preserved end-to-end; only the encoding differs between the two layers.
 
 When depositing funds into the staking contract (see above), an Ethereum address was specified (`withdrawal_credentials`). A valid withdrawal transaction must be signed by the private key associated with this Ethereum address.
 

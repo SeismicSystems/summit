@@ -15,6 +15,30 @@ pub enum ExecutionRequest {
     ProtocolParam(ProtocolParamRequest),
 }
 
+/// Refund metadata extracted from a 288-byte deposit chunk whose Ed25519 or
+/// BLS key fields could not be decoded. Withdrawal credentials, amount, and
+/// index live at fixed offsets and are recoverable from the raw chunk even
+/// when key decoding fails.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MalformedDepositRequest {
+    pub withdrawal_credentials: [u8; 32],
+    pub amount: u64,
+    pub index: u64,
+    pub reason: &'static str,
+}
+
+/// Per-chunk outcome of parsing a grouped EIP-7685 entry.
+/// `MalformedDeposit` is parse-time only and never round-trips through the
+/// Summit-internal codec — it exists so the finalizer can route a single
+/// bad chunk through the refund branch instead of dropping every chunk in
+/// the entry.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParsedExecutionRequest {
+    Valid(ExecutionRequest),
+    MalformedDeposit(MalformedDepositRequest),
+}
+
 impl ExecutionRequest {
     pub fn try_from_eth_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.is_empty() {
@@ -43,31 +67,69 @@ impl ExecutionRequest {
         }
     }
 
-    pub fn try_from_eth_entry(bytes: &[u8]) -> Result<Vec<Self>, &'static str> {
+    /// Parse a grouped EIP-7685 entry chunk-by-chunk. The outer `Err`
+    /// captures entry-level structural failures (empty buffer, unknown type
+    /// byte, length not a multiple of the per-chunk size). Within a `0x00`
+    /// (deposit) entry, individual chunks whose Ed25519 / BLS keys cannot
+    /// be decoded surface as `MalformedDeposit` carrying the refund
+    /// metadata so the caller can isolate them from chunks that decoded
+    /// cleanly.
+    ///
+    /// Reth's EIP-6110 extraction concatenates same-block deposit logs into
+    /// one type-0x00 entry, so a single contract-accepted but
+    /// parser-invalid deposit would otherwise poison every legitimate
+    /// deposit alongside it.
+    pub fn parse_eth_entry(bytes: &[u8]) -> Result<Vec<ParsedExecutionRequest>, &'static str> {
         if bytes.is_empty() {
             return Err("ExecutionRequest cannot be empty");
         }
 
         match bytes[0] {
-            0x00 => DepositRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
-                requests
-                    .into_iter()
-                    .map(ExecutionRequest::Deposit)
-                    .collect::<Vec<_>>()
-            }),
-            0x01 => WithdrawalRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
-                requests
-                    .into_iter()
-                    .map(ExecutionRequest::Withdrawal)
-                    .collect::<Vec<_>>()
-            }),
-            0xFF => ProtocolParamRequest::try_from_eth_entry_bytes(&bytes[1..]).map(|requests| {
-                requests
-                    .into_iter()
-                    .map(ExecutionRequest::ProtocolParam)
-                    .collect::<Vec<_>>()
-            }),
+            0x00 => {
+                let body = &bytes[1..];
+                if !body
+                    .len()
+                    .is_multiple_of(<DepositRequest as FixedSize>::SIZE)
+                {
+                    return Err("DepositRequest payload length must be a multiple of 288 bytes");
+                }
+                Ok(body
+                    .chunks_exact(<DepositRequest as FixedSize>::SIZE)
+                    .map(parse_deposit_chunk)
+                    .collect())
+            }
+            0x01 => Ok(WithdrawalRequest::try_from_eth_entry_bytes(&bytes[1..])?
+                .into_iter()
+                .map(|w| ParsedExecutionRequest::Valid(ExecutionRequest::Withdrawal(w)))
+                .collect()),
+            0xFF => Ok(ProtocolParamRequest::try_from_eth_entry_bytes(&bytes[1..])?
+                .into_iter()
+                .map(|p| ParsedExecutionRequest::Valid(ExecutionRequest::ProtocolParam(p)))
+                .collect()),
             _request_type => Err("Unknown execution request type"),
+        }
+    }
+}
+
+fn parse_deposit_chunk(chunk: &[u8]) -> ParsedExecutionRequest {
+    match DepositRequest::try_from_eth_bytes(chunk) {
+        Ok(deposit) => ParsedExecutionRequest::Valid(ExecutionRequest::Deposit(deposit)),
+        Err(reason) => {
+            // try_from_eth_bytes only fails for key-decode errors on a
+            // 288-byte chunk, so these byte slices are guaranteed to be
+            // extractable.
+            let withdrawal_credentials: [u8; 32] =
+                chunk[80..112].try_into().expect("288-byte deposit chunk");
+            let amount =
+                u64::from_le_bytes(chunk[112..120].try_into().expect("288-byte deposit chunk"));
+            let index =
+                u64::from_le_bytes(chunk[280..288].try_into().expect("288-byte deposit chunk"));
+            ParsedExecutionRequest::MalformedDeposit(MalformedDepositRequest {
+                withdrawal_credentials,
+                amount,
+                index,
+                reason,
+            })
         }
     }
 }
@@ -589,7 +651,7 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use commonware_codec::{ReadExt, Write};
-    use commonware_cryptography::Signer;
+    use commonware_cryptography::{Signer, Verifier as _, ed25519};
 
     #[test]
     fn test_deposit_request_codec() {
@@ -612,6 +674,105 @@ mod tests {
         // Test Read
         let decoded = DepositRequest::read(&mut buf.as_ref()).unwrap();
         assert_eq!(decoded, deposit);
+    }
+
+    #[test]
+    fn test_deposit_signature_domain_binds_deposit_to_genesis_hash() {
+        let node_private_key = ed25519::PrivateKey::from_seed(1);
+        let consensus_private_key = bls12381::PrivateKey::from_seed(2);
+        let deposit = DepositRequest {
+            node_pubkey: node_private_key.public_key(),
+            consensus_pubkey: consensus_private_key.public_key(),
+            withdrawal_credentials: [3u8; 32],
+            amount: 32000000000u64,
+            node_signature: [0u8; 64],
+            consensus_signature: [0u8; 96],
+            index: 42u64,
+        };
+
+        let namespace = b"summit-network";
+        let source_domain = crate::deposit_signature_domain([1u8; 32], namespace);
+        let target_domain = crate::deposit_signature_domain([2u8; 32], namespace);
+        assert_ne!(source_domain, target_domain);
+
+        let source_message = deposit.as_message(source_domain);
+        let target_message = deposit.as_message(target_domain);
+        let node_signature = node_private_key.sign(&[], &source_message);
+        let consensus_signature = consensus_private_key.sign(&[], &source_message);
+
+        assert!(
+            deposit
+                .node_pubkey
+                .verify(&[], &source_message, &node_signature)
+        );
+        assert!(
+            deposit
+                .consensus_pubkey
+                .verify(&[], &source_message, &consensus_signature)
+        );
+        assert!(
+            !deposit
+                .node_pubkey
+                .verify(&[], &target_message, &node_signature)
+        );
+        assert!(
+            !deposit
+                .consensus_pubkey
+                .verify(&[], &target_message, &consensus_signature)
+        );
+    }
+
+    #[test]
+    fn test_deposit_signature_domain_binds_deposit_to_namespace() {
+        // Two Summit deployments can share an EL genesis hash yet be distinct
+        // networks (different namespace). A deposit signature authorized for one
+        // namespace must not verify under another, even with an identical genesis
+        // hash and identical deposit fields.
+        let node_private_key = ed25519::PrivateKey::from_seed(1);
+        let consensus_private_key = bls12381::PrivateKey::from_seed(2);
+        let deposit = DepositRequest {
+            node_pubkey: node_private_key.public_key(),
+            consensus_pubkey: consensus_private_key.public_key(),
+            withdrawal_credentials: [3u8; 32],
+            amount: 32000000000u64,
+            node_signature: [0u8; 64],
+            consensus_signature: [0u8; 96],
+            index: 42u64,
+        };
+
+        // Same genesis hash, different namespace.
+        let genesis_hash = [7u8; 32];
+        let source_domain = crate::deposit_signature_domain(genesis_hash, b"summit-network-a");
+        let target_domain = crate::deposit_signature_domain(genesis_hash, b"summit-network-b");
+        assert_ne!(source_domain, target_domain);
+
+        let source_message = deposit.as_message(source_domain);
+        let target_message = deposit.as_message(target_domain);
+        let node_signature = node_private_key.sign(&[], &source_message);
+        let consensus_signature = consensus_private_key.sign(&[], &source_message);
+
+        // Valid under the originating namespace...
+        assert!(
+            deposit
+                .node_pubkey
+                .verify(&[], &source_message, &node_signature)
+        );
+        assert!(
+            deposit
+                .consensus_pubkey
+                .verify(&[], &source_message, &consensus_signature)
+        );
+        // ...but rejected under a different namespace despite the same genesis hash.
+        assert!(
+            !deposit
+                .node_pubkey
+                .verify(&[], &target_message, &node_signature)
+        );
+        assert!(
+            !deposit
+                .consensus_pubkey
+                .verify(&[], &target_message, &consensus_signature)
+        );
     }
 
     #[test]
@@ -787,6 +948,131 @@ mod tests {
         } else {
             panic!("Expected Invalid error");
         }
+    }
+
+    /// Build a valid 288-byte deposit chunk by serializing a real
+    /// `DepositRequest` whose keys decode cleanly.
+    fn valid_deposit_chunk(
+        seed: u64,
+        withdrawal_credentials: [u8; 32],
+        amount: u64,
+        index: u64,
+    ) -> ([u8; 288], DepositRequest) {
+        let node_private_key = commonware_cryptography::ed25519::PrivateKey::from_seed(seed);
+        let consensus_private_key = bls12381::PrivateKey::from_seed(seed);
+        let deposit = DepositRequest {
+            node_pubkey: node_private_key.public_key(),
+            consensus_pubkey: consensus_private_key.public_key(),
+            withdrawal_credentials,
+            amount,
+            node_signature: [seed as u8; 64],
+            consensus_signature: [seed as u8; 96],
+            index,
+        };
+        let mut buf = BytesMut::new();
+        deposit.write(&mut buf);
+        let chunk: [u8; 288] = buf.as_ref().try_into().unwrap();
+        (chunk, deposit)
+    }
+
+    /// Build a 288-byte chunk that the public deposit contract would accept
+    /// (length / withdrawal-credentials shape look fine) but whose BLS
+    /// consensus pubkey field bytes cannot be decoded as a G1 point. Returns
+    /// the chunk together with the embedded refund metadata so the test can
+    /// pin what the per-chunk parser should surface.
+    fn parser_invalid_deposit_chunk(
+        withdrawal_credentials: [u8; 32],
+        amount: u64,
+        index: u64,
+    ) -> [u8; 288] {
+        let mut chunk = [0u8; 288];
+        // node_pubkey: 32 bytes that pass Ed25519 decoding (any byte pattern
+        // works here — Ed25519 decode does not reject curve points up front).
+        chunk[0..32].copy_from_slice(&[0x01u8; 32]);
+        // consensus_pubkey: 48 bytes that fail BLS12-381 G1 decoding.
+        // Compressed-form flag bits set but x coordinate = 2^381 - 1, which
+        // is far above the field modulus p, so decode must reject.
+        chunk[32] = 0x9F;
+        for b in chunk.iter_mut().take(80).skip(33) {
+            *b = 0xFF;
+        }
+        // withdrawal_credentials (32 bytes): copied verbatim by the parser.
+        chunk[80..112].copy_from_slice(&withdrawal_credentials);
+        // amount (8 bytes, little-endian).
+        chunk[112..120].copy_from_slice(&amount.to_le_bytes());
+        // node_signature (64 bytes) + consensus_signature (96 bytes): not
+        // decoded at parse time; leave as zero.
+        // index (8 bytes, little-endian).
+        chunk[280..288].copy_from_slice(&index.to_le_bytes());
+        chunk
+    }
+
+    /// Regression test for the grouped-deposit poisoning attack. Reth's
+    /// EIP-6110 deposit extraction concatenates every same-block deposit
+    /// log into a single type-0x00 EIP-7685 entry. Summit's per-chunk
+    /// parser must surface the valid chunk as `Valid(Deposit(_))` and the
+    /// contract-accepted-but-parser-invalid chunk as `MalformedDeposit(_)`
+    /// carrying the refund metadata — without dropping either.
+    #[test]
+    fn parse_eth_entry_isolates_malformed_chunk_in_grouped_deposit_entry() {
+        let valid_creds = [0x01u8; 32];
+        let valid_amount = 32_000_000_000u64; // 32 ETH in gwei
+        let valid_index = 7u64;
+        let (valid_chunk, valid_deposit) =
+            valid_deposit_chunk(11, valid_creds, valid_amount, valid_index);
+
+        let bad_creds = [0x01u8; 32];
+        let bad_amount = 1_000_000_000u64; // 1 ETH minimum
+        let bad_index = 8u64;
+        let bad_chunk = parser_invalid_deposit_chunk(bad_creds, bad_amount, bad_index);
+
+        // Sanity: each chunk on its own behaves as we expect, so the
+        // grouped-entry test below is exercising the poisoning path and
+        // nothing else.
+        assert!(
+            DepositRequest::try_from_eth_bytes(&bad_chunk).is_err(),
+            "test setup: parser_invalid_deposit_chunk did not fail decoding"
+        );
+        assert!(
+            DepositRequest::try_from_eth_bytes(&valid_chunk).is_ok(),
+            "test setup: valid_deposit_chunk did not parse on its own"
+        );
+
+        // Build the 0x00 entry the way Reth/EIP-6110 would: one type byte
+        // followed by concatenated 288-byte chunks.
+        let mut entry = vec![0x00];
+        entry.extend_from_slice(&valid_chunk);
+        entry.extend_from_slice(&bad_chunk);
+
+        let parsed = ExecutionRequest::parse_eth_entry(&entry)
+            .expect("entry-level structure is valid (length is a multiple of 288)");
+        assert_eq!(parsed.len(), 2);
+
+        match &parsed[0] {
+            ParsedExecutionRequest::Valid(ExecutionRequest::Deposit(d)) => {
+                assert_eq!(d, &valid_deposit)
+            }
+            other => panic!("valid chunk was not surfaced as Valid(Deposit): {other:?}"),
+        }
+        match &parsed[1] {
+            ParsedExecutionRequest::MalformedDeposit(m) => {
+                assert_eq!(m.withdrawal_credentials, bad_creds);
+                assert_eq!(m.amount, bad_amount);
+                assert_eq!(m.index, bad_index);
+            }
+            other => panic!("parser-invalid chunk was not surfaced as MalformedDeposit: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_eth_entry_rejects_deposit_entry_with_truncated_length() {
+        // 1 (type byte) + 287 bytes is not a valid deposit entry — the body
+        // must be a multiple of 288. This is an entry-level structural
+        // failure that cannot be recovered per-chunk.
+        let mut entry = vec![0x00];
+        entry.extend_from_slice(&[0u8; 287]);
+        let err = ExecutionRequest::parse_eth_entry(&entry).unwrap_err();
+        assert!(err.contains("multiple of 288"), "unexpected error: {err}");
     }
 
     #[test]

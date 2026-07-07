@@ -10,9 +10,22 @@ pub enum RpcError {
     EpochNotFound,
     InvalidPublicKey(String),
     GenesisPathError(String),
+    InvalidGenesis(String),
     IoError(String),
     InvalidKey(String),
+    StateProofKeyLimit {
+        max: usize,
+        actual: usize,
+    },
+    StateProofCostLimit {
+        max: usize,
+        actual: usize,
+    },
+    StateProofBusy {
+        max: usize,
+    },
     Internal(String),
+    DisabledInObserverMode,
     #[cfg(feature = "permissioned")]
     InvalidAdminAddress(String),
     #[cfg(feature = "permissioned")]
@@ -49,11 +62,38 @@ impl From<RpcError> for ErrorObjectOwned {
             RpcError::GenesisPathError(msg) => {
                 ErrorObjectOwned::owned(2001, "Invalid genesis path", Some(msg))
             }
+            RpcError::InvalidGenesis(msg) => {
+                ErrorObjectOwned::owned(2005, "Invalid genesis content", Some(msg))
+            }
             RpcError::IoError(msg) => ErrorObjectOwned::owned(2002, "I/O error", Some(msg)),
             RpcError::InvalidKey(msg) => {
                 ErrorObjectOwned::owned(3002, "Invalid key descriptor", Some(msg))
             }
+            RpcError::StateProofKeyLimit { max, actual } => ErrorObjectOwned::owned(
+                3005,
+                "State proof key limit exceeded",
+                Some(format!("requested {actual} keys, maximum is {max}")),
+            ),
+            RpcError::StateProofCostLimit { max, actual } => ErrorObjectOwned::owned(
+                3006,
+                "State proof cost limit exceeded",
+                Some(format!("requested cost {actual}, maximum is {max}")),
+            ),
+            RpcError::StateProofBusy { max } => ErrorObjectOwned::owned(
+                3007,
+                "State proof generation at capacity",
+                Some(format!(
+                    "at the limit of {max} concurrent state proof requests; retry shortly"
+                )),
+            ),
             RpcError::Internal(msg) => ErrorObjectOwned::owned(5000, "Internal error", Some(msg)),
+            RpcError::DisabledInObserverMode => ErrorObjectOwned::owned(
+                4003,
+                "Method disabled in observer mode",
+                Some(
+                    "this node runs with --observer and does not sign with the validator keystore",
+                ),
+            ),
             #[cfg(feature = "permissioned")]
             RpcError::InvalidAdminAddress(msg) => {
                 ErrorObjectOwned::owned(4000, "Invalid admin address", Some(msg))
