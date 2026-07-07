@@ -480,10 +480,6 @@ impl ConsensusState {
         self.ssz_tree.set_epoch_genesis_hash(&hash);
     }
 
-    pub fn get_head_digest_ref(&self) -> &Digest {
-        &self.head_digest
-    }
-
     pub fn set_head_digest(&mut self, digest: Digest) {
         self.head_digest = digest;
         self.ssz_tree.set_head_digest(&digest.0);
@@ -899,10 +895,6 @@ impl ConsensusState {
 
         #[cfg(feature = "prom")]
         histogram!("ssz_push_deposit_micros").record(start.elapsed().as_micros() as f64);
-    }
-
-    pub fn peek_deposit(&self) -> Option<&DepositRequest> {
-        self.deposit_queue.front()
     }
 
     pub fn get_deposit(&self, index: usize) -> Option<&DepositRequest> {
@@ -1430,25 +1422,6 @@ impl ConsensusState {
         Some(w)
     }
 
-    pub fn pop_withdrawal_by_index(
-        &mut self,
-        withdrawal_epoch: u64,
-        index: u64,
-    ) -> Option<PendingWithdrawal> {
-        #[cfg(feature = "prom")]
-        let start = std::time::Instant::now();
-
-        let w = self
-            .withdrawal_queue
-            .pop_by_index(withdrawal_epoch, index)?;
-        self.ssz_tree.rebuild_withdrawals(&self.withdrawal_queue);
-
-        #[cfg(feature = "prom")]
-        histogram!("ssz_pop_withdrawal_micros").record(start.elapsed().as_micros() as f64);
-
-        Some(w)
-    }
-
     pub fn get_withdrawal(&self, pubkey: &[u8; 32]) -> Option<&PendingWithdrawal> {
         self.withdrawal_queue.get_withdrawal(pubkey)
     }
@@ -1456,15 +1429,6 @@ impl ConsensusState {
     /// Get all pending withdrawals for a specific epoch
     pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Vec<&PendingWithdrawal> {
         self.withdrawal_queue.get_for_epoch(epoch)
-    }
-
-    pub fn get_withdrawals_for_epoch_with_total_cap(
-        &self,
-        epoch: u64,
-        max_total: usize,
-    ) -> Vec<&PendingWithdrawal> {
-        self.withdrawal_queue
-            .get_for_epoch_with_total_cap(epoch, max_total)
     }
 
     /// Payout amount for one due withdrawal against `balance`, the validator's
@@ -1603,11 +1567,6 @@ impl ConsensusState {
     /// Get the number of pending withdrawals for a specific epoch
     pub fn get_withdrawal_count_for_epoch(&self, epoch: u64) -> usize {
         self.withdrawal_queue.count_for_epoch(epoch)
-    }
-
-    /// Get all epochs that have pending withdrawals
-    pub fn get_epochs_with_withdrawals(&self) -> Vec<u64> {
-        self.withdrawal_queue.epochs_with_withdrawals()
     }
 
     /// Apply the staged committee deltas at an epoch boundary, mutating account
@@ -1763,16 +1722,6 @@ impl ConsensusState {
         peers
     }
 
-    pub fn get_active_validators_as<BLS: Clone>(&self) -> Vec<(PublicKey, BLS)>
-    where
-        bls12381::PublicKey: Into<BLS>,
-    {
-        self.get_active_validators()
-            .into_iter()
-            .map(|(pk, bls_pk)| (pk, bls_pk.into()))
-            .collect()
-    }
-
     pub fn apply_protocol_parameter_changes(&mut self) -> Result<bool, Error> {
         let mut minimum_stake_changed = false;
         for param in self.protocol_param_changes.drain(0..) {
@@ -1880,14 +1829,6 @@ impl ConsensusState {
 
         #[cfg(feature = "prom")]
         histogram!("ssz_rebuild_tree_micros").record(start.elapsed().as_micros() as f64);
-    }
-
-    pub fn validator_is_joining(&self, node_pubkey: &PublicKey) -> bool {
-        let validator_pubkey: [u8; 32] = node_pubkey.as_ref().try_into().unwrap();
-        self.validator_accounts
-            .get(&validator_pubkey)
-            .map(|acc| acc.status == ValidatorStatus::Joining)
-            .unwrap_or(false)
     }
 }
 

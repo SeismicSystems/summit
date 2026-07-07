@@ -324,19 +324,6 @@ impl Genesis {
         Ok(validators)
     }
 
-    pub fn get_consensus_keys(
-        &self,
-    ) -> Result<Vec<bls12381::PublicKey>, Box<dyn std::error::Error>> {
-        let mut keys = Vec::new();
-        for validator in &self.validators {
-            let key_bytes = from_hex_formatted(&validator.consensus_public_key)
-                .ok_or("Invalid hex format for consensus public key")?;
-            let key = bls12381::PublicKey::decode(&*key_bytes)?;
-            keys.push(key);
-        }
-        Ok(keys)
-    }
-
     pub fn get_validator_keys(
         &self,
     ) -> Result<Vec<(PublicKey, bls12381::PublicKey)>, Box<dyn std::error::Error>> {
