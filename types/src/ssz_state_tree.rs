@@ -1039,18 +1039,6 @@ impl SszStateTree {
         (gindex, node_value, branch)
     }
 
-    /// Generate a proof for a deposit identified by node pubkey.
-    pub fn generate_deposit_proof_by_key(
-        &self,
-        node_pubkey: &PublicKey,
-        deposits: &VecDeque<DepositRequest>,
-    ) -> Option<SszProof> {
-        let index = deposits
-            .iter()
-            .position(|d| &d.node_pubkey == node_pubkey)?;
-        self.generate_deposit_proof(index)
-    }
-
     /// Generate a proof for a withdrawal identified by validator pubkey (O(1) lookup).
     pub fn generate_withdrawal_proof_by_key(&self, pubkey: &[u8; 32]) -> Option<SszProof> {
         let &slot = self.withdrawal_pubkey_index.get(pubkey)?;
@@ -1098,19 +1086,6 @@ impl SszStateTree {
                 self.deposit_count,
             ),
         })
-    }
-
-    /// Generate a field-level proof for a deposit identified by node pubkey.
-    pub fn generate_deposit_field_proof_by_key(
-        &self,
-        node_pubkey: &PublicKey,
-        field_index: usize,
-        deposits: &VecDeque<DepositRequest>,
-    ) -> Option<SszProof> {
-        let index = deposits
-            .iter()
-            .position(|d| &d.node_pubkey == node_pubkey)?;
-        self.generate_deposit_field_proof(index, field_index)
     }
 
     /// Internal helper: produce (gindex, node_value, branch) for a whole-deposit proof.
@@ -1362,20 +1337,6 @@ impl SszStateTree {
         })
     }
 
-    /// Generate a field-level proof for an added validator identified by node key.
-    pub fn generate_added_validator_field_proof_by_key(
-        &self,
-        node_key: &PublicKey,
-        field_index: usize,
-        added_validators: &BTreeMap<u64, Vec<AddedValidator>>,
-    ) -> Option<SszProof> {
-        let index = added_validators
-            .values()
-            .flat_map(|v| v.iter())
-            .position(|av| &av.node_key == node_key)?;
-        self.generate_added_validator_field_proof(index, field_index)
-    }
-
     /// Internal helper: produce (gindex, node_value, branch) for a whole-added-validator proof.
     fn added_validator_item_proof(&self, slot: usize) -> (u64, [u8; 32], Vec<[u8; 32]>) {
         let sd = self.added_validator_tree.depth();
@@ -1420,11 +1381,6 @@ impl SszStateTree {
                 self.removed_validator_count,
             ),
         })
-    }
-
-    /// Validator subtree depth.
-    pub fn validator_tree_depth(&self) -> usize {
-        self.validator_tree.depth()
     }
 
     /// Top-level tree depth.

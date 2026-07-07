@@ -436,18 +436,17 @@ impl EngineClient for BadBlockEngineClient {
 
 #[cfg(feature = "bench")]
 pub mod benchmarking {
+    use crate::Block;
     use crate::engine_client::{EngineClient, EngineClientError};
-    use crate::{Block, Digest};
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
-    use alloy_primitives::{Address, B256, FixedBytes, U256};
+    use alloy_primitives::{Address, FixedBytes, U256};
     use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
     use alloy_rpc_types_engine::{
         ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3,
         ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
     };
     use alloy_transport_ipc::IpcConnect;
-    use serde::{Deserialize, Serialize};
     use std::fs;
     use std::path::PathBuf;
 
@@ -536,44 +535,6 @@ pub mod benchmarking {
                 .fork_choice_updated_v3(fork_choice_state, None)
                 .await
                 .map_err(EngineClientError::from)
-        }
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct EthereumBlockData {
-        pub block_number: u64,
-        pub payload: ExecutionPayloadV3,
-        pub requests: FixedBytes<32>,
-        pub parent_beacon_block_root: B256,
-        pub versioned_hashes: Vec<B256>,
-    }
-
-    impl EthereumBlockData {
-        pub fn from_file(file_path: &PathBuf) -> anyhow::Result<Self> {
-            let json_data = fs::read_to_string(file_path)?;
-            let block_data: EthereumBlockData = serde_json::from_str(&json_data)?;
-            Ok(block_data)
-        }
-
-        pub fn to_block(self, parent: Digest, height: u64, timestamp: u64, view: u64) -> Block {
-            // Create execution requests from the stored requests hash
-            let execution_requests = Vec::new(); // Convert from self.requests if needed
-
-            // Compute and return the entire block
-            Block::compute_digest(
-                parent,
-                height,
-                timestamp,
-                self.payload,
-                execution_requests,
-                0, // epoch
-                view,
-                None,                    // checkpoint_hash
-                Digest::from([0u8; 32]), // prev_epoch_header_hash
-                Vec::new(),              // added_validators
-                Vec::new(),              // removed_validators
-                [0u8; 32],               // parent_beacon_block_root
-            )
         }
     }
 }

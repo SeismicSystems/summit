@@ -211,23 +211,6 @@ impl WithdrawalQueue {
         self.withdrawals.push_back(pending);
     }
 
-    pub fn push_refund(&mut self, epoch: u64, request: WithdrawalRequest) {
-        let index = self.next_index;
-        self.next_index += 1;
-        let pending = PendingWithdrawal {
-            inner: Withdrawal {
-                index,
-                validator_index: 0,
-                address: request.source_address,
-                amount: request.amount,
-            },
-            pubkey: request.validator_pubkey,
-            epoch,
-            kind: WithdrawalKind::DepositRefund,
-        };
-        self.refunds.push_back(pending);
-    }
-
     /// Peek at the next validator withdrawal without removing it, returning it only
     /// if it is due (its earliest-processable `epoch <= current_epoch`). Since the
     /// queue is epoch-ordered, a not-due front means nothing is due.
@@ -235,12 +218,6 @@ impl WithdrawalQueue {
         self.withdrawals
             .front()
             .filter(|w| w.epoch <= current_epoch)
-    }
-
-    /// Peek at the next deposit refund without removing it, returning it only if it
-    /// is due (its earliest-processable `epoch <= current_epoch`).
-    pub fn peek_refund(&self, current_epoch: u64) -> Option<&PendingWithdrawal> {
-        self.refunds.front().filter(|w| w.epoch <= current_epoch)
     }
 
     fn deque(&self, kind: WithdrawalKind) -> &VecDeque<PendingWithdrawal> {
@@ -410,10 +387,6 @@ impl WithdrawalQueue {
             + self.refunds.iter().filter(|w| w.epoch <= epoch).count()
     }
 
-    pub fn count_for_epoch_by_kind(&self, epoch: u64, kind: WithdrawalKind) -> usize {
-        self.deque(kind).iter().filter(|w| w.epoch <= epoch).count()
-    }
-
     /// Get all epochs that have pending withdrawals.
     pub fn epochs_with_withdrawals(&self) -> Vec<u64> {
         self.withdrawals
@@ -458,14 +431,6 @@ impl WithdrawalQueue {
             .iter()
             .chain(self.refunds.iter())
             .find(|w| &w.pubkey == pubkey)
-    }
-
-    /// Iterate over the validator withdrawals scheduled for `epoch`, in queue order.
-    pub fn withdrawals_iter(&self, epoch: u64) -> impl Iterator<Item = PendingWithdrawal> {
-        self.withdrawals
-            .iter()
-            .filter(move |w| w.epoch == epoch)
-            .cloned()
     }
 }
 
