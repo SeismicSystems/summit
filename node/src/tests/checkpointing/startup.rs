@@ -129,3 +129,74 @@ fn single_file_import_has_no_chain_and_is_refused() {
         CheckpointStartupDecision::SkipUnsafe
     );
 }
+
+// Checkpoints are created at the penultimate block of an epoch and cannot nest
+// a pending checkpoint (ConsensusState::try_from rejects it), so a state
+// restored from a checkpoint always starts with pending_checkpoint unset. Live
+// peers at that point have it set, and their captured state root includes its
+// digest leaf; the epoch terminal block commits that root as
+// parent_beacon_block_root and its aux data requires the pending checkpoint.
+// read_checkpoint must therefore repopulate the field from the checkpoint it
+// just loaded and re-capture the root, or the restored node cannot
+// propose/verify/certify the terminal block and its state root diverges from
+// its peers until the epoch boundary.
+#[test]
+fn read_checkpoint_repopulates_pending_checkpoint() {
+    // A live peer at the penultimate block (finalizer flow: create the
+    // checkpoint, set it as pending, capture the root).
+    let mut live = ConsensusState::new(
+        Default::default(),
+        32_000_000_000,
+        NonZeroU64::new(10).unwrap(),
+        10_000,
+        Address::ZERO,
+        3,
+        16,
+        0,
+        1,
+        0,
+    );
+    let checkpoint = Checkpoint::new(&live);
+    live.set_pending_checkpoint(Some(checkpoint.clone()));
+    live.capture_state_root(live.get_latest_height());
+
+    let assert_restored = |restored: &ConsensusState, branch: &str| {
+        assert_eq!(
+            restored.get_pending_checkpoint().map(|cp| cp.digest),
+            Some(checkpoint.digest),
+            "{branch}: restore must repopulate pending_checkpoint from the loaded checkpoint"
+        );
+        assert_eq!(
+            restored.get_state_root(),
+            live.get_state_root(),
+            "{branch}: restored state root must match the live penultimate root"
+        );
+    };
+
+    // Single-file branch.
+    let file_path = std::env::temp_dir().join(format!(
+        "summit_repopulate_checkpoint_{}.ssz",
+        std::process::id()
+    ));
+    std::fs::write(&file_path, checkpoint.as_ssz_bytes()).unwrap();
+    let loaded = read_checkpoint::<MultisigScheme>(&file_path.to_str().unwrap().to_string(), false);
+    let _ = std::fs::remove_file(&file_path);
+    assert_restored(
+        &loaded.consensus_state.expect("checkpoint state must load"),
+        "file",
+    );
+
+    // Directory branch.
+    let dir_path = std::env::temp_dir().join(format!(
+        "summit_repopulate_checkpoint_dir_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir_path).unwrap();
+    std::fs::write(dir_path.join("checkpoint"), checkpoint.as_ssz_bytes()).unwrap();
+    let loaded = read_checkpoint::<MultisigScheme>(&dir_path.to_str().unwrap().to_string(), false);
+    let _ = std::fs::remove_dir_all(&dir_path);
+    assert_restored(
+        &loaded.consensus_state.expect("checkpoint state must load"),
+        "directory",
+    );
+}

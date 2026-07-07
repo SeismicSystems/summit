@@ -752,6 +752,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
 
 #[cfg(test)]
 mod tests {
+    use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use crate::dynamic_epocher::DynamicEpocher;
@@ -829,7 +830,6 @@ mod tests {
 
     #[test]
     fn test_checkpoint_ssz_encode_decode_with_populated_state() {
-        use crate::account::{ValidatorAccount, ValidatorStatus};
         use crate::execution_request::DepositRequest;
         use crate::withdrawal::PendingWithdrawal;
         use alloy_eips::eip4895::Withdrawal;
@@ -2176,6 +2176,77 @@ mod tests {
             ),
             "verifier must reject a checkpoint carrying an extra Joining account not \
              committed by the terminal finalized header, got {result:?}"
+        );
+    }
+
+    // Checkpoint data encodes the state before set_pending_checkpoint runs
+    // (nested pending checkpoints are rejected at decode), so a restore has to
+    // repopulate the field from the outer checkpoint and re-capture the root
+    // to land in the exact state a live peer had at the penultimate block.
+    // This pins the mechanism the restore path relies on: a decode-rebuilt SSZ
+    // tree plus the pending digest leaf plus a capture equals the live,
+    // incrementally built tree. The live root here is what the epoch terminal
+    // block commits as parent_beacon_block_root.
+    #[test]
+    fn restored_state_with_repopulated_pending_checkpoint_matches_live() {
+        let mut live = ConsensusState::new(
+            Default::default(),
+            32_000_000_000,
+            NonZeroU64::new(10).unwrap(),
+            10_000,
+            Address::ZERO,
+            3,
+            16,
+            0,
+            1,
+            0,
+        );
+        let node_key: [u8; 32] = ed25519::PrivateKey::from_seed(42)
+            .public_key()
+            .as_ref()
+            .try_into()
+            .expect("ed25519 public key is 32 bytes");
+        live.set_account(
+            node_key,
+            ValidatorAccount {
+                consensus_public_key: bls12381::PrivateKey::from_seed(42).public_key(),
+                withdrawal_credentials: Address::from([3u8; 20]),
+                balance: 32_000_000_000,
+                status: ValidatorStatus::Active,
+                joining_epoch: 0,
+                last_deposit_index: 0,
+            },
+        );
+        live.rebuild_ssz_tree();
+
+        // The finalizer's penultimate-block flow: create the checkpoint, set
+        // it as pending, then capture the root the terminal block commits.
+        let checkpoint = Checkpoint::new(&live);
+        live.set_pending_checkpoint(Some(checkpoint.clone()));
+        live.capture_state_root(live.get_latest_height());
+
+        // Without repopulation the restored root is missing the pending
+        // checkpoint digest leaf and cannot match the live root. If this ever
+        // becomes equal, the assertions below pin nothing.
+        let mut restored = ConsensusState::try_from(&checkpoint).expect("checkpoint must decode");
+        assert_ne!(
+            restored.get_state_root(),
+            live.get_state_root(),
+            "a restore without repopulation must diverge from the live root"
+        );
+
+        restored.set_pending_checkpoint(Some(checkpoint.clone()));
+        restored.capture_state_root(restored.get_latest_height());
+
+        assert_eq!(
+            restored.get_pending_checkpoint().map(|cp| cp.digest),
+            Some(checkpoint.digest),
+            "repopulation must install the restored checkpoint as pending"
+        );
+        assert_eq!(
+            restored.get_state_root(),
+            live.get_state_root(),
+            "a repopulated restore must reproduce the live penultimate state root"
         );
     }
 }
