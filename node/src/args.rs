@@ -1244,6 +1244,23 @@ pub(crate) struct LoadedCheckpoint<S: Scheme> {
     pub(crate) finalized_headers_chain: Option<Vec<FinalizedHeader<S>>>,
 }
 
+/// Rebuild the live consensus state a peer had at the penultimate block of the
+/// epoch from a checkpoint artifact. Checkpoint data cannot nest the pending
+/// checkpoint (`ConsensusState::try_from` rejects it), but live peers at the
+/// checkpoint's height have it set, and their captured state root commits its
+/// digest. Repopulate the field from the outer checkpoint and re-capture the
+/// root so the restored node can serve aux data for the epoch's terminal block
+/// and matches the parent_beacon_block_root that block commits. The EL block
+/// number passed to the capture equals the consensus height, which block
+/// verification enforces.
+fn restore_state_from_checkpoint(checkpoint: &Checkpoint) -> ConsensusState {
+    let mut state = ConsensusState::try_from(checkpoint)
+        .expect("failed to create consensus state from checkpoint");
+    state.set_pending_checkpoint(Some(checkpoint.clone()));
+    state.capture_state_root(state.get_latest_height());
+    state
+}
+
 pub(crate) fn read_checkpoint<S: Scheme>(
     checkpoint_path: &String,
     checkpoint_or_default: bool,
@@ -1259,8 +1276,7 @@ where
         let checkpoint =
             Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
 
-        let consensus_state = ConsensusState::try_from(&checkpoint)
-            .expect("failed to create consensus state from checkpoint");
+        let consensus_state = restore_state_from_checkpoint(&checkpoint);
 
         info!(
             epoch = consensus_state.get_epoch(),
@@ -1289,8 +1305,7 @@ where
             let checkpoint =
                 Checkpoint::from_ssz_bytes(&checkpoint_bytes).expect("failed to parse checkpoint");
 
-            let consensus_state = ConsensusState::try_from(&checkpoint)
-                .expect("failed to create consensus state from checkpoint");
+            let consensus_state = restore_state_from_checkpoint(&checkpoint);
 
             (Some(consensus_state), Some(checkpoint))
         };
