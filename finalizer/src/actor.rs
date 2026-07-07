@@ -2117,8 +2117,34 @@ async fn execute_block<
     }
 
     // Validate block against execution layer state
-    // Note: withdrawals are validated in the application layer before voting
     if !payload_status.is_valid() {
+        return Ok(ExecuteOutcome::InvalidPayload);
+    }
+
+    // The EL only checks the withdrawals list against the header's
+    // withdrawalsRoot, so an internally consistent bogus list is VALID to it.
+    // Verify enforces equality against the emitted payouts before voting, so
+    // reaching this path with a mismatched list requires a certificate from a
+    // malicious 2/3+1 quorum (honest committees never certify such a block).
+    // This path also executes certified blocks the local node never verified
+    // (finalized catch up, notarized forks), so recheck here, before the EL
+    // forkchoice adoption and any state mutation. A mismatch is fail stop
+    // territory: route it through the InvalidPayload policy (fatal shutdown on
+    // the finalized path, discard on the fork path) instead of the raw assert
+    // in apply_withdrawal_payouts, which would panic after the EL already
+    // adopted the block.
+    let expected_withdrawals = if is_last_block_of_epoch(state.get_epocher(), new_height) {
+        state.emit_withdrawal_payouts(state.get_epoch())
+    } else {
+        Vec::new()
+    };
+    if block.payload.payload_inner.withdrawals.as_slice() != expected_withdrawals.as_slice() {
+        warn!(
+            height = new_height,
+            expected_count = expected_withdrawals.len(),
+            actual_count = block.payload.payload_inner.withdrawals.len(),
+            "block withdrawals do not match consensus state payouts; rejecting"
+        );
         return Ok(ExecuteOutcome::InvalidPayload);
     }
 
