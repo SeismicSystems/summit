@@ -501,6 +501,8 @@ Deposit field names: `node_pubkey`, `consensus_pubkey`, `withdrawal_credentials`
 
 Withdrawal field names: `index`, `validator_index`, `address`, `amount`, `pubkey`, `epoch`, `kind`.
 
+A pubkey may have several pending entries (partial withdrawals and deposit refunds are not merged). A by-pubkey proof resolves the earliest-queued entry, the same one the `getPendingWithdrawal` RPC returns.
+
 **Protocol parameter proofs** — by index:
 
 | Key Format | Example | Proves |

@@ -605,7 +605,9 @@ impl SszStateTree {
         let mut pubkey_index = HashMap::new();
         for (slot, withdrawal) in queue.iter_all().enumerate() {
             Self::set_withdrawal_fields(&mut tree, slot, withdrawal);
-            pubkey_index.insert(withdrawal.pubkey, slot);
+            // Keep the earliest slot per pubkey so keyed proofs resolve the same
+            // entry `WithdrawalQueue::get_withdrawal` returns (the earliest-queued).
+            pubkey_index.entry(withdrawal.pubkey).or_insert(slot);
         }
         self.withdrawal_tree = tree;
         self.withdrawal_count = count;
@@ -659,7 +661,12 @@ impl SszStateTree {
         self.withdrawal_tree.grow(needed);
         Self::set_withdrawal_fields(&mut self.withdrawal_tree, slot, withdrawal);
         self.withdrawal_count += 1;
-        self.withdrawal_pubkey_index.insert(withdrawal.pubkey, slot);
+        // An append lands at the highest slot, so only record it when the pubkey
+        // has no earlier entry: keyed proofs must resolve the earliest-queued
+        // entry (the one `WithdrawalQueue::get_withdrawal` returns).
+        self.withdrawal_pubkey_index
+            .entry(withdrawal.pubkey)
+            .or_insert(slot);
         self.update_withdrawal_collection_root();
     }
 
@@ -1040,6 +1047,8 @@ impl SszStateTree {
     }
 
     /// Generate a proof for a withdrawal identified by validator pubkey (O(1) lookup).
+    /// A pubkey may have several pending entries; this resolves the earliest-queued
+    /// one, matching [`WithdrawalQueue::get_withdrawal`] and the getPendingWithdrawal RPC.
     pub fn generate_withdrawal_proof_by_key(&self, pubkey: &[u8; 32]) -> Option<SszProof> {
         let &slot = self.withdrawal_pubkey_index.get(pubkey)?;
         self.generate_withdrawal_proof(slot)
@@ -1150,6 +1159,8 @@ impl SszStateTree {
     }
 
     /// Generate a field-level proof for a withdrawal identified by validator pubkey (O(1) lookup).
+    /// Resolves the earliest-queued entry for the pubkey (see
+    /// [`Self::generate_withdrawal_proof_by_key`]).
     pub fn generate_withdrawal_field_proof_by_key(
         &self,
         pubkey: &[u8; 32],
@@ -2046,6 +2057,66 @@ mod tests {
         // Unknown key returns None
         let unknown = [0xFFu8; 32];
         assert!(tree.generate_withdrawal_proof_by_key(&unknown).is_none());
+    }
+
+    // A pubkey can have several pending entries now that entries are never
+    // merged. `WithdrawalQueue::get_withdrawal` (served by the getPendingWithdrawal
+    // RPC) returns the earliest-queued entry, so the keyed proof must resolve that
+    // same entry. Otherwise the value a client reads and the proof it verifies
+    // describe different withdrawals.
+    #[test]
+    fn withdrawal_keyed_proof_resolves_earliest_entry() {
+        let pk = [0x55u8; 32];
+        let mut queue = WithdrawalQueue::default();
+        // Two partial withdrawals for the same validator, earliest first.
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 0,
+                validator_index: 0,
+                address: Address::from([0x11; 20]),
+                amount: 1_000_000_000,
+            },
+            pubkey: pk,
+            epoch: 1,
+            kind: WithdrawalKind::Validator,
+        });
+        queue.push(PendingWithdrawal {
+            inner: Withdrawal {
+                index: 1,
+                validator_index: 0,
+                address: Address::from([0x11; 20]),
+                amount: 2_000_000_000,
+            },
+            pubkey: pk,
+            epoch: 1,
+            kind: WithdrawalKind::Validator,
+        });
+
+        // The RPC-facing lookup returns the earliest entry (slot 0).
+        assert_eq!(
+            queue.get_withdrawal(&pk).unwrap().inner.amount,
+            1_000_000_000
+        );
+
+        let mut tree = SszStateTree::new();
+        tree.rebuild_withdrawals(&queue);
+
+        // The keyed amount proof must prove the earliest entry's amount, i.e. the
+        // same leaf as the slot-0 proof, not the later slot-1 entry.
+        let by_key = tree
+            .generate_withdrawal_field_proof_by_key(&pk, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        let slot0 = tree
+            .generate_withdrawal_field_proof(0, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        let slot1 = tree
+            .generate_withdrawal_field_proof(1, WITHDRAWAL_FIELD_AMOUNT)
+            .unwrap();
+        assert_ne!(slot0.leaf, slot1.leaf, "the two entries must differ");
+        assert_eq!(
+            by_key.leaf, slot0.leaf,
+            "keyed proof must resolve the earliest-queued entry that get_withdrawal returns"
+        );
     }
 
     #[test]
