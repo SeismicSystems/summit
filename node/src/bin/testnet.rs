@@ -201,6 +201,7 @@ fn get_node_flags(node: usize) -> RunFlags {
         port: (26600 + (node * 10)) as u16,
         prom_port: (28600 + (node * 10)) as u16,
         prom_ip: "0.0.0.0".into(),
+        rpc_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
         admin_rpc_port: (3031 + (node * 10)) as u16,
         rpc_max_request_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,

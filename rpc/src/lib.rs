@@ -20,7 +20,7 @@ pub use api::{SummitPermissionedApiClient, SummitPermissionedApiServer};
 
 use commonware_runtime::signal::Signal;
 use jsonrpsee::server::ServerHandle;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 #[cfg(feature = "permissioned")]
 use std::sync::Arc;
 #[cfg(feature = "permissioned")]
@@ -68,6 +68,7 @@ pub async fn start_rpc_server(
     key_store_path: String,
     genesis_hash: [u8; 32],
     namespace: Vec<u8>,
+    rpc_listen_addr: IpAddr,
     port: u16,
     admin_port: u16,
     body_limits: RpcBodyLimits,
@@ -90,7 +91,7 @@ pub async fn start_rpc_server(
     #[cfg(feature = "permissioned")]
     public_methods.merge(SummitPermissionedApiServer::into_rpc(rpc_impl.clone()))?;
 
-    let public_server = builder::RpcServerBuilder::new(port)
+    let public_server = builder::RpcServerBuilder::new_with_listen_addr(rpc_listen_addr, port)
         .with_max_connections(1000)
         .with_max_request_body_size(body_limits.max_request_body_size)
         .with_max_response_body_size(body_limits.max_response_body_size)
@@ -102,7 +103,7 @@ pub async fn start_rpc_server(
 
     let public_handle = public_server.start(public_methods);
 
-    tracing::info!("RPC Server listening on http://0.0.0.0:{port}");
+    tracing::info!("RPC Server listening on http://{rpc_listen_addr}:{port}");
 
     // Admin RPC: hosts `SummitAdminApi` (validator-key signing methods).
     let admin_methods = SummitAdminApiServer::into_rpc(rpc_impl);

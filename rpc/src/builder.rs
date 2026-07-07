@@ -1,6 +1,6 @@
 use http::{HeaderValue, Method};
 use jsonrpsee::server::{BatchRequestConfig, ServerBuilder, ServerConfigBuilder, ServerHandle};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -41,31 +41,29 @@ impl RpcServer {
 }
 
 impl RpcServerBuilder {
+    /// Listen on all interfaces (`0.0.0.0`).
     pub fn new(port: u16) -> Self {
+        Self::new_with_listen_addr(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
+    }
+
+    /// Listen on 127.0.0.1 only. Used for the admin RPC listener so the
+    /// validator-key signing methods (`SummitAdminApi`) can't be reached
+    /// from off-host even if the firewall is misconfigured.
+    pub fn new_localhost(port: u16) -> Self {
+        Self::new_with_listen_addr(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    }
+
+    /// Listen on an explicit address (e.g. from `--rpc-ip`); `new` /
+    /// `new_localhost` are the `0.0.0.0` / `127.0.0.1` shorthands. Holds the
+    /// canonical server config so the hardening below lives in exactly one place.
+    pub fn new_with_listen_addr(listen_addr: IpAddr, port: u16) -> Self {
         Self {
-            addr: SocketAddr::from(([0, 0, 0, 0], port)),
+            addr: SocketAddr::new(listen_addr, port),
             // http-only: Summit's RPC is request/response (no subscriptions), so
             // websockets are not needed. jsonrpsee enables websockets with pings
             // disabled by default, and an idle upgraded connection holds its
             // max_connections permit until the client closes; disabling websocket
             // upgrades removes that idle-permit-exhaustion vector entirely.
-            // The batch config caps calls per JSON-RPC batch (see `with_batch_limit`).
-            config: ServerConfigBuilder::new()
-                .http_only()
-                .set_batch_request_config(default_batch_config()),
-            cors_domains: None,
-            request_timeout: Duration::from_secs(crate::DEFAULT_RPC_REQUEST_TIMEOUT_SECS),
-        }
-    }
-
-    /// Bind to 127.0.0.1 only. Used for the admin RPC listener so the
-    /// validator-key signing methods (`SummitAdminApi`) can't be reached
-    /// from off-host even if the firewall is misconfigured.
-    pub fn new_localhost(port: u16) -> Self {
-        Self {
-            addr: SocketAddr::from(([127, 0, 0, 1], port)),
-            // http-only: see `new`. websockets are unused, so disabling upgrades
-            // closes the idle-connection permit-exhaustion vector.
             // The batch config caps calls per JSON-RPC batch (see `with_batch_limit`).
             config: ServerConfigBuilder::new()
                 .http_only()
