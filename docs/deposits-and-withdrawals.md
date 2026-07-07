@@ -6,9 +6,9 @@
 - If a potential validator makes an initial deposit with *amount* < **MINIMUM_STAKE**, then the validator account is still created, but it won't be set to active.
 - Top-up deposits are allowed.
 - A potential validator will become active **VALIDATOR_NUM_WARM_UP_EPOCHS** after depositing at least **MINIMUM_STAKE**.
-- Deposit requests with invalid signatures will be refunded as a withdrawal. K% of the deposited amount will be burned. This prevents invalid deposits from becoming a DDOS vector.
-- if the deposit's keys are malformed, it is refunded with the same K% burn applied to invalid signatures.
-- If the deposit's consensus (BLS) key does not match the key already on the account (or is already used by another validator), the deposit is refunded in full with no burn.
+- Deposit requests with invalid signatures will be refunded as a withdrawal. K% of the deposited amount (**INVALID_DEPOSIT_TAX**, default 5%) is sent to the treasury address (the zero address by default, which effectively burns it). This prevents invalid deposits from becoming a DDOS vector.
+- if the deposit's keys are malformed, it is refunded with the same K% tax applied to invalid signatures.
+- If the deposit's consensus (BLS) key does not match the key already on the account (or is already used by another validator), the deposit is refunded with the same K% tax applied to invalid signatures.
 - If a deposit lands for an account that no longer exists, then a new account is created.
 
 ## Withdrawals

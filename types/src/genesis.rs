@@ -100,7 +100,7 @@ fn default_minimum_validator_count() -> u64 {
 }
 
 fn default_invalid_deposit_tax() -> u64 {
-    0
+    5
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ssz_derive::Encode)]

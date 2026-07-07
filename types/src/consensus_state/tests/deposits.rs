@@ -3,6 +3,7 @@ use crate::account::ValidatorStatus;
 use crate::withdrawal::WithdrawalKind;
 use crate::{Digest, deposit_signature_domain};
 
+use alloy_primitives::Address;
 use commonware_cryptography::{Signer, bls12381, ed25519};
 
 use super::common::*;
@@ -376,6 +377,39 @@ fn consensus_key_mismatch_is_refunded() {
     let account = state.get_account(&key).unwrap();
     assert_eq!(account.balance, 50); // not credited
     assert!(has_refund(&state));
+}
+
+// A rejection after valid signatures (consensus key mismatch) is taxed like
+// any other invalid deposit: the treasury takes its cut and only the remainder
+// is refunded to the depositor.
+#[test]
+fn consensus_key_mismatch_refund_is_taxed() {
+    let mut state = deposit_state();
+    state.set_invalid_deposit_tax(25);
+    let node = ed25519::PrivateKey::from_seed(19);
+    let account_bls = bls12381::PrivateKey::from_seed(19);
+    seed_account(&mut state, &node, &account_bls, ValidatorStatus::Active, 50);
+
+    let wrong_bls = bls12381::PrivateKey::from_seed(98);
+    state.push_deposit(make_signed_deposit(
+        &node,
+        &wrong_bls,
+        eth1_credentials(1),
+        100,
+        5,
+        test_domain(),
+    ));
+    state.process_deposits(test_domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+
+    let refunds: Vec<_> = state
+        .get_withdrawals_for_epoch(WITHDRAWAL_EPOCHS)
+        .into_iter()
+        .filter(|w| w.kind == WithdrawalKind::DepositRefund)
+        .map(|w| (w.inner.address, w.inner.amount))
+        .collect();
+    let depositor = Address::from([1u8; 20]);
+    let treasury = state.get_treasury_address();
+    assert_eq!(refunds, vec![(depositor, 75), (treasury, 25)]);
 }
 
 // verify_deposit_request accepts a correctly signed deposit.
