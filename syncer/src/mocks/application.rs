@@ -1,4 +1,5 @@
 use crate::Update;
+use commonware_actor::Feedback;
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::{Block, Reporter};
 use commonware_utils::Acknowledgement;
@@ -41,7 +42,7 @@ impl<B: Block, S: Scheme<B::Digest>> Application<B, S> {
 impl<B: Block, S: Scheme<B::Digest>> Reporter for Application<B, S> {
     type Activity = Update<B, S>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         match activity {
             Update::Tip(height, commitment) => {
                 *self.tip.lock().unwrap() = Some((height, commitment));
@@ -57,5 +58,6 @@ impl<B: Block, S: Scheme<B::Digest>> Reporter for Application<B, S> {
                 // Mock application ignores notarized blocks
             }
         }
+        Feedback::Ok
     }
 }

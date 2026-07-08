@@ -232,3 +232,14 @@ mod tests {
         assert!(Notarize::sign(&scheme, sample_proposal(epoch)).is_none());
     }
 }
+
+/// Provides the certified genesis payload digest for an epoch.
+///
+/// Consensus no longer queries the automaton for the epoch genesis; the
+/// orchestrator fetches it through this trait when spawning an epoch's engine
+/// and passes it to consensus via `simplex::Config::floor`.
+pub trait EpochGenesisProvider: Send + 'static {
+    /// Returns the genesis payload digest for the given epoch.
+    fn genesis(&mut self, epoch: Epoch)
+    -> impl core::future::Future<Output = crate::Digest> + Send;
+}

@@ -1,3 +1,4 @@
+use commonware_actor::Feedback;
 use commonware_consensus::types::{Epoch, Round};
 use commonware_consensus::{
     Automaton, CertifiableAutomaton, Relay,
@@ -7,6 +8,7 @@ use commonware_consensus::{
 use commonware_cryptography::PublicKey;
 use commonware_cryptography::sha256::Digest;
 use commonware_utils::channel::{mpsc, oneshot};
+use summit_types::scheme::EpochGenesisProvider;
 
 pub enum Message<P: PublicKey> {
     Genesis {
@@ -46,11 +48,13 @@ impl<P: PublicKey> Mailbox<P> {
     }
 }
 
-impl<P: PublicKey> Automaton for Mailbox<P> {
-    type Context = Context<Self::Digest, P>;
-    type Digest = Digest;
-
-    async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
+impl<P: PublicKey> EpochGenesisProvider for Mailbox<P> {
+    /// Retrieve the genesis payload digest for the given epoch.
+    ///
+    /// Consensus no longer queries this through [Automaton]; the orchestrator
+    /// fetches it when spawning an epoch's engine and passes it via
+    /// `simplex::Config::floor`.
+    async fn genesis(&mut self, epoch: Epoch) -> Digest {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Message::Genesis { response, epoch })
@@ -58,6 +62,11 @@ impl<P: PublicKey> Automaton for Mailbox<P> {
             .expect("Failed to send genesis");
         receiver.await.expect("Failed to receive genesis")
     }
+}
+
+impl<P: PublicKey> Automaton for Mailbox<P> {
+    type Context = Context<Self::Digest, P>;
+    type Digest = Digest;
 
     async fn propose(
         &mut self,
@@ -118,14 +127,15 @@ impl<P: PublicKey> Relay for Mailbox<P> {
     type PublicKey = P;
     type Plan = commonware_consensus::simplex::Plan<P>;
 
-    async fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) {
-        self.sender
-            .send(Message::Broadcast {
-                payload: digest,
-                plan,
-            })
-            .await
-            .expect("Failed to send broadcast");
+    fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) -> Feedback {
+        match self.sender.try_send(Message::Broadcast {
+            payload: digest,
+            plan,
+        }) {
+            Ok(()) => Feedback::Ok,
+            Err(mpsc::error::TrySendError::Full(_)) => Feedback::Backoff,
+            Err(mpsc::error::TrySendError::Closed(_)) => Feedback::Closed,
+        }
     }
 }
 
@@ -134,6 +144,7 @@ mod tests {
     use super::*;
     use commonware_codec::DecodeExt as _;
     use commonware_cryptography::{Hasher as _, Signer as _, ed25519, sha256::Sha256};
+    use commonware_p2p::Recipients;
 
     fn test_public_key(seed: u8) -> ed25519::PublicKey {
         ed25519::PrivateKey::decode([seed; 32].as_ref())
@@ -155,15 +166,13 @@ mod tests {
             let round = Round::new(Epoch::new(3), View::new(7));
             let peers = vec![test_public_key(1), test_public_key(2)];
 
-            mailbox
-                .broadcast(
-                    digest,
-                    Plan::Forward {
-                        round,
-                        peers: peers.clone(),
-                    },
-                )
-                .await;
+            let _ = mailbox.broadcast(
+                digest,
+                Plan::Forward {
+                    round,
+                    recipients: Recipients::Some(peers.clone()),
+                },
+            );
             let Some(Message::Broadcast { payload, plan }) = rx.recv().await else {
                 panic!("expected a Broadcast message");
             };
@@ -171,20 +180,22 @@ mod tests {
             match plan {
                 Plan::Forward {
                     round: got_round,
-                    peers: got_peers,
+                    recipients: got_recipients,
                 } => {
                     assert_eq!(got_round, round);
-                    assert_eq!(got_peers, peers);
+                    assert!(
+                        matches!(got_recipients, Recipients::Some(got_peers) if got_peers == peers)
+                    );
                 }
-                Plan::Propose => panic!("Plan::Forward was lost in the relay"),
+                Plan::Propose { .. } => panic!("Plan::Forward was lost in the relay"),
             }
 
-            mailbox.broadcast(digest, Plan::Propose).await;
+            let _ = mailbox.broadcast(digest, Plan::Propose { round });
             let Some(Message::Broadcast { payload, plan }) = rx.recv().await else {
                 panic!("expected a Broadcast message");
             };
             assert_eq!(payload, digest);
-            assert!(matches!(plan, Plan::Propose));
+            assert!(matches!(plan, Plan::Propose { .. }));
         });
     }
 }

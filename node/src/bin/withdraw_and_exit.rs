@@ -16,8 +16,8 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256};
 use clap::Parser;
 use commonware_codec::DecodeExt;
-use commonware_runtime::{Clock, Runner as _, Spawner as _, tokio as cw_tokio};
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
+use commonware_runtime::{Clock, Runner as _, Spawner as _, Supervisor as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::core::ClientError;
 use jsonrpsee::http_client::HttpClientBuilder;
@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let stdout = reth.stdout().expect("Failed to get stdout");
 
                 let log_dir = args.log_dir.clone();
-                context.clone().spawn(async move |_| {
+                context.child("reth").spawn(async move |_| {
                     let reader = BufReader::new(stdout);
                     let mut log_file = log_dir.as_ref().map(|dir| {
                         fs::File::create(format!("{}/node{}.log", dir, x))
@@ -187,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        let node_handle = node_context.child("node").spawn(move |ctx| async move {
                             // a coordinated shutdown (graceful stop or committee exit) returns
                             // ok; a genuine core task failure returns err and must fail the
                             // scenario instead of being masked as a clean node exit.
@@ -246,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .connect_http(node0_url.parse().expect("Invalid URL"));
 
             let withdrawal_contract_address = Address::from_str("0x00000961Ef480Eb55e80D19ad83579A64c007002").unwrap();
-            let pub_key_bytes = from_hex_formatted("f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226").ok_or("PublicKey bad format").unwrap();
+            let pub_key_bytes = from_hex("f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226").ok_or("PublicKey bad format").unwrap();
             let pub_key_bytes_ar: [u8; 32] = pub_key_bytes.try_into().unwrap();
             let _public_key = PublicKey::decode(&pub_key_bytes_ar[..]).map_err(|_| "Unable to decode Public Key").unwrap();
             // Amount 0 is a full exit (EIP-7002): the validator leaves the

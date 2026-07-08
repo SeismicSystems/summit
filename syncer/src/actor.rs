@@ -1,15 +1,21 @@
 use super::{
+    acks::{PendingAck, PendingAcks},
     cache,
     config::{Config, SyncCheckpoint, SyncStart},
+    delivery::PendingVerification,
+    floor::Floor,
     ingress::{
-        handler::{self, Request},
-        mailbox::{Mailbox, Message},
+        handler::{self, Annotation, Key, Request},
+        mailbox::{Identifier as BlockID, Mailbox, Message},
     },
+    stream::Stream,
 };
-use crate::{Update, ingress::mailbox::Identifier as BlockID, variant::Buffer as _};
+use crate::{Update, variant::Buffer as _};
 use bytes::Bytes;
+use commonware_actor::mailbox;
 use commonware_broadcast::buffered;
 use commonware_codec::{Decode, Encode};
+use commonware_consensus::marshal::store::{Blocks, Certificates};
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::simplex::types::{
     Finalization, Notarization, Subject, verify_certificates,
@@ -17,162 +23,52 @@ use commonware_consensus::simplex::types::{
 use commonware_consensus::types::{Epoch, Epocher, Height, Round, View, ViewDelta};
 use commonware_consensus::{Block, Epochable, Reporter, Viewable};
 use commonware_cryptography::PublicKey;
-use commonware_cryptography::certificate::Scheme as CertificateScheme;
+use commonware_cryptography::certificate::{Provider, Scheme as CertificateScheme};
 use commonware_macros::select_loop;
 use commonware_p2p::Recipients;
 use commonware_parallel::Strategy;
-use commonware_resolver::Resolver;
+use commonware_resolver::{Delivery, Resolver, TargetedResolver};
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell,
+    telemetry::metrics::{Gauge, GaugeExt, MetricsExt as _},
 };
 use commonware_storage::archive::Identifier as ArchiveID;
 use commonware_utils::{
     Acknowledgement, BoxedError,
-    channel::{mpsc, oneshot},
+    acknowledgement::Exact,
+    channel::{fallible::OneshotExt, oneshot},
     futures::{AbortablePool, Aborter},
-    sequence::U64,
 };
-use pin_project::pin_project;
-use summit_types::utils::is_last_block_of_epoch;
-
-use commonware_consensus::marshal::store::{Blocks, Certificates};
-use commonware_cryptography::certificate::Provider;
-use commonware_storage::metadata;
-use commonware_storage::metadata::Metadata;
-use commonware_utils::acknowledgement::Exact;
-use commonware_utils::channel::fallible::OneshotExt;
-use commonware_utils::futures::OptionFuture;
-use futures::{FutureExt, future::join_all, try_join};
+use futures::{future::join_all, try_join};
 use governor::clock::Clock as GClock;
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
-#[cfg(feature = "prom")]
-use prometheus_client::metrics::gauge::Gauge;
 use rand_core::CryptoRngCore;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::num::NonZeroUsize;
-use std::pin::Pin;
 use std::sync::Arc;
 #[cfg(feature = "prom")]
 use std::time::Instant;
-use std::{
-    collections::{BTreeMap, btree_map::Entry},
-    future::Future,
-};
+use summit_types::Digest;
+use summit_types::utils::is_last_block_of_epoch;
 use tracing::{debug, error, info, warn};
 
-use summit_types::Digest;
-
-/// The key used to store the last processed height in the metadata store.
-const LATEST_KEY: U64 = U64::new(0xFF);
-
-/// A parsed-but-unverified resolver delivery awaiting batch certificate verification.
-enum PendingVerification<S: CertificateScheme, B: Block> {
-    Notarized {
-        notarization: Notarization<S, B::Digest>,
-        block: B,
-        response: oneshot::Sender<bool>,
-    },
-    Finalized {
-        finalization: Finalization<S, B::Digest>,
-        block: B,
-        response: oneshot::Sender<bool>,
-    },
+/// A resolver delivery plus the peer-validity response channel. Local
+/// annotations on the delivery decide how accepted data is used.
+struct ResolverDelivery<D: commonware_cryptography::Digest> {
+    delivery: Delivery<Key<D>, Annotation>,
+    value: Bytes,
+    response: oneshot::Sender<bool>,
 }
 
-/// A pending acknowledgement from the application for processing a block at the contained height/commitment.
-#[pin_project]
-struct PendingAck<B: Block, A: Acknowledgement> {
-    height: Height,
-    commitment: B::Digest,
-    #[pin]
-    receiver: A::Waiter,
-}
-
-impl<B: Block, A: Acknowledgement> Future for PendingAck<B, A> {
-    type Output = <A::Waiter as Future>::Output;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        self.project().receiver.poll(cx)
-    }
-}
-
-/// Tracks in-flight application acknowledgements with FIFO semantics.
-struct PendingAcks<B: Block, A: Acknowledgement> {
-    current: OptionFuture<PendingAck<B, A>>,
-    queue: VecDeque<PendingAck<B, A>>,
-    max: usize,
-}
-
-impl<B: Block, A: Acknowledgement> PendingAcks<B, A> {
-    /// Creates a new pending-ack tracker with a maximum in-flight capacity.
-    fn new(max: usize) -> Self {
-        Self {
-            current: None.into(),
-            queue: VecDeque::with_capacity(max),
-            max,
-        }
-    }
-
-    /// Drops the current ack and all queued acks.
-    fn clear(&mut self) {
-        self.current = None.into();
-        self.queue.clear();
-    }
-
-    /// Returns the currently armed ack future (if any) for `select_loop!`.
-    const fn current(&mut self) -> &mut OptionFuture<PendingAck<B, A>> {
-        &mut self.current
-    }
-
-    /// Returns whether we can dispatch another block without exceeding capacity.
-    fn has_capacity(&self) -> bool {
-        let reserved = usize::from(self.current.is_some());
-        self.queue.len() < self.max - reserved
-    }
-
-    /// Returns the next height to dispatch while preserving sequential order.
-    fn next_dispatch_height(&self, last_processed_height: Height) -> Height {
-        self.queue
-            .back()
-            .map(|ack| ack.height.next())
-            .or_else(|| self.current.as_ref().map(|ack| ack.height.next()))
-            .unwrap_or_else(|| last_processed_height.next())
-    }
-
-    /// Enqueues a newly dispatched ack, arming it immediately when idle.
-    fn enqueue(&mut self, ack: PendingAck<B, A>) {
-        if self.current.is_none() {
-            self.current.replace(ack);
-            return;
-        }
-        self.queue.push_back(ack);
-    }
-
-    /// Returns metadata for a completed current ack and arms the next queued ack.
-    fn complete_current(
-        &mut self,
-        result: <A::Waiter as Future>::Output,
-    ) -> (Height, B::Digest, <A::Waiter as Future>::Output) {
-        let PendingAck {
-            height, commitment, ..
-        } = self.current.take().expect("ack state must be present");
-        if let Some(next) = self.queue.pop_front() {
-            self.current.replace(next);
-        }
-        (height, commitment, result)
-    }
-
-    /// If the current ack is already resolved, takes it and arms the next ack.
-    fn pop_ready(&mut self) -> Option<(Height, B::Digest, <A::Waiter as Future>::Output)> {
-        let pending = self.current.as_mut()?;
-        let result = Pin::new(&mut pending.receiver).now_or_never()?;
-        Some(self.complete_current(result))
-    }
-}
+/// Pool of subscription waiter futures. Each resolves to the requested
+/// (digest, block) pair on delivery, or to the digest when the wait fails.
+type BlockWaiters<B> = AbortablePool<
+    Result<
+        (<B as commonware_cryptography::Digestible>::Digest, B),
+        <B as commonware_cryptography::Digestible>::Digest,
+    >,
+>;
 
 /// A struct that holds multiple subscriptions for a block.
 struct BlockSubscription<B: Block> {
@@ -233,7 +129,7 @@ where
 
     // ---------- Message Passing ----------
     // Mailbox
-    mailbox: mpsc::Receiver<Message<P::Scheme, B>>,
+    mailbox: mailbox::Receiver<Message<P::Scheme, B>>,
 
     // ---------- Configuration ----------
     // Provider for epoch-specific signing schemes
@@ -250,10 +146,12 @@ where
     strategy: T,
 
     // ---------- State ----------
-    // Last view processed
-    last_processed_round: Round,
-    // Last height processed by the application
-    last_processed_height: Height,
+    // Last proposed block
+    last_proposed_block: Option<(Round, B::Digest, B)>,
+    // Current processed floor and any pending floor update
+    floor: Floor<P::Scheme, B::Digest>,
+    // Application delivery cursor
+    stream: Stream<E>,
     // Pending application acknowledgements
     pending_acks: PendingAcks<B, A>,
     // Highest known finalized height
@@ -264,8 +162,6 @@ where
     // ---------- Storage ----------
     // Prunable cache
     cache: cache::Manager<E, B, P::Scheme>,
-    // Metadata tracking application progress
-    application_metadata: Metadata<E, U64, Height>,
     // Finalizations stored by height
     finalizations_by_height: FC,
     // Finalized blocks stored by height
@@ -273,10 +169,8 @@ where
 
     // ---------- Metrics ----------
     // Latest height metric
-    #[cfg(feature = "prom")]
     finalized_height: Gauge,
     // Latest processed height
-    #[cfg(feature = "prom")]
     processed_height: Gauge,
 }
 
@@ -308,93 +202,51 @@ where
             key_page_cache: config.page_cache.clone(),
         };
         let cache = cache::Manager::init(
-            context.with_label("cache"),
+            context.child("cache"),
             prunable_config,
             config.block_codec_config.clone(),
         )
         .await;
 
         // Initialize metadata tracking application progress
-        let application_metadata = Metadata::init(
-            context.with_label("application_metadata"),
-            metadata::Config {
-                partition: format!("{}-application-metadata", config.partition_prefix),
-                codec_config: (),
-            },
+        let application_metadata_partition =
+            format!("{}-application-metadata", config.partition_prefix);
+        let stream = Stream::new(
+            context.child("application_metadata"),
+            &application_metadata_partition,
         )
-        .await
-        .expect("failed to initialize application metadata");
+        .await;
 
         // Create metrics
-        #[cfg(feature = "prom")]
-        {
-            let finalized_height = Gauge::default();
-            context.register(
-                "finalized_height",
-                "Finalized height of application",
-                finalized_height.clone(),
-            );
-            let processed_height = Gauge::default();
-            context.register(
-                "processed_height",
-                "Processed height of application",
-                processed_height.clone(),
-            );
+        let finalized_height = context.gauge("finalized_height", "Finalized height of application");
+        let processed_height = context.gauge("processed_height", "Processed height of application");
 
-            // Initialize mailbox
-            let (sender, mailbox) = mpsc::channel(config.mailbox_size);
-            (
-                Self {
-                    context: ContextCell::new(context),
-                    mailbox,
-                    provider: config.scheme_provider,
-                    epocher: config.epocher,
-                    view_retention_timeout: config.view_retention_timeout,
-                    max_repair: config.max_repair,
-                    block_codec_config: config.block_codec_config,
-                    strategy: config.strategy,
-                    last_processed_round: Round::zero(),
-                    last_processed_height: Height::zero(),
-                    pending_acks: PendingAcks::new(config.max_pending_acks.get()),
-                    tip: Height::zero(),
-                    block_subscriptions: BTreeMap::new(),
-                    cache,
-                    application_metadata,
-                    finalizations_by_height,
-                    finalized_blocks,
-                    finalized_height,
-                    processed_height,
-                },
-                Mailbox::new(sender),
-            )
-        }
-        #[cfg(not(feature = "prom"))]
-        {
-            // Initialize mailbox
-            let (sender, mailbox) = mpsc::channel(config.mailbox_size);
-            (
-                Self {
-                    context: ContextCell::new(context),
-                    mailbox,
-                    provider: config.scheme_provider,
-                    epocher: config.epocher,
-                    view_retention_timeout: config.view_retention_timeout,
-                    max_repair: config.max_repair,
-                    block_codec_config: config.block_codec_config,
-                    strategy: config.strategy,
-                    last_processed_round: Round::zero(),
-                    last_processed_height: Height::zero(),
-                    pending_acks: PendingAcks::new(config.max_pending_acks.get()),
-                    tip: Height::zero(),
-                    block_subscriptions: BTreeMap::new(),
-                    cache,
-                    application_metadata,
-                    finalizations_by_height,
-                    finalized_blocks,
-                },
-                Mailbox::new(sender),
-            )
-        }
+        // Initialize mailbox
+        let (sender, mailbox) = mailbox::new(context.child("mailbox"), config.mailbox_size);
+        (
+            Self {
+                context: ContextCell::new(context),
+                mailbox,
+                provider: config.scheme_provider,
+                epocher: config.epocher,
+                view_retention_timeout: config.view_retention_timeout,
+                max_repair: config.max_repair,
+                block_codec_config: config.block_codec_config,
+                strategy: config.strategy,
+                last_proposed_block: None,
+                floor: Floor::resolved(None, Round::zero()),
+                stream,
+                pending_acks: PendingAcks::new(config.max_pending_acks.get()),
+                tip: Height::zero(),
+                block_subscriptions: BTreeMap::new(),
+                cache,
+                finalizations_by_height,
+                finalized_blocks,
+                finalized_height,
+                processed_height,
+            },
+            Mailbox::new(sender),
+        )
     }
 
     /// Start the actor.
@@ -402,21 +254,21 @@ where
         mut self,
         application: impl Reporter<Activity = Update<B, P::Scheme, A>>,
         buffer: buffered::Mailbox<K, B>,
-        resolver: (mpsc::Receiver<handler::Message<B::Digest>>, R),
+        resolver: (handler::Receiver<B::Digest>, R),
         sync_start: SyncStart,
         checkpoint: Option<SyncCheckpoint<B, P::Scheme>>,
     ) -> Handle<()>
     where
-        R: Resolver<
-                Key = handler::Request<B::Digest>,
+        R: TargetedResolver<
+                Key = Key<B::Digest>,
+                Subscriber = Annotation,
                 PublicKey = <P::Scheme as CertificateScheme>::PublicKey,
             >,
         K: PublicKey + From<<P::Scheme as CertificateScheme>::PublicKey>,
     {
         spawn_cell!(
             self.context,
-            self.run(application, buffer, resolver, sync_start, checkpoint,)
-                .await
+            self.run(application, buffer, resolver, sync_start, checkpoint)
         )
     }
 
@@ -425,12 +277,13 @@ where
         mut self,
         mut application: impl Reporter<Activity = Update<B, P::Scheme, A>>,
         mut buffer: buffered::Mailbox<K, B>,
-        (mut resolver_rx, mut resolver): (mpsc::Receiver<handler::Message<B::Digest>>, R),
+        (mut resolver_rx, mut resolver): (handler::Receiver<B::Digest>, R),
         sync_start: SyncStart,
         checkpoint: Option<SyncCheckpoint<B, P::Scheme>>,
     ) where
-        R: Resolver<
-                Key = handler::Request<B::Digest>,
+        R: TargetedResolver<
+                Key = Key<B::Digest>,
+                Subscriber = Annotation,
                 PublicKey = <P::Scheme as CertificateScheme>::PublicKey,
             >,
         K: PublicKey + From<<P::Scheme as CertificateScheme>::PublicKey>,
@@ -440,8 +293,10 @@ where
             epoch: sync_epoch,
             view: sync_view,
         } = sync_start;
-        self.last_processed_height = Height::new(sync_height);
-        self.last_processed_round = Round::new(Epoch::new(sync_epoch), View::new(sync_view));
+        self.stream.acknowledge(Height::new(sync_height));
+        self.floor.set_processed_height(Height::new(sync_height));
+        self.floor
+            .set_processed_round(Round::new(Epoch::new(sync_epoch), View::new(sync_view)));
         self.tip = Height::new(sync_height);
         info!(sync_height, sync_epoch, sync_view, "syncer initialized");
 
@@ -468,30 +323,24 @@ where
                 checkpoint.last_block,
                 finalization,
                 &mut application,
-                &mut buffer,
             )
             .await;
             self.sync_finalized().await;
         }
 
-        #[cfg(feature = "prom")]
-        {
-            self.processed_height
-                .set(self.last_processed_height.get() as i64);
-        }
+        let _ = self
+            .processed_height
+            .try_set(self.floor.processed_height().get());
 
         // Create a local pool for waiter futures.
-        let mut waiters = AbortablePool::<(B::Digest, B)>::default();
+        let mut waiters = BlockWaiters::<B>::default();
 
         // Get tip and send to application
         let tip = self.get_latest().await;
         if let Some((height, commitment)) = tip {
-            application
-                .report(Update::Tip(height.get(), commitment))
-                .await;
+            application.report(Update::Tip(height.get(), commitment));
             self.tip = height;
-            #[cfg(feature = "prom")]
-            self.finalized_height.set(height.get() as i64);
+            let _ = self.finalized_height.try_set(height.get());
         }
 
         // Load persisted cache epochs so find_block can discover blocks
@@ -524,364 +373,520 @@ where
             },
             // Handle waiter completions first
             result = waiters.next_completed() => {
-                let Ok((commitment, block)) = result else {
+                let Ok(completion) = result else {
                     continue; // Aborted future
                 };
-                self.notify_subscribers(commitment, &block).await;
+                match completion {
+                    Ok((commitment, block)) => self.notify_subscribers(commitment, &block),
+                    Err(commitment) => {
+                        debug!(
+                            ?commitment,
+                            "buffer subscription closed, canceling local subscribers"
+                        );
+                        self.block_subscriptions.remove(&commitment);
+                    }
+                }
             },
             // Handle application acknowledgements (drain all ready acks, sync once)
             result = self.pending_acks.current() => {
-                // Start with the ack that woke this arm.
-                let mut pending = Some(self.pending_acks.complete_current(result));
-                loop {
-                    let (height, commitment, result) =
-                        pending.take().expect("pending ack must exist");
-                    match result {
-                        Ok(()) => {
-                            // Apply in-memory progress updates for this acknowledged block.
-                            self.handle_block_processed(height, commitment, &mut resolver)
-                                .await;
-                        }
-                        Err(e) => {
-                            error!(?e, %height, "application did not acknowledge block");
-                            return;
-                        }
-                    }
-
-                    // Opportunistically drain any additional already-ready acks so we
-                    // can persist one metadata sync for the whole batch.
-                    let Some(next) = self.pending_acks.pop_ready() else {
-                        break;
-                    };
-                    pending = Some(next);
-                }
-
-                // Persist buffered processed-height updates once after draining all ready acks.
-                if let Err(e) = self.application_metadata.sync().await {
-                    error!(?e, "failed to sync application progress");
+                if !self.handle_ack(result, &mut application, &mut resolver).await {
                     return;
                 }
-
-                // Fill the pipeline
-                self.try_dispatch_blocks(&mut application, &mut resolver).await;
             },
             // Handle consensus inputs before backfill or resolver traffic
             Some(message) = self.mailbox.recv() else {
                 info!("mailbox closed, shutting down");
                 break;
             } => {
-                match message {
-                    Message::GetInfo { identifier, response } => {
-                        let info = match identifier {
-                            BlockID::Digest(commitment) => self
-                                .finalized_blocks
-                                .get(ArchiveID::Key(&commitment))
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|b| (b.height(), commitment)),
-                            BlockID::Height(height) => self
-                                .finalizations_by_height
-                                .get(ArchiveID::Index(height.get()))
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|f| (height, f.proposal.payload)),
-                            BlockID::Latest => self.get_latest().await,
-                        };
-                        response.send_lossy(info);
-                    }
-                    Message::Proposed { round, block } => {
-                        self.cache_verified(round, block.digest(), block.clone()).await;
-                        buffer.send(round, block, Recipients::All).await;
-                    }
-                    Message::Forward {
-                        round,
-                        commitment,
-                        peers,
-                    } => {
-                        if peers.is_empty() {
-                            continue;
-                        }
-                        let Some(block) = self.find_block(&mut buffer, commitment).await else {
-                            debug!(?commitment, "block not found for forwarding");
-                            continue;
-                        };
-                        let peers: Vec<K> = peers.into_iter().map(K::from).collect();
-                        buffer.send(round, block, Recipients::Some(peers)).await;
-                    }
-                    Message::Verified { round, block } => {
-                        self.cache_verified(round, block.digest(), block).await;
-                    }
-                    Message::Notarization { notarization } => {
-                        let round = notarization.round();
-                        let commitment = notarization.proposal.payload;
-
-                        // Store notarization by view
-                        self.cache.put_notarization(round, commitment, notarization.clone()).await;
-
-                        // Search for block locally, otherwise fetch it remotely
-                        if let Some(block) = self.find_block(&mut buffer, commitment).await {
-                            // If found, persist the block and send to application
-                            self.cache_block(round, commitment, block.clone()).await;
-                            application.report(Update::NotarizedBlock(block.clone())).await;
-                            self.notify_subscribers(commitment, &block).await;
-                        } else {
-                            debug!(?round, "notarized block missing");
-                            resolver.fetch(Request::<B::Digest>::Notarized { round }).await;
-                        }
-                    }
-                    Message::Finalization { finalization } => {
-                        // Cache finalization by round
-                        let round = finalization.round();
-                        let commitment = finalization.proposal.payload;
-                        self.cache.put_finalization(round, commitment, finalization.clone()).await;
-
-                        // Search for block locally, otherwise fetch it remotely
-                        if let Some(block) = self.find_block(&mut buffer, commitment).await {
-                            // If found, persist the block
-                            let height = block.height();
-                            let mut needs_sync = self.store_finalization(
-                                height,
-                                commitment,
-                                block,
-                                Some(finalization),
-                                &mut application,
-                                &mut buffer,
-                            )
-                            .await;
-                            if needs_sync {
-                                needs_sync |= self.try_repair_gaps(&mut buffer, &mut resolver, &mut application)
-                                    .await;
-                            }
-                            if needs_sync {
-                                self.sync_finalized().await;
-                                debug!(?round, %height, "finalized block stored");
-                            }
-                            self.try_dispatch_blocks(&mut application, &mut resolver).await;
-                        } else {
-                            // Otherwise, fetch the block from the network.
-                            debug!(?round, ?commitment, "finalized block missing");
-                            resolver.fetch(Request::<B::Digest>::Block(commitment)).await;
-                        }
-                    }
-                    Message::GetBlock { identifier, response } => {
-                        match identifier {
-                            BlockID::Digest(commitment) => {
-                                let result = self.find_block(&mut buffer, commitment).await;
-                                response.send_lossy(result);
-                            }
-                            BlockID::Height(height) => {
-                                let result = self.get_finalized_block(height).await;
-                                response.send_lossy(result);
-                            }
-                            BlockID::Latest => {
-                                let block = match self.get_latest().await {
-                                    Some((_, commitment)) => self.find_block(&mut buffer, commitment).await,
-                                    None => None,
-                                };
-                                response.send_lossy(block);
-                            }
-                        }
-                    }
-                    Message::GetFinalization { height, response } => {
-                        let finalization = self.get_finalization_by_height(height).await;
-                        response.send_lossy(finalization);
-                    }
-                    Message::HintFinalized { height, targets } => {
-                        // Skip if height is at or below the floor
-                        if height <= self.last_processed_height {
-                            continue;
-                        }
-
-                        // Skip if finalization is already available locally
-                        if self.get_finalization_by_height(height).await.is_some() {
-                            continue;
-                        }
-
-                        // Trigger a targeted fetch via the resolver
-                        let request = Request::<B::Digest>::Finalized { height: height.get() };
-                        resolver.fetch_targeted(request, targets).await;
-                    }
-                    Message::Subscribe { round, commitment, response } => {
-                        // Check for block locally
-                        if let Some(block) = self.find_block(&mut buffer, commitment).await {
-                            response.send_lossy(block);
-                            continue;
-                        }
-
-                        // We don't have the block locally, so fetch the block from the network
-                        // if we have an associated view. If we only have the digest, don't make
-                        // the request as we wouldn't know when to drop it, and the request may
-                        // never complete if the block is not finalized.
-                        if let Some(round) = round {
-                            if round < self.last_processed_round {
-                                warn!(
-                                    ?round,
-                                    ?commitment,
-                                    last_processed_round = ?self.last_processed_round,
-                                    last_processed_height = %self.last_processed_height,
-                                    tip = %self.tip,
-                                    "subscription for block in past round that wasn't finalized - possible notarize-nullify race"
-                                );
-
-                                #[cfg(feature = "prom")]
-                                counter!("syncer_stuck_subscription_total").increment(1);
-
-                                continue;
-                            }
-                            // Attempt to fetch the block (with notarization) from the resolver.
-                            // If this is a valid view, this request should be fine to keep open
-                            // until resolution or pruning (even if the oneshot is canceled).
-                            debug!(?round, ?commitment, "requested block missing");
-                            resolver.fetch(Request::<B::Digest>::Notarized { round }).await;
-                        }
-
-                        // Register subscriber
-                        debug!(?round, ?commitment, "registering subscriber");
-                        match self.block_subscriptions.entry(commitment) {
-                            Entry::Occupied(mut entry) => {
-                                entry.get_mut().subscribers.push(response);
-                            }
-                            Entry::Vacant(entry) => {
-                                let (tx, rx) = oneshot::channel();
-                                buffer.subscribe_prepared(commitment, tx).await;
-                                let aborter = waiters.push(async move {
-                                    (commitment, rx.await.expect("buffer subscriber closed"))
-                                });
-                                entry.insert(BlockSubscription {
-                                    subscribers: vec![response],
-                                    _aborter: aborter,
-                                });
-                            }
-                        }
-                    }
-                    Message::SetFloor { height } => {
-                        if self.last_processed_height >= height {
-                            warn!(
-                                %height,
-                                existing = %self.last_processed_height,
-                                "floor not updated, lower than existing"
-                            );
-                            continue;
-                        }
-
-                        // Update the processed height
-                        self.update_processed_height(height, &mut resolver).await;
-                        if let Err(err) = self.application_metadata.sync().await {
-                            error!(?err, %height, "failed to update floor");
-                            return;
-                        }
-
-                        // Drop all pending acknowledgements. We must do this to prevent
-                        // an in-process block from being processed that is below the new floor
-                        // updating `last_processed_height`.
-                        self.pending_acks.clear();
-
-                        // Prune data in the finalized archives below the new floor.
-                        if let Err(err) = self.prune_finalized_archives(height).await {
-                            error!(?err, %height, "failed to prune finalized archives");
-                            return;
-                        }
-                    }
-                    Message::Prune { height } => {
-                        // Only allow pruning at or below the current floor
-                        if height > self.last_processed_height {
-                            warn!(%height, floor = %self.last_processed_height, "prune height above floor, ignoring");
-                            continue;
-                        }
-
-                        // Prune the finalized block and finalization certificate archives in parallel.
-                        if let Err(err) = self.prune_finalized_archives(height).await {
-                            error!(?err, %height, "failed to prune finalized archives");
-                            return;
-                        }
-                    }
-                }
+                self.handle_mailbox_message(
+                    message,
+                    &mut resolver,
+                    &mut waiters,
+                    &mut buffer,
+                    &mut application,
+                )
+                .await;
             },
             // Handle resolver messages last (batched up to max_repair, sync once)
             Some(message) = resolver_rx.recv() else {
                 info!("handler closed, shutting down");
                 return;
             } => {
-                // Drain up to max_repair messages: blocks handled immediately,
-                // certificates batched for verification, produces deferred.
-                let mut needs_sync = false;
-                let mut produces = Vec::new();
-                let mut delivers = Vec::new();
-                for msg in std::iter::once(message)
-                    .chain(std::iter::from_fn(|| resolver_rx.try_recv().ok()))
-                    .take(self.max_repair.get())
-                {
-                    match msg {
-                        handler::Message::Produce { key, response } => {
-                            produces.push((key, response));
-                        }
-                        handler::Message::Deliver {
-                            key,
-                            value,
-                            response,
-                        } => {
-                            needs_sync |= self
-                                .handle_deliver(
-                                    key,
-                                    value,
-                                    response,
-                                    &mut delivers,
-                                    &mut application,
-                                    &mut buffer,
-                                )
-                                .await;
-                        }
-                    }
-                }
-
-                // Batch verify and process all delivers.
-                needs_sync |= self
-                    .verify_delivered(delivers, &mut application, &mut buffer)
-                    .await;
-
-                // Attempt to fill gaps before handling produce requests (so we
-                // can serve data we just received).
-                needs_sync |= self
-                    .try_repair_gaps(&mut buffer, &mut resolver, &mut application)
-                    .await;
-
-                // Sync archives before responding to peers (prioritize our own durability).
-                if needs_sync {
-                    self.sync_finalized().await;
-                }
-
-                // Dispatch blocks to the application.
-                self.try_dispatch_blocks(&mut application, &mut resolver).await;
-
-                // Handle produce requests in parallel.
-                join_all(
-                    produces
-                        .into_iter()
-                        .map(|(key, response)| self.handle_produce(key, response, &buffer)),
+                self.handle_resolver_message(
+                    message,
+                    &mut resolver_rx,
+                    &mut resolver,
+                    &mut buffer,
+                    &mut application,
                 )
                 .await;
             },
         }
     }
 
+    /// Handles one ready application acknowledgement and drains any queued acks
+    /// that are already complete.
+    ///
+    /// Returns `false` if the actor should shut down.
+    async fn handle_ack<R>(
+        &mut self,
+        result: <A::Waiter as std::future::Future>::Output,
+        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+        resolver: &mut R,
+    ) -> bool
+    where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+    {
+        // Start with the ack that woke this `select_loop!` arm.
+        let mut pending = Some(self.pending_acks.complete_current(result));
+        loop {
+            let (height, commitment, result) = pending.take().expect("pending ack must exist");
+            let _ = commitment;
+            match result {
+                Ok(()) => {
+                    // Apply in-memory progress updates for this acknowledged block.
+                    self.update_processed_height(height, resolver);
+                    self.update_processed_round(height, resolver).await;
+                }
+                Err(e) => {
+                    error!(?e, %height, "application did not acknowledge block");
+                    return false;
+                }
+            }
+
+            // Opportunistically drain any additional already-ready acks so we
+            // can persist one metadata sync for the whole batch.
+            let Some(next) = self.pending_acks.pop_ready() else {
+                break;
+            };
+            pending = Some(next);
+        }
+
+        // Persist buffered processed-height updates once after draining all ready acks.
+        if let Err(e) = self.stream.sync().await {
+            error!(?e, "failed to sync application progress");
+            return false;
+        }
+
+        // Fill the pipeline
+        self.try_dispatch_blocks(application, resolver).await;
+        true
+    }
+
+    /// Handles a single mailbox message from local consensus/application callers.
+    async fn handle_mailbox_message<R, K>(
+        &mut self,
+        message: Message<P::Scheme, B>,
+        resolver: &mut R,
+        waiters: &mut BlockWaiters<B>,
+        buffer: &mut buffered::Mailbox<K, B>,
+        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+    ) where
+        R: TargetedResolver<
+                Key = Key<B::Digest>,
+                Subscriber = Annotation,
+                PublicKey = <P::Scheme as CertificateScheme>::PublicKey,
+            >,
+        K: PublicKey + From<<P::Scheme as CertificateScheme>::PublicKey>,
+    {
+        if message.response_closed() {
+            return;
+        }
+
+        match message {
+            Message::GetInfo {
+                identifier,
+                response,
+            } => {
+                let info = match identifier {
+                    BlockID::Digest(commitment) => self
+                        .finalized_blocks
+                        .get(ArchiveID::Key(&commitment))
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|b| (b.height(), commitment)),
+                    BlockID::Height(height) => self.get_info_by_height(height).await,
+                    BlockID::Latest => self.get_latest().await,
+                };
+                response.send_lossy(info);
+            }
+            Message::GetVerified { round, response } => {
+                let block = self.cache.get_verified(round).await;
+                response.send_lossy(block);
+            }
+            Message::Proposed { round, block, ack } => {
+                // If the round has already been pruned by tip advancement,
+                // `cache_verified` is a no-op because the round is below
+                // the retention floor (and no longer is required by consensus
+                // to make progress).
+                self.cache_verified(round, block.digest(), block.clone())
+                    .await;
+                self.apply_floor_anchor(&block, buffer, application, resolver)
+                    .await;
+
+                // Broadcast the proposal to all peers.
+                buffer.send(round, block.clone(), Recipients::All);
+
+                // Retain the block in memory so a subsequent `Forward` can
+                // re-send it without reloading from storage. An older retained
+                // proposal (if any) is overwritten.
+                let commitment = block.digest();
+                self.last_proposed_block = Some((round, commitment, block));
+                ack.expect("durable ack present").send_lossy(());
+            }
+            Message::Forward {
+                round,
+                commitment,
+                recipients,
+            } => {
+                if matches!(&recipients, Recipients::Some(peers) if peers.is_empty()) {
+                    return;
+                }
+                let block = match self.take_proposed(round, commitment) {
+                    Some(block) => block,
+                    None => {
+                        let Some(block) = self.find_block(buffer, commitment).await else {
+                            debug!(?commitment, "block not found for forwarding");
+                            return;
+                        };
+                        block
+                    }
+                };
+                let recipients = match recipients {
+                    Recipients::All => Recipients::All,
+                    Recipients::Some(peers) => {
+                        Recipients::Some(peers.into_iter().map(K::from).collect())
+                    }
+                    Recipients::One(peer) => Recipients::One(K::from(peer)),
+                };
+                buffer.send(round, block, recipients);
+            }
+            Message::Verified { round, block, ack } => {
+                // If the round has already been pruned by tip advancement,
+                // `cache_verified` is a no-op because the round is below
+                // the retention floor (and no longer is required by consensus
+                // to make progress).
+                self.cache_verified(round, block.digest(), block.clone())
+                    .await;
+                self.apply_floor_anchor(&block, buffer, application, resolver)
+                    .await;
+                ack.expect("durable ack present").send_lossy(());
+            }
+            Message::Certified { round, block, ack } => {
+                // If the round has already been pruned by tip advancement,
+                // `cache_block` is a no-op because the round is below
+                // the retention floor (and no longer is required by consensus
+                // to make progress).
+                self.cache_block(round, block.digest(), block.clone()).await;
+                self.apply_floor_anchor(&block, buffer, application, resolver)
+                    .await;
+                ack.expect("durable ack present").send_lossy(());
+            }
+            Message::Notarization { notarization } => {
+                let round = notarization.round();
+                let commitment = notarization.proposal.payload;
+
+                // Store notarization by view
+                self.cache
+                    .put_notarization(round, commitment, notarization.clone())
+                    .await;
+
+                // A notarization alone is not enough to fetch missing proposal
+                // data. If the block is not locally available, remember the
+                // certificate and wait for a later finalization/repair path
+                // (or a round-bound subscription) to fetch it.
+                if let Some(block) = self.find_block(buffer, commitment).await {
+                    self.cache_block(round, commitment, block.clone()).await;
+                    self.apply_floor_anchor(&block, buffer, application, resolver)
+                        .await;
+                    application.report(Update::NotarizedBlock(block));
+                } else {
+                    debug!(?round, "notarized block unavailable locally");
+                }
+            }
+            Message::Finalization { finalization } => {
+                let round = finalization.round();
+                let commitment = finalization.proposal.payload;
+
+                // Cache finalization by round
+                self.cache
+                    .put_finalization(round, commitment, finalization.clone())
+                    .await;
+
+                // Search for the finalized block locally, otherwise fetch it remotely.
+                if let Some(block) = self.find_block(buffer, commitment).await {
+                    // The anchor path stores the floor block and finalization,
+                    // advances floors, prunes below them, and resumes dispatch.
+                    if self
+                        .apply_floor_anchor(&block, buffer, application, resolver)
+                        .await
+                    {
+                        return;
+                    }
+
+                    let height = block.height();
+                    self.update_processed_round_floor(height, round, resolver)
+                        .await;
+                    if self
+                        .store_finalization(
+                            height,
+                            commitment,
+                            block,
+                            Some(finalization),
+                            application,
+                        )
+                        .await
+                    {
+                        // If a floor anchor is pending, repair and dispatch are
+                        // no-ops until the anchor block is stored.
+                        self.try_repair_gaps(buffer, resolver, application).await;
+                        self.sync_finalized().await;
+                        self.try_dispatch_blocks(application, resolver).await;
+                        debug!(?round, %height, "finalized block stored");
+                    }
+                } else {
+                    // The finalization carries a round and commitment, but not a
+                    // height. Keep the request round-bound until the block is decoded.
+                    debug!(?round, ?commitment, "finalized block missing");
+                    self.floor
+                        .fetch_if_permitted(
+                            resolver,
+                            Request::finalized_block_by_round(commitment, round),
+                        )
+                        .ignore();
+                }
+            }
+            Message::GetBlock {
+                identifier,
+                response,
+            } => match identifier {
+                BlockID::Digest(commitment) => {
+                    let result = self.find_block(buffer, commitment).await;
+                    response.send_lossy(result);
+                }
+                BlockID::Height(height) => {
+                    let result = self.get_finalized_block(height).await;
+                    response.send_lossy(result);
+                }
+                BlockID::Latest => {
+                    let block = match self.get_latest().await {
+                        Some((_, commitment)) => self.find_block(buffer, commitment).await,
+                        None => None,
+                    };
+                    response.send_lossy(block);
+                }
+            },
+            Message::GetFinalization { height, response } => {
+                let finalization = self.get_finalization_by_height(height).await;
+                response.send_lossy(finalization);
+            }
+            Message::GetProcessedHeight { response } => {
+                response.send_lossy(self.stream.processed_height());
+            }
+            Message::HintFinalized { height, targets } => {
+                // Skip if finalization is already available locally.
+                if self.get_finalization_by_height(height).await.is_some() {
+                    return;
+                }
+
+                // Trigger a targeted fetch via the resolver (denied below the floor).
+                self.floor
+                    .fetch_targeted_if_permitted(resolver, Request::finalized(height), targets)
+                    .ignore();
+            }
+            Message::HintNotarized { round, commitment } => {
+                if self.find_block(buffer, commitment).await.is_none() {
+                    self.floor
+                        .fetch_if_permitted(resolver, Request::notarized(round))
+                        .ignore();
+                }
+            }
+            Message::Subscribe {
+                round,
+                commitment,
+                response,
+            } => {
+                // Check for block locally
+                if let Some(block) = self.find_block(buffer, commitment).await {
+                    response.send_lossy(block);
+                    return;
+                }
+
+                // We don't have the block locally, so fetch the block from the network
+                // if we have an associated round. If we only have the digest, don't make
+                // the request as we wouldn't know when to drop it, and the request may
+                // never complete if the block is not finalized.
+                if let Some(round) = round {
+                    if self
+                        .floor
+                        .fetch_if_permitted(resolver, Request::notarized(round))
+                        .denied()
+                    {
+                        warn!(
+                            ?round,
+                            ?commitment,
+                            last_processed_round = ?self.floor.processed_round(),
+                            last_processed_height = %self.floor.processed_height(),
+                            tip = %self.tip,
+                            "subscription for block in past round that wasn't finalized - possible notarize-nullify race"
+                        );
+
+                        #[cfg(feature = "prom")]
+                        counter!("syncer_stuck_subscription_total").increment(1);
+
+                        return;
+                    }
+                    // The fetch (with notarization) was issued. If this is a valid
+                    // view, this request should be fine to keep open until
+                    // resolution or pruning (even if the oneshot is canceled).
+                    debug!(?round, ?commitment, "requested block missing");
+                }
+
+                // Register subscriber
+                debug!(?round, ?commitment, "registering subscriber");
+                match self.block_subscriptions.entry(commitment) {
+                    Entry::Occupied(mut entry) => {
+                        entry.get_mut().subscribers.push(response);
+                    }
+                    Entry::Vacant(entry) => {
+                        let (tx, rx) = oneshot::channel();
+                        buffer.subscribe_prepared(commitment, tx);
+                        let aborter = waiters.push(async move {
+                            rx.await
+                                .map(|block| (commitment, block))
+                                .map_err(|_| commitment)
+                        });
+                        entry.insert(BlockSubscription {
+                            subscribers: vec![response],
+                            _aborter: aborter,
+                        });
+                    }
+                }
+            }
+            Message::SetFloor { finalization } => {
+                self.install_floor(finalization, true, resolver, buffer, application)
+                    .await;
+            }
+            Message::Prune { height } => {
+                // Only allow pruning at or below the current floor
+                if height > self.floor.processed_height() {
+                    warn!(%height, floor = %self.floor.processed_height(), "prune height above floor, ignoring");
+                    return;
+                }
+
+                // Prune the finalized block and finalization certificate archives in parallel.
+                self.prune_finalized_archives(height)
+                    .await
+                    .expect("failed to prune finalized archives");
+
+                // Intentionally keep existing block subscriptions alive. Canceling
+                // waiters can have catastrophic consequences because actors do not
+                // retry subscriptions on failed channels.
+            }
+        }
+    }
+
+    /// Handles a batch of resolver messages, syncing finalized archives once if
+    /// any accepted delivery buffered a write.
+    async fn handle_resolver_message<R, K>(
+        &mut self,
+        message: handler::Message<B::Digest>,
+        resolver_rx: &mut handler::Receiver<B::Digest>,
+        resolver: &mut R,
+        buffer: &mut buffered::Mailbox<K, B>,
+        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+    ) where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+        K: PublicKey,
+    {
+        let mut needs_sync = false;
+        let mut handled = false;
+        let mut produces = Vec::new();
+        let mut delivers = Vec::new();
+
+        // Drain up to max_repair resolver messages. Block deliveries are handled
+        // immediately, certificate-bearing deliveries are batched for verification,
+        // and produce responses wait until repair has had a chance to fill gaps.
+        for msg in std::iter::once(message)
+            .chain(std::iter::from_fn(|| resolver_rx.try_recv().ok()))
+            .take(self.max_repair.get())
+        {
+            if msg.response_closed() {
+                continue;
+            }
+            handled = true;
+
+            match msg {
+                handler::Message::Produce { key, response } => {
+                    produces.push((key, response));
+                }
+                handler::Message::Deliver {
+                    delivery,
+                    value,
+                    response,
+                } => {
+                    needs_sync |= self
+                        .handle_deliver(
+                            ResolverDelivery {
+                                delivery,
+                                value,
+                                response,
+                            },
+                            &mut delivers,
+                            buffer,
+                            application,
+                            resolver,
+                        )
+                        .await;
+                }
+            }
+        }
+        if !handled {
+            return;
+        }
+
+        // Batch verify and process all certificate-bearing deliveries.
+        needs_sync |= self
+            .verify_delivered(delivers, buffer, application, resolver)
+            .await;
+
+        // Attempt to fill gaps before handling produce requests so we can serve
+        // data received earlier in the same batch.
+        needs_sync |= self.try_repair_gaps(buffer, resolver, application).await;
+
+        if needs_sync {
+            // Sync archives before responding to peers so accepted repair data is
+            // durable before this node serves it.
+            self.sync_finalized().await;
+            self.try_dispatch_blocks(application, resolver).await;
+        }
+
+        // Handle produce requests in parallel.
+        join_all(
+            produces
+                .into_iter()
+                .map(|(key, response)| self.handle_produce(key, response, buffer)),
+        )
+        .await;
+    }
+
     /// Handle a produce request from a remote peer.
     async fn handle_produce<K: PublicKey>(
         &self,
-        key: Request<B::Digest>,
+        key: Key<B::Digest>,
         response: oneshot::Sender<Bytes>,
         buffer: &buffered::Mailbox<K, B>,
     ) {
         match key {
-            Request::Block(commitment) => {
-                let Some(block) = self.find_block_const(buffer, commitment).await else {
+            Key::Block(commitment) => {
+                let Some(block) = self.find_block(buffer, commitment).await else {
                     debug!(?commitment, "block missing on request");
                     return;
                 };
                 response.send_lossy(block.encode());
             }
-            Request::Finalized { height } => {
+            Key::Finalized { height } => {
                 let height = Height::new(height);
                 let Some(finalization) = self.get_finalization_by_height(height).await else {
                     debug!(%height, "finalization missing on request");
@@ -893,13 +898,13 @@ where
                 };
                 response.send_lossy((finalization, block).encode());
             }
-            Request::Notarized { round } => {
+            Key::Notarized { round } => {
                 let Some(notarization) = self.cache.get_notarization(round).await else {
                     debug!(?round, "notarization missing on request");
                     return;
                 };
                 let commitment = notarization.proposal.payload;
-                let Some(block) = self.find_block_const(buffer, commitment).await else {
+                let Some(block) = self.find_block(buffer, commitment).await else {
                     debug!(?commitment, "block missing on request");
                     return;
                 };
@@ -908,21 +913,198 @@ where
         }
     }
 
+    /// Verifies and installs a floor, fetching the anchor block if needed.
+    async fn install_floor<R, K>(
+        &mut self,
+        finalization: Finalization<P::Scheme, B::Digest>,
+        skip_if_superseded: bool,
+        resolver: &mut R,
+        buffer: &mut buffered::Mailbox<K, B>,
+        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+    ) where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+        K: PublicKey,
+    {
+        let round = finalization.round();
+        if round <= self.floor.processed_round() {
+            warn!(
+                ?round,
+                floor = ?self.floor.processed_round(),
+                "floor not updated, below existing round floor"
+            );
+            return;
+        }
+
+        let Some(scheme) = self.get_scheme_certificate_verifier(finalization.epoch()) else {
+            panic!("floor finalization epoch unavailable");
+        };
+        assert!(
+            finalization.verify(self.context.as_mut(), scheme.as_ref(), &self.strategy),
+            "floor finalization must verify"
+        );
+
+        let commitment = finalization.proposal.payload;
+        self.cache
+            .put_finalization(round, commitment, finalization.clone())
+            .await;
+
+        // A pending anchor at the same or a newer floor already blocks
+        // progress. Keep waiting for it instead of replacing it.
+        if skip_if_superseded && self.floor.has_pending_anchor_at_or_after(round) {
+            return;
+        }
+
+        if let Some(block) = self.find_block(buffer, commitment).await {
+            self.floor.await_anchor(finalization);
+            assert!(
+                self.apply_floor_anchor(&block, buffer, application, resolver)
+                    .await
+            );
+            return;
+        }
+
+        // The pending floor owns the next application sync point. Drop any
+        // in-flight acks before they can advance the processed height past it.
+        self.pending_acks.clear();
+
+        debug!(?round, ?commitment, "starting fetch for floor block");
+        self.floor.await_anchor(finalization);
+        self.floor
+            .fetch_if_permitted(
+                resolver,
+                Request::finalized_block_by_round(commitment, round),
+            )
+            .ignore();
+    }
+
+    /// Applies a block if it satisfies the current floor transition.
+    async fn apply_floor_anchor<R, K>(
+        &mut self,
+        block: &B,
+        buffer: &mut buffered::Mailbox<K, B>,
+        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+        resolver: &mut R,
+    ) -> bool
+    where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+        K: PublicKey,
+    {
+        let commitment = block.digest();
+        if !self.floor.matches_pending_anchor(commitment) {
+            return false;
+        }
+        let block = block.clone();
+
+        // This anchor cannot move the application sync point, but its
+        // finalization round can still prune round-bound resolver work.
+        // Keep pending acks intact because processed_height is unchanged.
+        let height = block.height();
+        if height <= self.floor.processed_height() {
+            warn!(
+                %height,
+                existing = %self.floor.processed_height(),
+                "floor not updated, at or below existing"
+            );
+            let finalization = self
+                .floor
+                .take_pending_anchor()
+                .expect("pending floor anchor missing");
+            self.update_processed_round_floor(height, finalization.round(), resolver)
+                .await;
+            if self.try_repair_gaps(buffer, resolver, application).await {
+                self.sync_finalized().await;
+            }
+            self.try_dispatch_blocks(application, resolver).await;
+            return true;
+        }
+
+        let finalization = self
+            .floor
+            .take_pending_anchor()
+            .expect("pending floor anchor missing");
+        let round = finalization.round();
+        try_join!(
+            async {
+                self.finalized_blocks
+                    .put(block.clone())
+                    .await
+                    .map_err(Box::new)?;
+                Ok::<_, BoxedError>(())
+            },
+            async {
+                self.finalizations_by_height
+                    .put(height, commitment, finalization)
+                    .await
+                    .map_err(Box::new)?;
+                Ok::<_, BoxedError>(())
+            }
+        )
+        .expect("failed to store floor anchor");
+        self.sync_finalized().await;
+        self.notify_subscribers(commitment, &block);
+
+        if height > self.tip {
+            application.report(Update::Tip(height.get(), commitment));
+            self.tip = height;
+            let _ = self.finalized_height.try_set(height.get());
+        }
+
+        // The anchor is durable, but the application still needs to process it.
+        // Record the previous height so dispatch resumes at the anchor itself.
+        let dispatch_floor = height
+            .previous()
+            .expect("floor anchor above processed height must have predecessor");
+        self.update_processed_height(dispatch_floor, resolver);
+        self.update_processed_round_floor(dispatch_floor, round, resolver)
+            .await;
+        self.stream
+            .sync()
+            .await
+            .expect("failed to sync floor metadata");
+
+        // Drop all pending acknowledgement waiters so any in-flight application
+        // acks for blocks below the new floor cannot rewrite the processed floor.
+        self.pending_acks.clear();
+
+        // The floor is durable, so cache/finalized data below it can be pruned.
+        self.prune_after_floor(height)
+            .await
+            .expect("failed to prune data below floor");
+
+        // Intentionally keep existing block subscriptions alive. Canceling
+        // waiters can have catastrophic consequences (nodes can get stuck in
+        // different views) as actors do not retry subscriptions on failed channels.
+        if self.try_repair_gaps(buffer, resolver, application).await {
+            self.sync_finalized().await;
+        }
+        self.try_dispatch_blocks(application, resolver).await;
+        true
+    }
+
     /// Handle a deliver message from the resolver. Block delivers are handled
     /// immediately. Finalized/Notarized delivers are parsed and structurally
     /// validated, then collected into `delivers` for batch certificate verification.
     /// Returns true if finalization archives were written and need syncing.
-    async fn handle_deliver<K: PublicKey>(
+    async fn handle_deliver<R, K>(
         &mut self,
-        key: Request<B::Digest>,
-        value: Bytes,
-        response: oneshot::Sender<bool>,
+        message: ResolverDelivery<B::Digest>,
         delivers: &mut Vec<PendingVerification<P::Scheme, B>>,
-        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
         buffer: &mut buffered::Mailbox<K, B>,
-    ) -> bool {
+        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+        resolver: &mut R,
+    ) -> bool
+    where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+        K: PublicKey,
+    {
+        let ResolverDelivery {
+            delivery,
+            value,
+            response,
+        } = message;
+        let Delivery { key, subscribers } = delivery;
         match key {
-            Request::Block(commitment) => {
+            Key::Block(commitment) => {
                 let Ok(block) = B::decode_cfg(value.as_ref(), &self.block_codec_config) else {
                     response.send_lossy(false);
                     return false;
@@ -932,29 +1114,66 @@ where
                     return false;
                 }
 
-                // Persist the block, also storing the finalization if we have it.
+                // This block may match the pending floor request. Whether it
+                // installs or is rejected as the floor anchor, do not also
+                // process it as an ordinary block delivery.
+                if self
+                    .apply_floor_anchor(&block, buffer, application, resolver)
+                    .await
+                {
+                    response.send_lossy(true);
+                    return false;
+                }
+
+                // The commitment validates the peer response. Annotations are
+                // local context attached to the request and do not affect peer
+                // validity.
+                self.notify_subscribers(commitment, &block);
+
+                // The peer-visible request only says "give me this block".
+                // Local annotations explain why the block was requested and
+                // therefore where, if anywhere, it should be stored.
                 let height = block.height();
+                let annotations = subscribers.into_vec();
+
+                // Round-bound proposal-parent fetches are `Key::Notarized`
+                // deliveries and are handled below. In this block-keyed path,
+                // `Finalized` means the block belongs in the finalized chain.
                 let finalization = self.cache.get_finalization_for(commitment).await;
-                let wrote = self
-                    .store_finalization(
-                        height,
-                        commitment,
-                        block,
-                        finalization,
-                        application,
-                        buffer,
-                    )
-                    .await;
+                if let Some(finalization) = &finalization {
+                    self.update_processed_round_floor(height, finalization.round(), resolver)
+                        .await;
+                }
+                let wrote = if finalization.is_some()
+                    || annotations
+                        .iter()
+                        .any(|annotation| matches!(annotation, Annotation::Finalized(_)))
+                {
+                    self.store_finalization(height, commitment, block, finalization, application)
+                        .await
+                } else {
+                    if annotations
+                        .iter()
+                        .any(|annotation| matches!(annotation, Annotation::Certified { .. }))
+                        && height > self.floor.processed_height()
+                        && let Some(bounds) = self.epocher.containing(height)
+                    {
+                        self.cache
+                            .put_certified(bounds.epoch(), height, commitment, block)
+                            .await;
+                    }
+                    false
+                };
                 debug!(?commitment, %height, "received block");
                 response.send_lossy(true);
                 wrote
             }
-            Request::Finalized { height } => {
+            Key::Finalized { height } => {
                 let height = Height::new(height);
                 let Some(bounds) = self.epocher.containing(height) else {
                     debug!(
                         %height,
-                        floor = %self.last_processed_height,
+                        floor = %self.floor.processed_height(),
                         "ignoring stale delivery"
                     );
                     response.send_lossy(true);
@@ -964,7 +1183,7 @@ where
                 let Some(scheme) = self.get_scheme_certificate_verifier(epoch) else {
                     debug!(
                         %height,
-                        floor = %self.last_processed_height,
+                        floor = %self.floor.processed_height(),
                         "ignoring stale delivery"
                     );
                     response.send_lossy(true);
@@ -1015,11 +1234,11 @@ where
                 });
                 false
             }
-            Request::Notarized { round } => {
+            Key::Notarized { round } => {
                 let Some(scheme) = self.get_scheme_certificate_verifier(round.epoch()) else {
                     debug!(
                         ?round,
-                        floor = %self.last_processed_height,
+                        floor = %self.floor.processed_height(),
                         "ignoring stale delivery"
                     );
                     response.send_lossy(true);
@@ -1071,12 +1290,18 @@ where
 
     /// Batch verify pending certificates and process valid items. Returns true
     /// if finalization archives were written and need syncing.
-    async fn verify_delivered<K: PublicKey>(
+    async fn verify_delivered<R, K>(
         &mut self,
         mut delivers: Vec<PendingVerification<P::Scheme, B>>,
-        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
         buffer: &mut buffered::Mailbox<K, B>,
-    ) -> bool {
+        application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
+        resolver: &mut R,
+    ) -> bool
+    where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+        K: PublicKey,
+    {
+        delivers.retain(|item| !item.response_closed());
         if delivers.is_empty() {
             return false;
         }
@@ -1103,7 +1328,12 @@ where
         // Batch verify using the all-epoch verifier if available, otherwise
         // batch verify per epoch using scoped verifiers.
         let verified = if let Some(scheme) = self.provider.all() {
-            verify_certificates(&mut self.context, scheme.as_ref(), &certs, &self.strategy)
+            verify_certificates(
+                self.context.as_mut(),
+                scheme.as_ref(),
+                &certs,
+                &self.strategy,
+            )
         } else {
             let mut verified = vec![false; delivers.len()];
 
@@ -1123,8 +1353,12 @@ where
                     continue;
                 };
                 let group: Vec<_> = indices.iter().map(|&i| certs[i]).collect();
-                let results =
-                    verify_certificates(&mut self.context, scheme.as_ref(), &group, &self.strategy);
+                let results = verify_certificates(
+                    self.context.as_mut(),
+                    scheme.as_ref(),
+                    &group,
+                    &self.strategy,
+                );
                 for (j, &idx) in indices.iter().enumerate() {
                     verified[idx] = results[j];
                 }
@@ -1150,11 +1384,24 @@ where
                     block,
                     response,
                 } => {
+                    // Valid finalization received.
                     response.send_lossy(true);
                     let round = finalization.round();
                     let height = block.height();
                     let commitment = block.digest();
                     debug!(?round, %height, "received finalization");
+
+                    // The floor-anchor path fully handles this finalization
+                    // and moves the lower bound past it.
+                    if self
+                        .apply_floor_anchor(&block, buffer, application, resolver)
+                        .await
+                    {
+                        continue;
+                    }
+
+                    self.update_processed_round_floor(height, round, resolver)
+                        .await;
 
                     wrote |= self
                         .store_finalization(
@@ -1163,7 +1410,6 @@ where
                             block,
                             Some(finalization),
                             application,
-                            buffer,
                         )
                         .await;
                 }
@@ -1172,15 +1418,36 @@ where
                     block,
                     response,
                 } => {
+                    // Valid notarization received.
                     response.send_lossy(true);
                     let round = notarization.round();
                     let commitment = block.digest();
                     debug!(?round, ?commitment, "received notarization");
 
-                    // If there exists a finalization certificate for this block, we
-                    // should finalize it.
+                    // Cache the notarization and block.
                     let height = block.height();
+                    self.cache_block(round, commitment, block.clone()).await;
+                    self.cache
+                        .put_notarization(round, commitment, notarization)
+                        .await;
+
+                    // A notarized delivery can carry the pending floor block
+                    // after the finalization is cached.
+                    if self
+                        .apply_floor_anchor(&block, buffer, application, resolver)
+                        .await
+                    {
+                        continue;
+                    }
+
+                    // If there exists a finalization certificate for this block, we
+                    // should finalize it. This could finalize the block faster when
+                    // a notarization then a finalization are received via consensus
+                    // and we resolve the notarization request before the block request.
                     if let Some(finalization) = self.cache.get_finalization_for(commitment).await {
+                        self.update_processed_round_floor(height, finalization.round(), resolver)
+                            .await;
+
                         wrote |= self
                             .store_finalization(
                                 height,
@@ -1188,20 +1455,11 @@ where
                                 block.clone(),
                                 Some(finalization),
                                 application,
-                                buffer,
                             )
                             .await;
                     }
 
-                    // Cache the notarization and block.
-                    self.cache_block(round, commitment, block.clone()).await;
-                    self.cache
-                        .put_notarization(round, commitment, notarization)
-                        .await;
-                    application
-                        .report(Update::NotarizedBlock(block.clone()))
-                        .await;
-                    self.notify_subscribers(commitment, &block).await;
+                    application.report(Update::NotarizedBlock(block));
                 }
             }
         }
@@ -1220,7 +1478,7 @@ where
     // -------------------- Waiters --------------------
 
     /// Notify any subscribers for the given commitment with the provided block.
-    async fn notify_subscribers(&mut self, commitment: B::Digest, block: &B) {
+    fn notify_subscribers(&mut self, commitment: B::Digest, block: &B) {
         if let Some(mut bs) = self.block_subscriptions.remove(&commitment) {
             for subscriber in bs.subscribers.drain(..) {
                 subscriber.send_lossy(block.clone());
@@ -1233,21 +1491,28 @@ where
     /// Attempt to dispatch finalized blocks to the application until the pipeline is full
     /// or no more blocks are available.
     ///
-    /// This does NOT advance `last_processed_height` or sync metadata. It only
+    /// This does NOT advance the processed floor height or sync metadata. It only
     /// sends blocks to the application and enqueues pending acks. Metadata is
-    /// updated later when acks arrive and [`Self::handle_block_processed`] runs.
+    /// updated later when acks arrive and [`Self::handle_ack`] runs.
     ///
-    /// Acks are processed in FIFO order so `last_processed_height` always
+    /// Acks are processed in FIFO order so the processed floor height always
     /// advances sequentially.
-    async fn try_dispatch_blocks(
+    async fn try_dispatch_blocks<R>(
         &mut self,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
-        resolver: &mut impl Resolver<Key = Request<B::Digest>>,
-    ) {
+        resolver: &mut R,
+    ) where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+    {
+        // Dispatch resumes after the floor anchor is durably stored.
+        if self.floor.blocks_progress() {
+            return;
+        }
+
         while self.pending_acks.has_capacity() {
             let next_height = self
                 .pending_acks
-                .next_dispatch_height(self.last_processed_height);
+                .next_dispatch_height(self.stream.next_height());
             let Some(block) = self.get_finalized_block(next_height).await else {
                 return;
             };
@@ -1264,10 +1529,9 @@ where
                 let Some(finalization) = self.get_finalization_by_height(next_height).await else {
                     // The last block of an epoch will always have an explicit finalization certificate.
                     // The finalizer requires it for storing the finalized header.
-                    let request = Request::<B::Digest>::Finalized {
-                        height: height.get(),
-                    };
-                    resolver.fetch(request).await;
+                    self.floor
+                        .fetch_if_permitted(resolver, Request::finalized(next_height))
+                        .ignore();
                     return;
                 };
 
@@ -1288,13 +1552,9 @@ where
                     return;
                 }
 
-                application
-                    .report(Update::FinalizedBlock((block, Some(finalization)), ack))
-                    .await;
+                application.report(Update::FinalizedBlock((block, Some(finalization)), ack));
             } else {
-                application
-                    .report(Update::FinalizedBlock((block, None), ack))
-                    .await;
+                application.report(Update::FinalizedBlock((block, None), ack));
             }
 
             self.pending_acks.enqueue(PendingAck {
@@ -1305,57 +1565,27 @@ where
         }
     }
 
-    /// Handle acknowledgement from the application that a block has been processed.
-    ///
-    /// Buffers the processed height update but does NOT sync to durable storage.
-    /// The caller must sync metadata after processing all ready acks.
-    async fn handle_block_processed(
-        &mut self,
-        height: Height,
-        commitment: B::Digest,
-        resolver: &mut impl Resolver<Key = Request<B::Digest>>,
-    ) {
-        // Update the processed height (buffered, not synced)
-        self.update_processed_height(height, resolver).await;
-
-        // Cancel any useless requests
-        resolver
-            .cancel(Request::<B::Digest>::Block(commitment))
-            .await;
-
-        if let Some(finalization) = self.get_finalization_by_height(height).await {
-            // Trail the previous processed finalized block by the timeout
-            let lpr = self.last_processed_round;
-            let prune_round = Round::new(
-                lpr.epoch(),
-                lpr.view().saturating_sub(self.view_retention_timeout),
-            );
-
-            // Prune archives
-            self.cache.prune(prune_round).await;
-
-            // Update the last processed round
-            let round = finalization.round();
-            self.last_processed_round = round;
-
-            // Cancel useless requests
-            resolver
-                .retain(Request::<B::Digest>::Notarized { round }.predicate())
-                .await;
-        }
-    }
-
     // -------------------- Prunable Storage --------------------
 
     /// Add a verified block to the prunable archive.
     async fn cache_verified(&mut self, round: Round, commitment: B::Digest, block: B) {
-        self.notify_subscribers(commitment, &block).await;
+        self.notify_subscribers(commitment, &block);
         self.cache.put_verified(round, commitment, block).await;
+    }
+
+    /// If a block previously accepted via [`Message::Proposed`] matches the
+    /// supplied `(round, commitment)`, remove and return it.
+    fn take_proposed(&mut self, round: Round, commitment: B::Digest) -> Option<B> {
+        let (cached_round, cached_commitment, _) = self.last_proposed_block.as_ref()?;
+        if *cached_round != round || *cached_commitment != commitment {
+            return None;
+        }
+        self.last_proposed_block.take().map(|(_, _, block)| block)
     }
 
     /// Add a notarized block to the prunable archive.
     async fn cache_block(&mut self, round: Round, commitment: B::Digest, block: B) {
-        self.notify_subscribers(commitment, &block).await;
+        self.notify_subscribers(commitment, &block);
         self.cache.put_block(round, commitment, block).await;
     }
 
@@ -1411,28 +1641,37 @@ where
         }
     }
 
+    /// Get finalized block information from either the finalization archive or
+    /// the finalized-block archive.
+    async fn get_info_by_height(&self, height: Height) -> Option<(Height, B::Digest)> {
+        if let Some(finalization) = self.get_finalization_by_height(height).await {
+            return Some((height, finalization.proposal.payload));
+        }
+
+        self.get_finalized_block(height)
+            .await
+            .map(|block| (block.height(), block.digest()))
+    }
+
     /// Add a finalized block, and optionally a finalization, to the archive.
-    ///
-    /// After persisting the block, attempt to dispatch the next contiguous block to the application.
     ///
     /// Writes are buffered and not synced. The caller must call
     /// [`sync_finalized`](Self::sync_finalized) before yielding to the `select_loop!`.
     ///
     /// Returns `true` if data was written and the archives need syncing.
-    async fn store_finalization<K: PublicKey>(
+    async fn store_finalization(
         &mut self,
         height: Height,
         commitment: B::Digest,
         block: B,
         finalization: Option<Finalization<P::Scheme, B::Digest>>,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
-        _buffer: &mut buffered::Mailbox<K, B>,
     ) -> bool {
         // Blocks below the last processed height are stale
-        if height <= self.last_processed_height {
+        if height <= self.floor.processed_height() {
             debug!(
                 %height,
-                floor = %self.last_processed_height,
+                floor = %self.floor.processed_height(),
                 ?commitment,
                 "dropping finalization at or below processed height floor"
             );
@@ -1445,7 +1684,7 @@ where
         // mismatches early, but a `(block, finalization)` pair becomes trusted
         // storage here regardless of which path produced it — including paths
         // that bypass those checks: a finalization cached first then the block
-        // fetched later by digest (`Request::Block`), a consensus finalization
+        // fetched later by digest (`Key::Block`), a consensus finalization
         // matched against a locally-found block, a notarized block paired with
         // a cached finalization, checkpoint restart, and gap repair. Enforcing
         // the binding at this join point ensures every order gets the same
@@ -1496,7 +1735,7 @@ where
             return false;
         }
 
-        self.notify_subscribers(commitment, &block).await;
+        self.notify_subscribers(commitment, &block);
 
         #[cfg(feature = "prom")]
         let store_start = Instant::now();
@@ -1540,14 +1779,9 @@ where
                     "tip advanced by multiple blocks (catch-up)"
                 );
             }
-            application
-                .report(Update::Tip(height.get(), commitment))
-                .await;
+            application.report(Update::Tip(height.get(), commitment));
             self.tip = height;
-            #[cfg(feature = "prom")]
-            {
-                self.finalized_height.set(height.get() as i64);
-            }
+            let _ = self.finalized_height.try_set(height.get());
         }
 
         true
@@ -1567,8 +1801,8 @@ where
 
     /// Looks for a block anywhere in local storage.
     async fn find_block<K: PublicKey>(
-        &mut self,
-        buffer: &mut buffered::Mailbox<K, B>,
+        &self,
+        buffer: &buffered::Mailbox<K, B>,
         commitment: B::Digest,
     ) -> Option<B> {
         // Check buffer.
@@ -1586,39 +1820,28 @@ where
         }
     }
 
-    /// Looks for a block anywhere in local storage (immutable borrow of buffer).
-    async fn find_block_const<K: PublicKey>(
-        &self,
-        buffer: &buffered::Mailbox<K, B>,
-        commitment: B::Digest,
-    ) -> Option<B> {
-        // Check buffer.
-        if let Some(block) = buffer.get(commitment).await {
-            return Some(block);
-        }
-        // Check verified / notarized blocks via cache manager.
-        if let Some(block) = self.cache.find_block(commitment).await {
-            return Some(block);
-        }
-        // Check finalized blocks.
-        match self.finalized_blocks.get(ArchiveID::Key(&commitment)).await {
-            Ok(block) => block,
-            Err(e) => panic!("failed to get block: {e}"),
-        }
-    }
-
     /// Attempt to repair any identified gaps in the finalized blocks archive.
     ///
     /// Writes are buffered. Returns `true` if this call wrote repaired blocks and
     /// needs a subsequent [`sync_finalized`](Self::sync_finalized).
-    async fn try_repair_gaps<K: PublicKey>(
+    async fn try_repair_gaps<R, K>(
         &mut self,
         buffer: &mut buffered::Mailbox<K, B>,
-        resolver: &mut impl Resolver<Key = Request<B::Digest>>,
+        resolver: &mut R,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
-    ) -> bool {
+    ) -> bool
+    where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+        K: PublicKey,
+    {
+        // Gap repair needs a known processed floor. A floor transition may
+        // jump the lower bound once its anchor block arrives.
+        if self.floor.blocks_progress() {
+            return false;
+        }
+
         let mut wrote = false;
-        let start = self.last_processed_height.next();
+        let start = self.floor.processed_height().next();
         'cache_repair: loop {
             let (gap_start, Some(gap_end)) = self.finalized_blocks.next_gap(start) else {
                 // No gaps detected
@@ -1646,7 +1869,6 @@ where
                             block.clone(),
                             finalization,
                             application,
-                            buffer,
                         )
                         .await;
                     debug!(
@@ -1657,15 +1879,23 @@ where
                     );
                     cursor = block;
                 } else {
-                    // Request the next missing block digest
+                    // Request the next missing block by commitment, bounding the
+                    // request by the parent height derived from the child block.
+                    let parent_height = cursor
+                        .height()
+                        .previous()
+                        .expect("cursor above gap start has a parent");
                     debug!(
                         ?commitment,
-                        target_height = cursor.height().get() - 1,
+                        target_height = %parent_height,
                         "requesting missing block from network for gap repair"
                     );
-                    resolver
-                        .fetch(Request::<B::Digest>::Block(commitment))
-                        .await;
+                    self.floor
+                        .fetch_if_permitted(
+                            resolver,
+                            Request::finalized_block_by_height(commitment, parent_height),
+                        )
+                        .ignore();
                     break 'cache_repair;
                 }
             }
@@ -1676,40 +1906,71 @@ where
         let missing_items = self
             .finalized_blocks
             .missing_items(start, self.max_repair.get());
-        let requests = missing_items
-            .into_iter()
-            .map(|height| Request::<B::Digest>::Finalized {
-                height: height.get(),
-            })
-            .collect::<Vec<_>>();
+        let requests: Vec<_> = missing_items.into_iter().map(Request::finalized).collect();
         if !requests.is_empty() {
-            resolver.fetch_all(requests).await
+            self.floor
+                .fetch_all_if_permitted(resolver, requests)
+                .ignore();
         }
         wrote
     }
 
     /// Buffers a processed height update in memory and metrics. Does NOT sync
     /// to durable storage. Sync metadata after buffered updates to make them durable.
-    async fn update_processed_height(
+    fn update_processed_height<R>(&mut self, height: Height, resolver: &mut R)
+    where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+    {
+        self.stream.acknowledge(height);
+        self.floor.set_processed_height(height);
+        let _ = self
+            .processed_height
+            .try_set(self.floor.processed_height().get());
+
+        // Prune any existing requests below the new floor.
+        resolver.retain(handler::above_height_floor::<B::Digest>(height));
+    }
+
+    /// Buffers a processed round update in memory and prunes round-bound requests.
+    async fn update_processed_round<R>(&mut self, height: Height, resolver: &mut R)
+    where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+    {
+        let Some(finalization) = self.get_finalization_by_height(height).await else {
+            return;
+        };
+        self.update_processed_round_floor(height, finalization.round(), resolver)
+            .await;
+    }
+
+    /// Buffers a processed round floor update in memory and prunes round-bound requests.
+    async fn update_processed_round_floor<R>(
         &mut self,
         height: Height,
-        resolver: &mut impl Resolver<Key = Request<B::Digest>>,
-    ) {
-        self.application_metadata.put(LATEST_KEY.clone(), height);
-        self.last_processed_height = height;
-        #[cfg(feature = "prom")]
-        self.processed_height
-            .set(self.last_processed_height.get() as i64);
+        round: Round,
+        resolver: &mut R,
+    ) where
+        R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
+    {
+        if height > self.floor.processed_height() || round <= self.floor.processed_round() {
+            return;
+        }
 
-        // Cancel any existing requests below the new floor.
-        resolver
-            .retain(
-                Request::<B::Digest>::Finalized {
-                    height: height.get(),
-                }
-                .predicate(),
-            )
-            .await;
+        let previous = self.floor.processed_round();
+        self.floor.set_processed_round(round);
+
+        // Retain view-indexed cache data for a window behind the previously
+        // processed finalized block.
+        let prune_round = Round::new(
+            previous.epoch(),
+            previous.view().saturating_sub(self.view_retention_timeout),
+        );
+        self.cache.prune_by_view(prune_round).await;
+
+        // Prune round-bound requests at or below the processed round.
+        resolver.retain(handler::above_round_floor::<B::Digest>(
+            self.floor.processed_round(),
+        ));
     }
 
     /// Prunes finalized blocks and certificates below the given height.
@@ -1724,6 +1985,31 @@ where
             },
             async {
                 self.finalizations_by_height
+                    .prune(height)
+                    .await
+                    .map_err(Box::new)?;
+                Ok::<_, BoxedError>(())
+            }
+        )?;
+        Ok(())
+    }
+
+    /// Prunes finalized archives and height-indexed certified cache data below the durable floor.
+    async fn prune_after_floor(&mut self, height: Height) -> Result<(), BoxedError> {
+        let cache = &mut self.cache;
+        let finalized_blocks = &mut self.finalized_blocks;
+        let finalizations_by_height = &mut self.finalizations_by_height;
+        try_join!(
+            async {
+                cache.prune_by_height(height).await;
+                Ok::<_, BoxedError>(())
+            },
+            async {
+                finalized_blocks.prune(height).await.map_err(Box::new)?;
+                Ok::<_, BoxedError>(())
+            },
+            async {
+                finalizations_by_height
                     .prune(height)
                     .await
                     .map_err(Box::new)?;

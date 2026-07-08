@@ -1,4 +1,5 @@
 use super::*;
+use commonware_runtime::Supervisor as _;
 use summit_types::execution_request::ProtocolParamRequest;
 use summit_types::protocol_params::MAX_MAX_DEPOSITS_PER_EPOCH;
 
@@ -18,7 +19,7 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -51,8 +52,7 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -93,7 +93,11 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -107,14 +111,11 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
             // a metric check.
             let metrics = context.encode();
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.ends_with("_peers_blocked") {
-                    assert_eq!(value.parse::<u64>().unwrap(), 0);
+                };
+                if sample.name.ends_with("_peers_blocked") {
+                    assert_eq!(sample.value.parse::<u64>().unwrap(), 0);
                 }
             }
 
@@ -165,7 +166,7 @@ fn test_protocol_param_allowed_timestamp_future() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -198,8 +199,7 @@ fn test_protocol_param_allowed_timestamp_future() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -244,7 +244,11 @@ fn test_protocol_param_allowed_timestamp_future() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -260,14 +264,11 @@ fn test_protocol_param_allowed_timestamp_future() {
             // a metric check.
             let metrics = context.encode();
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.ends_with("_peers_blocked") {
-                    assert_eq!(value.parse::<u64>().unwrap(), 0);
+                };
+                if sample.name.ends_with("_peers_blocked") {
+                    assert_eq!(sample.value.parse::<u64>().unwrap(), 0);
                 }
             }
 
@@ -325,7 +326,7 @@ fn test_protocol_param_treasury_address() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -359,7 +360,7 @@ fn test_protocol_param_treasury_address() {
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+            from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -416,7 +417,7 @@ fn test_protocol_param_treasury_address() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(context.child("engine").with_attribute("uid", uid.clone()), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -431,23 +432,19 @@ fn test_protocol_param_treasury_address() {
             let metrics = context.encode();
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
+                };
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 
@@ -515,7 +512,7 @@ fn test_protocol_param_max_deposits_per_epoch() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -548,8 +545,7 @@ fn test_protocol_param_max_deposits_per_epoch() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -590,7 +586,11 @@ fn test_protocol_param_max_deposits_per_epoch() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -604,23 +604,19 @@ fn test_protocol_param_max_deposits_per_epoch() {
             let metrics = context.encode();
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
+                };
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 
@@ -671,7 +667,7 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -704,8 +700,7 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -747,7 +742,11 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -761,23 +760,19 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
             let metrics = context.encode();
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
+                };
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 
@@ -839,7 +834,7 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -872,8 +867,7 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -943,7 +937,11 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -960,23 +958,19 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
 
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
+                };
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 
@@ -1064,7 +1058,7 @@ fn test_stake_increase_topup_keeps_active_validator() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -1097,8 +1091,7 @@ fn test_stake_increase_topup_keeps_active_validator() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -1173,7 +1166,11 @@ fn test_stake_increase_topup_keeps_active_validator() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -1189,23 +1186,19 @@ fn test_stake_increase_topup_keeps_active_validator() {
 
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
+                };
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 
@@ -1291,7 +1284,7 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -1324,8 +1317,7 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -1409,7 +1401,11 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -1426,23 +1422,19 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
 
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
+                };
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 

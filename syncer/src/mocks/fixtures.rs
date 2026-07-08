@@ -126,7 +126,7 @@ where
     let participants = ed25519_participants(rng, n).into_keys();
 
     let (output, shares_map) =
-        dkg::deal::<V, _, N3f1>(rng, Mode::NonZeroCounter, participants.clone())
+        dkg::feldman_desmedt::deal::<V, _, N3f1>(rng, Mode::NonZeroCounter, participants.clone())
             .expect("deal should succeed");
     let polynomial = output.public().clone();
 

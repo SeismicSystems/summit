@@ -19,6 +19,7 @@ async-trait = "0.1"
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 jsonrpsee-core = "0.26.0"
 jsonrpsee-types = "0.26.0"
+commonware-formatting.workspace = true
 commonware-consensus = { workspace = true }
 commonware-cryptography = { workspace = true }
 commonware-utils = { workspace = true }

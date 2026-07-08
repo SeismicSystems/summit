@@ -11,13 +11,12 @@
 //! contain extra information for optimized retrieval, though the digest must be extractable
 //! from the commitment for lookup purposes.
 
-use crate::Block;
 use commonware_codec::{Codec, Read};
-use commonware_consensus::types::Round;
+use commonware_consensus::{Block, types::Round};
 use commonware_cryptography::{Digest, Digestible, PublicKey};
 use commonware_p2p::Recipients;
 use commonware_utils::channel::oneshot;
-use std::{future::Future, sync::Arc};
+use std::future::Future;
 
 /// A marker trait describing the types used by a variant of the syncer.
 pub trait Variant: Clone + Send + Sync + 'static {
@@ -37,7 +36,7 @@ pub trait Variant: Clone + Send + Sync + 'static {
     type StoredBlock: Block<Digest = <Self::Block as Digestible>::Digest>
         + Into<Self::Block>
         + Clone
-        + Codec<Cfg = <Self::Block as Read>::Cfg>;
+        + Codec<Cfg = <Self::ApplicationBlock as Read>::Cfg>;
 
     /// The [`Digest`] type used by consensus.
     type Commitment: Digest;
@@ -54,6 +53,15 @@ pub trait Variant: Clone + Send + Sync + 'static {
     /// Returns the parent commitment referenced by `block`.
     fn parent_commitment(block: &Self::Block) -> Self::Commitment;
 
+    /// Returns the codec configuration used to decode [`Self::Block`] received over the wire.
+    ///
+    /// The returned configuration may bind `expected` so that decoding rejects
+    /// blocks that do not match the expected commitment.
+    fn block_cfg(
+        block_cfg: &<Self::ApplicationBlock as Read>::Cfg,
+        expected: Self::Commitment,
+    ) -> <Self::Block as Read>::Cfg;
+
     /// Converts a working block to an application block.
     fn into_inner(block: Self::Block) -> Self::ApplicationBlock;
 }
@@ -68,61 +76,41 @@ pub trait Buffer<V: Variant>: Clone + Send + Sync + 'static {
     /// The public key type used to identify peers.
     type PublicKey: PublicKey;
 
-    /// The cached block type held internally by the buffer.
-    type CachedBlock: IntoBlock<V::Block>;
-
     /// Attempt to find a block by its digest.
     fn find_by_digest(
         &self,
         digest: <V::Block as Digestible>::Digest,
-    ) -> impl Future<Output = Option<Self::CachedBlock>> + Send;
+    ) -> impl Future<Output = Option<V::Block>> + Send;
 
     /// Attempt to find a block by its commitment.
     fn find_by_commitment(
         &self,
         commitment: V::Commitment,
-    ) -> impl Future<Output = Option<Self::CachedBlock>> + Send;
+    ) -> impl Future<Output = Option<V::Block>> + Send;
 
     /// Subscribe to a block's availability by its digest.
+    ///
+    /// Returns a receiver that will resolve when the block becomes available.
+    /// If the block is already cached, the receiver may resolve immediately.
+    /// Returns `None` when the buffer cannot provide availability notifications.
     fn subscribe_by_digest(
         &self,
         digest: <V::Block as Digestible>::Digest,
-    ) -> impl Future<Output = oneshot::Receiver<Self::CachedBlock>> + Send;
+    ) -> Option<oneshot::Receiver<V::Block>>;
 
     /// Subscribe to a block's availability by its commitment.
+    ///
+    /// Returns a receiver that will resolve when the block becomes available.
+    /// If the block is already cached, the receiver may resolve immediately.
+    /// Returns `None` when the buffer cannot provide availability notifications.
     fn subscribe_by_commitment(
         &self,
         commitment: V::Commitment,
-    ) -> impl Future<Output = oneshot::Receiver<Self::CachedBlock>> + Send;
+    ) -> Option<oneshot::Receiver<V::Block>>;
 
     /// Notify the buffer that a block has been finalized.
-    fn finalized(&self, commitment: V::Commitment) -> impl Future<Output = ()> + Send;
+    fn finalized(&self, commitment: V::Commitment);
 
     /// Send a block to peers.
-    fn send(
-        &self,
-        round: Round,
-        block: V::Block,
-        recipients: Recipients<Self::PublicKey>,
-    ) -> impl Future<Output = ()> + Send;
-}
-
-/// A trait for cached block types that can be converted to the underlying block.
-pub trait IntoBlock<B>: Clone + Send {
-    /// Convert this cached block into the underlying block type.
-    fn into_block(self) -> B;
-}
-
-/// Blanket implementation for any cloneable block type.
-impl<B: Clone + Send> IntoBlock<B> for B {
-    fn into_block(self) -> B {
-        self
-    }
-}
-
-/// Implementation for `Arc<B>` to support the coding variant.
-impl<B: Clone + Send + Sync> IntoBlock<B> for Arc<B> {
-    fn into_block(self) -> B {
-        Self::unwrap_or_clone(self)
-    }
+    fn send(&self, round: Round, block: V::Block, recipients: Recipients<Self::PublicKey>);
 }

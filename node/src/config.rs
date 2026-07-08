@@ -16,7 +16,10 @@ pub const RECOVERED_CHANNEL: u64 = 1;
 pub const RESOLVER_CHANNEL: u64 = 2;
 pub const BROADCASTER_CHANNEL: u64 = 3;
 pub const BACKFILLER_CHANNEL: u64 = 4;
-pub const MAILBOX_SIZE: usize = 16384;
+use commonware_utils::NZUsize;
+use std::num::NonZeroUsize;
+
+pub const MAILBOX_SIZE: NonZeroUsize = NZUsize!(16384);
 /// How often the finalizer retries applying blocks that were deferred because
 /// the execution layer returned `SYNCING`. See [`summit_finalizer::FinalizerConfig`].
 pub const FINALIZER_DRAIN_INTERVAL: Duration = Duration::from_secs(5);
@@ -42,7 +45,7 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub partition_prefix: String,
     pub key_store: KeyStore<S>,
     pub participants: Vec<(PublicKey, bls12381::PublicKey)>,
-    pub mailbox_size: usize,
+    pub mailbox_size: NonZeroUsize,
     pub finalizer_pending_notarized_max: usize,
     pub backfill_quota: Quota,
     pub deque_size: usize,

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 summit-types.workspace = true
 
+commonware-actor.workspace = true
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
