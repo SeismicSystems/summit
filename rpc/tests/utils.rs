@@ -217,13 +217,13 @@ pub fn create_test_keystore() -> anyhow::Result<tempfile::TempDir> {
     // Generate ed25519 node key (deterministic for testing)
     let mut rng = StdRng::seed_from_u64(0);
     let node_private_key = ed25519::PrivateKey::random(&mut rng);
-    let encoded_node_key = commonware_utils::hex(&node_private_key.encode());
+    let encoded_node_key = commonware_formatting::hex(&node_private_key.encode());
     let node_key_path = temp_dir.path().join("node_key.pem");
     fs::write(node_key_path, encoded_node_key)?;
 
     // Generate BLS consensus key (deterministic for testing)
     let consensus_private_key = bls12381::PrivateKey::random(&mut rng);
-    let encoded_consensus_key = commonware_utils::hex(&consensus_private_key.encode());
+    let encoded_consensus_key = commonware_formatting::hex(&consensus_private_key.encode());
     let consensus_key_path = temp_dir.path().join("consensus_key.pem");
     fs::write(consensus_key_path, encoded_consensus_key)?;
 

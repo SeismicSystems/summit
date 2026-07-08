@@ -5,13 +5,15 @@ use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, ge
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381;
+use commonware_formatting::from_hex;
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-use commonware_utils::{NZUsize, from_hex_formatted};
+use commonware_utils::NZUsize;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
@@ -35,7 +37,7 @@ fn test_single_engine_with_checkpoint() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -73,8 +75,7 @@ fn test_single_engine_with_checkpoint() {
         // Link validator
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -105,7 +106,11 @@ fn test_single_engine_with_checkpoint() {
             consensus_state,
         );
 
-        let engine = Engine::new(context.with_label(&uid), config).await;
+        let engine = Engine::new(
+            context.child("engine").with_attribute("uid", uid.clone()),
+            config,
+        )
+        .await;
         let finalizer_mailbox = engine.finalizer_mailbox.clone();
         // Get networking
         let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -150,7 +155,7 @@ fn test_node_joins_later_with_checkpoint() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -189,8 +194,7 @@ fn test_node_joins_later_with_checkpoint() {
             common::register_validators(&mut oracle, initial_node_public_keys).await;
         common::link_validators(&mut oracle, initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -229,7 +233,11 @@ fn test_node_joins_later_with_checkpoint() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -299,7 +307,11 @@ fn test_node_joins_later_with_checkpoint() {
             validators.clone(),
             consensus_state,
         );
-        let engine = Engine::new(context.with_label(&uid), config).await;
+        let engine = Engine::new(
+            context.child("engine").with_attribute("uid", uid.clone()),
+            config,
+        )
+        .await;
 
         // Get networking from late registrations
         let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -316,26 +328,20 @@ fn test_node_joins_later_with_checkpoint() {
             // Iterate over all lines
             let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-
-                // Split metric and value
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
                 // If ends with peers_blocked, ensure it is zero
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     if value >= stop_height {
-                        nodes_finished.insert(metric.to_string());
+                        nodes_finished.insert(sample.uid.clone());
                         if nodes_finished.len() as u32 == n {
                             success = true;
                             break;
@@ -399,7 +405,7 @@ fn test_checkpoint_join_replays_and_seeds_finalized_header() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -433,8 +439,7 @@ fn test_checkpoint_join_replays_and_seeds_finalized_header() {
             common::register_validators(&oracle, initial_node_public_keys).await;
         common::link_validators(&mut oracle, initial_node_public_keys, link.clone(), None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -461,7 +466,11 @@ fn test_checkpoint_join_replays_and_seeds_finalized_header() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
             let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
@@ -534,7 +543,11 @@ fn test_checkpoint_join_replays_and_seeds_finalized_header() {
         config.checkpoint_last_block = Some(last_block.clone());
         config.checkpoint_finalized_header = Some(source_header.clone());
 
-        let engine = Engine::new(context.with_label(&uid), config).await;
+        let engine = Engine::new(
+            context.child("engine").with_attribute("uid", uid.clone()),
+            config,
+        )
+        .await;
         let joiner_query = engine.finalizer_mailbox.clone();
         let (pending, recovered, resolver, orchestrator, broadcast) =
             late_registrations.remove(&public_key).unwrap();
@@ -596,7 +609,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -636,8 +649,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             common::register_validators(&mut oracle, initial_node_public_keys).await;
         common::link_validators(&mut oracle, initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -676,7 +688,11 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
                 initial_validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -746,7 +762,11 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             initial_validators,
             consensus_state,
         );
-        let engine = Engine::new(context.with_label(&uid), config).await;
+        let engine = Engine::new(
+            context.child("engine").with_attribute("uid", uid.clone()),
+            config,
+        )
+        .await;
 
         // Get networking from late registrations
         let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -765,26 +785,20 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
             // Iterate over all lines
             let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-
-                // Split metric and value
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
                 // If ends with peers_blocked, ensure it is zero
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     if value >= stop_height {
-                        nodes_finished.insert(metric.to_string());
+                        nodes_finished.insert(sample.uid.clone());
                         if nodes_finished.len() == n as usize {
                             success = true;
                             break;

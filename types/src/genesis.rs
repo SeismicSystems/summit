@@ -8,7 +8,7 @@ use anyhow::Context;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::bls12381;
 use commonware_cryptography::{Hasher as _, Sha256};
-use commonware_utils::{from_hex, from_hex_formatted};
+use commonware_formatting::from_hex;
 use serde::{Deserialize, Serialize};
 use ssz::Encode as _;
 use std::net::SocketAddr;
@@ -140,11 +140,11 @@ impl TryFrom<&GenesisValidator> for Validator {
 
     fn try_from(value: &GenesisValidator) -> Result<Self, Self::Error> {
         let node_key_bytes =
-            from_hex_formatted(&value.node_public_key).context("Node PublicKey bad format")?;
+            from_hex(&value.node_public_key).context("Node PublicKey bad format")?;
         let node_public_key = PublicKey::decode(&*node_key_bytes)?;
 
-        let consensus_key_bytes = from_hex_formatted(&value.consensus_public_key)
-            .context("Consensus PublicKey bad format")?;
+        let consensus_key_bytes =
+            from_hex(&value.consensus_public_key).context("Consensus PublicKey bad format")?;
         let consensus_public_key = bls12381::PublicKey::decode(&*consensus_key_bytes)?;
 
         Ok(Validator {
@@ -186,7 +186,7 @@ impl Genesis {
     /// deployment. Panics if `eth_genesis_hash` is not a 32-byte hex string;
     /// genesis files are operator-provided and validated at load time.
     pub fn genesis_hash(&self) -> [u8; 32] {
-        from_hex_formatted(&self.eth_genesis_hash)
+        from_hex(&self.eth_genesis_hash)
             .map(|bytes| bytes.try_into())
             .expect("bad eth_genesis_hash")
             .expect("bad eth_genesis_hash")
@@ -299,7 +299,7 @@ impl Genesis {
     pub fn ip_of(&self, target_public_key: &PublicKey) -> Option<SocketAddr> {
         for validator in &self.validators {
             #[allow(clippy::collapsible_if)]
-            if let Some(public_key_bytes) = from_hex_formatted(&validator.node_public_key) {
+            if let Some(public_key_bytes) = from_hex(&validator.node_public_key) {
                 if let Ok(pub_key) = PublicKey::decode(&*public_key_bytes) {
                     if &pub_key == target_public_key {
                         if let Ok(socket_addr) = validator.ip_address.parse() {
@@ -329,11 +329,11 @@ impl Genesis {
     ) -> Result<Vec<(PublicKey, bls12381::PublicKey)>, Box<dyn std::error::Error>> {
         let mut keys = Vec::new();
         for validator in &self.validators {
-            let node_key_bytes = from_hex_formatted(&validator.node_public_key)
+            let node_key_bytes = from_hex(&validator.node_public_key)
                 .ok_or("Invalid hex format for node public key")?;
             let node_key = PublicKey::decode(&*node_key_bytes)?;
 
-            let consensus_key_bytes = from_hex_formatted(&validator.consensus_public_key)
+            let consensus_key_bytes = from_hex(&validator.consensus_public_key)
                 .ok_or("Invalid hex format for consensus public key")?;
             let consensus_key = bls12381::PublicKey::decode(&*consensus_key_bytes)?;
 

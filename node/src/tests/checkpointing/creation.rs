@@ -6,13 +6,15 @@ use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381;
+use commonware_formatting::from_hex;
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-use commonware_utils::{NZUsize, from_hex_formatted};
+use commonware_utils::NZUsize;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
@@ -39,7 +41,7 @@ fn test_checkpoint_created() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -73,8 +75,7 @@ fn test_checkpoint_created() {
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
         // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -111,7 +112,11 @@ fn test_checkpoint_created() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -131,43 +136,37 @@ fn test_checkpoint_created() {
             // Iterate over all lines
             let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-
-                // Split metric and value
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
                 // If ends with peers_blocked, ensure it is zero
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("consensus_state_stored") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("consensus_state_stored") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     // Height should be the last block of an epoch
                     if height > 0 {
                         assert_eq!((height + 1) % DEFAULT_BLOCKS_PER_EPOCH, 0);
                     }
-                    state_stored.insert(metric.to_string());
+                    state_stored.insert(sample.uid.clone());
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 
-                if metric.ends_with("finalized_header_stored") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalized_header_stored") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     // Height should be the last block of an epoch
                     assert_eq!((height + 1) % DEFAULT_BLOCKS_PER_EPOCH, 0);
-                    header_stored.insert(metric.to_string());
+                    header_stored.insert(sample.uid.clone());
                 }
                 if header_stored.len() as u32 >= n
                     && state_stored.len() as u32 == n
@@ -236,7 +235,7 @@ fn test_previous_header_hash_matches() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -270,8 +269,7 @@ fn test_previous_header_hash_matches() {
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
         // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -308,7 +306,11 @@ fn test_previous_header_hash_matches() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -328,37 +330,30 @@ fn test_previous_header_hash_matches() {
             // Iterate over all lines
             let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-
-                // Split metric and value
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
                 // If ends with peers_blocked, ensure it is zero
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 
-                if metric.ends_with("finalized_header_stored") {
-                    let height = value.parse::<u64>().unwrap();
-                    let header =
-                        common::parse_metric_substring(metric, "header").expect("header missing");
-                    let prev_header = common::parse_metric_substring(metric, "prev_header")
+                if sample.name.ends_with("finalized_header_stored") {
+                    let height = sample.value.parse::<u64>().unwrap();
+                    let header = common::parse_metric_substring(&sample.name, "header")
+                        .expect("header missing");
+                    let prev_header = common::parse_metric_substring(&sample.name, "prev_header")
                         .expect("prev_header missing");
-                    let validator_id =
-                        common::extract_validator_id(metric).expect("failed to parse validator id");
+                    let validator_id = sample.uid.clone();
 
                     if is_last_block_of_epoch(
                         &FixedEpocher::new(NonZeroU64::new(DEFAULT_BLOCKS_PER_EPOCH).unwrap()),

@@ -130,7 +130,7 @@ impl<
         syncer: SyncerMailbox<S, Block>,
         finalizer: FinalizerMailbox<S, Block>,
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(syncer, finalizer).await)
+        spawn_cell!(self.context, self.run(syncer, finalizer))
     }
 
     pub async fn run(
@@ -203,10 +203,12 @@ impl<
                                                 // broadcast.
                                                 let _ = response.send(digest);
 
-                                                self.context.with_label("proposed").spawn({
+                                                self.context.child("proposed").spawn({
                                                     let mut syncer = syncer.clone();
                                                     move |_| async move {
-                                                        syncer.proposed(round, block).await;
+                                                        if !syncer.proposed(round, block).await {
+                                                            warn!(?round, "syncer dropped proposed-block durability ack");
+                                                        }
                                                     }
                                                 });
                                             },
@@ -250,23 +252,18 @@ impl<
                                 // Our own proposal was already handed to syncer.proposed()
                                 // at propose time (dispatched off the loop right after the
                                 // digest was returned), which caches and broadcasts it.
-                                Plan::Propose => {
+                                Plan::Propose { .. } => {
                                     debug!(?payload, "{rand_id} Broadcast(Propose): already broadcast at propose time");
                                 }
                                 // Push the certified block to voters consensus has
                                 // identified as missing it (ForwardingPolicy::SilentVoters).
-                                // Dispatch off the loop: syncer.forward enqueues into the
-                                // bounded syncer mailbox, so awaiting it here would let a
-                                // full or slow syncer block the application loop from
-                                // dequeuing later Propose/Verify/Certify messages.
-                                Plan::Forward { round, peers } => {
-                                    debug!(?round, n_peers = peers.len(), "{rand_id} Broadcast(Forward): forwarding to silent voters");
-                                    self.context.with_label("forward").spawn({
-                                        let syncer = syncer.clone();
-                                        move |_| async move {
-                                            syncer.forward(round, payload, peers).await;
-                                        }
-                                    });
+                                // `forward` is a synchronous, non-blocking enqueue into the
+                                // overflow-buffered syncer mailbox, so it can run directly on
+                                // the application loop without blocking later
+                                // Propose/Verify/Certify messages.
+                                Plan::Forward { round, recipients } => {
+                                    debug!(?round, "{rand_id} Broadcast(Forward): forwarding to silent voters");
+                                    let _ = syncer.forward(round, payload, recipients);
                                 }
                             }
                         }
@@ -286,17 +283,16 @@ impl<
                             debug!("{rand_id} application: Handling message Certify for round {} (epoch {}, view {})",
                                 round, round.epoch(), round.view());
 
-                            self.context.with_label("certify").spawn({
+                            self.context.child("certify").spawn({
                                 let mut syncer = syncer.clone();
                                 let mut finalizer_clone = finalizer.clone();
                                 let mut engine_client = self.engine_client.clone();
                                 let genesis_hash = self.genesis_hash;
                                 let max_message_size_bytes = self.max_message_size_bytes;
                                 move |context| async move {
-                                    // Subscribe inside the task: the enqueue goes into the
-                                    // bounded syncer mailbox, so doing it on the application
-                                    // loop would let a full syncer block later messages.
-                                    let block_request = syncer.subscribe(Some(round), payload).await;
+                                    // Subscribe inside the task; the enqueue is synchronous and
+                                    // non-blocking (overflow-buffered syncer mailbox).
+                                    let block_request = syncer.subscribe(Some(round), payload);
                                     let work = async {
                                         let Ok(block) = block_request.await else {
                                             warn!(?round, "certify: failed to receive block from syncer");
@@ -432,12 +428,12 @@ impl<
                             // `move` closure copies this Copy `u64` for `handle_verify`).
                             let signed_parent_view = parent.0.get();
 
-                            // Subscribe and wait for the blocks in a separate task so a full
-                            // or slow syncer mailbox cannot block the application loop from
-                            // dequeuing later consensus messages. The subscribe enqueues go
-                            // into the bounded syncer mailbox, so they run off-loop too.
+                            // Wait for the blocks in a separate task: the subscribe enqueues
+                            // are non-blocking, but awaiting their responses on the
+                            // application loop would block it from dequeuing later consensus
+                            // messages until the blocks arrive.
                             let genesis_hash = self.genesis_hash;
-                            self.context.with_label("verify").spawn({
+                            self.context.child("verify").spawn({
                                 let mut syncer = syncer.clone();
                                 let mut finalizer_clone = finalizer.clone();
                                 let epocher = self.epocher.clone();
@@ -453,9 +449,9 @@ impl<
                                         } else {
                                             Some(Round::new(round.epoch(), parent.0))
                                         };
-                                        Either::Right(syncer.subscribe(parent_round, parent.1).await)
+                                        Either::Right(syncer.subscribe(parent_round, parent.1))
                                     };
-                                    let block_request = syncer.subscribe(Some(round), payload).await;
+                                    let block_request = syncer.subscribe(Some(round), payload);
 
                                     let requester = try_join(parent_request, block_request);
                                     select! {
@@ -535,7 +531,9 @@ impl<
                                                     let _ = response.send(true);
 
                                                     // persist valid block off the vote response path
-                                                    syncer.verified(round, block).await;
+                                                    if !syncer.verified(round, block).await {
+                                                        warn!(?round, "syncer dropped verified-block durability ack");
+                                                    }
                                                 } else {
                                                     info!("Unsuccessful vote for round {round} because the block is invalid");
                                                     let _ = response.send(false);
@@ -613,7 +611,6 @@ impl<
             Either::Right(
                 syncer
                     .subscribe(parent_round, parent.1)
-                    .await
                     .map(|x| x.context("parent block subscription canceled")),
             )
         };

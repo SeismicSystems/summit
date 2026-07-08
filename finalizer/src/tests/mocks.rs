@@ -6,6 +6,7 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
     PayloadStatusEnum,
 };
+use commonware_actor::Feedback;
 use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::{Finalization, Finalize, Proposal};
 use commonware_consensus::types::{Epoch, Round, View};
@@ -282,7 +283,9 @@ impl NetworkOracle<PublicKey> for MockNetworkOracle {
 
 impl commonware_p2p::Blocker for MockNetworkOracle {
     type PublicKey = PublicKey;
-    async fn block(&mut self, _public_key: Self::PublicKey) {}
+    fn block(&mut self, _public_key: Self::PublicKey) -> Feedback {
+        Feedback::Ok
+    }
 }
 
 /// A single recorded `track` call: the epoch and the peer tiers handed to the
@@ -320,5 +323,7 @@ impl NetworkOracle<PublicKey> for RecordingNetworkOracle {
 
 impl commonware_p2p::Blocker for RecordingNetworkOracle {
     type PublicKey = PublicKey;
-    async fn block(&mut self, _public_key: Self::PublicKey) {}
+    fn block(&mut self, _public_key: Self::PublicKey) -> Feedback {
+        Feedback::Ok
+    }
 }

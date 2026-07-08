@@ -11,9 +11,10 @@ use commonware_consensus::Reporter;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
-use commonware_runtime::{Clock, Metrics, Runner as _};
+use commonware_runtime::{Clock, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::channel::mpsc as futures_mpsc;
@@ -166,7 +167,7 @@ fn test_initial_startup_sync_waits_for_valid() {
         let initial_state =
             create_checkpoint_initial_state(checkpoint_hash, 5, 0, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -204,7 +205,7 @@ fn test_initial_startup_sync_waits_for_valid() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -219,9 +220,7 @@ fn test_initial_startup_sync_waits_for_valid() {
         // Height 6, epoch = 6/10 = 0, matches state.epoch
         let block = create_test_block(checkpoint_hash.into(), 6, 6, 2001);
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // Verify the block was processed by checking the height advanced
@@ -246,7 +245,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
         let genesis_hash = [0u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -278,7 +277,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -291,9 +290,7 @@ fn test_initial_startup_sync_zero_forkchoice_skips_sync() {
         let genesis_block = Block::genesis(genesis_hash);
         let block = create_test_block(genesis_block.digest(), 1, 1, 3001);
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         let height = mailbox.get_latest_height().await;
@@ -317,7 +314,7 @@ fn test_execute_block_retries_on_syncing() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -353,7 +350,7 @@ fn test_execute_block_retries_on_syncing() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -365,9 +362,7 @@ fn test_execute_block_retries_on_syncing() {
         let genesis_block = Block::genesis(genesis_hash);
         let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1.clone(), None), ack));
 
         // With 3 SYNCING retries at 5s each, need ~15s for the retries to complete
         context.sleep(Duration::from_secs(17)).await;
@@ -381,9 +376,7 @@ fn test_execute_block_retries_on_syncing() {
         // Send a second block to verify the finalizer continues normally
         let block2 = create_test_block(block1.digest(), 2, 2, 4002);
         let (ack2, _waiter2) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block2, None), ack2))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block2, None), ack2));
         context.sleep(Duration::from_millis(100)).await;
 
         let height = mailbox.get_latest_height().await;
@@ -407,7 +400,7 @@ fn test_notarized_block_retries_on_syncing() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -443,7 +436,7 @@ fn test_notarized_block_retries_on_syncing() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -455,7 +448,7 @@ fn test_notarized_block_retries_on_syncing() {
         let genesis_block = Block::genesis(genesis_hash);
         let block1 = create_test_block(genesis_block.digest(), 1, 1, 5001);
         let block1_digest = block1.digest();
-        mailbox.report(Update::NotarizedBlock(block1)).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1));
 
         // Wait for SYNCING retries to complete (2 retries * 5s = 10s)
         context.sleep(Duration::from_secs(12)).await;
@@ -487,7 +480,7 @@ fn test_checkpoint_startup_full_flow() {
         let initial_state =
             create_checkpoint_initial_state(checkpoint_hash, 5, 0, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -525,7 +518,7 @@ fn test_checkpoint_startup_full_flow() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -538,9 +531,7 @@ fn test_checkpoint_startup_full_flow() {
         // Send first block after checkpoint (height 6, epoch 0)
         let block6 = create_test_block(checkpoint_hash.into(), 6, 6, 6001);
         let (ack6, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block6.clone(), None), ack6))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block6.clone(), None), ack6));
 
         // Wait for the check_payload SYNCING retry (1 * 5s)
         context.sleep(Duration::from_secs(7)).await;
@@ -554,9 +545,7 @@ fn test_checkpoint_startup_full_flow() {
         // Send second block — no more SYNCING, should be immediate
         let block7 = create_test_block(block6.digest(), 7, 7, 6002);
         let (ack7, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block7.clone(), None), ack7))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block7.clone(), None), ack7));
         context.sleep(Duration::from_millis(100)).await;
 
         let height = mailbox.get_latest_height().await;
@@ -565,9 +554,7 @@ fn test_checkpoint_startup_full_flow() {
         // Send third block — also immediate
         let block8 = create_test_block(block7.digest(), 8, 8, 6003);
         let (ack8, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block8, None), ack8))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block8, None), ack8));
         context.sleep(Duration::from_millis(100)).await;
 
         let height = mailbox.get_latest_height().await;
@@ -609,7 +596,7 @@ fn test_finalizer_mailbox_responsive_under_persistent_syncing() {
         let genesis_hash = [0xAAu8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -647,7 +634,7 @@ fn test_finalizer_mailbox_responsive_under_persistent_syncing() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -662,9 +649,7 @@ fn test_finalizer_mailbox_responsive_under_persistent_syncing() {
         let genesis_block = Block::genesis(genesis_hash);
         let block1 = create_test_block(genesis_block.digest(), 1, 1, 7001);
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1, None), ack));
 
         // Give the finalizer enough virtual time to dequeue the
         // FinalizedBlock update and enter execute_block's SYNCING loop.
@@ -733,7 +718,7 @@ fn test_finalizer_mailbox_responsive_during_startup_syncing() {
         let initial_state =
             create_checkpoint_initial_state(checkpoint_hash, 5, 0, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -770,7 +755,7 @@ fn test_finalizer_mailbox_responsive_during_startup_syncing() {
 
         let (finalizer, _state, mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -822,7 +807,7 @@ fn test_finalizer_shuts_down_when_pending_notarized_cap_is_reached() {
         let genesis_hash = [0xEFu8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -856,7 +841,7 @@ fn test_finalizer_shuts_down_when_pending_notarized_cap_is_reached() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -869,9 +854,9 @@ fn test_finalizer_shuts_down_when_pending_notarized_cap_is_reached() {
         let block_b = create_test_block(genesis_block.digest(), 1, 1, 17002);
         let block_c = create_test_block(genesis_block.digest(), 1, 1, 17003);
 
-        mailbox.report(Update::NotarizedBlock(block_a)).await;
-        mailbox.report(Update::NotarizedBlock(block_b)).await;
-        mailbox.report(Update::NotarizedBlock(block_c)).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block_a));
+        let _ = mailbox.report(Update::NotarizedBlock(block_b));
+        let _ = mailbox.report(Update::NotarizedBlock(block_c));
 
         context.sleep(Duration::from_millis(50)).await;
 
@@ -921,7 +906,7 @@ fn test_finalizer_finalized_buffer_drains_in_order() {
         let genesis_hash = [0u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -960,7 +945,7 @@ fn test_finalizer_finalized_buffer_drains_in_order() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -975,17 +960,13 @@ fn test_finalizer_finalized_buffer_drains_in_order() {
         let block_b = create_test_block(block_a.digest(), 2, 2, 13002);
 
         let (ack_a, _waiter_a) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block_a, None), ack_a))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block_a, None), ack_a));
 
         // Small gap so A's mailbox path runs (and buffers) before B arrives.
         context.sleep(Duration::from_millis(10)).await;
 
         let (ack_b, _waiter_b) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block_b, None), ack_b))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block_b, None), ack_b));
 
         // Give the drain timer multiple ticks to exhaust the queued SYNCING
         // responses and apply both blocks. Three SYNCING responses at 50ms
@@ -1021,7 +1002,7 @@ fn test_duplicate_finalized_delivery_is_idempotent() {
         let genesis_hash = [0u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -1056,7 +1037,7 @@ fn test_duplicate_finalized_delivery_is_idempotent() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1068,9 +1049,7 @@ fn test_duplicate_finalized_delivery_is_idempotent() {
 
         // First (legitimate) finalized delivery: the block is applied and executed once.
         let (ack1, _waiter1) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1.clone(), None), ack1))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1.clone(), None), ack1));
         context.sleep(Duration::from_millis(200)).await;
         assert_eq!(
             mailbox.get_latest_height().await,
@@ -1085,9 +1064,7 @@ fn test_duplicate_finalized_delivery_is_idempotent() {
 
         // Duplicate finalized delivery of the SAME block (at-least-once contract).
         let (ack2, waiter2) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1.clone(), None), ack2))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1.clone(), None), ack2));
         context.sleep(Duration::from_millis(200)).await;
 
         // The duplicate must be acknowledged so the syncer's pending-ack pipeline does not
@@ -1127,7 +1104,7 @@ fn test_finalized_commit_hash_syncing_buffers_and_retries() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let node_key = ed25519::PrivateKey::from_seed(0);
 
@@ -1161,7 +1138,7 @@ fn test_finalized_commit_hash_syncing_buffers_and_retries() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1171,9 +1148,7 @@ fn test_finalized_commit_hash_syncing_buffers_and_retries() {
         let genesis_block = Block::genesis(genesis_hash);
         let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1, None), ack));
 
         // Must NOT advance while the forkchoice is still SYNCING.
         context.sleep(Duration::from_millis(50)).await;
@@ -1206,7 +1181,7 @@ fn test_finalized_commit_hash_invalid_shuts_down() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let node_key = ed25519::PrivateKey::from_seed(0);
 
@@ -1243,7 +1218,7 @@ fn test_finalized_commit_hash_invalid_shuts_down() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1253,9 +1228,7 @@ fn test_finalized_commit_hash_invalid_shuts_down() {
         let genesis_block = Block::genesis(genesis_hash);
         let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1, None), ack));
         context.sleep(Duration::from_millis(500)).await;
 
         assert!(
@@ -1277,7 +1250,7 @@ fn test_notarized_commit_hash_invalid_discards_fork() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let node_key = ed25519::PrivateKey::from_seed(0);
 
@@ -1314,7 +1287,7 @@ fn test_notarized_commit_hash_invalid_discards_fork() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1325,7 +1298,7 @@ fn test_notarized_commit_hash_invalid_discards_fork() {
         let block1 = create_test_block(genesis_block.digest(), 1, 1, 4001);
 
         // Notarized block whose forkchoice update is INVALID → fork discarded.
-        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1.clone()));
         context.sleep(Duration::from_millis(500)).await;
         assert!(
             !token.is_cancelled(),
@@ -1335,9 +1308,7 @@ fn test_notarized_commit_hash_invalid_discards_fork() {
         // The finalizer must keep working: finalize the same block (commit_hash now
         // VALID) and confirm it advances.
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1, None), ack));
         context.sleep(Duration::from_millis(500)).await;
         assert_eq!(
             mailbox.get_latest_height().await,
@@ -1366,7 +1337,7 @@ fn test_finalized_reuse_path_commits_finalized_forkchoice_and_shuts_down_on_inva
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let node_key = ed25519::PrivateKey::from_seed(0);
 
@@ -1403,7 +1374,7 @@ fn test_finalized_reuse_path_commits_finalized_forkchoice_and_shuts_down_on_inva
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1415,7 +1386,7 @@ fn test_finalized_reuse_path_commits_finalized_forkchoice_and_shuts_down_on_inva
         let block1_digest = block1.digest();
 
         // Notarize first → block lands in fork_states (forkchoice VALID).
-        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1.clone()));
         context.sleep(Duration::from_millis(200)).await;
         let notify = mailbox.notify_at_height(1, block1_digest).await;
         assert!(
@@ -1430,9 +1401,7 @@ fn test_finalized_reuse_path_commits_finalized_forkchoice_and_shuts_down_on_inva
         // Finalize the same block → reuse path sends the finalized forkchoice, which
         // the EL rejects as INVALID → fatal shutdown.
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1, None), ack));
         context.sleep(Duration::from_millis(500)).await;
 
         assert!(
@@ -1455,7 +1424,7 @@ fn test_finalized_reuse_path_buffers_on_syncing() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let node_key = ed25519::PrivateKey::from_seed(0);
 
@@ -1491,7 +1460,7 @@ fn test_finalized_reuse_path_buffers_on_syncing() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1504,7 +1473,7 @@ fn test_finalized_reuse_path_buffers_on_syncing() {
 
         // Notarize first → block lands in fork_states (forkchoice VALID). Notarization
         // does not advance the finalized height.
-        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1.clone()));
         context.sleep(Duration::from_millis(200)).await;
         let notify = mailbox.notify_at_height(1, block1_digest).await;
         assert!(
@@ -1519,9 +1488,7 @@ fn test_finalized_reuse_path_buffers_on_syncing() {
 
         // Finalize the same block → reuse path forkchoice is SYNCING: must buffer.
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1, None), ack));
         context.sleep(Duration::from_millis(50)).await;
         assert_eq!(
             mailbox.get_latest_height().await,

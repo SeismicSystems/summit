@@ -1,4 +1,5 @@
 use super::*;
+use commonware_runtime::Supervisor as _;
 
 /// Test that verifies added_validators is correctly populated in block headers at epoch boundaries.
 ///
@@ -26,7 +27,7 @@ fn test_added_validators_at_epoch_boundary() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
@@ -59,8 +60,7 @@ fn test_added_validators_at_epoch_boundary() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -124,7 +124,11 @@ fn test_added_validators_at_epoch_boundary() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -140,14 +144,11 @@ fn test_added_validators_at_epoch_boundary() {
             // a metric check.
             let metrics = context.encode();
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.ends_with("_peers_blocked") {
-                    assert_eq!(value.parse::<u64>().unwrap(), 0);
+                };
+                if sample.name.ends_with("_peers_blocked") {
+                    assert_eq!(sample.value.parse::<u64>().unwrap(), 0);
                 }
             }
 
@@ -241,7 +242,7 @@ fn test_removed_validators_at_epoch_boundary() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
@@ -274,8 +275,7 @@ fn test_removed_validators_at_epoch_boundary() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -344,7 +344,11 @@ fn test_removed_validators_at_epoch_boundary() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             finalizer_mailboxes.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -360,14 +364,11 @@ fn test_removed_validators_at_epoch_boundary() {
             // a metric check.
             let metrics = context.encode();
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.ends_with("_peers_blocked") {
-                    assert_eq!(value.parse::<u64>().unwrap(), 0);
+                };
+                if sample.name.ends_with("_peers_blocked") {
+                    assert_eq!(sample.value.parse::<u64>().unwrap(), 0);
                 }
             }
 

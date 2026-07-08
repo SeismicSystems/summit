@@ -7,14 +7,17 @@ use crate::{config::EngineConfig, engine::Engine};
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
+use commonware_actor::Feedback;
 use commonware_codec::Write;
+use commonware_formatting::from_hex;
 use commonware_p2p::simulated::{self, Link, Network, Oracle, Receiver, Sender};
-use commonware_p2p::{Blocker, Manager, PeerSetUpdate, Provider, TrackedPeers};
+use commonware_p2p::{Blocker, Manager, PeerSetSubscription, Provider, TrackedPeers};
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::{
     Clock, Metrics, Runner as _,
     deterministic::{self, Runner},
 };
-use commonware_utils::{NZUsize, from_hex_formatted};
+use commonware_utils::NZUsize;
 use governor::Quota;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -34,7 +37,6 @@ use summit_types::keystore::KeyStore;
 use summit_types::network_oracle::NetworkOracle;
 use summit_types::scheme::MultisigScheme;
 use summit_types::{Block, Digest, EngineClient, PrivateKey, PublicKey, deposit_signature_domain};
-use tokio::sync::mpsc;
 
 pub const DEFAULT_BLOCKS_PER_EPOCH: u64 = 10;
 
@@ -147,7 +149,7 @@ pub fn run_until_height(
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
@@ -185,7 +187,7 @@ pub fn run_until_height(
         link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         // Create the engine clients
-        let genesis_hash = from_hex_formatted(GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -218,7 +220,11 @@ pub fn run_until_height(
                 initial_state.clone(),
             );
 
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -237,27 +243,21 @@ pub fn run_until_height(
             // Iterate over all lines
             let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
-                if !line.starts_with("validator_") {
+                let Some(sample) = parse_metric(line) else {
                     continue;
-                }
-
-                // Split metric and value
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
                 // If ends with peers_blocked, ensure it is zero
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
                 // If ends with contiguous_height, ensure it is at least required_container
-                if metric.ends_with("finalizer_height") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     if value >= stop_height {
-                        nodes_finished.insert(metric.to_string());
+                        nodes_finished.insert(sample.uid.clone());
                         if nodes_finished.len() as u32 == n {
                             success = true;
                             break;
@@ -361,7 +361,7 @@ pub async fn assert_state_root_consensus_skip(
 }
 
 pub fn get_domain() -> Digest {
-    let genesis_hash = from_hex_formatted(GENESIS_HASH).expect("failed to decode genesis hash");
+    let genesis_hash = from_hex(GENESIS_HASH).expect("failed to decode genesis hash");
     let genesis_hash: [u8; 32] = genesis_hash
         .try_into()
         .expect("failed to convert genesis hash");
@@ -420,6 +420,46 @@ pub fn get_initial_state(
     })
 }
 
+/// One Prometheus sample line parsed from `context.encode()`.
+///
+/// Commonware 2026.5.0 renders dynamic context labels as Prometheus label
+/// attributes instead of metric name prefixes, so the legacy sample
+/// `validator_<pk>_engine_finalizer_height 21` is now encoded as
+/// `engine_finalizer_height{uid="validator_<pk>"} 21`.
+pub struct MetricSample {
+    /// The metric name, without labels.
+    pub name: String,
+    /// The `uid` label value identifying the node that emitted the sample.
+    pub uid: String,
+    /// The raw sample value.
+    pub value: String,
+}
+
+/// Parses one sample line from `context.encode()`.
+///
+/// # Returns
+/// * `Some(MetricSample)` for samples carrying a `uid` label
+/// * `None` for descriptor/EOF lines and samples without a `uid` label
+pub fn parse_metric(line: &str) -> Option<MetricSample> {
+    if line.starts_with('#') {
+        return None;
+    }
+    let (sample, value) = line.rsplit_once(' ')?;
+    let (name, labels) = match sample.split_once('{') {
+        Some((name, labels)) => (name, labels.strip_suffix('}')?),
+        None => (sample, ""),
+    };
+    let uid = labels.split(',').find_map(|label| {
+        let (key, value) = label.split_once('=')?;
+        (key == "uid").then(|| value.trim_matches('"').to_string())
+    })?;
+    Some(MetricSample {
+        name: name.to_string(),
+        uid,
+        value: value.to_string(),
+    })
+}
+
 /// Parse a substring from a metric name using XML-like tags
 ///
 /// # Arguments
@@ -444,35 +484,6 @@ pub fn parse_metric_substring(metric: &str, tag: &str) -> Option<String> {
 
     let substring_start = start + start_tag.len();
     Some(metric[substring_start..end].to_string())
-}
-
-/// Extracts the validator id from a metric string.
-///
-/// # Arguments
-/// * `metric` - The metric name to parse from
-///
-/// # Returns
-/// * `Some(String)` if the validator id is contained in the string
-/// * `None` if the validator if doesn't exist
-/// ```
-pub fn extract_validator_id(metric: &str) -> Option<String> {
-    // Metric format is: validator_{pubkey}_{component}_{metric_name}
-    // We need to extract validator_{pubkey}
-    let prefix = "validator_";
-
-    if !metric.starts_with(prefix) {
-        return None;
-    }
-
-    // Find the position after "validator_"
-    let start = prefix.len();
-
-    // Find the next underscore after "validator_"
-    let remaining = &metric[start..];
-    let end_offset = remaining.find('_')?;
-
-    // Extract from beginning to the second underscore (start + end_offset)
-    Some(metric[..start + end_offset].to_string())
 }
 
 /// Create a single DepositRequest for testing with valid ED25519 and BLS signatures
@@ -688,7 +699,7 @@ where
         namespace,
         key_store,
         participants,
-        mailbox_size: 1024,
+        mailbox_size: NZUsize!(1024),
         finalizer_pending_notarized_max: 1000,
         deque_size: 10,
         backfill_quota: Quota::per_second(NonZeroU32::new(512).unwrap()),
@@ -711,9 +722,16 @@ where
     }
 }
 
-#[derive(Clone)]
 pub struct SimulatedOracle<E: Clock> {
     inner: simulated::Manager<PublicKey, E>,
+}
+
+impl<E: Clock> Clone for SimulatedOracle<E> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<E: Clock> Debug for SimulatedOracle<E> {
@@ -735,18 +753,19 @@ impl<E: Clock> NetworkOracle<PublicKey> for SimulatedOracle<E> {
         use commonware_utils::ordered::Set;
         let primary = Set::try_from(primary).expect("primary peers should be unique");
         let secondary = Set::try_from(secondary).expect("secondary peers should be unique");
-        self.inner
-            .track(index, TrackedPeers::new(primary, secondary))
-            .await
+        let _ = self
+            .inner
+            .track(index, TrackedPeers::new(primary, secondary));
     }
 }
 
 impl<E: Clock> Blocker for SimulatedOracle<E> {
     type PublicKey = PublicKey;
 
-    async fn block(&mut self, _public_key: Self::PublicKey) {
+    fn block(&mut self, _public_key: Self::PublicKey) -> Feedback {
         // Simulated oracle doesn't support blocking individual peers
         // This is only used in production for misbehaving peers
+        Feedback::Ok
     }
 }
 
@@ -757,16 +776,16 @@ impl<E: Clock> Provider for SimulatedOracle<E> {
         self.inner.peer_set(id).await
     }
 
-    async fn subscribe(&mut self) -> mpsc::UnboundedReceiver<PeerSetUpdate<Self::PublicKey>> {
+    async fn subscribe(&mut self) -> PeerSetSubscription<Self::PublicKey> {
         self.inner.subscribe().await
     }
 }
 
 impl<E: Clock> Manager for SimulatedOracle<E> {
-    async fn track<R>(&mut self, id: u64, peers: R)
+    fn track<R>(&mut self, id: u64, peers: R) -> Feedback
     where
         R: Into<TrackedPeers<Self::PublicKey>> + Send,
     {
-        self.inner.track(id, peers).await
+        self.inner.track(id, peers)
     }
 }

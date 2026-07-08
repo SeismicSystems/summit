@@ -5,13 +5,15 @@ use crate::test_harness::common::{
 };
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_cryptography::{Signer, bls12381};
+use commonware_formatting::from_hex;
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-use commonware_utils::{NZUsize, from_hex_formatted};
+use commonware_utils::NZUsize;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::HashSet;
@@ -40,7 +42,7 @@ fn test_observer_reaches_end_height() {
     executor.start(|context| async move {
         let total_nodes = n_validators + 1;
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -76,7 +78,7 @@ fn test_observer_reaches_end_height() {
         // observers under (#335). The harness uses genesis_hash as the
         // config_digest (see get_default_engine_config), so derive against
         // chain_domain(genesis_hash) to match the validators' authorized set.
-        let observer_config_digest: [u8; 32] = from_hex_formatted(common::GENESIS_HASH)
+        let observer_config_digest: [u8; 32] = from_hex(common::GENESIS_HASH)
             .expect("genesis hash hex")
             .try_into()
             .expect("genesis hash len");
@@ -104,7 +106,7 @@ fn test_observer_reaches_end_height() {
         common::link_validators(&mut oracle, &all_pubkeys, link.clone(), None).await;
 
         // Shared genesis + engine client network.
-        let genesis_hash = from_hex_formatted(common::GENESIS_HASH).expect("genesis hash hex");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("genesis hash hex");
         let genesis_hash: [u8; 32] = genesis_hash.try_into().expect("genesis hash len");
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_stop_at(stop_height)
@@ -130,7 +132,11 @@ fn test_observer_reaches_end_height() {
                 initial_state.clone(),
             );
 
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
@@ -156,7 +162,13 @@ fn test_observer_reaches_end_height() {
             initial_state.clone(),
         );
         observer_config.force_verifier_only = true;
-        let observer_engine = Engine::new(context.with_label(&observer_uid), observer_config).await;
+        let observer_engine = Engine::new(
+            context
+                .child("observer")
+                .with_attribute("uid", observer_uid.clone()),
+            observer_config,
+        )
+        .await;
         let (pending, recovered, resolver, orchestrator, broadcast) =
             registrations.remove(&observer_pubkey).unwrap();
         observer_engine.start(pending, recovered, resolver, orchestrator, broadcast);
@@ -167,23 +179,23 @@ fn test_observer_reaches_end_height() {
             let metrics = context.encode();
             let mut success = false;
             for line in metrics.lines() {
-                if !(line.starts_with("validator_") || line.starts_with("observer_")) {
+                let Some(sample) = common::parse_metric(line) else {
+                    continue;
+                };
+                if !(sample.uid.starts_with("validator_") || sample.uid.starts_with("observer_")) {
                     continue;
                 }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.ends_with("_peers_blocked") {
+                if sample.name.ends_with("_peers_blocked") {
                     assert_eq!(
-                        value.parse::<u64>().unwrap(),
+                        sample.value.parse::<u64>().unwrap(),
                         0,
                         "no node should have blocked peers"
                     );
                 }
-                if metric.ends_with("finalizer_height")
-                    && value.parse::<u64>().unwrap() >= stop_height
+                if sample.name.ends_with("finalizer_height")
+                    && sample.value.parse::<u64>().unwrap() >= stop_height
                 {
-                    nodes_finished.insert(metric.to_string());
+                    nodes_finished.insert(sample.uid.clone());
                     if nodes_finished.len() as u32 >= total_nodes {
                         success = true;
                         break;
@@ -233,7 +245,7 @@ fn test_observer_backfills_from_parent_validator() {
     executor.start(|context| async move {
         let total_nodes = n_validators + 1;
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -273,7 +285,7 @@ fn test_observer_backfills_from_parent_validator() {
         // observers under (#335). The harness uses genesis_hash as the
         // config_digest (see get_default_engine_config), so derive against
         // chain_domain(genesis_hash) to match the validators' authorized set.
-        let observer_config_digest: [u8; 32] = from_hex_formatted(common::GENESIS_HASH)
+        let observer_config_digest: [u8; 32] = from_hex(common::GENESIS_HASH)
             .expect("genesis hash hex")
             .try_into()
             .expect("genesis hash len");
@@ -298,7 +310,7 @@ fn test_observer_backfills_from_parent_validator() {
         .await;
 
         // Shared genesis + engine client network.
-        let genesis_hash = from_hex_formatted(common::GENESIS_HASH).expect("genesis hash hex");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("genesis hash hex");
         let genesis_hash: [u8; 32] = genesis_hash.try_into().expect("genesis hash len");
         let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
             .with_stop_at(stop_height)
@@ -323,7 +335,11 @@ fn test_observer_backfills_from_parent_validator() {
                 initial_state.clone(),
             );
 
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
                 registrations.remove(&public_key).unwrap();
@@ -338,13 +354,11 @@ fn test_observer_backfills_from_parent_validator() {
             let metrics = context.encode();
             let advanced = metrics
                 .lines()
-                .filter(|l| l.starts_with("validator_"))
-                .filter(|l| {
-                    let mut parts = l.split_whitespace();
-                    let metric = parts.next().unwrap();
-                    let value = parts.next().unwrap();
-                    metric.ends_with("finalizer_height")
-                        && value.parse::<u64>().unwrap() >= join_height
+                .filter_map(common::parse_metric)
+                .filter(|sample| {
+                    sample.uid.starts_with("validator_")
+                        && sample.name.ends_with("finalizer_height")
+                        && sample.value.parse::<u64>().unwrap() >= join_height
                 })
                 .count();
             if advanced as u32 >= n_validators {
@@ -371,23 +385,26 @@ fn test_observer_backfills_from_parent_validator() {
         );
         observer_config.force_verifier_only = true;
         observer_config.observer_network_key = Some(observer_pubkey.clone());
-        let observer_engine = Engine::new(context.with_label(&observer_uid), observer_config).await;
+        let observer_engine = Engine::new(
+            context
+                .child("observer")
+                .with_attribute("uid", observer_uid.clone()),
+            observer_config,
+        )
+        .await;
         let (pending, recovered, resolver, orchestrator, broadcast) =
             registrations.remove(&observer_pubkey).unwrap();
         observer_engine.start(pending, recovered, resolver, orchestrator, broadcast);
 
         // The observer must backfill the missed blocks from its parent — the
         // only peer it is linked to — and reach stop_height.
-        let observer_height_metric = format!("{observer_uid}_finalizer_height");
         let mut polls = 0;
         loop {
             let metrics = context.encode();
-            let observer_done = metrics.lines().any(|l| {
-                let mut parts = l.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                metric.ends_with(&observer_height_metric)
-                    && value.parse::<u64>().unwrap() >= stop_height
+            let observer_done = metrics.lines().filter_map(common::parse_metric).any(|s| {
+                s.uid == observer_uid
+                    && s.name.ends_with("finalizer_height")
+                    && s.value.parse::<u64>().unwrap() >= stop_height
             });
             if observer_done {
                 break;

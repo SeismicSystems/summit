@@ -14,9 +14,10 @@ use commonware_consensus::Reporter;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
-use commonware_runtime::{Clock, Metrics, Runner as _};
+use commonware_runtime::{Clock, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::{StreamExt as _, channel::mpsc as futures_mpsc};
@@ -227,7 +228,7 @@ fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epo
         initial_state.set_account(exiting_pubkey_bytes, exiting_account);
         initial_state.push_removed_validator(exiting_node_pubkey.clone());
 
-        let (orchestrator_tx, mut orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, mut orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
@@ -259,7 +260,7 @@ fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epo
 
         let (finalizer, _state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -316,7 +317,7 @@ fn test_validator_exit_triggers_cancellation() {
             create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
         initial_state.push_removed_validator(node_pubkey.clone());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let cancellation_token = CancellationToken::new();
@@ -352,7 +353,7 @@ fn test_validator_exit_triggers_cancellation() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -380,9 +381,7 @@ fn test_validator_exit_triggers_cancellation() {
             parent_digest = block.digest();
 
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
 
@@ -400,9 +399,7 @@ fn test_validator_exit_triggers_cancellation() {
         parent_digest = block4_digest;
         let finalization4 = make_finalization(block4_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block4, Some(finalization4)), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // Token still should not be cancelled (we're at block 4, not first of new epoch)
@@ -415,9 +412,7 @@ fn test_validator_exit_triggers_cancellation() {
         // This should trigger the cancellation
         let block5 = create_test_block_with_epoch(parent_digest, 5, 6, 13005, 1);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block5, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block5, None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // Now the token should be cancelled
@@ -448,7 +443,7 @@ fn test_finalizer_rejects_finalized_block_with_wrong_parent() {
 
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let cancellation_token = CancellationToken::new();
@@ -483,7 +478,7 @@ fn test_finalizer_rejects_finalized_block_with_wrong_parent() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -499,9 +494,7 @@ fn test_finalizer_rejects_finalized_block_with_wrong_parent() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 0);
             parent_digest = block.digest();
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
         assert!(
@@ -517,9 +510,7 @@ fn test_finalizer_rejects_finalized_block_with_wrong_parent() {
         assert_ne!(wrong_parent, parent_digest);
         let bad_block = create_test_block_with_epoch(wrong_parent, 3, 4, 13003, 0);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((bad_block, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((bad_block, None), ack));
         context.sleep(Duration::from_millis(150)).await;
 
         assert!(
@@ -553,7 +544,7 @@ fn test_finalizer_rejects_block_certificate_digest_mismatch() {
         // that can cancel the token is the digest-binding guard.
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let cancellation_token = CancellationToken::new();
@@ -594,7 +585,7 @@ fn test_finalizer_rejects_block_certificate_digest_mismatch() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -613,9 +604,7 @@ fn test_finalizer_rejects_block_certificate_digest_mismatch() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 0);
             parent_digest = block.digest();
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
         assert!(
@@ -638,12 +627,10 @@ fn test_finalizer_rejects_block_certificate_digest_mismatch() {
         assert_ne!(block4.digest(), wrong_digest);
         let mismatched_finalization = make_finalization(wrong_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock(
-                (block4, Some(mismatched_finalization)),
-                ack,
-            ))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock(
+            (block4, Some(mismatched_finalization)),
+            ack,
+        ));
         context.sleep(Duration::from_millis(150)).await;
 
         assert!(
@@ -717,7 +704,7 @@ fn test_joining_validator_peer_tier_follows_activation() {
         let oracle = RecordingNetworkOracle::new();
         let track_calls = oracle.calls.clone();
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, RecordingNetworkOracle, MinPk> {
@@ -753,7 +740,7 @@ fn test_joining_validator_peer_tier_follows_activation() {
             RecordingNetworkOracle,
             ed25519::PrivateKey,
             MinPk,
-        >::new(context.with_label("finalizer"), finalizer_cfg)
+        >::new(context.child("finalizer"), finalizer_cfg)
         .await;
 
         let _handle = finalizer.start(orchestrator_mailbox);
@@ -783,9 +770,7 @@ fn test_joining_validator_peer_tier_follows_activation() {
             let finalization = (height % 5 == 4)
                 .then(|| make_finalization(block_digest, height, height + 1, &schemes, quorum));
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, finalization), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, finalization), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
 
@@ -868,7 +853,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
             std::num::NonZero::new(4096).unwrap(),
             NZUsize!(100),
         );
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let cancellation_token = CancellationToken::new();
 
@@ -897,7 +882,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -912,9 +897,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 58000 + height, 0);
             parent_digest = block.digest();
             let (ack, ack_waiter) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             ack_waiter.await.expect("non-boundary block must be acked");
         }
 
@@ -924,9 +907,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
         let boundary_digest = boundary.digest();
         let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
         let (ack, ack_waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((boundary, Some(finalization)), ack));
         ack_waiter.await.expect("epoch boundary block must be acked");
 
         drop(mailbox);
@@ -935,7 +916,7 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
 
         let (restarted, reloaded_state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer_restart"),
+                context.child("finalizer_restart"),
                 FinalizerConfig {
                     mailbox_size: 100,
                     db_prefix,
@@ -1041,7 +1022,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
             std::num::NonZero::new(4096).unwrap(),
             NZUsize!(100),
         );
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let cancellation_token = CancellationToken::new();
 
@@ -1075,7 +1056,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1091,9 +1072,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 59000 + height, 0);
             parent_digest = block.digest();
             let (ack, ack_waiter) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             ack_waiter.await.expect("non-boundary block must be acked");
         }
 
@@ -1106,9 +1085,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
         let boundary_digest = boundary.digest();
         let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
         let (ack, ack_waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((boundary, Some(finalization)), ack));
 
         // Ack must be WITHHELD: the finalizer errors on the failed commit before
         // acknowledging, so the Exact waiter resolves Err (sender dropped).
@@ -1131,7 +1108,7 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
         // Restart from the same DB: the epoch must NOT have durably advanced.
         let (restarted, reloaded_state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer_restart"),
+                context.child("finalizer_restart"),
                 FinalizerConfig {
                     mailbox_size: 100,
                     db_prefix,
@@ -1243,7 +1220,7 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
         let oracle = RecordingOracle::default();
         let tracks = oracle.tracks.clone();
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, RecordingOracle, MinPk> {
@@ -1275,7 +1252,7 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, RecordingOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1304,9 +1281,7 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
         );
         parent_digest = b1.digest();
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b1, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((b1, None), ack));
         context.sleep(Duration::from_millis(30)).await;
 
         // Blocks 2-3: empty filler to reach the last block of epoch 0.
@@ -1315,7 +1290,7 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 19000 + height, 0);
             parent_digest = b.digest();
             let (ack, _) = Exact::handle();
-            mailbox.report(Update::FinalizedBlock((b, None), ack)).await;
+            let _ = mailbox.report(Update::FinalizedBlock((b, None), ack));
             context.sleep(Duration::from_millis(30)).await;
         }
 
@@ -1325,9 +1300,7 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
         let b4_digest = b4.digest();
         let finalization4 = make_finalization(b4_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b4, Some(finalization4)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((b4, Some(finalization4)), ack));
         context.sleep(Duration::from_millis(50)).await;
 
         // The canceled joining validator's account must leave `Joining` (to
@@ -1429,12 +1402,12 @@ fn restart_mid_warmup_preserves_pending_joining_validator() {
             std::num::NonZero::new(4096).unwrap(),
             NZUsize!(100),
         );
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg(
                     &db_prefix,
                     page_cache.clone(),
@@ -1457,9 +1430,7 @@ fn restart_mid_warmup_preserves_pending_joining_validator() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 77000 + height, 0);
             parent_digest = block.digest();
             let (ack, ack_waiter) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             ack_waiter.await.expect("non-boundary block must be acked");
         }
 
@@ -1469,9 +1440,7 @@ fn restart_mid_warmup_preserves_pending_joining_validator() {
         let boundary_digest = boundary.digest();
         let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
         let (ack, ack_waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((boundary, Some(finalization)), ack));
         ack_waiter
             .await
             .expect("epoch boundary block must be acked");
@@ -1484,7 +1453,7 @@ fn restart_mid_warmup_preserves_pending_joining_validator() {
 
         let (restarted, reloaded_state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer_restart"),
+                context.child("finalizer_restart"),
                 finalizer_cfg(
                     &db_prefix,
                     page_cache,
@@ -1594,12 +1563,12 @@ fn restart_preserves_pending_full_exit_payout() {
             std::num::NonZero::new(4096).unwrap(),
             NZUsize!(100),
         );
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg(
                     &db_prefix,
                     page_cache.clone(),
@@ -1623,9 +1592,7 @@ fn restart_preserves_pending_full_exit_payout() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 88000 + height, 0);
             parent_digest = block.digest();
             let (ack, ack_waiter) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             ack_waiter.await.expect("non-boundary block must be acked");
         }
 
@@ -1635,9 +1602,7 @@ fn restart_preserves_pending_full_exit_payout() {
         let boundary_digest = boundary.digest();
         let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
         let (ack, ack_waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((boundary, Some(finalization)), ack));
         ack_waiter
             .await
             .expect("epoch boundary block must be acked");
@@ -1649,7 +1614,7 @@ fn restart_preserves_pending_full_exit_payout() {
 
         let (restarted, reloaded_state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer_restart"),
+                context.child("finalizer_restart"),
                 finalizer_cfg(
                     &db_prefix,
                     page_cache,

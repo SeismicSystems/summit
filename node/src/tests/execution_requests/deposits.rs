@@ -1,4 +1,5 @@
 use super::*;
+use commonware_runtime::Supervisor as _;
 
 #[test_traced("INFO")]
 fn test_deposit_request_single() {
@@ -18,7 +19,7 @@ fn test_deposit_request_single() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
@@ -52,8 +53,7 @@ fn test_deposit_request_single() {
         // Link all validators
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
         // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -102,7 +102,11 @@ fn test_deposit_request_single() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -120,14 +124,11 @@ fn test_deposit_request_single() {
             // a metric check.
             let metrics = context.encode();
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.ends_with("_peers_blocked") {
-                    assert_eq!(value.parse::<u64>().unwrap(), 0);
+                };
+                if sample.name.ends_with("_peers_blocked") {
+                    assert_eq!(sample.value.parse::<u64>().unwrap(), 0);
                 }
             }
 
@@ -184,7 +185,7 @@ fn test_deposit_less_than_min_stake_creates_inactive_account() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -221,8 +222,7 @@ fn test_deposit_less_than_min_stake_creates_inactive_account() {
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -287,7 +287,11 @@ fn test_deposit_less_than_min_stake_creates_inactive_account() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -305,14 +309,11 @@ fn test_deposit_less_than_min_stake_creates_inactive_account() {
             // a metric check.
             let metrics = context.encode();
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.ends_with("_peers_blocked") {
-                    assert_eq!(value.parse::<u64>().unwrap(), 0);
+                };
+                if sample.name.ends_with("_peers_blocked") {
+                    assert_eq!(sample.value.parse::<u64>().unwrap(), 0);
                 }
             }
 
@@ -399,7 +400,7 @@ fn test_duplicate_bls_consensus_key_rejected() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -432,8 +433,7 @@ fn test_duplicate_bls_consensus_key_rejected() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -524,7 +524,11 @@ fn test_duplicate_bls_consensus_key_rejected() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -538,18 +542,14 @@ fn test_duplicate_bls_consensus_key_rejected() {
             let metrics = context.encode();
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
+                };
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 
@@ -643,7 +643,7 @@ fn test_top_up_deposit_with_mismatched_bls_key_rejected() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -676,8 +676,7 @@ fn test_top_up_deposit_with_mismatched_bls_key_rejected() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -766,7 +765,11 @@ fn test_top_up_deposit_with_mismatched_bls_key_rejected() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -780,18 +783,14 @@ fn test_top_up_deposit_with_mismatched_bls_key_rejected() {
             let metrics = context.encode();
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
+                };
 
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
 

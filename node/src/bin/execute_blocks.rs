@@ -1,7 +1,7 @@
 use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV4, ForkchoiceState};
 use anyhow::Result;
 use clap::{Arg, Command};
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
 use std::path::PathBuf;
 use summit_types::engine_client::EngineClient;
 #[cfg(feature = "bench")]
@@ -69,10 +69,7 @@ async fn main() -> Result<()> {
     let mut client = EthereumHistoricalEngineClient::new(engine_ipc_path, block_dir).await;
 
     // Load and commit blocks to Reth
-    let genesis_hash: [u8; 32] = from_hex_formatted(genesis_hash_str)
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let genesis_hash: [u8; 32] = from_hex(genesis_hash_str).unwrap().try_into().unwrap();
 
     let mut forkchoice = ForkchoiceState {
         head_block_hash: genesis_hash.into(),
