@@ -1,3 +1,7 @@
+use commonware_actor::{
+    Feedback,
+    mailbox::{Overflow, Policy, Sender},
+};
 use commonware_consensus::{
     Block, Reporter,
     simplex::scheme::Scheme,
@@ -5,11 +9,9 @@ use commonware_consensus::{
     types::{Height, Round},
 };
 use commonware_cryptography::Digest;
+use commonware_p2p::Recipients;
 use commonware_storage::archive;
-use commonware_utils::{
-    channel::{mpsc, oneshot},
-    vec::NonEmptyVec,
-};
+use commonware_utils::{channel::oneshot, vec::NonEmptyVec};
 use futures::{
     FutureExt,
     future::BoxFuture,
@@ -17,10 +19,10 @@ use futures::{
 };
 use pin_project::pin_project;
 use std::{
+    collections::{BTreeMap, VecDeque, btree_map::Entry},
     pin::Pin,
     task::{Context, Poll},
 };
-use tracing::{error, warn};
 
 /// An identifier for a block request.
 pub enum Identifier<D: Digest> {
@@ -64,7 +66,7 @@ impl<D: Digest> From<archive::Identifier<'_, D>> for Identifier<D> {
     }
 }
 
-/// Messages sent to the marshal [Actor](super::super::actor::Actor).
+/// Messages sent to the marshal [Actor](crate::actor::Actor).
 ///
 /// These messages are sent from the consensus engine and other parts of the
 /// system to drive the state of the marshal.
@@ -95,6 +97,11 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         /// A channel to send the retrieved finalization.
         response: oneshot::Sender<Option<Finalization<S, B::Digest>>>,
     },
+    /// A request to retrieve the latest processed height.
+    GetProcessedHeight {
+        /// A channel to send the latest processed height.
+        response: oneshot::Sender<Option<Height>>,
+    },
     /// A hint to fetch a finalization from the network if not available locally.
     ///
     /// This is fire-and-forget: the finalization will be stored in syncer and delivered
@@ -102,7 +109,7 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
     HintFinalized {
         /// The height of the finalization to fetch.
         height: Height,
-        /// Target peers to fetch from.
+        /// Target peers to fetch from. Added to any existing targets for this height.
         targets: NonEmptyVec<S::PublicKey>,
     },
     /// A request to retrieve a block by its commitment.
@@ -115,21 +122,40 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         /// A channel to send the retrieved block.
         response: oneshot::Sender<B>,
     },
+    /// A hint to fetch a notarized block by round without adding another local subscriber.
+    ///
+    /// `commitment` is used as a locality check: if the block is already
+    /// available locally, the fetch is skipped.
+    HintNotarized {
+        /// The notarized round to request.
+        round: Round,
+        /// The commitment used to short-circuit if the block is already local.
+        commitment: B::Digest,
+    },
+    /// A request to retrieve the verified block previously persisted for `round`.
+    GetVerified {
+        /// The round to query.
+        round: Round,
+        /// A channel to send the retrieved block, if any.
+        response: oneshot::Sender<Option<B>>,
+    },
     /// A request to broadcast a proposed block to all peers.
     Proposed {
         /// The round in which the block was proposed.
         round: Round,
         /// The block to broadcast.
         block: B,
+        /// A channel signaled once the block is durably stored.
+        ack: Option<oneshot::Sender<()>>,
     },
-    /// A request to forward a block to a set of peers.
+    /// A request to forward a block to a set of recipients.
     Forward {
         /// The round in which the block was proposed.
         round: Round,
         /// The commitment of the block to forward.
         commitment: B::Digest,
-        /// The peers to forward the block to.
-        peers: Vec<S::PublicKey>,
+        /// The recipients to forward the block to.
+        recipients: Recipients<S::PublicKey>,
     },
     /// A notification that a block has been verified by the application.
     Verified {
@@ -137,6 +163,17 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         round: Round,
         /// The verified block.
         block: B,
+        /// A channel signaled once the block is durably stored.
+        ack: Option<oneshot::Sender<()>>,
+    },
+    /// A notification that a block has been certified by the application.
+    Certified {
+        /// The round in which the block was certified.
+        round: Round,
+        /// The certified block.
+        block: B,
+        /// A channel signaled once the block is durably stored.
+        ack: Option<oneshot::Sender<()>>,
     },
 
     // -------------------- Consensus Engine Messages --------------------
@@ -150,17 +187,17 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         /// The finalization.
         finalization: Finalization<S, B::Digest>,
     },
-    /// Sets the sync starting point (advances if higher than current).
+    /// Attempts to set the sync starting point from a finalized commitment.
     ///
-    /// Marshal will sync and deliver blocks starting at `floor + 1`. Data below
-    /// the floor is pruned.
+    /// If the verified finalization advances the current floor, the syncer
+    /// anchors on its block, prunes below it, then syncs and delivers blocks
+    /// starting at the floor height. Stale or superseded floors may be ignored.
     ///
-    /// To prune data without affecting the sync starting point, use [Message::Prune] instead.
-    ///
-    /// The default floor is 0.
+    /// To prune data without changing the sync starting point, use
+    /// [Message::Prune] instead.
     SetFloor {
-        /// The candidate floor height.
-        height: Height,
+        /// The candidate floor finalization, verified by the actor before use.
+        finalization: Finalization<S, B::Digest>,
     },
     /// Prunes finalized blocks and certificates below the given height.
     ///
@@ -173,15 +210,302 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
     },
 }
 
-/// A mailbox for sending messages to the marshal [Actor](super::super::actor::Actor).
+impl<S: Scheme<B::Digest>, B: Block> Message<S, B> {
+    fn stale(&self, current: Option<Height>) -> bool {
+        match self {
+            // Height-targeted reads below the floor can never be served
+            Self::GetInfo {
+                identifier: Identifier::Height(height),
+                ..
+            }
+            | Self::GetBlock {
+                identifier: Identifier::Height(height),
+                ..
+            }
+            | Self::GetFinalization { height, .. } => Some(*height) < current,
+            // Hints only inform the actor about heights strictly above the floor
+            Self::HintFinalized { height, .. } => Some(*height) <= current,
+            // Durability acks cannot be dropped: callers depend on them
+            Self::Proposed { .. } | Self::Verified { .. } | Self::Certified { .. } => false,
+            // Digest and latest lookups are not bound to a specific height
+            Self::GetBlock {
+                identifier: Identifier::Digest(_) | Identifier::Latest,
+                ..
+            }
+            | Self::GetInfo {
+                identifier: Identifier::Digest(_) | Identifier::Latest,
+                ..
+            }
+            | Self::GetProcessedHeight { .. } => false,
+            Self::HintNotarized { .. } => false,
+            Self::Subscribe { .. }
+            | Self::GetVerified { .. }
+            | Self::Forward { .. }
+            | Self::SetFloor { .. }
+            | Self::Prune { .. }
+            | Self::Notarization { .. }
+            | Self::Finalization { .. } => false,
+        }
+    }
+
+    pub(crate) fn response_closed(&self) -> bool {
+        match self {
+            Self::GetInfo { response, .. } => response.is_closed(),
+            Self::GetBlock { response, .. } | Self::GetVerified { response, .. } => {
+                response.is_closed()
+            }
+            Self::GetFinalization { response, .. } => response.is_closed(),
+            Self::GetProcessedHeight { response } => response.is_closed(),
+            Self::Subscribe { response, .. } => response.is_closed(),
+            Self::HintNotarized { .. } => false,
+            Self::HintFinalized { .. }
+            | Self::Forward { .. }
+            | Self::Proposed { .. }
+            | Self::Verified { .. }
+            | Self::Certified { .. }
+            | Self::SetFloor { .. }
+            | Self::Prune { .. }
+            | Self::Notarization { .. }
+            | Self::Finalization { .. } => false,
+        }
+    }
+}
+
+/// Overflow state for syncer mailbox messages retained after the mailbox fills.
+///
+/// Advisory inputs are coalesced instead of queued unboundedly: finalized
+/// hints keep one entry per height with a unioned target set, floors collapse
+/// to the highest round seen, and prunes collapse to the highest height seen.
+/// This keeps callers running control loops (e.g. the orchestrator) from ever
+/// parking on a full syncer mailbox.
+pub(crate) struct Pending<S: Scheme<B::Digest>, B: Block> {
+    floor: Option<Finalization<S, B::Digest>>,
+    prune: Option<Height>,
+    hints: BTreeMap<Height, NonEmptyVec<S::PublicKey>>,
+    messages: VecDeque<PendingMessage<S, B>>,
+}
+
+enum PendingMessage<S: Scheme<B::Digest>, B: Block> {
+    Message(Message<S, B>),
+    HintFinalized(Height),
+}
+
+impl<S: Scheme<B::Digest>, B: Block> Default for Pending<S, B> {
+    fn default() -> Self {
+        Self {
+            floor: None,
+            prune: None,
+            hints: BTreeMap::new(),
+            messages: VecDeque::new(),
+        }
+    }
+}
+
+impl<S: Scheme<B::Digest>, B: Block> Pending<S, B> {
+    // Only prune advances are usable for height staleness checks. A pending
+    // floor finalization does not carry the block height until the block is decoded.
+    const fn height(&self) -> Option<Height> {
+        self.prune
+    }
+
+    fn retain(&mut self) {
+        let current = self.height();
+        self.hints.retain(|height, _| Some(*height) > current);
+
+        let hints = &self.hints;
+        self.messages.retain(|message| match message {
+            PendingMessage::Message(message) => {
+                !message.response_closed() && !message.stale(current)
+            }
+            PendingMessage::HintFinalized(height) => hints.contains_key(height),
+        });
+    }
+
+    fn set_floor(&mut self, finalization: Finalization<S, B::Digest>) {
+        let round = finalization.round();
+        if self
+            .floor
+            .as_ref()
+            .is_some_and(|floor| floor.round() >= round)
+        {
+            return;
+        }
+
+        self.floor = Some(finalization);
+    }
+
+    fn prune(&mut self, height: Height) {
+        let current = self.height();
+        let prune = Some(height);
+        if self.prune >= prune {
+            return;
+        }
+
+        self.prune = self.prune.max(prune);
+        if self.height() > current {
+            self.retain();
+        }
+    }
+
+    fn extend_hint_targets(
+        pending: &mut NonEmptyVec<S::PublicKey>,
+        targets: NonEmptyVec<S::PublicKey>,
+    ) {
+        for target in targets {
+            if !pending.contains(&target) {
+                pending.push(target);
+            }
+        }
+    }
+
+    fn hint_finalized(&mut self, height: Height, targets: NonEmptyVec<S::PublicKey>) {
+        // The finalized height is already covered by the floor or prune point.
+        let current = self.height();
+        if current.is_some_and(|current| height <= current) {
+            return;
+        }
+
+        match self.hints.entry(height) {
+            Entry::Vacant(entry) => {
+                entry.insert(targets);
+                self.messages
+                    .push_back(PendingMessage::HintFinalized(height));
+            }
+            Entry::Occupied(mut entry) => {
+                Self::extend_hint_targets(entry.get_mut(), targets);
+            }
+        }
+    }
+
+    fn restore_hint(&mut self, height: Height, targets: NonEmptyVec<S::PublicKey>) {
+        match self.hints.entry(height) {
+            Entry::Vacant(entry) => {
+                entry.insert(targets);
+            }
+            Entry::Occupied(mut entry) => {
+                Self::extend_hint_targets(entry.get_mut(), targets);
+            }
+        }
+        self.messages
+            .push_front(PendingMessage::HintFinalized(height));
+    }
+
+    fn drain_one<F>(&mut self, message: Message<S, B>, push: &mut F) -> bool
+    where
+        F: FnMut(Message<S, B>) -> Option<Message<S, B>>,
+    {
+        // Receiver accepted; the message is consumed
+        let Some(message) = push(message) else {
+            return true;
+        };
+
+        // Receiver rejected; restore so the next drain retries from the same point
+        match message {
+            Message::SetFloor { finalization } => self.set_floor(finalization),
+            Message::Prune { height } => self.prune(height),
+            Message::HintFinalized { height, targets } => self.restore_hint(height, targets),
+            message => self.messages.push_front(PendingMessage::Message(message)),
+        }
+        false
+    }
+}
+
+impl<S: Scheme<B::Digest>, B: Block> Overflow<Message<S, B>> for Pending<S, B> {
+    fn is_empty(&self) -> bool {
+        self.floor.is_none()
+            && self.prune.is_none()
+            && self.hints.is_empty()
+            && self.messages.is_empty()
+    }
+
+    fn drain<F>(&mut self, mut push: F)
+    where
+        F: FnMut(Message<S, B>) -> Option<Message<S, B>>,
+    {
+        // Drain floor and prune first so the actor advances its floor before
+        // it sees the height-bounded reads that follow
+        if let Some(finalization) = self.floor.take()
+            && !self.drain_one(Message::SetFloor { finalization }, &mut push)
+        {
+            return;
+        }
+        if let Some(height) = self.prune.take()
+            && !self.drain_one(Message::Prune { height }, &mut push)
+        {
+            return;
+        }
+
+        // Drain the remaining queued messages in FIFO order
+        while let Some(pending) = self.messages.pop_front() {
+            match pending {
+                PendingMessage::Message(message) => {
+                    if message.response_closed() {
+                        continue;
+                    }
+                    if !self.drain_one(message, &mut push) {
+                        break;
+                    }
+                }
+                PendingMessage::HintFinalized(hint_height) => {
+                    let Some(targets) = self.hints.remove(&hint_height) else {
+                        continue;
+                    };
+                    let message = Message::HintFinalized {
+                        height: hint_height,
+                        targets,
+                    };
+                    if !self.drain_one(message, &mut push) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<S: Scheme<B::Digest>, B: Block> Policy for Message<S, B> {
+    type Overflow = Pending<S, B>;
+
+    fn handle(overflow: &mut Self::Overflow, message: Self) {
+        // A closed responder cannot be served
+        if message.response_closed() {
+            return;
+        }
+        match message {
+            // Coalesce hints: a single entry per height with a unioned target set
+            Self::HintFinalized { height, targets } => {
+                overflow.hint_finalized(height, targets);
+            }
+            // Floors collapse to the highest round seen; prune collapses to
+            // the highest height seen.
+            Self::SetFloor { finalization } => {
+                overflow.set_floor(finalization);
+            }
+            Self::Prune { height } => {
+                overflow.prune(height);
+            }
+            // Queue if the new message is still useful
+            message => {
+                if message.stale(overflow.height()) {
+                    return;
+                }
+                overflow
+                    .messages
+                    .push_back(PendingMessage::Message(message));
+            }
+        }
+    }
+}
+
+/// A mailbox for sending messages to the marshal [Actor](crate::actor::Actor).
 #[derive(Clone)]
 pub struct Mailbox<S: Scheme<B::Digest>, B: Block> {
-    sender: mpsc::Sender<Message<S, B>>,
+    sender: Sender<Message<S, B>>,
 }
 
 impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     /// Creates a new mailbox.
-    pub(crate) const fn new(sender: mpsc::Sender<Message<S, B>>) -> Self {
+    pub(crate) const fn new(sender: Sender<Message<S, B>>) -> Self {
         Self { sender }
     }
 
@@ -190,103 +514,59 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
         &mut self,
         identifier: impl Into<Identifier<B::Digest>>,
     ) -> Option<(Height, B::Digest)> {
-        let (tx, rx) = oneshot::channel();
-        if self
-            .sender
-            .send(Message::GetInfo {
-                identifier: identifier.into(),
-                response: tx,
-            })
-            .await
-            .is_err()
-        {
-            error!("failed to send get info message to actor: receiver dropped");
-        }
-        rx.await.unwrap_or_else(|_| {
-            error!("failed to get block info: receiver dropped");
-            None
-        })
+        let (response, receiver) = oneshot::channel();
+        let _ = self.sender.enqueue(Message::GetInfo {
+            identifier: identifier.into(),
+            response,
+        });
+        receiver.await.ok().flatten()
     }
 
     /// A best-effort attempt to retrieve a given block from local
     /// storage. It is not an indication to go fetch the block from the network.
     pub async fn get_block(&mut self, identifier: impl Into<Identifier<B::Digest>>) -> Option<B> {
-        let (tx, rx) = oneshot::channel();
-        if self
-            .sender
-            .send(Message::GetBlock {
-                identifier: identifier.into(),
-                response: tx,
-            })
-            .await
-            .is_err()
-        {
-            error!("failed to send get block message to actor: receiver dropped");
-        }
-        rx.await.unwrap_or_else(|_| {
-            error!("failed to get block: receiver dropped");
-            None
-        })
+        let (response, receiver) = oneshot::channel();
+        let _ = self.sender.enqueue(Message::GetBlock {
+            identifier: identifier.into(),
+            response,
+        });
+        receiver.await.ok().flatten()
     }
 
     /// A best-effort attempt to retrieve a given [Finalization] from local
     /// storage. It is not an indication to go fetch the [Finalization] from the network.
     pub async fn get_finalization(&mut self, height: Height) -> Option<Finalization<S, B::Digest>> {
-        let (tx, rx) = oneshot::channel();
-        if self
+        let (response, receiver) = oneshot::channel();
+        let _ = self
             .sender
-            .send(Message::GetFinalization {
-                height,
-                response: tx,
-            })
-            .await
-            .is_err()
-        {
-            error!("failed to send get finalization message to actor: receiver dropped");
-        }
-        rx.await.unwrap_or_else(|_| {
-            error!("failed to get finalization: receiver dropped");
-            None
-        })
+            .enqueue(Message::GetFinalization { height, response });
+        receiver.await.ok().flatten()
+    }
+
+    /// Retrieve the latest processed height.
+    pub async fn get_processed_height(&self) -> Option<Height> {
+        let (response, receiver) = oneshot::channel();
+        let _ = self
+            .sender
+            .enqueue(Message::GetProcessedHeight { response });
+        receiver.await.ok().flatten()
     }
 
     /// Hints that a finalization should be fetched from the network if not available locally.
     ///
     /// This is fire-and-forget: the finalization will be stored in syncer and delivered
     /// via the normal finalization flow when available.
-    pub async fn hint_finalized(&mut self, height: Height, targets: NonEmptyVec<S::PublicKey>) {
-        if self
-            .sender
-            .send(Message::HintFinalized { height, targets })
-            .await
-            .is_err()
-        {
-            error!("failed to send hint finalized message to actor: receiver dropped");
-        }
-    }
-
-    /// Non-blocking variant of [`hint_finalized`](Self::hint_finalized).
     ///
     /// The hint is advisory catch-up input, so callers running a control loop
     /// that must stay responsive (the orchestrator processes epoch Enter/Exit on
-    /// the same loop) must not park on a full syncer mailbox. When the mailbox is
-    /// full we drop the hint instead of awaiting capacity: the peer re-advertises
-    /// the later epoch and the finalization also arrives through the normal flow,
-    /// so dropping under backpressure only delays catch up, it does not lose
-    /// correctness.
-    pub fn try_hint_finalized(&mut self, height: Height, targets: NonEmptyVec<S::PublicKey>) {
-        match self
+    /// the same loop) must not park on a full syncer mailbox. Enqueueing is
+    /// non-blocking: when the mailbox is full, hints are coalesced per height
+    /// (with unioned target sets) in the overflow state instead of blocking or
+    /// being lost.
+    pub fn hint_finalized(&mut self, height: Height, targets: NonEmptyVec<S::PublicKey>) {
+        let _ = self
             .sender
-            .try_send(Message::HintFinalized { height, targets })
-        {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!("syncer mailbox full, dropping advisory finalized hint");
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                error!("failed to send hint finalized message to actor: receiver dropped");
-            }
-        }
+            .enqueue(Message::HintFinalized { height, targets });
     }
 
     /// A request to retrieve a block by its commitment.
@@ -298,25 +578,38 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     /// it may never become available.
     ///
     /// The oneshot receiver should be dropped to cancel the subscription.
-    pub async fn subscribe(
+    pub fn subscribe(
         &mut self,
         round: Option<Round>,
         commitment: B::Digest,
     ) -> oneshot::Receiver<B> {
-        let (tx, rx) = oneshot::channel();
-        if self
+        let (response, receiver) = oneshot::channel();
+        let _ = self.sender.enqueue(Message::Subscribe {
+            round,
+            commitment,
+            response,
+        });
+        receiver
+    }
+
+    /// Hint that peers may have the block notarized at `round`.
+    ///
+    /// This issues a round-bound resolver request without registering a new
+    /// block subscriber. The `commitment` is only used to skip the request when
+    /// the block is already available locally.
+    pub fn hint_notarized(&self, round: Round, commitment: B::Digest) {
+        let _ = self
             .sender
-            .send(Message::Subscribe {
-                round,
-                commitment,
-                response: tx,
-            })
-            .await
-            .is_err()
-        {
-            error!("failed to send subscribe message to actor: receiver dropped");
-        }
-        rx
+            .enqueue(Message::HintNotarized { round, commitment });
+    }
+
+    /// Returns the verified block previously persisted for `round`, if any.
+    pub async fn get_verified(&self, round: Round) -> Option<B> {
+        let (response, receiver) = oneshot::channel();
+        let _ = self
+            .sender
+            .enqueue(Message::GetVerified { round, response });
+        receiver.await.ok().flatten()
     }
 
     /// Returns an [AncestorStream] over the ancestry of a given block, leading up to genesis.
@@ -328,68 +621,76 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     ) -> Option<AncestorStream<S, B>> {
         self.subscribe(start_round, start_commitment)
             .await
-            .await
             .ok()
             .map(|block| AncestorStream::new(self.clone(), [block]))
     }
 
     /// Proposed requests that a proposed block is sent to all peers.
-    pub async fn proposed(&mut self, round: Round, block: B) {
-        if self
-            .sender
-            .send(Message::Proposed { round, block })
-            .await
-            .is_err()
-        {
-            error!("failed to send proposed message to actor: receiver dropped");
-        }
+    ///
+    /// Returns after the block is durably stored and broadcast.
+    #[must_use = "callers must consider block durability before proceeding"]
+    pub async fn proposed(&mut self, round: Round, block: B) -> bool {
+        let (ack, receiver) = oneshot::channel();
+        let _ = self.sender.enqueue(Message::Proposed {
+            round,
+            block,
+            ack: Some(ack),
+        });
+        receiver.await.is_ok()
     }
 
-    /// Forward a block to a set of peers.
-    pub async fn forward(&self, round: Round, commitment: B::Digest, peers: Vec<S::PublicKey>) {
-        if self
-            .sender
-            .send(Message::Forward {
-                round,
-                commitment,
-                peers,
-            })
-            .await
-            .is_err()
-        {
-            error!("failed to send forward message to actor: receiver dropped");
-        }
+    /// Forward a block to a set of recipients.
+    pub fn forward(
+        &self,
+        round: Round,
+        commitment: B::Digest,
+        recipients: Recipients<S::PublicKey>,
+    ) -> Feedback {
+        self.sender.enqueue(Message::Forward {
+            round,
+            commitment,
+            recipients,
+        })
     }
 
     /// Notifies the actor that a block has been verified.
-    pub async fn verified(&mut self, round: Round, block: B) {
-        if self
-            .sender
-            .send(Message::Verified { round, block })
-            .await
-            .is_err()
-        {
-            error!("failed to send verified message to actor: receiver dropped");
-        }
+    ///
+    /// Returns after the block is durably stored.
+    #[must_use = "callers must consider block durability before proceeding"]
+    pub async fn verified(&mut self, round: Round, block: B) -> bool {
+        let (ack, receiver) = oneshot::channel();
+        let _ = self.sender.enqueue(Message::Verified {
+            round,
+            block,
+            ack: Some(ack),
+        });
+        receiver.await.is_ok()
     }
 
-    /// Sets the sync starting point (conditionally advances if higher).
+    /// Notifies the actor that a block has been certified.
     ///
-    /// Marshal will sync and deliver blocks starting at `floor + 1`. Data below
-    /// the floor is pruned.
+    /// Returns after the block is durably stored.
+    #[must_use = "callers must consider block durability before proceeding"]
+    pub async fn certified(&mut self, round: Round, block: B) -> bool {
+        let (ack, receiver) = oneshot::channel();
+        let _ = self.sender.enqueue(Message::Certified {
+            round,
+            block,
+            ack: Some(ack),
+        });
+        receiver.await.is_ok()
+    }
+
+    /// Attempts to set the sync starting point from a finalized commitment.
     ///
-    /// To prune data without affecting the sync starting point, use [`Self::prune`] instead.
+    /// If the verified finalization advances the current floor, the syncer
+    /// anchors on its block, prunes below it, then syncs and delivers blocks
+    /// starting at the floor height. Stale or superseded floors may be ignored.
     ///
-    /// The default floor is 0.
-    pub async fn set_floor(&mut self, height: Height) {
-        if self
-            .sender
-            .send(Message::SetFloor { height })
-            .await
-            .is_err()
-        {
-            error!("failed to send set sync floor message to actor: receiver dropped");
-        }
+    /// To prune data without changing the sync starting point, use
+    /// [`Self::prune`] instead.
+    pub fn set_floor(&mut self, finalization: Finalization<S, B::Digest>) {
+        let _ = self.sender.enqueue(Message::SetFloor { finalization });
     }
 
     /// Prunes finalized blocks and certificates below the given height.
@@ -397,43 +698,29 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     /// Unlike [`Self::set_floor`], this does not affect the sync starting point.
     /// The height must be at or below the current floor (last processed height),
     /// otherwise the prune request is ignored.
-    pub async fn prune(&mut self, height: Height) {
-        if self.sender.send(Message::Prune { height }).await.is_err() {
-            error!("failed to send prune message to actor: receiver dropped");
-        }
+    pub fn prune(&mut self, height: Height) {
+        let _ = self.sender.enqueue(Message::Prune { height });
     }
 
     /// Notifies the actor of a verified [`Finalization`].
     ///
     /// This is a trusted call that injects a finalization directly into marshal. The
     /// finalization is expected to have already been verified by the caller.
-    pub async fn finalization(&mut self, finalization: Finalization<S, B::Digest>) {
-        if self
-            .sender
-            .send(Message::Finalization { finalization })
-            .await
-            .is_err()
-        {
-            error!("failed to send finalization message to actor: receiver dropped");
-        }
+    pub fn finalization(&mut self, finalization: Finalization<S, B::Digest>) {
+        let _ = self.sender.enqueue(Message::Finalization { finalization });
     }
 }
 
 impl<S: Scheme<B::Digest>, B: Block> Reporter for Mailbox<S, B> {
     type Activity = Activity<S, B::Digest>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         let message = match activity {
             Activity::Notarization(notarization) => Message::Notarization { notarization },
             Activity::Finalization(finalization) => Message::Finalization { finalization },
-            _ => {
-                // Ignore other activity types
-                return;
-            }
+            _ => return Feedback::Ok,
         };
-        if self.sender.send(message).await.is_err() {
-            error!("failed to report activity to actor: receiver dropped");
-        }
+        self.sender.enqueue(message)
     }
 }
 
@@ -444,7 +731,7 @@ fn subscribe_block_future<S: Scheme<B::Digest>, B: Block>(
     commitment: B::Digest,
 ) -> BoxFuture<'static, Option<B>> {
     async move {
-        let receiver = marshal.subscribe(None, commitment).await;
+        let receiver = marshal.subscribe(None, commitment);
         receiver.await.ok()
     }
     .boxed()
@@ -552,34 +839,108 @@ mod tests {
 
     type TestScheme = ed_scheme::Scheme;
     type TestBlock = MockBlock<sha256::Digest>;
+    type TestMessage = Message<TestScheme, TestBlock>;
+    type TestPending = Pending<TestScheme, TestBlock>;
 
-    // The orchestrator drives try_hint_finalized on the
-    // same loop that processes epoch Enter/Exit, so it must never block on a
-    // full syncer mailbox. A full mailbox must drop the advisory hint and return
-    // synchronously rather than awaiting capacity. try_send/try_recv are
-    // non-async, so a hang here would itself be the regression.
+    fn target(seed: u64) -> ed25519::PublicKey {
+        ed25519::PrivateKey::random(&mut StdRng::seed_from_u64(seed)).public_key()
+    }
+
+    // The orchestrator drives hint_finalized on the same loop that processes
+    // epoch Enter/Exit, so it must never block on a full syncer mailbox. The
+    // overflow policy coalesces hints per height (with unioned target sets)
+    // instead of blocking or dropping them silently.
     #[test]
-    fn try_hint_finalized_drops_when_mailbox_full() {
-        // capacity-1 mailbox: a single queued message saturates it.
-        let (tx, mut rx) = mpsc::channel::<Message<TestScheme, TestBlock>>(1);
-        let mut mailbox = Mailbox::<TestScheme, TestBlock>::new(tx);
+    fn hint_finalized_coalesces_in_overflow() {
+        let mut overflow = TestPending::default();
 
-        let target = ed25519::PrivateKey::random(&mut StdRng::seed_from_u64(0)).public_key();
+        let first = target(0);
+        let second = target(1);
 
-        // first hint takes the only slot.
-        mailbox.try_hint_finalized(Height::new(1), NonEmptyVec::new(target.clone()));
-        // second hint hits a full mailbox: must return (not block) and drop.
-        mailbox.try_hint_finalized(Height::new(2), NonEmptyVec::new(target));
-
-        // exactly the first hint is enqueued; the second was dropped.
-        match rx.try_recv() {
-            Ok(Message::HintFinalized { height, .. }) => assert_eq!(height, Height::new(1)),
-            Ok(_) => panic!("expected a HintFinalized message"),
-            Err(_) => panic!("first hint should have been enqueued"),
-        }
-        assert!(
-            rx.try_recv().is_err(),
-            "second hint should have been dropped on the full mailbox"
+        // Two hints for the same height coalesce into one entry with a
+        // unioned target set.
+        TestMessage::handle(
+            &mut overflow,
+            Message::HintFinalized {
+                height: Height::new(1),
+                targets: NonEmptyVec::new(first.clone()),
+            },
         );
+        TestMessage::handle(
+            &mut overflow,
+            Message::HintFinalized {
+                height: Height::new(1),
+                targets: NonEmptyVec::new(second.clone()),
+            },
+        );
+
+        let mut drained = Vec::new();
+        Overflow::drain(&mut overflow, |message| {
+            drained.push(message);
+            None
+        });
+
+        assert_eq!(drained.len(), 1);
+        match drained.pop() {
+            Some(Message::HintFinalized { height, targets }) => {
+                assert_eq!(height, Height::new(1));
+                let targets: Vec<_> = targets.into_iter().collect();
+                assert_eq!(targets, vec![first, second]);
+            }
+            _ => panic!("expected a coalesced HintFinalized message"),
+        }
+        assert!(overflow.is_empty());
+    }
+
+    // Prune requests collapse to the highest height and staleness-check
+    // queued hints so a full mailbox cannot accumulate unbounded state.
+    #[test]
+    fn prune_collapses_and_drops_stale_hints() {
+        let mut overflow = TestPending::default();
+
+        TestMessage::handle(
+            &mut overflow,
+            Message::HintFinalized {
+                height: Height::new(1),
+                targets: NonEmptyVec::new(target(0)),
+            },
+        );
+        TestMessage::handle(
+            &mut overflow,
+            Message::HintFinalized {
+                height: Height::new(5),
+                targets: NonEmptyVec::new(target(1)),
+            },
+        );
+        TestMessage::handle(
+            &mut overflow,
+            Message::Prune {
+                height: Height::new(2),
+            },
+        );
+        TestMessage::handle(
+            &mut overflow,
+            Message::Prune {
+                height: Height::new(3),
+            },
+        );
+
+        let mut drained = Vec::new();
+        Overflow::drain(&mut overflow, |message| {
+            drained.push(message);
+            None
+        });
+
+        // One collapsed prune (highest height) and only the still-useful hint.
+        assert_eq!(drained.len(), 2);
+        assert!(matches!(
+            drained[0],
+            Message::Prune { height } if height == Height::new(3)
+        ));
+        assert!(matches!(
+            drained[1],
+            Message::HintFinalized { height, .. } if height == Height::new(5)
+        ));
+        assert!(overflow.is_empty());
     }
 }

@@ -27,7 +27,7 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
-use summit_types::scheme::{EpochSchemeProvider, MultisigScheme};
+use summit_types::scheme::{EpochGenesisProvider, EpochSchemeProvider, MultisigScheme};
 
 use crate::committee_filter::{ActiveCommittees, CommitteeFilteredReceiver};
 use tracing::info;
@@ -37,7 +37,8 @@ pub struct Config<B, A, St, ES>
 where
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>,
+        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>
+        + EpochGenesisProvider,
     St: Strategy + Default,
     ES: Epocher,
 {
@@ -71,12 +72,13 @@ where
     E: BufferPooler + Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>,
+        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>
+        + EpochGenesisProvider,
     St: Strategy + Default,
     ES: Epocher,
 {
     context: ContextCell<E>,
-    mailbox: mpsc::Receiver<Message>,
+    mailbox: mpsc::UnboundedReceiver<Message>,
     application: A,
 
     oracle: B,
@@ -104,12 +106,13 @@ where
     E: BufferPooler + Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
-        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>,
+        + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>
+        + EpochGenesisProvider,
     St: Strategy + Default,
     ES: Epocher,
 {
     pub fn new(context: E, config: Config<B, A, St, ES>) -> (Self, Mailbox) {
-        let (sender, mailbox) = mpsc::channel(config.mailbox_size);
+        let (sender, mailbox) = mpsc::unbounded();
         let page_cache = CacheRef::from_pooler(&context, NZU16!(16_384), NZUsize!(10_000));
 
         (
@@ -151,7 +154,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<()> {
-        spawn_cell!(self.context, self.run(pending, recovered, resolver).await)
+        spawn_cell!(self.context, self.run(pending, recovered, resolver))
     }
 
     async fn run(
@@ -187,7 +190,7 @@ where
 
         // Start muxers for each physical channel used by consensus
         let (mux, mut pending_mux, mut pending_backup) = Muxer::builder(
-            self.context.with_label("pending_mux"),
+            self.context.child("pending_mux"),
             pending_sender,
             pending_receiver,
             self.muxer_size,
@@ -196,14 +199,14 @@ where
         .build();
         mux.start();
         let (mux, mut recovered_mux) = Muxer::new(
-            self.context.with_label("recovered_mux"),
+            self.context.child("recovered_mux"),
             recovered_sender,
             recovered_receiver,
             self.muxer_size,
         );
         mux.start();
         let (mux, mut resolver_mux) = Muxer::new(
-            self.context.with_label("resolver_mux"),
+            self.context.child("resolver_mux"),
             resolver_sender,
             resolver_receiver,
             self.muxer_size,
@@ -240,11 +243,10 @@ where
                 let boundary_height = self.epocher.last(our_epoch).expect("epoch should exist");
                 // Non-blocking: this advisory catch-up hint must not park the
                 // orchestrator loop on a full syncer mailbox, or epoch Enter/Exit
-                // (processed by the arm below) would wait behind it. Dropping the
-                // hint under syncer backpressure is fine: the ahead peer keeps
-                // re-advertising the later epoch and the finalization also arrives
-                // through the normal flow.
-                self.syncer_mailbox.try_hint_finalized(boundary_height, NonEmptyVec::new(from));
+                // (processed by the arm below) would wait behind it. Enqueueing is
+                // synchronous: when the syncer mailbox is full, hints are coalesced
+                // per height in the mailbox overflow state instead of blocking.
+                self.syncer_mailbox.hint_finalized(boundary_height, NonEmptyVec::new(from));
             },
             transition = self.mailbox.next() => {
                 let Some(transition) = transition else {
@@ -338,11 +340,16 @@ where
             impl Receiver<PublicKey = PublicKey>,
         >,
     ) -> Handle<()> {
+        // Fetch the epoch's genesis payload: consensus no longer queries the
+        // automaton for it and instead takes the certified root via `floor`.
+        let genesis = self.application.genesis(epoch).await;
+
         // Start the new engine
         let elector = simplex::elector::RoundRobin::<Sha256>::default();
         let engine = simplex::Engine::new(
             self.context
-                .with_label(&format!("consensus_engine_{}", epoch)),
+                .child("consensus_engine")
+                .with_attribute("epoch", epoch),
             simplex::Config {
                 scheme,
                 elector,
@@ -352,8 +359,9 @@ where
                 reporter: self.syncer_mailbox.clone(),
                 strategy: St::default(),
                 partition: format!("{}_consensus_{}", self.partition_prefix, epoch),
-                mailbox_size: 1024,
+                mailbox_size: NZUsize!(1024),
                 epoch,
+                floor: simplex::Floor::Genesis(genesis),
                 replay_buffer: NZUsize!(1024 * 1024),
                 write_buffer: NZUsize!(1024 * 1024),
                 leader_timeout: self.leader_timeout,
@@ -362,7 +370,7 @@ where
                 fetch_timeout: self.fetch_timeout,
                 activity_timeout: self.activity_timeout,
                 skip_timeout: self.skip_timeout,
-                fetch_concurrent: 2,
+                fetch_concurrent: NZUsize!(2),
                 page_cache: self.page_cache.clone(),
                 forwarding: simplex::ForwardingPolicy::SilentVoters,
             },

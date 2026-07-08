@@ -1,3 +1,4 @@
+use commonware_actor::Feedback;
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::{Block as ConsensusBlock, Reporter};
 use futures::{
@@ -14,7 +15,7 @@ use summit_types::{
 };
 
 #[allow(clippy::large_enum_variant)]
-pub enum FinalizerMessage<S: Scheme<B::Digest>, B: ConsensusBlock = Block> {
+pub enum FinalizerMessage<S: Scheme<Digest>> {
     NotifyAtHeight {
         height: u64,
         block_digest: Digest,
@@ -33,19 +34,20 @@ pub enum FinalizerMessage<S: Scheme<B::Digest>, B: ConsensusBlock = Block> {
         request: ConsensusStateRequest,
         response: oneshot::Sender<ConsensusStateResponse<S>>,
     },
-    SyncerUpdate {
-        update: Update<B, S>,
-    },
 }
 
 #[derive(Clone)]
-pub struct FinalizerMailbox<S: Scheme<B::Digest>, B: ConsensusBlock = Block> {
-    sender: mpsc::Sender<FinalizerMessage<S, B>>,
+pub struct FinalizerMailbox<S: Scheme<Digest>, B: ConsensusBlock<Digest = Digest> = Block> {
+    sender: mpsc::Sender<FinalizerMessage<S>>,
+    updates: mpsc::UnboundedSender<Update<B, S>>,
 }
 
-impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
-    pub fn new(sender: mpsc::Sender<FinalizerMessage<S, B>>) -> Self {
-        Self { sender }
+impl<S: Scheme<Digest>, B: ConsensusBlock<Digest = Digest>> FinalizerMailbox<S, B> {
+    pub fn new(
+        sender: mpsc::Sender<FinalizerMessage<S>>,
+        updates: mpsc::UnboundedSender<Update<B, S>>,
+    ) -> Self {
+        Self { sender, updates }
     }
 
     pub async fn notify_at_height(
@@ -500,13 +502,17 @@ impl<S: Scheme<B::Digest>, B: ConsensusBlock> FinalizerMailbox<S, B> {
     }
 }
 
-impl<S: Scheme<B::Digest>, B: ConsensusBlock> Reporter for FinalizerMailbox<S, B> {
+impl<S: Scheme<Digest>, B: ConsensusBlock<Digest = Digest>> Reporter for FinalizerMailbox<S, B> {
     type Activity = Update<B, S>;
 
-    async fn report(&mut self, activity: Self::Activity) {
-        self.sender
-            .send(FinalizerMessage::SyncerUpdate { update: activity })
-            .await
-            .expect("Unable to send syncer update to Finalizer");
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        // Syncer updates ride a dedicated unbounded channel: delivery must be
+        // reliable (a dropped `Update::FinalizedBlock` would stall the syncer's
+        // dispatch pipeline forever) and the syncer already bounds in-flight
+        // updates via `max_pending_acks`.
+        if self.updates.unbounded_send(activity).is_err() {
+            return Feedback::Closed;
+        }
+        Feedback::Ok
     }
 }

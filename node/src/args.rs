@@ -11,7 +11,8 @@ use clap::{Args, Parser, Subcommand};
 use commonware_codec::Read;
 use commonware_cryptography::{Signer, certificate::Scheme};
 use commonware_p2p::{Ingress, authenticated};
-use commonware_runtime::{Handle, Metrics as _, Runner, Spawner, tokio};
+use commonware_runtime::Supervisor as _;
+use commonware_runtime::{Handle, Runner, Spawner, tokio};
 use summit_rpc::{
     DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_MAX_BATCH_SIZE, DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
     PathSender, RpcBodyLimits, start_rpc_server, start_rpc_server_for_genesis,
@@ -20,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
 use futures::{FutureExt, channel::oneshot};
 use governor::Quota;
 use ssz::Decode;
@@ -342,7 +343,7 @@ async fn acquire_genesis(context: &tokio::Context, flags: &RunFlags) -> Genesis 
     };
     let rpc_genesis_path = genesis_path.clone();
     let _rpc_handle = context
-        .with_label("rpc_genesis")
+        .child("rpc_genesis")
         .spawn(move |_context| async move {
             let genesis_sender = PathSender::new(rpc_genesis_path, Some(genesis_tx));
             if let Err(e) = start_rpc_server_for_genesis(
@@ -489,7 +490,7 @@ async fn run_node_inner(
     key_store: KeyStore<PrivateKey>,
     mut loaded: LoadedCheckpoint<MultisigScheme>,
 ) {
-    let context = context.with_label("summit_cw");
+    let context = context.child("summit_cw");
 
     // Initialize telemetry first, before genesis acquisition. First-boot
     // provisioning can block in acquire_genesis waiting for the genesis RPC, so the
@@ -657,7 +658,7 @@ async fn run_node_inner(
         let listen_addr = format!("{}:{}", flags.prom_ip, flags.prom_port)
             .parse::<SocketAddr>()
             .unwrap();
-        let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
+        let config = MetricServerConfig::new(listen_addr, hooks, Some(context.child("prom")));
         let stop_signal = context.stopped();
         MetricServer::new(config).serve(stop_signal).await.unwrap();
     }
@@ -700,7 +701,7 @@ async fn run_node_inner(
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
         start_network_and_engine(
-            context.clone(),
+            context.child("node"),
             p2p_cfg,
             engine_client,
             key_store,
@@ -725,7 +726,7 @@ async fn run_node_inner(
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
         start_network_and_engine(
-            context.clone(),
+            context.child("node"),
             p2p_cfg,
             engine_client,
             key_store,
@@ -776,7 +777,7 @@ async fn run_node_local_inner(
     checkpoint: Option<ConsensusState>,
     checkpoint_parent_block: Option<Block>,
 ) -> anyhow::Result<()> {
-    let context = context.with_label("summit_cw");
+    let context = context.child("summit_cw");
 
     let genesis = acquire_genesis(&context, &flags).await;
 
@@ -864,7 +865,7 @@ async fn run_node_local_inner(
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
         start_network_and_engine(
-            context.clone(),
+            context.child("node"),
             p2p_cfg,
             engine_client,
             key_store,
@@ -889,7 +890,7 @@ async fn run_node_local_inner(
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
         start_network_and_engine(
-            context.clone(),
+            context.child("node"),
             p2p_cfg,
             engine_client,
             key_store,
@@ -917,7 +918,7 @@ async fn run_node_local_inner(
             .parse::<SocketAddr>()
             .unwrap();
         let stop_signal = context.stopped();
-        let config = MetricServerConfig::new(listen_addr, hooks, Some(context.clone()));
+        let config = MetricServerConfig::new(listen_addr, hooks, Some(context.child("prom")));
         MetricServer::new(config).serve(stop_signal).await.unwrap();
     }
 
@@ -1012,7 +1013,7 @@ where
     EC: EngineClient,
 {
     let (mut network, oracle) =
-        authenticated::discovery::Network::new(context.with_label("network"), p2p_cfg);
+        authenticated::discovery::Network::new(context.child("network"), p2p_cfg);
 
     let oracle = DiscoveryOracle::new(oracle);
 
@@ -1059,7 +1060,7 @@ where
 
     let genesis_hash = config.genesis_hash;
     let namespace = config.namespace.as_bytes().to_vec();
-    let engine: Engine<_, _, _, _> = Engine::new(context.with_label("engine"), config).await;
+    let engine: Engine<_, _, _, _> = Engine::new(context.child("engine"), config).await;
     #[cfg(feature = "permissioned")]
     let paused = engine.paused.clone();
 
@@ -1083,7 +1084,7 @@ where
         max_batch_size: flags.rpc_max_batch_size,
     };
     let stop_signal = context.stopped();
-    let rpc_handle = context.with_label("rpc").spawn(move |_context| async move {
+    let rpc_handle = context.child("rpc").spawn(move |_context| async move {
         if let Err(e) = start_rpc_server(
             finalizer_state_query,
             key_store_path,
@@ -1113,7 +1114,7 @@ fn get_initial_state(
 ) -> ConsensusState {
     let epoch_length =
         NonZeroU64::new(genesis.blocks_per_epoch).expect("blocks_per_epoch must be nonzero");
-    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+    let genesis_hash: [u8; 32] = from_hex(&genesis.eth_genesis_hash)
         .map(|hash_bytes| hash_bytes.try_into())
         .expect("bad eth_genesis_hash")
         .expect("bad eth_genesis_hash");
@@ -1192,8 +1193,8 @@ fn weak_subjectivity_from_flags(
 }
 
 fn parse_digest_arg(value: &str, arg_name: &str) -> summit_types::Digest {
-    let bytes = from_hex_formatted(value)
-        .unwrap_or_else(|| panic!("{arg_name} must be a 32-byte hex digest"));
+    let bytes =
+        from_hex(value).unwrap_or_else(|| panic!("{arg_name} must be a 32-byte hex digest"));
     let bytes: [u8; 32] = bytes
         .try_into()
         .unwrap_or_else(|_| panic!("{arg_name} must be a 32-byte hex digest"));
@@ -1405,14 +1406,14 @@ mod supervision_tests {
         let executor = deterministic::Runner::from(deterministic::Config::default());
         executor.start(|context| async move {
             let p2p = context
-                .with_label("p2p")
+                .child("p2p")
                 .spawn(|_| async move { futures::future::pending::<()>().await });
             let rpc = context
-                .with_label("rpc")
+                .child("rpc")
                 .spawn(|_| async move { futures::future::pending::<()>().await });
             // Engine returns Ok immediately, simulating a clean stop (e.g. committee exit).
             let engine = context
-                .with_label("engine")
+                .child("engine")
                 .spawn(|_| async move { Ok::<(), anyhow::Error>(()) });
 
             let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
@@ -1428,13 +1429,13 @@ mod supervision_tests {
         let executor = deterministic::Runner::from(deterministic::Config::default());
         executor.start(|context| async move {
             let p2p = context
-                .with_label("p2p")
+                .child("p2p")
                 .spawn(|_| async move { futures::future::pending::<()>().await });
             let rpc = context
-                .with_label("rpc")
+                .child("rpc")
                 .spawn(|_| async move { futures::future::pending::<()>().await });
             // Engine surfaces a tracked-actor failure as Err — the node must exit non-zero.
-            let engine = context.with_label("engine").spawn(|_| async move {
+            let engine = context.child("engine").spawn(|_| async move {
                 Err::<(), anyhow::Error>(anyhow::anyhow!("tracked actor failed"))
             });
 
@@ -1455,19 +1456,17 @@ mod supervision_tests {
         let executor = deterministic::Runner::from(deterministic::Config::default());
         executor.start(|context| async move {
             let p2p = context
-                .with_label("p2p")
+                .child("p2p")
                 .spawn(|_| async move { futures::future::pending::<()>().await });
             let rpc = context
-                .with_label("rpc")
+                .child("rpc")
                 .spawn(|_| async move { futures::future::pending::<()>().await });
             let engine = context
-                .with_label("engine")
+                .child("engine")
                 .spawn(|_| async move { futures::future::pending::<anyhow::Result<()>>().await });
             // Request a runtime stop from a background task so `context.stopped()` resolves.
-            let stopper = context.clone();
-            context
-                .with_label("stopper")
-                .spawn(move |_| async move { stopper.stop(0, None).await });
+            let stopper = context.child("stopper");
+            stopper.spawn(move |stopper| async move { stopper.stop(0, None).await });
 
             let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
             assert!(

@@ -17,8 +17,8 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::{Address, U256, keccak256};
 use clap::Parser;
 use commonware_cryptography::{Signer, bls12381, ed25519::PrivateKey};
-use commonware_runtime::{Clock, Runner as _, Spawner as _, tokio as cw_tokio};
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
+use commonware_runtime::{Clock, Runner as _, Spawner as _, Supervisor as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::http_client::HttpClientBuilder;
 use ssz::Decode;
@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
     genesis.blocks_per_epoch = E2E_BLOCKS_PER_EPOCH;
-    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+    let genesis_hash: [u8; 32] = from_hex(&genesis.eth_genesis_hash)
         .expect("bad eth_genesis_hash")
         .try_into()
         .expect("bad eth_genesis_hash");
@@ -153,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let stdout = reth.stdout().expect("Failed to get stdout");
 
                 let log_dir = args.log_dir.clone();
-                context.clone().spawn(async move |_| {
+                context.child("reth").spawn(async move |_| {
                     let reader = BufReader::new(stdout);
                     let mut log_file = log_dir.as_ref().map(|dir| {
                         fs::File::create(format!("{}/node{}.log", dir, x))
@@ -202,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        let node_handle = node_context.child("node").spawn(move |ctx| async move {
                             // a coordinated shutdown (graceful stop or committee exit) returns
                             // ok; a genuine core task failure returns err and must fail the
                             // scenario instead of being masked as a clean node exit.
@@ -456,7 +456,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             //    executor.start(|node_context| async move {
             //        let flags = get_node_flags(source_node);
-            //        let node_handle = node_context.clone().spawn(move |ctx| async move {
+            //        let node_handle = node_context.child("node").spawn(move |ctx| async move {
             //            run_node_with_runtime(ctx, flags, None).await.unwrap();
             //        });
 
@@ -517,7 +517,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let stdout = reth.stdout().expect("Failed to get stdout");
 
             let log_dir = args.log_dir.clone();
-            context.clone().spawn(async move |_| {
+            context.child("reth").spawn(async move |_| {
                 let reader = BufReader::new(stdout);
                 let mut log_file = log_dir.as_ref().map(|dir| {
                     fs::File::create(format!("{}/node{}.log", dir, x))
@@ -553,11 +553,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let consensus_key_path = format!("{}/node{}/data/consensus_key.pem", args.data_dir, x);
 
             // Write node key (hex encoded)
-            let encoded_node_key = commonware_utils::hex(&ed25519_private_key.encode());
+            let encoded_node_key = commonware_formatting::hex(&ed25519_private_key.encode());
             fs::write(&node_key_path, encoded_node_key).expect("Unable to write node key to disk");
 
             // Write consensus key (hex encoded)
-            let encoded_consensus_key = commonware_utils::hex(&bls_private_key.encode());
+            let encoded_consensus_key = commonware_formatting::hex(&bls_private_key.encode());
             fs::write(&consensus_key_path, encoded_consensus_key).expect("Unable to write consensus key to disk");
 
             flags.key_store_path = format!("{}/node{}/data", args.data_dir, x);
@@ -581,7 +581,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                    let node_handle = node_context.child("node").spawn(move |ctx| async move {
                         // the checkpoint restarted node is a required participant: a genuine
                         // core task failure (err) must fail the scenario, not be masked.
                         if let Err(e) =

@@ -16,7 +16,9 @@ pub struct MetricServerConfig {
     listen_addr: SocketAddr,
     hooks: Hooks,
     /// Optional commonware runtime context for merging runtime metrics into the response.
-    cw_context: Option<Context>,
+    /// Arc-wrapped so every connection handler can encode the registry: the 2026.5.0
+    /// runtime context is not Clone.
+    cw_context: Option<Arc<Context>>,
 }
 
 impl MetricServerConfig {
@@ -25,7 +27,7 @@ impl MetricServerConfig {
         Self {
             listen_addr,
             hooks,
-            cw_context,
+            cw_context: cw_context.map(Arc::new),
         }
     }
 }
@@ -77,7 +79,7 @@ impl MetricServer {
         &self,
         listen_addr: SocketAddr,
         hook: Arc<F>,
-        cw_context: Option<Context>,
+        cw_context: Option<Arc<Context>>,
         stop_signal: Signal,
     ) -> eyre::Result<()> {
         let listener = tokio::net::TcpListener::bind(listen_addr)

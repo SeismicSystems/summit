@@ -7,13 +7,15 @@ use alloy_primitives::Address;
 use commonware_codec::Encode as _;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381;
+use commonware_formatting::from_hex;
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-use commonware_utils::{NZUsize, from_hex_formatted};
+use commonware_utils::NZUsize;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
@@ -69,7 +71,7 @@ fn test_checkpoint_verification_fixed_committee() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -101,8 +103,8 @@ fn test_checkpoint_verification_fixed_committee() {
             .iter()
             .enumerate()
             .map(|(i, (node_pk, consensus_pk))| {
-                let node_pub_hex = commonware_utils::hex(node_pk.as_ref());
-                let consensus_pub_hex = commonware_utils::hex(&consensus_pk.encode());
+                let node_pub_hex = commonware_formatting::hex(node_pk.as_ref());
+                let consensus_pub_hex = commonware_formatting::hex(&consensus_pk.encode());
                 GenesisValidator {
                     node_public_key: format!("0x{node_pub_hex}"),
                     consensus_public_key: format!("0x{consensus_pub_hex}"),
@@ -138,7 +140,7 @@ fn test_checkpoint_verification_fixed_committee() {
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
         let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+            from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -172,7 +174,7 @@ fn test_checkpoint_verification_fixed_committee() {
             // `genesis`. Align the engine's chain-bound consensus domain with the
             // verifier by deriving it from the same genesis config digest.
             config.config_digest = genesis.config_digest();
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(context.child("engine").with_attribute("uid", uid.clone()), config).await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -186,17 +188,14 @@ fn test_checkpoint_verification_fixed_committee() {
             let metrics = context.encode();
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
-                if metric.ends_with("finalizer_height") {
-                    let height = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
                 if height_reached.len() as u32 >= n {
@@ -445,7 +444,7 @@ fn test_checkpoint_verification_dynamic_committee() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -477,8 +476,8 @@ fn test_checkpoint_verification_dynamic_committee() {
             .iter()
             .enumerate()
             .map(|(i, (node_pk, consensus_pk))| {
-                let node_pub_hex = commonware_utils::hex(node_pk.as_ref());
-                let consensus_pub_hex = commonware_utils::hex(&consensus_pk.encode());
+                let node_pub_hex = commonware_formatting::hex(node_pk.as_ref());
+                let consensus_pub_hex = commonware_formatting::hex(&consensus_pk.encode());
                 GenesisValidator {
                     node_public_key: format!("0x{node_pub_hex}"),
                     consensus_public_key: format!("0x{consensus_pub_hex}"),
@@ -513,8 +512,7 @@ fn test_checkpoint_verification_dynamic_committee() {
         let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -576,7 +574,11 @@ fn test_checkpoint_verification_dynamic_committee() {
             // `genesis`. Align the engine's chain-bound consensus domain with the
             // verifier by deriving it from the same genesis config digest.
             config.config_digest = genesis.config_digest();
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -591,21 +593,18 @@ fn test_checkpoint_verification_dynamic_committee() {
             let metrics = context.encode();
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
-                if metric.ends_with("finalizer_height") {
+                if sample.name.ends_with("finalizer_height") {
                     // Skip the withdrawing validator — it will exit consensus
-                    if metric.starts_with(&withdrawing_uid) {
+                    if sample.uid.starts_with(&withdrawing_uid) {
                         continue;
                     }
-                    let height = value.parse::<u64>().unwrap();
+                    let height = sample.value.parse::<u64>().unwrap();
                     if height >= stop_height {
-                        height_reached.insert(metric.to_string());
+                        height_reached.insert(sample.uid.clone());
                     }
                 }
                 if height_reached.len() as u32 >= n - 1 {

@@ -17,7 +17,8 @@ use std::{
 
 use alloy_node_bindings::Reth;
 use clap::Parser;
-use commonware_runtime::{Metrics as _, Runner as _, Spawner as _, tokio};
+use commonware_runtime::Supervisor as _;
+use commonware_runtime::{Runner as _, Spawner as _, tokio};
 use futures::future::try_join_all;
 use summit::args::{RunFlags, run_node_local};
 
@@ -101,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let stdout = reth.stdout().expect("Failed to get stdout");
 
                 let log_dir = args.log_dir.clone();
-                context.clone().spawn(async move |_| {
+                context.child("reth").spawn(async move |_| {
                     let reader = BufReader::new(stdout);
                     let mut log_file = log_dir.as_ref().map(|dir| {
                         fs::File::create(format!("{}/node{}.log", dir, x))
@@ -156,8 +157,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Start our consensus engine
-                let handle =
-                    run_node_local(context.with_label(&format!("node{x}")), flags, None, None);
+                let handle = run_node_local(
+                    context.child("node").with_attribute("index", x),
+                    flags,
+                    None,
+                    None,
+                );
                 consensus_handles.push(handle);
             }
 

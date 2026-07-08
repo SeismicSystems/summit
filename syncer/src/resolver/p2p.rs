@@ -1,14 +1,14 @@
 //! P2P resolver initialization and config.
 
-use crate::ingress::handler::{self, Handler};
+use crate::ingress::handler::{self, Annotation, Key, Receiver as HandlerReceiver};
+use commonware_actor::mailbox;
 use commonware_cryptography::{Digest, PublicKey};
-use commonware_p2p::{Blocker, Provider, Receiver, Sender};
+use commonware_p2p::{Blocker, Provider, Receiver as P2pReceiver, Sender};
 use commonware_resolver::p2p;
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner};
-use commonware_utils::channel::mpsc;
 use governor::clock::Clock as GClock;
 use rand::Rng;
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 /// Configuration for the P2P [Resolver](commonware_resolver::Resolver).
 pub struct Config<P: PublicKey, C: Provider<PublicKey = P>, B: Blocker<PublicKey = P>> {
@@ -22,7 +22,7 @@ pub struct Config<P: PublicKey, C: Provider<PublicKey = P>, B: Blocker<PublicKey
     pub blocker: B,
 
     /// The size of the request mailbox backlog.
-    pub mailbox_size: usize,
+    pub mailbox_size: NonZeroUsize,
 
     /// Initial expected performance for new participants.
     pub initial: Duration,
@@ -40,28 +40,28 @@ pub struct Config<P: PublicKey, C: Provider<PublicKey = P>, B: Blocker<PublicKey
     pub priority_responses: bool,
 }
 
+/// Mailbox for issuing syncer backfill requests.
+pub type Mailbox<D, P> = p2p::Mailbox<Key<D>, P, Annotation>;
+
 /// Initialize a P2P resolver.
 pub fn init<E, C, Bl, D, S, R, P>(
-    ctx: &E,
+    context: E,
     config: Config<P, C, Bl>,
     backfill: (S, R),
-) -> (
-    mpsc::Receiver<handler::Message<D>>,
-    p2p::Mailbox<handler::Request<D>, P>,
-)
+) -> (HandlerReceiver<D>, Mailbox<D, P>)
 where
     E: BufferPooler + Rng + Spawner + Clock + GClock + Metrics,
     C: Provider<PublicKey = P>,
     Bl: Blocker<PublicKey = P>,
     D: Digest,
     S: Sender<PublicKey = P>,
-    R: Receiver<PublicKey = P>,
+    R: P2pReceiver<PublicKey = P>,
     P: PublicKey,
 {
-    let (handler, receiver) = mpsc::channel(config.mailbox_size);
-    let handler = Handler::new(handler);
+    let (sender, receiver) = mailbox::new(context.child("handler"), config.mailbox_size);
+    let handler = handler::Handler::new(sender);
     let (resolver_engine, resolver) = p2p::Engine::new(
-        ctx.with_label("resolver"),
+        context.child("resolver"),
         p2p::Config {
             peer_provider: config.provider,
             blocker: config.blocker,
@@ -77,5 +77,5 @@ where
         },
     );
     resolver_engine.start(backfill);
-    (receiver, resolver)
+    (HandlerReceiver::new(receiver), resolver)
 }

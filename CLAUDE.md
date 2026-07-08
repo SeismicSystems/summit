@@ -4,10 +4,11 @@ High-performance consensus client for EVM-based blockchains, built by [Seismic S
 
 ## Commonware
 
-[Commonware](https://commonware.xyz) is Summit's core infrastructure layer. Summit depends on 12 Commonware crates (version pinned in root `Cargo.toml`). Nearly every component in Summit is built on top of Commonware primitives.
+[Commonware](https://commonware.xyz) is Summit's core infrastructure layer. Summit depends on 14 Commonware crates (version pinned in root `Cargo.toml`). Nearly every component in Summit is built on top of Commonware primitives.
 
 | Crate | What it provides |
 | --- | --- |
+| `commonware-actor` | Actor mailboxes with backpressure policies (`Policy`/`Overflow`), `Feedback` for sync sends |
 | `commonware-consensus` | Simplex BFT protocol — leader election, notarization (2/3+1), finalization |
 | `commonware-cryptography` | BLS12-381 multisig, Ed25519 identity, SHA256 hashing |
 | `commonware-runtime` | Async runtime abstractions — Clock, Spawner, Metrics, Signal/Stopper |
@@ -15,6 +16,7 @@ High-performance consensus client for EVM-based blockchains, built by [Seismic S
 | `commonware-p2p` | Authenticated P2P connections, peer management, simulated network for tests |
 | `commonware-broadcast` | Buffered reliable broadcast between validators |
 | `commonware-codec` | Streaming encode/decode for blocks, checkpoints, and messages |
+| `commonware-formatting` | Hex encoding/decoding (`hex`, `from_hex`) |
 | `commonware-resolver` | Request-response backfill for missing blocks from peers |
 | `commonware-utils` | Channels (mpsc, oneshot), ordered sets, byte utilities, non-zero types |
 | `commonware-macros` | `select!`/`select_loop!` async macros, `test_traced!` for instrumented tests |

@@ -38,8 +38,8 @@ use alloy_primitives::{Address, U256};
 use clap::Parser;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{Signer, bls12381, ed25519::PrivateKey};
-use commonware_runtime::{Clock, Runner as _, Spawner as _, tokio as cw_tokio};
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
+use commonware_runtime::{Clock, Runner as _, Spawner as _, Supervisor as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::core::ClientError;
 use jsonrpsee::http_client::HttpClientBuilder;
@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut genesis = Genesis::load_from_file(GENESIS_PATH).expect("Failed to load genesis file");
     genesis.blocks_per_epoch = E2E_BLOCKS_PER_EPOCH;
-    let genesis_hash: [u8; 32] = from_hex_formatted(&genesis.eth_genesis_hash)
+    let genesis_hash: [u8; 32] = from_hex(&genesis.eth_genesis_hash)
         .expect("bad eth_genesis_hash")
         .try_into()
         .expect("bad eth_genesis_hash");
@@ -165,7 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let stdout = reth.stdout().expect("Failed to get stdout");
 
                 let log_dir = args.log_dir.clone();
-                context.clone().spawn(async move |_| {
+                context.child("reth").spawn(async move |_| {
                     let reader = BufReader::new(stdout);
                     let mut log_file = log_dir.as_ref().map(|dir| {
                         fs::File::create(format!("{}/node{}.log", dir, x))
@@ -214,7 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        let node_handle = node_context.child("node").spawn(move |ctx| async move {
                             // a coordinated shutdown (graceful stop or committee exit) returns
                             // ok; a genuine core task failure returns err and must fail the
                             // scenario instead of being masked as a clean node exit.
@@ -273,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .connect_http(node0_url.parse().expect("Invalid URL"));
 
             let withdrawal_contract_address = Address::from_str("0x00000961Ef480Eb55e80D19ad83579A64c007002").unwrap();
-            let pub_key_bytes = from_hex_formatted("f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226").ok_or("PublicKey bad format").unwrap();
+            let pub_key_bytes = from_hex("f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226").ok_or("PublicKey bad format").unwrap();
             let pub_key_bytes_ar: [u8; 32] = pub_key_bytes.try_into().unwrap();
             let _public_key = PublicKey::decode(&pub_key_bytes_ar[..]).map_err(|_| "Unable to decode Public Key").unwrap();
             // Amount 0 is a full exit (EIP-7002): the validator leaves the
@@ -474,7 +474,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let stdout = reth.stdout().expect("Failed to get stdout");
             let log_dir = args.log_dir.clone();
-            context.clone().spawn(async move |_| {
+            context.child("reth").spawn(async move |_| {
                 let reader = BufReader::new(stdout);
                 let mut log_file = log_dir.as_ref().map(|dir| {
                     fs::File::create(format!("{}/node{}.log", dir, x))
@@ -501,10 +501,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let node_key_path = format!("{}/node{}/data/node_key.pem", args.data_dir, x);
             let consensus_key_path = format!("{}/node{}/data/consensus_key.pem", args.data_dir, x);
 
-            let encoded_node_key = commonware_utils::hex(&ed25519_private_key.encode());
+            let encoded_node_key = commonware_formatting::hex(&ed25519_private_key.encode());
             fs::write(&node_key_path, encoded_node_key).expect("Unable to write node key to disk");
 
-            let encoded_consensus_key = commonware_utils::hex(&bls_private_key.encode());
+            let encoded_consensus_key = commonware_formatting::hex(&bls_private_key.encode());
             fs::write(&consensus_key_path, encoded_consensus_key).expect("Unable to write consensus key to disk");
 
             // Start the joining node - syncing from genesis (no checkpoint)
@@ -525,7 +525,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Failed to load genesis");
             let validators = genesis.get_validators().expect("Failed to get validators");
             let bootstrap_validator = &validators[0];
-            let bootstrap_pk_hex = commonware_utils::hex(bootstrap_validator.node_public_key.as_ref());
+            let bootstrap_pk_hex = commonware_formatting::hex(bootstrap_validator.node_public_key.as_ref());
             let bootstrap_addr = bootstrap_validator.ip_address;
 
             let bootstrappers_path = format!("{}/bootstrappers.toml", args.data_dir);
@@ -559,7 +559,7 @@ address = "{}"
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                    let node_handle = node_context.child("node").spawn(move |ctx| async move {
                         // no checkpoint, sync from genesis. a coordinated shutdown (graceful
                         // stop or committee exit) returns ok; a genuine core task failure
                         // returns err and must fail the scenario instead of being masked.
@@ -612,7 +612,7 @@ address = "{}"
             }
 
             // Verify the new validator is in the consensus state
-            let new_validator_pubkey = commonware_utils::hex(&ed25519_pubkey_bytes);
+            let new_validator_pubkey = commonware_formatting::hex(&ed25519_pubkey_bytes);
             let new_validator_balance = get_validator_balance(new_node_rpc_port, new_validator_pubkey.clone()).await;
             match new_validator_balance {
                 Ok(balance) => {

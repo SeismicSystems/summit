@@ -1,8 +1,9 @@
 use crate::PublicKey;
 use crate::utils::get_expanded_path;
 use commonware_codec::DecodeExt as _;
+use commonware_formatting::from_hex;
 use commonware_p2p::Ingress;
-use commonware_utils::{Hostname, from_hex_formatted};
+use commonware_utils::Hostname;
 use serde::Deserialize;
 use std::net::SocketAddr;
 
@@ -59,8 +60,8 @@ impl Bootstrappers {
     pub fn to_ingress_list(&self) -> Result<Vec<(PublicKey, Ingress)>, Box<dyn std::error::Error>> {
         let mut result = Vec::with_capacity(self.bootstrappers.len());
         for entry in &self.bootstrappers {
-            let pk_bytes: Vec<u8> = from_hex_formatted(&entry.node_public_key)
-                .ok_or("Invalid hex-encoded public key")?;
+            let pk_bytes: Vec<u8> =
+                from_hex(&entry.node_public_key).ok_or("Invalid hex-encoded public key")?;
             let pk =
                 PublicKey::decode(&pk_bytes[..]).map_err(|e| format!("Invalid public key: {e}"))?;
             let ingress = parse_ingress(&entry.address)?;
@@ -74,8 +75,8 @@ impl Bootstrappers {
 mod tests {
     use super::*;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use commonware_formatting::hex;
     use commonware_math::algebra::Random;
-    use commonware_utils::hex;
     use rand::rngs::OsRng;
 
     fn generate_test_pk_hex() -> String {

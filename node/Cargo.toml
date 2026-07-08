@@ -55,6 +55,8 @@ summit-syncer.workspace = true
 summit-finalizer.workspace = true
 summit-orchestrator.workspace = true
 
+commonware-actor.workspace = true
+commonware-formatting.workspace = true
 commonware-broadcast.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true

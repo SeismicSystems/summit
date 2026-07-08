@@ -14,7 +14,7 @@ use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_cryptography::Signer;
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
 use jsonrpsee::core::RpcResult;
 use ssz::Encode as _;
 use std::sync::Arc;
@@ -244,7 +244,7 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_validator_balance(&self, public_key: String) -> RpcResult<u64> {
-        let key_bytes = from_hex_formatted(&public_key)
+        let key_bytes = from_hex(&public_key)
             .ok_or_else(|| RpcError::InvalidPublicKey("Invalid hex format".to_string()))?;
 
         let public_key = PublicKey::decode(&*key_bytes)
@@ -262,7 +262,7 @@ impl SummitApiServer for SummitRpcServer {
         &self,
         public_key: String,
     ) -> RpcResult<ValidatorAccountResponse> {
-        let key_bytes = from_hex_formatted(&public_key)
+        let key_bytes = from_hex(&public_key)
             .ok_or_else(|| RpcError::InvalidPublicKey("Invalid hex format".to_string()))?;
 
         let public_key = PublicKey::decode(&*key_bytes)
@@ -343,7 +343,7 @@ impl SummitApiServer for SummitRpcServer {
         &self,
         public_key: String,
     ) -> RpcResult<PendingWithdrawalResponse> {
-        let key_bytes = from_hex_formatted(&public_key)
+        let key_bytes = from_hex(&public_key)
             .ok_or_else(|| RpcError::InvalidPublicKey("Invalid hex format".to_string()))?;
 
         let pubkey: [u8; 32] = key_bytes
