@@ -2,25 +2,72 @@
 
 Easiest way to run a network locally is to use the testnet bin. This will start 4 summit nodes and 4 reth nodes locally and start coming to consensus on a fresh network.
 
-## Steps to do this:
+## Prerequisites
 
-1. First make sure you have a `reth` binary installed and in your `PATH`. For Seismic development, that typically means building `seismic-reth` and placing the resulting binary in your path as `reth`.
+1. Make sure you have a `reth` binary installed and in your `PATH`. The testnet bin passes Seismic-specific flags (e.g. `--enclave.endpoint-port`) to the execution client, so a vanilla upstream `reth` will not work - build `seismic-reth`:
    ```bash
    git clone https://github.com/SeismicSystems/seismic-reth.git && cd seismic-reth && cargo build --release
    ```
-   - Move the built binary somewhere in your path under the name `reth`
+   Then move the built binary somewhere in your path under the name `reth`:
    ```bash
    mv target/release/seismic-reth ~/.cargo/bin/reth
    ```
 
-2. Then `cd` into this repo and run `cargo run --bin testnet` at the repo root. This will start 4 Summit nodes and 4 Reth nodes in that terminal.
+## Starting the network
 
-3. You can reach the Reth RPC endpoints on the ports printed by the testnet binary. By default they are `localhost:8545`, `localhost:8546`, `localhost:8547`, and `localhost:8548`.
+From the repo root:
 
-4. To reset the local testnet data and start fresh, run this from the repo root:
-   ```bash
-   cd testnet && ./reset.sh && cd ..
-   ```
+```bash
+cargo run --bin testnet
+```
+
+This starts 4 Summit nodes and 4 Reth nodes in that terminal. Each node uses the pregenerated keys in `testnet/node0` .. `testnet/node3`.
+
+Useful flags:
+
+- `--nodes <N>` - number of nodes to run (default: 4)
+- `--only-reth` - start only the reth instances, without consensus
+- `--log-dir <PATH>` - write per-node logs to a directory
+- `--critical-log-dir <PATH>` - write critical error logs to a directory
+
+## Ports
+
+Reth RPC endpoints count **down** from 8545 (`localhost:8545 - node_number`):
+
+| Node | Reth HTTP RPC | Summit RPC | Summit admin RPC | Consensus P2P | Prometheus |
+| ---- | ------------- | ---------- | ---------------- | ------------- | ---------- |
+| node0 | 8545 | 3030 | 3031 | 26600 | 28600 |
+| node1 | 8544 | 3040 | 3041 | 26610 | 28610 |
+| node2 | 8543 | 3050 | 3051 | 26620 | 28620 |
+| node3 | 8542 | 3060 | 3061 | 26630 | 28630 |
+
+The exact Reth RPC address for each node is also printed on startup (`Node <N> rpc address: ...`).
+
+Quick check that blocks are being produced:
+
+```bash
+curl -s -X POST localhost:8545 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+
+Transactions can be submitted through any of the Reth RPC endpoints as usual.
+
+## Resetting
+
+To reset the local testnet data and start fresh, run this from the repo root:
+
+```bash
+cd testnet && ./reset.sh && cd ..
+```
+
+This removes `node*/data/reth_db`, `node*/db`, and `./stores`. Keys in `testnet/node*` are kept, so the same genesis works after a reset.
+
+## Troubleshooting
+
+- **`reth` not found / immediately exits** - the binary in `PATH` must be `seismic-reth` renamed to `reth`; upstream reth does not understand the Seismic enclave flags.
+- **Nodes fail to come to consensus after a previous run** - stale state; run `testnet/reset.sh` and start again.
+- **Port already in use** - a previous run did not shut down cleanly; kill leftover `reth`/`testnet` processes before restarting.
 
 ---
 
