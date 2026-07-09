@@ -1,0 +1,49 @@
+{
+  "description": "Deposit-request golden vectors: 288-byte EL wire format with valid Ed25519 + BLS signatures over as_message(deposit_signature_domain(genesis_hash, namespace)). Consumed by summit-types tests and by the Seismic client SDK tests (seismic monorepo, clients/). Regenerate with: cargo test -p summit-types regenerate_deposit_request_fixtures -- --ignored",
+  "genesis_hash": "0x683713729fcb72be6f3d8b88c8cda3e10569d73b9640d3bf6f5184d94bd97616",
+  "namespace": "_SUMMIT",
+  "vectors": [
+    {
+      "name": "new_validator_32eth",
+      "comment": "Fresh validator depositing exactly the minimum stake; activates after the warm-up.",
+      "node_private_key": "0x747da9456ae7632794bcd3292ed3ec8d370ad63f76e6daf97da1896ed6249f9a",
+      "bls_private_key": "0x5dbaea2b49f0dc7fcb2e5ac753fa489e6f25f200226dbe34b0aed6cbc3503001",
+      "node_pubkey": "0xae3a9bc6eb721b7b8a34d23aa0d5b1623e89bc6f092815ea13b92f79a39c7d38",
+      "consensus_pubkey": "0xa14001719d5b45c5552452779faf655b380f821fb0949de004dd4745383480ffa3a7b8e0a1ff70605e886af77411976e",
+      "withdrawal_credentials": "0x010000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "amount_gwei": 32000000000,
+      "node_signature": "0x91a882803611856e5f8a682df8d4a5b4eec07ce6c0128716e88b16d5c1b263612726515a3ea3b867967bf4ac60e52e3a694d94b4b7f7847cd2f3ab20aac4a605",
+      "consensus_signature": "0x931ac77b245ba8f8d43ec1e6b681166c3dd41772626527c5c0076f3c893248850f83e21c1a7bfa44d02345e6ee11a5f6000ba262f55b9e6ef968144d7d7cdd43639c18c7df1ae1cfcdb0ed2b3872c8c4e237cfcbb1fba35ce5aa220a2d430a30",
+      "index": 0,
+      "expected_request": "0xae3a9bc6eb721b7b8a34d23aa0d5b1623e89bc6f092815ea13b92f79a39c7d38a14001719d5b45c5552452779faf655b380f821fb0949de004dd4745383480ffa3a7b8e0a1ff70605e886af77411976e010000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa004059730700000091a882803611856e5f8a682df8d4a5b4eec07ce6c0128716e88b16d5c1b263612726515a3ea3b867967bf4ac60e52e3a694d94b4b7f7847cd2f3ab20aac4a605931ac77b245ba8f8d43ec1e6b681166c3dd41772626527c5c0076f3c893248850f83e21c1a7bfa44d02345e6ee11a5f6000ba262f55b9e6ef968144d7d7cdd43639c18c7df1ae1cfcdb0ed2b3872c8c4e237cfcbb1fba35ce5aa220a2d430a300000000000000000"
+    },
+    {
+      "name": "new_validator_1eth_below_min",
+      "comment": "Fresh validator depositing the contract minimum (1 ETH); stays Inactive below the minimum stake.",
+      "node_private_key": "0x29090ac8555c09b8fe99a886f7ed6ae1c20c6cce107257cf9888a501daf9fb75",
+      "bls_private_key": "0x258dc58544dbc05ebe17de3c42a5c2bd844a20e44e81d612afcd7206f0c779cf",
+      "node_pubkey": "0xf4f2b48f107be2146fa8545ad8dd3dac832d684a7df72038df4d3dda1d9b703f",
+      "consensus_pubkey": "0x84d0508a1d844407ca3408b69c6d45051e51e4fd80ee359eb577bc265c35754f13fb5fa1c57d82a1294bfde24a05d45a",
+      "withdrawal_credentials": "0x010000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "amount_gwei": 1000000000,
+      "node_signature": "0xde49e00a559a48a20ea49a1e80f085b9fa9932e63df1d983ef9e3bb6e4b957d2f081989668556bcc5d1fc9d2c0774bb25c229030b66fb452a6f14a8f6742c202",
+      "consensus_signature": "0x880caf63f7b0f0e5194928a1bc5dc585f8f9dc7e268a2816e3e7b3c6ebbabdc6821e69334124546977667fe09d201c270555f7c1151c108f39b358534246f789d02ed3e27371b6c1b8bfc3d19c96b78925bd1cd645ec462d279584e8c8249cdb",
+      "index": 1,
+      "expected_request": "0xf4f2b48f107be2146fa8545ad8dd3dac832d684a7df72038df4d3dda1d9b703f84d0508a1d844407ca3408b69c6d45051e51e4fd80ee359eb577bc265c35754f13fb5fa1c57d82a1294bfde24a05d45a010000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00ca9a3b00000000de49e00a559a48a20ea49a1e80f085b9fa9932e63df1d983ef9e3bb6e4b957d2f081989668556bcc5d1fc9d2c0774bb25c229030b66fb452a6f14a8f6742c202880caf63f7b0f0e5194928a1bc5dc585f8f9dc7e268a2816e3e7b3c6ebbabdc6821e69334124546977667fe09d201c270555f7c1151c108f39b358534246f789d02ed3e27371b6c1b8bfc3d19c96b78925bd1cd645ec462d279584e8c8249cdb0100000000000000"
+    },
+    {
+      "name": "top_up_31eth_reaches_min",
+      "comment": "Top-up for the 1 ETH validator with the same keys; lifts the balance to the minimum stake.",
+      "node_private_key": "0x29090ac8555c09b8fe99a886f7ed6ae1c20c6cce107257cf9888a501daf9fb75",
+      "bls_private_key": "0x258dc58544dbc05ebe17de3c42a5c2bd844a20e44e81d612afcd7206f0c779cf",
+      "node_pubkey": "0xf4f2b48f107be2146fa8545ad8dd3dac832d684a7df72038df4d3dda1d9b703f",
+      "consensus_pubkey": "0x84d0508a1d844407ca3408b69c6d45051e51e4fd80ee359eb577bc265c35754f13fb5fa1c57d82a1294bfde24a05d45a",
+      "withdrawal_credentials": "0x010000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "amount_gwei": 31000000000,
+      "node_signature": "0xb19a2f8797485d81f1e8c8e74e87194a1b50625e974533848220b4b780af93784db94937243f358730a1bf35ce854210f3642928dc3ab5f7875e33c94a839d04",
+      "consensus_signature": "0xa759c78a7bd9e358d79120f26ff4a4a3012085f91025f42fe812cae73f71b85427a850f3ad83fbff145500b87a5e038b0dbd595d5148b5adf26bc35f03c3ed1462a8964571d4adb62641b7ed39994838124a4aaa4a5d74d944917d9012f57b89",
+      "index": 2,
+      "expected_request": "0xf4f2b48f107be2146fa8545ad8dd3dac832d684a7df72038df4d3dda1d9b703f84d0508a1d844407ca3408b69c6d45051e51e4fd80ee359eb577bc265c35754f13fb5fa1c57d82a1294bfde24a05d45a010000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0076be3707000000b19a2f8797485d81f1e8c8e74e87194a1b50625e974533848220b4b780af93784db94937243f358730a1bf35ce854210f3642928dc3ab5f7875e33c94a839d04a759c78a7bd9e358d79120f26ff4a4a3012085f91025f42fe812cae73f71b85427a850f3ad83fbff145500b87a5e038b0dbd595d5148b5adf26bc35f03c3ed1462a8964571d4adb62641b7ed39994838124a4aaa4a5d74d944917d9012f57b890200000000000000"
+    }
+  ]
+}
