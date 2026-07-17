@@ -6,8 +6,8 @@ use crate::execution_request::{
 };
 use crate::header::AddedValidator;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_INVALID_DEPOSIT_TAX, MIN_ALLOWED_TIMESTAMP_FUTURE_MS,
-    ProtocolParam,
+    DEFAULT_MAX_PENDING_WITHDRAWALS_PER_VALIDATOR, DEFAULT_MINIMUM_VALIDATOR_COUNT,
+    MAX_INVALID_DEPOSIT_TAX, MIN_ALLOWED_TIMESTAMP_FUTURE_MS, ProtocolParam,
 };
 use crate::ssz_state_tree::SszStateTree;
 use crate::utils::{invalid_deposit_refund_split, parse_withdrawal_credentials};
@@ -74,6 +74,7 @@ pub struct ConsensusState {
     pub(crate) minimum_validator_count: u64,
     pub(crate) pending_active_validator_exits: u64,
     pub(crate) invalid_deposit_tax: u64,
+    pub(crate) max_pending_withdrawals_per_validator: u64,
     pub(crate) epocher: DynamicEpocher,
 
     /// In-memory SSZ binary Merkle tree over the entire consensus state.
@@ -144,6 +145,7 @@ impl Default for ConsensusState {
             minimum_validator_count: DEFAULT_MINIMUM_VALIDATOR_COUNT,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: DEFAULT_MAX_PENDING_WITHDRAWALS_PER_VALIDATOR,
             epocher: DynamicEpocher::new(NonZeroU64::new(1).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -189,6 +191,7 @@ impl ConsensusState {
             minimum_validator_count: self.minimum_validator_count,
             pending_active_validator_exits: self.pending_active_validator_exits,
             invalid_deposit_tax: self.invalid_deposit_tax,
+            max_pending_withdrawals_per_validator: self.max_pending_withdrawals_per_validator,
             epocher,
             ssz_tree: self.ssz_tree.clone(),
             proof_tree: self.proof_tree.clone(),
@@ -220,6 +223,7 @@ impl ConsensusState {
         observers_per_validator: u32,
         minimum_validator_count: u64,
         invalid_deposit_tax: u64,
+        max_pending_withdrawals_per_validator: u64,
     ) -> Self {
         let mut s = Self {
             epoch: 0,
@@ -245,6 +249,7 @@ impl ConsensusState {
             minimum_validator_count,
             pending_active_validator_exits: 0,
             invalid_deposit_tax,
+            max_pending_withdrawals_per_validator,
             epocher: DynamicEpocher::new(epoch_length),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -375,6 +380,16 @@ impl ConsensusState {
     pub fn set_observers_per_validator(&mut self, value: u32) {
         self.observers_per_validator = value;
         self.ssz_tree.set_observers_per_validator(value);
+    }
+
+    pub fn get_max_pending_withdrawals_per_validator(&self) -> u64 {
+        self.max_pending_withdrawals_per_validator
+    }
+
+    pub fn set_max_pending_withdrawals_per_validator(&mut self, value: u64) {
+        self.max_pending_withdrawals_per_validator = value;
+        self.ssz_tree
+            .set_max_pending_withdrawals_per_validator(value);
     }
 
     pub fn get_minimum_validator_count(&self) -> u64 {
@@ -1368,6 +1383,17 @@ impl ConsensusState {
             return false;
         }
 
+        // Per-validator cap on outstanding queue entries (spam guard). Full-exit
+        // markers count toward the cap too. An over-cap request is dropped
+        // wholesale, before any state mutation, so a capped request never cancels
+        // a pending activation or flips a status. Slots free up as the payout
+        // sweep drains the validator's earlier entries.
+        if self.withdrawal_queue.pending_count(&pubkey)
+            >= self.max_pending_withdrawals_per_validator
+        {
+            return false;
+        }
+
         let current_epoch = self.get_epoch();
         let withdrawal_epoch = current_epoch + withdrawal_num_epochs;
 
@@ -1819,6 +1845,11 @@ impl ConsensusState {
                     self.invalid_deposit_tax = value;
                     self.ssz_tree.set_invalid_deposit_tax(value);
                 }
+                ProtocolParam::MaxPendingWithdrawalsPerValidator(value) => {
+                    self.max_pending_withdrawals_per_validator = value;
+                    self.ssz_tree
+                        .set_max_pending_withdrawals_per_validator(value);
+                }
             }
         }
         // Protocol param changes have been consumed — update the (now empty) collection root
@@ -1862,6 +1893,7 @@ impl ConsensusState {
             self.minimum_validator_count,
             self.pending_active_validator_exits,
             self.invalid_deposit_tax,
+            self.max_pending_withdrawals_per_validator,
         );
 
         // Capture root and freeze proof tree so get_state_root() / proof_tree() are valid
@@ -1916,6 +1948,7 @@ impl EncodeSize for ConsensusState {
         + 8 // minimum_validator_count
         + 8 // pending_active_validator_exits
         + 8 // invalid_deposit_tax
+        + 8 // max_pending_withdrawals_per_validator
         + self.epocher.encode_size()
     }
 }
@@ -2122,6 +2155,21 @@ impl Read for ConsensusState {
                 "invalid deposit tax out of bounds",
             ));
         }
+        let max_pending_withdrawals_per_validator =
+            buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        // Same bounds the runtime protocol-parameter path applies (see
+        // ProtocolParam::validate). A zero cap from a crafted or tampered artifact
+        // would silently drop every future withdrawal request, including full
+        // exits, so reject it at decode.
+        if !(crate::protocol_params::MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN
+            ..=crate::protocol_params::MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX)
+            .contains(&max_pending_withdrawals_per_validator)
+        {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "max pending withdrawals per validator out of bounds",
+            ));
+        }
 
         let epocher = DynamicEpocher::read_cfg(buf, &())?;
 
@@ -2169,6 +2217,7 @@ impl Read for ConsensusState {
             minimum_validator_count,
             pending_active_validator_exits,
             invalid_deposit_tax,
+            max_pending_withdrawals_per_validator,
             epocher,
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -2291,6 +2340,9 @@ impl Write for ConsensusState {
 
         // Write invalid_deposit_tax
         buf.put_u64(self.invalid_deposit_tax);
+
+        // Write max_pending_withdrawals_per_validator
+        buf.put_u64(self.max_pending_withdrawals_per_validator);
 
         // Write epocher
         self.epocher.write(buf);

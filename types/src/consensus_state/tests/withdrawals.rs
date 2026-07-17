@@ -5,7 +5,7 @@ use crate::account::ValidatorStatus;
 use crate::execution_request::WithdrawalRequest;
 use crate::header::AddedValidator;
 use alloy_primitives::Address;
-use commonware_codec::DecodeExt;
+use commonware_codec::{DecodeExt, Encode};
 
 const MIN: u64 = 32;
 const WITHDRAWAL_EPOCHS: u64 = 2;
@@ -286,4 +286,146 @@ fn source_address_mismatch_dropped() {
     );
     assert!(!is_removed(&state, pubkey));
     assert!(due(&state).is_empty());
+}
+
+// The per-validator cap drops a request once the validator already has
+// max_pending_withdrawals_per_validator entries outstanding.
+#[test]
+fn requests_beyond_cap_dropped() {
+    let mut state = withdrawal_state();
+    let pubkey = [1u8; 32];
+    state.set_account(pubkey, create_test_validator_account(1, 100));
+    assert_eq!(state.get_max_pending_withdrawals_per_validator(), 3);
+
+    for _ in 0..3 {
+        state.apply_withdrawal_request(request(pubkey, creds(1), 5), WITHDRAWAL_EPOCHS);
+    }
+    assert_eq!(due(&state), vec![5, 5, 5]);
+
+    state.apply_withdrawal_request(request(pubkey, creds(1), 5), WITHDRAWAL_EPOCHS);
+    assert_eq!(due(&state), vec![5, 5, 5]);
+}
+
+// A capped full-exit request is dropped wholesale: no status flip, no staged
+// committee removal, no marker enqueued.
+#[test]
+fn capped_exit_request_leaves_state_untouched() {
+    let mut state = withdrawal_state();
+    let pubkey = [1u8; 32];
+    state.set_account(pubkey, create_test_validator_account(1, 100));
+
+    for _ in 0..3 {
+        state.apply_withdrawal_request(request(pubkey, creds(1), 5), WITHDRAWAL_EPOCHS);
+    }
+    state.apply_withdrawal_request(request(pubkey, creds(1), 0), WITHDRAWAL_EPOCHS);
+
+    let account = state.get_account(&pubkey).unwrap();
+    assert_eq!(account.status, ValidatorStatus::Active);
+    assert!(!is_removed(&state, pubkey));
+    assert_eq!(due(&state), vec![5, 5, 5]);
+}
+
+// Cap slots free up as the payout sweep drains the validator's entries.
+#[test]
+fn cap_slot_frees_after_drain() {
+    let mut state = withdrawal_state();
+    let pubkey = [1u8; 32];
+    state.set_account(pubkey, create_test_validator_account(1, 100));
+
+    for _ in 0..3 {
+        state.apply_withdrawal_request(request(pubkey, creds(1), 5), WITHDRAWAL_EPOCHS);
+    }
+    state.pop_withdrawal(WITHDRAWAL_EPOCHS).unwrap();
+
+    state.apply_withdrawal_request(request(pubkey, creds(1), 7), WITHDRAWAL_EPOCHS);
+    assert_eq!(due(&state), vec![5, 5, 7]);
+}
+
+// The cap is per validator: one validator at cap does not block another.
+#[test]
+fn cap_is_per_validator() {
+    let mut state = withdrawal_state();
+    let full = [1u8; 32];
+    let other = [2u8; 32];
+    state.set_account(full, create_test_validator_account(1, 100));
+    state.set_account(other, create_test_validator_account(2, 100));
+
+    for _ in 0..3 {
+        state.apply_withdrawal_request(request(full, creds(1), 5), WITHDRAWAL_EPOCHS);
+    }
+    state.apply_withdrawal_request(request(other, creds(2), 7), WITHDRAWAL_EPOCHS);
+
+    assert_eq!(due(&state), vec![5, 5, 5, 7]);
+}
+
+// The cap is a protocol parameter: a queued change applies at the boundary and
+// governs subsequent intake.
+#[test]
+fn cap_param_change_applies() {
+    use crate::protocol_params::ProtocolParam;
+
+    let mut state = withdrawal_state();
+    state.push_protocol_param_change(ProtocolParam::MaxPendingWithdrawalsPerValidator(1));
+    state.apply_protocol_parameter_changes().unwrap();
+    assert_eq!(state.get_max_pending_withdrawals_per_validator(), 1);
+
+    let pubkey = [1u8; 32];
+    state.set_account(pubkey, create_test_validator_account(1, 100));
+    state.apply_withdrawal_request(request(pubkey, creds(1), 5), WITHDRAWAL_EPOCHS);
+    state.apply_withdrawal_request(request(pubkey, creds(1), 5), WITHDRAWAL_EPOCHS);
+    assert_eq!(due(&state), vec![5]);
+}
+
+/// A serializable state with one validator holding partial withdrawals at the
+/// cap. Unlike [`withdrawal_state`] this keeps the default (nonzero) minimum
+/// validator count, which decode requires, and uses partials only so no exit
+/// machinery is involved.
+fn serializable_state_at_cap(pubkey: [u8; 32]) -> ConsensusState {
+    let mut state = ConsensusState::default();
+    state.set_minimum_stake(MIN);
+    state.set_max_withdrawals_per_epoch(10);
+    state.set_account(pubkey, create_test_validator_account(1, 100));
+    for _ in 0..3 {
+        state.apply_withdrawal_request(request(pubkey, creds(1), 5), WITHDRAWAL_EPOCHS);
+    }
+    assert_eq!(due(&state), vec![5, 5, 5]);
+    state
+}
+
+/// After restoring, the rebuilt transient counts must both hold the validator
+/// at cap and free a slot when an entry drains.
+fn assert_cap_live_after_restore(restored: &mut ConsensusState, pubkey: [u8; 32]) {
+    restored.apply_withdrawal_request(request(pubkey, creds(1), 5), WITHDRAWAL_EPOCHS);
+    assert_eq!(due(restored), vec![5, 5, 5]);
+
+    restored.pop_withdrawal(WITHDRAWAL_EPOCHS).unwrap();
+    restored.apply_withdrawal_request(request(pubkey, creds(1), 7), WITHDRAWAL_EPOCHS);
+    assert_eq!(due(restored), vec![5, 5, 7]);
+}
+
+// The per pubkey pending counts are transient and never serialized, so every
+// state reconstruction path must rebuild them from the decoded queue. This
+// covers the codec round trip, which is also the finalizer disk load path.
+#[test]
+fn cap_enforced_after_codec_round_trip() {
+    let pubkey = [1u8; 32];
+    let state = serializable_state_at_cap(pubkey);
+
+    let mut encoded = state.encode();
+    let mut restored = ConsensusState::decode(&mut encoded).unwrap();
+    assert_cap_live_after_restore(&mut restored, pubkey);
+}
+
+// Checkpoint restore decodes the state from the checkpoint data blob; the
+// rebuilt counts must keep enforcing the cap.
+#[test]
+fn cap_enforced_after_checkpoint_restore() {
+    use crate::checkpoint::Checkpoint;
+
+    let pubkey = [1u8; 32];
+    let state = serializable_state_at_cap(pubkey);
+
+    let checkpoint = Checkpoint::new(&state);
+    let mut restored = ConsensusState::try_from(&checkpoint).unwrap();
+    assert_cap_live_after_restore(&mut restored, pubkey);
 }

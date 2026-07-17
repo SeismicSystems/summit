@@ -90,6 +90,7 @@ fn single_file_import_has_no_chain_and_is_refused() {
         0,
         1,
         0,
+        3,
     );
     let checkpoint = Checkpoint::new(&state);
 
@@ -155,6 +156,7 @@ fn read_checkpoint_repopulates_pending_checkpoint() {
         0,
         1,
         0,
+        3,
     );
     let checkpoint = Checkpoint::new(&live);
     live.set_pending_checkpoint(Some(checkpoint.clone()));

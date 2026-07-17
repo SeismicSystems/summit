@@ -113,6 +113,7 @@ impl SszHashTreeRoot for ProtocolParam {
             ProtocolParam::ObserversPerValidator(v) => (6u64, v.hash_tree_root()),
             ProtocolParam::MinimumValidatorCount(v) => (7u64, v.hash_tree_root()),
             ProtocolParam::InvalidDepositTax(v) => (8u64, v.hash_tree_root()),
+            ProtocolParam::MaxPendingWithdrawalsPerValidator(v) => (9u64, v.hash_tree_root()),
         };
         merkleize(&[tag.hash_tree_root(), value_hash])
     }

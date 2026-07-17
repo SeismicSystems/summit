@@ -3,7 +3,7 @@ use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::Address;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error, FixedSize, Read, Write};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WithdrawalKind {
@@ -191,6 +191,11 @@ pub struct WithdrawalQueue {
     refunds: VecDeque<PendingWithdrawal>,
     /// The next withdrawal index to assign.
     next_index: u64,
+    /// Transient count of outstanding validator-kind entries per pubkey, kept in
+    /// step with `withdrawals` by every push/pop. Derived data: rebuilt from the
+    /// deque on decode, never serialized or committed to the SSZ tree. Entries
+    /// that reach zero are removed so equal deques always yield equal maps.
+    pending_per_pubkey: HashMap<[u8; 32], u64>,
 }
 
 impl WithdrawalQueue {
@@ -208,7 +213,32 @@ impl WithdrawalQueue {
             epoch,
             kind: WithdrawalKind::Validator,
         };
+        self.increment_pending_count(pending.pubkey);
         self.withdrawals.push_back(pending);
+    }
+
+    /// Number of outstanding validator-kind entries for `pubkey` (full-exit
+    /// markers included; deposit refunds excluded).
+    pub fn pending_count(&self, pubkey: &[u8; 32]) -> u64 {
+        self.pending_per_pubkey.get(pubkey).copied().unwrap_or(0)
+    }
+
+    fn increment_pending_count(&mut self, pubkey: [u8; 32]) {
+        *self.pending_per_pubkey.entry(pubkey).or_insert(0) += 1;
+    }
+
+    /// Decrement the pending count for an entry leaving the queue. Refund
+    /// entries are not tracked and pass through unchanged.
+    fn decrement_pending_count(&mut self, withdrawal: &PendingWithdrawal) {
+        if withdrawal.kind != WithdrawalKind::Validator {
+            return;
+        }
+        if let Some(count) = self.pending_per_pubkey.get_mut(&withdrawal.pubkey) {
+            *count -= 1;
+            if *count == 0 {
+                self.pending_per_pubkey.remove(&withdrawal.pubkey);
+            }
+        }
     }
 
     /// Peek at the next validator withdrawal without removing it, returning it only
@@ -264,12 +294,18 @@ impl WithdrawalQueue {
             epoch,
             kind,
         };
+        if kind == WithdrawalKind::Validator {
+            self.increment_pending_count(pending.pubkey);
+        }
         self.deque_mut(kind).push_back(pending);
         Ok(false)
     }
 
     /// Push a pre-built withdrawal directly (for test setup and deserialization).
     pub fn push(&mut self, withdrawal: PendingWithdrawal) {
+        if withdrawal.kind == WithdrawalKind::Validator {
+            self.increment_pending_count(withdrawal.pubkey);
+        }
         self.deque_mut(withdrawal.kind).push_back(withdrawal);
     }
 
@@ -287,7 +323,9 @@ impl WithdrawalQueue {
     fn pop_kind(&mut self, epoch: u64, kind: WithdrawalKind) -> Option<PendingWithdrawal> {
         // Pop the front only if it is due (its earliest-processable epoch has arrived).
         if self.deque(kind).front().is_some_and(|w| w.epoch <= epoch) {
-            self.deque_mut(kind).pop_front()
+            let withdrawal = self.deque_mut(kind).pop_front()?;
+            self.decrement_pending_count(&withdrawal);
+            Some(withdrawal)
         } else {
             None
         }
@@ -313,7 +351,9 @@ impl WithdrawalQueue {
             .front()
             .is_some_and(|w| w.inner.index == index)
         {
-            return self.withdrawals.pop_front();
+            let withdrawal = self.withdrawals.pop_front()?;
+            self.decrement_pending_count(&withdrawal);
+            return Some(withdrawal);
         }
         if self.refunds.front().is_some_and(|w| w.inner.index == index) {
             return self.refunds.pop_front();
@@ -538,10 +578,18 @@ impl Read for WithdrawalQueue {
         let withdrawals = read_flat(buf, WithdrawalKind::Validator, next_index, &mut indexes)?;
         let refunds = read_flat(buf, WithdrawalKind::DepositRefund, next_index, &mut indexes)?;
 
+        // Rebuild the transient per-pubkey count from the decoded deque; it is
+        // derived data and never serialized.
+        let mut pending_per_pubkey: HashMap<[u8; 32], u64> = HashMap::new();
+        for withdrawal in &withdrawals {
+            *pending_per_pubkey.entry(withdrawal.pubkey).or_insert(0) += 1;
+        }
+
         Ok(Self {
             withdrawals,
             refunds,
             next_index,
+            pending_per_pubkey,
         })
     }
 }
@@ -1120,5 +1168,53 @@ mod tests {
         queue.pop(5);
         assert_eq!(queue.num_epochs(), 0);
         assert!(queue.epochs_with_withdrawals().is_empty());
+    }
+
+    // The transient per-pubkey count follows every push and pop, counts
+    // full-exit markers (amount 0), and ignores refunds.
+    #[test]
+    fn pending_count_tracks_pushes_and_pops() {
+        let mut queue = WithdrawalQueue::default();
+        let pk = [1u8; 32];
+        assert_eq!(queue.pending_count(&pk), 0);
+
+        queue.push_request(make_request(pk, 100), 5);
+        queue.push_request(make_request(pk, 0), 5);
+        assert_eq!(queue.pending_count(&pk), 2);
+
+        queue
+            .push_request_with_kind(make_request(pk, 7), 5, WithdrawalKind::DepositRefund)
+            .unwrap();
+        assert_eq!(queue.pending_count(&pk), 2);
+
+        let popped = queue.pop(5).unwrap();
+        assert_eq!(popped.kind, WithdrawalKind::Validator);
+        assert_eq!(queue.pending_count(&pk), 1);
+
+        let front_index = queue.peek_withdrawal(5).unwrap().inner.index;
+        queue.pop_by_index(5, front_index).unwrap();
+        assert_eq!(queue.pending_count(&pk), 0);
+
+        // Only the refund is left; popping it does not underflow the counter.
+        queue.pop(5).unwrap();
+        assert_eq!(queue.pending_count(&pk), 0);
+    }
+
+    // Decoding rebuilds the per-pubkey count from the serialized deque.
+    #[test]
+    fn pending_count_rebuilt_on_decode() {
+        let mut queue = WithdrawalQueue::default();
+        queue.push_request(make_request([1u8; 32], 100), 5);
+        queue.push_request(make_request([1u8; 32], 200), 5);
+        queue.push_request(make_request([2u8; 32], 300), 5);
+
+        let mut buf = BytesMut::new();
+        queue.write(&mut buf);
+        let decoded = WithdrawalQueue::read(&mut buf.as_ref()).unwrap();
+
+        assert_eq!(decoded, queue);
+        assert_eq!(decoded.pending_count(&[1u8; 32]), 2);
+        assert_eq!(decoded.pending_count(&[2u8; 32]), 1);
+        assert_eq!(decoded.pending_count(&[3u8; 32]), 0);
     }
 }
