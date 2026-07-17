@@ -1563,6 +1563,15 @@ impl ConsensusState {
                 // Account is gone (already fully paid out). Nothing to pay.
                 continue;
             };
+            // Stale entry: the account was drained, removed, and re created by a
+            // fresh deposit under different credentials. The stored payout
+            // address no longer authorizes this balance, so pay nothing; the
+            // entry is consumed at apply. This guards the reincarnation case
+            // where a surviving marker would hand the new balance to the old
+            // address.
+            if entry.inner.address != account.withdrawal_credentials {
+                continue;
+            }
             let balance = *running.entry(entry.pubkey).or_insert(account.balance);
             let active = account.status == ValidatorStatus::Active;
             let payout = Self::withdrawal_payout_amount(entry, balance, active, min_stake);
@@ -1621,6 +1630,11 @@ impl ConsensusState {
             let Some(mut account) = self.get_account(&entry.pubkey).cloned() else {
                 continue;
             };
+            // Mirror emit: a stale entry whose stored address no longer matches
+            // the account's withdrawal credentials is consumed without paying.
+            if entry.inner.address != account.withdrawal_credentials {
+                continue;
+            }
             let active = account.status == ValidatorStatus::Active;
             let payout = Self::withdrawal_payout_amount(&entry, account.balance, active, min_stake);
             account.balance = account.balance.saturating_sub(payout);

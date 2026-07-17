@@ -278,6 +278,62 @@ fn emit_prioritizes_validator_exits_over_refunds_under_cap() {
     assert_eq!(block[0].amount, 100);
 }
 
+// emit/apply: a stale full-exit marker whose stored payout address no longer
+// matches the account's withdrawal credentials is consumed without paying.
+// This is the reincarnation case: the account was drained and removed, then
+// re created by a fresh deposit with new credentials, and the surviving marker
+// must not hand the new balance to the old address.
+#[test]
+fn stale_entry_skipped_after_credential_change() {
+    let mut state = payout_state();
+    let pubkey = [1u8; 32];
+    state.set_account(pubkey, create_test_validator_account(1, 100));
+    // Marker enqueued under the old credentials ([1; 20]).
+    push_full_exit(&mut state, pubkey, 1);
+
+    // Simulate removal plus reincarnation: same pubkey, new credentials and a
+    // fresh balance.
+    state.set_account(pubkey, create_test_validator_account(2, 500));
+
+    // Nothing is emitted for the stale marker.
+    assert!(state.emit_withdrawal_payouts(1).is_empty());
+
+    // Apply consumes the marker and leaves the new balance untouched.
+    state.apply_withdrawal_payouts(1, &[]);
+    assert_eq!(state.get_account(&pubkey).unwrap().balance, 500);
+    assert!(state.get_withdrawals_for_epoch(1).is_empty());
+}
+
+// emit/apply: a stale partial with mismatched credentials is skipped while a
+// later matching entry for the same validator still pays.
+#[test]
+fn stale_partial_skipped_matching_entry_pays() {
+    let mut state = payout_state();
+    let pubkey = [1u8; 32];
+    state.set_account(pubkey, create_test_validator_account(1, 100));
+    push_partial(&mut state, pubkey, 40, 1);
+
+    // Reincarnate with new credentials, then enqueue a matching partial under
+    // them.
+    state.set_account(pubkey, create_test_validator_account(2, 100));
+    state.push_withdrawal_request(
+        WithdrawalRequest {
+            source_address: Address::from([2u8; 20]),
+            validator_pubkey: pubkey,
+            amount: 10,
+        },
+        1,
+    );
+
+    let block = state.emit_withdrawal_payouts(1);
+    assert_eq!(amounts(&block), vec![10]);
+    assert_eq!(block[0].address, Address::from([2u8; 20]));
+
+    state.apply_withdrawal_payouts(1, &block);
+    assert_eq!(state.get_account(&pubkey).unwrap().balance, 90);
+    assert!(state.get_withdrawals_for_epoch(1).is_empty());
+}
+
 // #362: a ready backlog far larger than the per-epoch cap is served by emitting and
 // applying only the capped front-prefix each sweep, deferring the remainder. This
 // exercises the lazy capped selection and the single batched SSZ rebuild at apply
