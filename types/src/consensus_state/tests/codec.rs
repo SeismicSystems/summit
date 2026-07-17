@@ -81,6 +81,7 @@ fn test_serialization_deserialization_populated() {
         0,
         DEFAULT_MINIMUM_VALIDATOR_COUNT,
         0,
+        3,
     );
 
     original_state.set_epoch(7);
@@ -360,6 +361,40 @@ fn test_decode_rejects_out_of_range_max_withdrawals_per_epoch() {
         assert!(
             ConsensusState::read(&mut encoded.as_ref()).is_err(),
             "max_withdrawals_per_epoch {invalid} should be rejected on decode"
+        );
+    }
+}
+
+#[test]
+fn test_decode_rejects_out_of_range_max_pending_withdrawals_per_validator() {
+    use crate::protocol_params::{
+        MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX, MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN,
+    };
+
+    // Genesis and runtime updates bound the per-validator cap to [MIN, MAX];
+    // a decoded value outside that range can only come from a crafted or
+    // tampered artifact. A zero cap would silently drop every withdrawal
+    // request, including full exits, so decode must reject it.
+    for valid in [
+        MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN,
+        MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX,
+    ] {
+        let mut state = ConsensusState::default();
+        state.max_pending_withdrawals_per_validator = valid;
+        let encoded = state.encode();
+        let decoded = ConsensusState::read(&mut encoded.as_ref()).unwrap_or_else(|_| {
+            panic!("valid max_pending_withdrawals_per_validator {valid} should decode")
+        });
+        assert_eq!(decoded.max_pending_withdrawals_per_validator, valid);
+    }
+
+    for invalid in [0, MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX + 1] {
+        let mut state = ConsensusState::default();
+        state.max_pending_withdrawals_per_validator = invalid;
+        let encoded = state.encode();
+        assert!(
+            ConsensusState::read(&mut encoded.as_ref()).is_err(),
+            "max_pending_withdrawals_per_validator {invalid} should be rejected on decode"
         );
     }
 }

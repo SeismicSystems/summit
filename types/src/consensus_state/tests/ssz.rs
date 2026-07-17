@@ -642,6 +642,7 @@ fn test_ssz_full_block_lifecycle_matches_rebuild() {
         0,
         DEFAULT_MINIMUM_VALIDATOR_COUNT,
         0,
+        3,
     );
 
     // Add 4 genesis validators (like the testnet)
@@ -864,6 +865,7 @@ fn test_genesis_materialization_refreshes_proof_snapshot() {
         0,
         0,
         0,
+        3,
     );
 
     // mirror node/src/args.rs genesis materialization.

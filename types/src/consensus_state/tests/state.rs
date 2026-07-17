@@ -79,6 +79,7 @@ fn test_clone_preserves_epoch_schedule_snapshot() {
         0,
         0,
         0,
+        3,
     );
     state.get_epocher().advance_epoch(Epoch::new(0));
 

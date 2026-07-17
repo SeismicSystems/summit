@@ -395,6 +395,7 @@ pub fn get_initial_state(
             0,
             3,
             0,
+            3,
         );
         // Add the genesis nodes to the consensus state with the minimum stake balance.
         for ((node_pubkey, consensus_pubkey), address) in committee.iter().zip(addresses.iter()) {

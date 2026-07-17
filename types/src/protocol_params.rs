@@ -25,6 +25,13 @@ pub const MAX_MESSAGE_SIZE_BYTES_MIN: u64 = 1 << 20; // 1 MiB
 pub const MAX_MESSAGE_SIZE_BYTES_MAX: u64 = 1 << 30; // 1 GiB
 pub const MIN_INVALID_DEPOSIT_TAX: u64 = 0;
 pub const MAX_INVALID_DEPOSIT_TAX: u64 = 100;
+// Bounds on the per-validator cap of outstanding withdrawal-queue entries. The
+// floor of 1 keeps withdrawals (including full exits) always possible; the
+// ceiling bounds the queue at validators * cap entries, which is the anti-spam
+// point of the parameter.
+pub const MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN: u64 = 1;
+pub const MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX: u64 = 256;
+pub const DEFAULT_MAX_PENDING_WITHDRAWALS_PER_VALIDATOR: u64 = 3;
 
 #[derive(Clone, Debug)]
 pub enum ProtocolParam {
@@ -37,6 +44,7 @@ pub enum ProtocolParam {
     ObserversPerValidator(u64),
     MinimumValidatorCount(u64),
     InvalidDepositTax(u64),
+    MaxPendingWithdrawalsPerValidator(u64),
 }
 
 /// A protocol-parameter value that fell outside its allowed bounds.
@@ -55,6 +63,7 @@ pub enum ParamBoundsError {
     MaxDepositsPerEpoch(u64),
     MaxWithdrawalsPerEpoch(u64),
     ObserversPerValidator(u64),
+    MaxPendingWithdrawalsPerValidator(u64),
 }
 
 impl ParamBoundsError {
@@ -67,6 +76,9 @@ impl ParamBoundsError {
             Self::MaxDepositsPerEpoch(_) => "max deposits per epoch out of bounds",
             Self::MaxWithdrawalsPerEpoch(_) => "max withdrawals per epoch out of bounds",
             Self::ObserversPerValidator(_) => "observers per validator out of bounds",
+            Self::MaxPendingWithdrawalsPerValidator(_) => {
+                "max pending withdrawals per validator out of bounds"
+            }
         }
     }
 }
@@ -93,6 +105,10 @@ impl std::fmt::Display for ParamBoundsError {
             Self::ObserversPerValidator(v) => write!(
                 f,
                 "observers per validator {v} must not exceed {MAX_OBSERVERS_PER_VALIDATOR}"
+            ),
+            Self::MaxPendingWithdrawalsPerValidator(v) => write!(
+                f,
+                "max pending withdrawals per validator {v} must be between {MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN} and {MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX}"
             ),
         }
     }
@@ -132,6 +148,13 @@ impl ProtocolParam {
             }
             ProtocolParam::ObserversPerValidator(v) if v > MAX_OBSERVERS_PER_VALIDATOR => {
                 Err(ParamBoundsError::ObserversPerValidator(v))
+            }
+            ProtocolParam::MaxPendingWithdrawalsPerValidator(v)
+                if !(MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN
+                    ..=MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX)
+                    .contains(&v) =>
+            {
+                Err(ParamBoundsError::MaxPendingWithdrawalsPerValidator(v))
             }
             _ => Ok(()),
         }
@@ -259,6 +282,19 @@ impl TryFrom<ProtocolParamRequest> for ProtocolParam {
                 }
                 Ok(ProtocolParam::InvalidDepositTax(invalid_deposit_tax))
             }
+            0x09 => {
+                if request.param.len() != 8 {
+                    return Err(anyhow!(
+                        "Failed to parse max pending withdrawals per validator protocol param, invalid length {}",
+                        request.param.len()
+                    ));
+                }
+                let bytes: [u8; 8] = request.param.as_slice().try_into()?;
+                let param =
+                    ProtocolParam::MaxPendingWithdrawalsPerValidator(u64::from_le_bytes(bytes));
+                param.validate().map_err(|e| anyhow!("{e}"))?;
+                Ok(param)
+            }
             _ => Err(anyhow!(
                 "Failed to parse protocol param request - unknown param_id: {request:?}"
             )),
@@ -276,7 +312,8 @@ impl EncodeSize for ProtocolParam {
             | ProtocolParam::MaxWithdrawalsPerEpoch(_)
             | ProtocolParam::ObserversPerValidator(_)
             | ProtocolParam::MinimumValidatorCount(_)
-            | ProtocolParam::InvalidDepositTax(_) => 1 + 8, // 1 byte tag + 8 byte value
+            | ProtocolParam::InvalidDepositTax(_)
+            | ProtocolParam::MaxPendingWithdrawalsPerValidator(_) => 1 + 8, // 1 byte tag + 8 byte value
             ProtocolParam::TreasuryAddress(_) => 1 + 20, // 1 byte tag + 20 byte address
         }
     }
@@ -319,6 +356,10 @@ impl Write for ProtocolParam {
             }
             ProtocolParam::InvalidDepositTax(value) => {
                 buf.put_u8(0x08);
+                buf.put_u64(*value);
+            }
+            ProtocolParam::MaxPendingWithdrawalsPerValidator(value) => {
+                buf.put_u8(0x09);
                 buf.put_u64(*value);
             }
         }
@@ -400,6 +441,14 @@ impl Read for ProtocolParam {
                     ));
                 }
                 Ok(ProtocolParam::InvalidDepositTax(value))
+            }
+            0x09 => {
+                let value = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+                let param = ProtocolParam::MaxPendingWithdrawalsPerValidator(value);
+                param
+                    .validate()
+                    .map_err(|e| Error::Invalid("ProtocolParam", e.reason()))?;
+                Ok(param)
             }
             _ => Err(Error::Invalid("ProtocolParam", "unknown tag")),
         }
@@ -865,6 +914,61 @@ mod tests {
     }
 
     #[test]
+    fn test_max_pending_withdrawals_per_validator_encode_decode() {
+        let param = ProtocolParam::MaxPendingWithdrawalsPerValidator(3);
+
+        let mut buf = BytesMut::new();
+        param.write(&mut buf);
+
+        assert_eq!(buf.len(), param.encode_size());
+        assert_eq!(buf.len(), 9);
+        assert_eq!(buf[0], 0x09);
+
+        let decoded = ProtocolParam::read(&mut buf.as_ref()).unwrap();
+        match decoded {
+            ProtocolParam::MaxPendingWithdrawalsPerValidator(v) => assert_eq!(v, 3),
+            _ => panic!("Expected MaxPendingWithdrawalsPerValidator variant"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_max_pending_withdrawals_per_validator_bounds() {
+        for valid in [
+            MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN,
+            DEFAULT_MAX_PENDING_WITHDRAWALS_PER_VALIDATOR,
+            MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX,
+        ] {
+            let request = ProtocolParamRequest {
+                param_id: 0x09,
+                param: valid.to_le_bytes().to_vec(),
+            };
+            let param = ProtocolParam::try_from(request).unwrap();
+            match param {
+                ProtocolParam::MaxPendingWithdrawalsPerValidator(v) => assert_eq!(v, valid),
+                _ => panic!("Expected MaxPendingWithdrawalsPerValidator variant"),
+            }
+        }
+
+        for invalid in [0, MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX + 1] {
+            let request = ProtocolParamRequest {
+                param_id: 0x09,
+                param: invalid.to_le_bytes().to_vec(),
+            };
+            assert!(ProtocolParam::try_from(request).is_err());
+        }
+    }
+
+    #[test]
+    fn test_decode_max_pending_withdrawals_per_validator_out_of_bounds() {
+        for invalid in [0, MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX + 1] {
+            let mut buf = BytesMut::new();
+            buf.put_u8(0x09);
+            buf.put_u64(invalid);
+            assert!(ProtocolParam::read(&mut buf.as_ref()).is_err());
+        }
+    }
+
+    #[test]
     fn test_decode_truncated_input_returns_err() {
         // Empty buffer — must not panic.
         let empty: &[u8] = &[];
@@ -874,7 +978,7 @@ mod tests {
         ));
 
         // Tag only, no payload.
-        for tag in 0x00u8..=0x08 {
+        for tag in 0x00u8..=0x09 {
             let mut buf = BytesMut::new();
             buf.put_u8(tag);
             assert!(

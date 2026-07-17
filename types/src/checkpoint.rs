@@ -807,6 +807,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -934,6 +935,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -990,6 +992,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1125,6 +1128,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1186,6 +1190,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1252,6 +1257,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1314,6 +1320,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1471,6 +1478,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1597,6 +1605,7 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 1,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
         };
 
         let mut state = ConsensusState::new(
@@ -1610,6 +1619,7 @@ mod tests {
             0,
             1,
             0,
+            3,
         );
         state.set_validator_accounts(validator_accounts);
         // Let the test introduce any decoded-state inconsistency before the
@@ -2200,6 +2210,7 @@ mod tests {
             0,
             1,
             0,
+            3,
         );
         let node_key: [u8; 32] = ed25519::PrivateKey::from_seed(42)
             .public_key()

@@ -77,6 +77,13 @@ pub struct Genesis {
     /// Percentage tax applied to invalid-deposit refunds. Must be between 0 and 100.
     #[serde(default = "default_invalid_deposit_tax")]
     pub invalid_deposit_tax: u64,
+    /// Maximum number of outstanding withdrawal-queue entries per validator.
+    /// Requests beyond the cap are dropped at intake; full-exit markers count
+    /// toward it. Mutable via the
+    /// [`MaxPendingWithdrawalsPerValidator`](crate::protocol_params::ProtocolParam::MaxPendingWithdrawalsPerValidator)
+    /// execution request.
+    #[serde(default = "default_max_pending_withdrawals_per_validator")]
+    pub max_pending_withdrawals_per_validator: u64,
 }
 
 fn default_treasury_address() -> String {
@@ -101,6 +108,10 @@ fn default_minimum_validator_count() -> u64 {
 
 fn default_invalid_deposit_tax() -> u64 {
     5
+}
+
+fn default_max_pending_withdrawals_per_validator() -> u64 {
+    crate::protocol_params::DEFAULT_MAX_PENDING_WITHDRAWALS_PER_VALIDATOR
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ssz_derive::Encode)]
@@ -286,6 +297,10 @@ impl Genesis {
         ProtocolParam::MaxDepositsPerEpoch(self.max_deposits_per_epoch).validate()?;
         ProtocolParam::MaxWithdrawalsPerEpoch(self.max_withdrawals_per_epoch).validate()?;
         ProtocolParam::ObserversPerValidator(u64::from(self.observers_per_validator)).validate()?;
+        ProtocolParam::MaxPendingWithdrawalsPerValidator(
+            self.max_pending_withdrawals_per_validator,
+        )
+        .validate()?;
         // `minimum_validator_count` has no scalar bound in `ProtocolParam::validate`
         // (it carries no `ParamBoundsError` variant), so its floor is enforced here.
         if self.minimum_validator_count < MIN_MINIMUM_VALIDATOR_COUNT {
@@ -357,6 +372,7 @@ mod tests {
     use super::*;
     use crate::protocol_params::{
         MAX_EPOCH_LENGTH, MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR,
+        MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX, MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN,
         MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_EPOCH_LENGTH,
     };
 
@@ -412,6 +428,27 @@ mod tests {
     fn rejects_max_deposits_per_epoch_u64_max() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.max_deposits_per_epoch = u64::MAX;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_max_pending_withdrawals_per_validator_at_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_pending_withdrawals_per_validator = MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN;
+        assert!(genesis.validate().is_ok());
+        genesis.max_pending_withdrawals_per_validator = MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX;
+        assert!(genesis.validate().is_ok());
+    }
+
+    /// A zero cap would silently drop every withdrawal request, including full
+    /// exits, so genesis must reject it.
+    #[test]
+    fn rejects_max_pending_withdrawals_per_validator_outside_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_pending_withdrawals_per_validator = 0;
+        assert!(genesis.validate().is_err());
+        genesis.max_pending_withdrawals_per_validator =
+            MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX + 1;
         assert!(genesis.validate().is_err());
     }
 
@@ -602,6 +639,10 @@ mod tests {
             (
                 "max_withdrawals_per_epoch",
                 Box::new(|g| g.max_withdrawals_per_epoch += 1),
+            ),
+            (
+                "max_pending_withdrawals_per_validator",
+                Box::new(|g| g.max_pending_withdrawals_per_validator += 1),
             ),
             (
                 "observers_per_validator",

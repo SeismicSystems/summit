@@ -131,6 +131,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         0,
         3,
         0,
+        3,
     );
     state.set_validator_accounts(validator_accounts);
     state
