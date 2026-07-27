@@ -14,7 +14,9 @@ use commonware_cryptography::{Digestible, Signer};
 use commonware_formatting::hex;
 #[cfg(debug_assertions)]
 use commonware_runtime::telemetry::metrics::{Gauge, MetricsExt as _};
-use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_runtime::{
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell,
+};
 use commonware_storage::translator::EightCap;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use commonware_utils::{NZU64, NZUsize};
@@ -216,7 +218,7 @@ struct PendingNotarized {
 }
 
 pub struct Finalizer<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,
@@ -292,7 +294,7 @@ pub struct Finalizer<
 }
 
 impl<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,
@@ -321,6 +323,7 @@ impl<
                 page_cache: cfg.page_cache,
             },
             translator: EightCap,
+            init_cache_size: Some(NZUsize!(1024)),
         };
 
         let db = FinalizerState::<R, V>::new(
@@ -2066,7 +2069,7 @@ impl<
 /// is always finalized (never notarized+nullified).
 async fn execute_block<
     C: EngineClient,
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
     engine_client: &mut C,
     context: &ContextCell<R>,
@@ -2274,7 +2277,7 @@ async fn execute_block<
 }
 
 async fn process_execution_requests<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
     #[allow(unused)] context: &ContextCell<R>,
     block: &Block,
@@ -2306,7 +2309,7 @@ async fn process_execution_requests<
 }
 
 impl<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,

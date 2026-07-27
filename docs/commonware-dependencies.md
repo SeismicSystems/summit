@@ -267,12 +267,24 @@ use commonware_macros::test_traced;
 Summit pins Commonware to a versioned release in the workspace `Cargo.toml`. All 14 `commonware-*` workspace dependencies are bumped in lockstep:
 
 ```toml
-commonware-consensus = "2026.5.0"
-commonware-cryptography = "2026.5.0"
+commonware-consensus = "2026.7.0"
+commonware-cryptography = "2026.7.0"
 # ...
 ```
 
 To upgrade, bump the version across every `commonware-*` entry in the root `Cargo.toml` and run `cargo update -p commonware-consensus` (etc.).
+
+### Syncer Durability
+
+Summit's syncer is a fork of Commonware marshal with additional application reporting and checkpoint behavior. It preserves marshal's durability model while reporting notarized blocks to the finalizer for speculative execution:
+
+- Proposed blocks are handed to the network before persistence starts so storage does not delay propagation.
+- Proposed, verified, and certified writes return durability handles to the mailbox caller, which awaits them without blocking the syncer actor.
+- Certified durability covers both the block and any accepted notarization for the round.
+- Summit's `CertifiableAutomaton::certify` waits for the certified durability barrier before returning `true`, so Simplex cannot cast a finalize vote before the block is recoverable locally.
+- Finalized blocks are not dispatched to the application until the finalized block and certificate archives are durable.
+- Direct consensus notarizations start storage asynchronously and are reported through `Update::NotarizedBlock` only after both the block and notarization are durable; storage failures remain fatal.
+- Resolver-delivered notarized data is made durable before repair and finalization bookkeeping advances.
 
 ## Audit Recommendations
 

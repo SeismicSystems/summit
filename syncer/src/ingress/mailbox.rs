@@ -1,3 +1,4 @@
+use crate::durability::Durable as _;
 use commonware_actor::{
     Feedback,
     mailbox::{Overflow, Policy, Sender},
@@ -10,6 +11,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::Digest;
 use commonware_p2p::Recipients;
+use commonware_runtime::Handle;
 use commonware_storage::archive;
 use commonware_utils::{channel::oneshot, vec::NonEmptyVec};
 use futures::{
@@ -145,8 +147,8 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         round: Round,
         /// The block to broadcast.
         block: B,
-        /// A channel signaled once the block is durably stored.
-        ack: Option<oneshot::Sender<()>>,
+        /// A channel sent once the block sync has started.
+        ack: oneshot::Sender<Handle<()>>,
     },
     /// A request to forward a block to a set of recipients.
     Forward {
@@ -163,8 +165,8 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         round: Round,
         /// The verified block.
         block: B,
-        /// A channel signaled once the block is durably stored.
-        ack: Option<oneshot::Sender<()>>,
+        /// A channel sent once the block sync has started.
+        ack: oneshot::Sender<Handle<()>>,
     },
     /// A notification that a block has been certified by the application.
     Certified {
@@ -172,8 +174,8 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         round: Round,
         /// The certified block.
         block: B,
-        /// A channel signaled once the block is durably stored.
-        ack: Option<oneshot::Sender<()>>,
+        /// A channel sent once the block and notarization syncs have started.
+        ack: oneshot::Sender<Handle<()>>,
     },
 
     // -------------------- Consensus Engine Messages --------------------
@@ -604,6 +606,11 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     }
 
     /// Returns the verified block previously persisted for `round`, if any.
+    ///
+    /// Multiple candidates can exist for one round when an equivocating leader
+    /// stores one before a crash and another after. This returns the first stored
+    /// candidate. Callers must not assume it is the most recently verified block:
+    /// check its digest and context before reuse, or look up the expected digest.
     pub async fn get_verified(&self, round: Round) -> Option<B> {
         let (response, receiver) = oneshot::channel();
         let _ = self
@@ -625,18 +632,19 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
             .map(|block| AncestorStream::new(self.clone(), [block]))
     }
 
-    /// Proposed requests that a proposed block is sent to all peers.
+    /// Requests that a proposed block is sent to all peers and persisted.
     ///
-    /// Returns after the block is durably stored and broadcast.
+    /// The actor broadcasts before starting persistence, then returns the sync
+    /// handle so durability is awaited on this caller's task rather than the
+    /// actor task.
     #[must_use = "callers must consider block durability before proceeding"]
     pub async fn proposed(&mut self, round: Round, block: B) -> bool {
         let (ack, receiver) = oneshot::channel();
-        let _ = self.sender.enqueue(Message::Proposed {
-            round,
-            block,
-            ack: Some(ack),
-        });
-        receiver.await.is_ok()
+        let _ = self.sender.enqueue(Message::Proposed { round, block, ack });
+        let Ok(handle) = receiver.await else {
+            return false;
+        };
+        handle.durable(round, "verified").await
     }
 
     /// Forward a block to a set of recipients.
@@ -659,12 +667,11 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     #[must_use = "callers must consider block durability before proceeding"]
     pub async fn verified(&mut self, round: Round, block: B) -> bool {
         let (ack, receiver) = oneshot::channel();
-        let _ = self.sender.enqueue(Message::Verified {
-            round,
-            block,
-            ack: Some(ack),
-        });
-        receiver.await.is_ok()
+        let _ = self.sender.enqueue(Message::Verified { round, block, ack });
+        let Ok(handle) = receiver.await else {
+            return false;
+        };
+        handle.durable(round, "verified").await
     }
 
     /// Notifies the actor that a block has been certified.
@@ -673,12 +680,13 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     #[must_use = "callers must consider block durability before proceeding"]
     pub async fn certified(&mut self, round: Round, block: B) -> bool {
         let (ack, receiver) = oneshot::channel();
-        let _ = self.sender.enqueue(Message::Certified {
-            round,
-            block,
-            ack: Some(ack),
-        });
-        receiver.await.is_ok()
+        let _ = self
+            .sender
+            .enqueue(Message::Certified { round, block, ack });
+        let Ok(handle) = receiver.await else {
+            return false;
+        };
+        handle.durable(round, "certified").await
     }
 
     /// Attempts to set the sync starting point from a finalized commitment.

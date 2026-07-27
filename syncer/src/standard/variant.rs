@@ -4,12 +4,13 @@
 //! receives the full block directly from the proposer or via gossip.
 
 use crate::variant::{Buffer, Variant};
-use commonware_broadcast::{Broadcaster, buffered};
+use commonware_broadcast::buffered;
 use commonware_codec::Read;
 use commonware_consensus::{Block, types::Round};
 use commonware_cryptography::{Digestible, PublicKey};
 use commonware_p2p::Recipients;
 use commonware_utils::channel::oneshot;
+use std::sync::Arc;
 
 /// The standard variant of the syncer, which broadcasts complete blocks.
 ///
@@ -58,21 +59,19 @@ where
 {
     type PublicKey = K;
 
-    async fn find_by_digest(&self, digest: B::Digest) -> Option<B> {
+    async fn find_by_digest(&self, digest: B::Digest) -> Option<Arc<B>> {
         self.get(digest).await
     }
 
-    async fn find_by_commitment(&self, commitment: B::Digest) -> Option<B> {
+    async fn find_by_commitment(&self, commitment: B::Digest) -> Option<Arc<B>> {
         self.find_by_digest(commitment).await
     }
 
-    fn subscribe_by_digest(&self, digest: B::Digest) -> Option<oneshot::Receiver<B>> {
-        let (tx, rx) = oneshot::channel();
-        self.subscribe_prepared(digest, tx);
-        Some(rx)
+    fn subscribe_by_digest(&self, digest: B::Digest) -> Option<oneshot::Receiver<Arc<B>>> {
+        Some(self.subscribe(digest))
     }
 
-    fn subscribe_by_commitment(&self, commitment: B::Digest) -> Option<oneshot::Receiver<B>> {
+    fn subscribe_by_commitment(&self, commitment: B::Digest) -> Option<oneshot::Receiver<Arc<B>>> {
         self.subscribe_by_digest(commitment)
     }
 
@@ -80,7 +79,7 @@ where
         // No cleanup needed in standard mode — the buffer handles its own pruning
     }
 
-    fn send(&self, _round: Round, block: B, recipients: Recipients<K>) {
-        Broadcaster::broadcast(self, recipients, block);
+    fn send(&self, _round: Round, block: Arc<B>, recipients: Recipients<K>) {
+        self.broadcast_shared(recipients, block);
     }
 }

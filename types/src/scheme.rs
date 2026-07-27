@@ -3,7 +3,8 @@ use commonware_consensus::simplex::scheme::{self, Scheme};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::group;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
-use commonware_cryptography::certificate::Provider;
+use commonware_cryptography::certificate::Scheme as _;
+use commonware_cryptography::certificate::{Provider, Scoped};
 use commonware_cryptography::{Digest, PublicKey, Signer, ed25519};
 use commonware_utils::TryCollect;
 use commonware_utils::ordered::BiMap;
@@ -102,9 +103,15 @@ impl Provider for SummitSchemeProvider {
     type Scope = Epoch;
     type Scheme = MultisigScheme;
 
-    fn scoped(&self, scope: Self::Scope) -> Option<Arc<Self::Scheme>> {
+    fn scoped(&self, scope: Self::Scope) -> Option<Scoped<Self::Scheme>> {
         let schemes = self.schemes.lock().unwrap();
-        schemes.get(&scope).cloned()
+        schemes.get(&scope).cloned().map(|scheme| {
+            if scheme.me().is_some() {
+                Scoped::scheme(scheme)
+            } else {
+                Scoped::verifier(scheme)
+            }
+        })
     }
 }
 
@@ -174,7 +181,6 @@ mod tests {
     use crate::{Digest, bls12381};
     use commonware_consensus::simplex::types::{Notarize, Proposal};
     use commonware_consensus::types::{Round, View};
-    use commonware_cryptography::certificate::Scheme as _;
 
     const NAMESPACE: &[u8] = b"test-scheme";
 
@@ -230,6 +236,54 @@ mod tests {
 
         assert!(scheme.me().is_none());
         assert!(Notarize::sign(&scheme, sample_proposal(epoch)).is_none());
+    }
+
+    #[test]
+    fn provider_exposes_signing_scheme_for_validator() {
+        let node_key = ed25519::PrivateKey::from_seed(1);
+        let consensus_key = bls12381::PrivateKey::from_seed(2);
+        let epoch = Epoch::new(3);
+        let transition = EpochTransition {
+            epoch,
+            validator_keys: vec![(node_key.public_key(), consensus_key.public_key())],
+        };
+        let provider =
+            SummitSchemeProvider::new(private_scalar(&consensus_key), NAMESPACE.to_vec());
+        let scheme = <SummitSchemeProvider as EpochSchemeProvider<Digest>>::scheme_for_epoch(
+            &provider,
+            &transition,
+        );
+        assert!(provider.register(epoch, scheme));
+
+        assert!(
+            Provider::scoped(&provider, epoch)
+                .and_then(Scoped::into_scheme)
+                .is_some()
+        );
+        assert!(Provider::scheme(&provider, epoch).is_some());
+    }
+
+    #[test]
+    fn provider_keeps_verifier_available_without_exposing_signer() {
+        let node_key = ed25519::PrivateKey::from_seed(1);
+        let consensus_key = bls12381::PrivateKey::from_seed(2);
+        let epoch = Epoch::new(3);
+        let transition = EpochTransition {
+            epoch,
+            validator_keys: vec![(node_key.public_key(), consensus_key.public_key())],
+        };
+        let provider = SummitSchemeProvider::verifier_only(NAMESPACE.to_vec());
+        let scheme = <SummitSchemeProvider as EpochSchemeProvider<Digest>>::scheme_for_epoch(
+            &provider,
+            &transition,
+        );
+        assert!(provider.register(epoch, scheme));
+
+        assert!(
+            Provider::scoped(&provider, epoch)
+                .is_some_and(|scoped| { scoped.into_scheme().is_none() })
+        );
+        assert!(Provider::scheme(&provider, epoch).is_none());
     }
 }
 

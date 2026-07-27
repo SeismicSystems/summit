@@ -7,7 +7,7 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId,
     PayloadStatus, PayloadStatusEnum,
 };
-use rand::RngCore;
+use rand::Rng as _;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use summit_types::{Block, EngineClient};
@@ -393,7 +393,7 @@ impl EngineClient for MockEngineClient {
 
         // Generate unique payload ID
         let payload_id = {
-            let mut rng = rand::thread_rng();
+            let mut rng = commonware_utils::sys_rng();
             let mut bytes = [0u8; 8];
             rng.fill_bytes(&mut bytes);
             PayloadId::new(bytes)

@@ -6,7 +6,7 @@ use commonware_utils::union_unique;
 use curve25519_dalek::{
     constants::ED25519_BASEPOINT_POINT, edwards::CompressedEdwardsY, scalar::Scalar,
 };
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use sha2::{Digest, Sha512};
 
 const DERIVE_TAG: &[u8] = b"ed25519-additive-derive/tweak/v1";
@@ -62,7 +62,7 @@ impl ExtPrivateKey {
 }
 
 impl Random for ExtPrivateKey {
-    fn random(rng: impl CryptoRngCore) -> Self {
+    fn random(rng: impl CryptoRng) -> Self {
         let master = PrivateKey::random(rng);
         // Random master => no cross-deployment collision concern; empty namespace.
         ExtPrivateKey::derive_child_signer(&master, b"", 0)
@@ -168,12 +168,12 @@ fn compute_tweak(master_pub: &[u8; 32], namespace: &[u8], path: &[u8]) -> Scalar
 mod tests {
     use super::*;
     use commonware_cryptography::Verifier;
-    use rand_core::OsRng;
+    use commonware_utils::TestRng;
 
     #[test]
     fn test_derived_pubkey_matches() {
         // Create master key
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(0));
         let master_pk = master_sk.public_key();
 
         // Derive first child
@@ -193,7 +193,7 @@ mod tests {
         let msg: &[u8] = b"hello, world!";
 
         // Create master key
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(1));
         let master_pk = master_sk.public_key();
 
         // Derive first child
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn test_siblings_different() {
         // Create master key
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(2));
 
         // Derive first child
         let child_index = 0;
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_derivation_deterministic() {
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(3));
         let child_a = ExtPrivateKey::derive_child_signer(&master_sk, b"test-ns", 42);
         let child_b = ExtPrivateKey::derive_child_signer(&master_sk, b"test-ns", 42);
 
@@ -246,8 +246,8 @@ mod tests {
 
     #[test]
     fn test_different_masters_different_children() {
-        let master_a = PrivateKey::random(&mut OsRng);
-        let master_b = PrivateKey::random(&mut OsRng);
+        let master_a = PrivateKey::random(TestRng::new(4));
+        let master_b = PrivateKey::random(TestRng::new(5));
         let index = 0;
 
         let child_a = ExtPrivateKey::derive_child_signer(&master_a, b"test-ns", index);
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_wrong_index_verify_fails() {
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(6));
         let master_pk = master_sk.public_key();
         let signer = ExtPrivateKey::derive_child_signer(&master_sk, b"test-ns", 5);
         let sig = signer.sign(b"ns", b"msg");
@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn test_wrong_master_verify_fails() {
-        let master_a = PrivateKey::random(&mut OsRng);
-        let master_b = PrivateKey::random(&mut OsRng);
+        let master_a = PrivateKey::random(TestRng::new(7));
+        let master_b = PrivateKey::random(TestRng::new(8));
         let index = 0;
 
         let signer = ExtPrivateKey::derive_child_signer(&master_a, b"test-ns", index);
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_tampered_message_verify_fails() {
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(9));
         let signer = ExtPrivateKey::derive_child_signer(&master_sk, b"test-ns", 0);
         let pubkey = signer.public_key();
         let sig = signer.sign(b"ns", b"original");
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_clone_equivalence() {
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(10));
         let original = ExtPrivateKey::derive_child_signer(&master_sk, b"test-ns", 7);
         let cloned = original.clone();
 
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_empty_namespace_and_msg() {
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(11));
         let signer = ExtPrivateKey::derive_child_signer(&master_sk, b"test-ns", 0);
         let pubkey = signer.public_key();
 
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_index_boundaries() {
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(12));
         let child_min = ExtPrivateKey::derive_child_signer(&master_sk, b"test-ns", 0);
         let child_max = ExtPrivateKey::derive_child_signer(&master_sk, b"test-ns", u32::MAX);
 
@@ -329,7 +329,7 @@ mod tests {
     // in the namespace identically (so they still match each other within a namespace).
     #[test]
     fn test_namespace_domain_separation() {
-        let master_sk = PrivateKey::random(&mut OsRng);
+        let master_sk = PrivateKey::random(TestRng::new(13));
         let master_pk = master_sk.public_key();
         let index = 3;
 

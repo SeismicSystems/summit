@@ -296,7 +296,7 @@ impl<
                                     let work = async {
                                         let Ok(block) = block_request.await else {
                                             warn!(?round, "certify: failed to receive block from syncer");
-                                            return false;
+                                            return None;
                                         };
 
                                         if let Some((block_size_bytes, max_block_size_bytes)) =
@@ -313,7 +313,7 @@ impl<
                                                 max_message_size_bytes,
                                                 "certify: block violates P2P block size limit"
                                             );
-                                            return false;
+                                            return Some(false);
                                         }
 
                                         // Wait for parent to be executed so its state is in Reth
@@ -339,7 +339,7 @@ impl<
                                                     ?parent_digest,
                                                     "certify: finalizer did not confirm parent on its chain (superseded, fork, or digest mismatch)"
                                                 );
-                                                return false;
+                                                return Some(false);
                                             }
                                         }
 
@@ -391,13 +391,24 @@ impl<
                                                 height = block.height(),
                                                 "certify: payload rejected by execution client"
                                             );
+                                            return Some(false);
                                         }
-                                        valid
+
+                                        // Certification permits Simplex to cast a finalize vote.
+                                        // Hold that vote until the block and any accepted
+                                        // notarization for this round are durably stored.
+                                        if !syncer.certified(round, block).await {
+                                            warn!(?round, "certify: syncer durability barrier closed");
+                                            return None;
+                                        }
+                                        Some(true)
                                     };
 
                                     select! {
                                         result = work => {
-                                            let _ = response.send(result);
+                                            if let Some(result) = result {
+                                                let _ = response.send(result);
+                                            }
                                         },
                                         _ = response.closed() => {
                                             warn!("certify aborted for round {round}");

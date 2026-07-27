@@ -306,29 +306,34 @@ impl<D: Digest> Request<D> {
         }
     }
 
-    pub(crate) const fn into_inner(self) -> ResolverFetch<Key<D>, Annotation> {
+    pub(crate) fn into_inner(self) -> ResolverFetch<Key<D>, Annotation> {
         match self.kind {
             RequestKind::Notarized { round } => ResolverFetch {
                 key: Key::Notarized { round },
                 subscriber: Annotation::Notarization { round },
+                span: tracing::Span::current(),
             },
             RequestKind::Finalized { height } => ResolverFetch {
                 key: Key::Finalized {
                     height: height.get(),
                 },
                 subscriber: Annotation::Finalized(Finalized::ByHeight { height }),
+                span: tracing::Span::current(),
             },
             RequestKind::CertifiedBlock { commitment, height } => ResolverFetch {
                 key: Key::Block(commitment),
                 subscriber: Annotation::Certified { height },
+                span: tracing::Span::current(),
             },
             RequestKind::FinalizedBlockByHeight { commitment, height } => ResolverFetch {
                 key: Key::Block(commitment),
                 subscriber: Annotation::Finalized(Finalized::ByHeight { height }),
+                span: tracing::Span::current(),
             },
             RequestKind::FinalizedBlockByRound { commitment, round } => ResolverFetch {
                 key: Key::Block(commitment),
                 subscriber: Annotation::Finalized(Finalized::ByRound { round }),
+                span: tracing::Span::current(),
             },
         }
     }

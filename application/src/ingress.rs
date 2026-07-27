@@ -108,6 +108,9 @@ impl<P: PublicKey> Automaton for Mailbox<P> {
 }
 
 impl<P: PublicKey> CertifiableAutomaton for Mailbox<P> {
+    /// Returns `true` only after execution validation succeeds and the block is
+    /// durably stored by the syncer. This is the durability barrier before
+    /// Simplex may journal and broadcast a finalize vote.
     async fn certify(&mut self, round: Round, payload: Self::Digest) -> oneshot::Receiver<bool> {
         let (response, receiver) = oneshot::channel();
         self.sender
