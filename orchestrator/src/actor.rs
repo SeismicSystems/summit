@@ -21,7 +21,7 @@ use commonware_runtime::{
 use commonware_utils::{NZU16, NZUsize, vec::NonEmptyVec};
 use futures::{StreamExt, channel::mpsc};
 use governor::clock::Clock as GClock;
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use std::{
     collections::BTreeMap,
     sync::{Arc, RwLock},
@@ -69,7 +69,7 @@ where
 
 pub struct Actor<E, B, A, St, ES>
 where
-    E: BufferPooler + Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
+    E: BufferPooler + Spawner + Metrics + CryptoRng + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>
@@ -103,7 +103,7 @@ where
 
 impl<E, B, A, St, ES> Actor<E, B, A, St, ES>
 where
-    E: BufferPooler + Spawner + Metrics + CryptoRngCore + Clock + GClock + Storage + Network,
+    E: BufferPooler + Spawner + Metrics + CryptoRng + Clock + GClock + Storage + Network,
     B: Blocker<PublicKey = PublicKey>,
     A: CertifiableAutomaton<Context = Context<Digest, PublicKey>, Digest = Digest>
         + Relay<Digest = Digest, PublicKey = PublicKey, Plan = simplex::Plan<PublicKey>>

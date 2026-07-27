@@ -77,10 +77,10 @@ mod tests {
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use commonware_formatting::hex;
     use commonware_math::algebra::Random;
-    use rand::rngs::OsRng;
+    use commonware_utils::TestRng;
 
     fn generate_test_pk_hex() -> String {
-        let private_key = PrivateKey::random(&mut OsRng);
+        let private_key = PrivateKey::random(TestRng::new(0));
         let public_key = private_key.public_key();
         format!("0x{}", hex(public_key.as_ref()))
     }

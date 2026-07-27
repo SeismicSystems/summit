@@ -154,9 +154,9 @@ mod chain_domain_tests {
         use crate::PrivateKey;
         use commonware_cryptography::{Signer, Verifier};
         use commonware_math::algebra::Random;
-        use rand_core::OsRng;
+        use commonware_utils::TestRng;
 
-        let key = PrivateKey::random(&mut OsRng);
+        let key = PrivateKey::random(TestRng::new(0));
         let pk = key.public_key();
         let msg = b"peer-handshake";
 

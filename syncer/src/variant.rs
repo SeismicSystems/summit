@@ -16,7 +16,7 @@ use commonware_consensus::{Block, types::Round};
 use commonware_cryptography::{Digest, Digestible, PublicKey};
 use commonware_p2p::Recipients;
 use commonware_utils::channel::oneshot;
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 /// A marker trait describing the types used by a variant of the syncer.
 pub trait Variant: Clone + Send + Sync + 'static {
@@ -80,13 +80,13 @@ pub trait Buffer<V: Variant>: Clone + Send + Sync + 'static {
     fn find_by_digest(
         &self,
         digest: <V::Block as Digestible>::Digest,
-    ) -> impl Future<Output = Option<V::Block>> + Send;
+    ) -> impl Future<Output = Option<Arc<V::Block>>> + Send;
 
     /// Attempt to find a block by its commitment.
     fn find_by_commitment(
         &self,
         commitment: V::Commitment,
-    ) -> impl Future<Output = Option<V::Block>> + Send;
+    ) -> impl Future<Output = Option<Arc<V::Block>>> + Send;
 
     /// Subscribe to a block's availability by its digest.
     ///
@@ -96,7 +96,7 @@ pub trait Buffer<V: Variant>: Clone + Send + Sync + 'static {
     fn subscribe_by_digest(
         &self,
         digest: <V::Block as Digestible>::Digest,
-    ) -> Option<oneshot::Receiver<V::Block>>;
+    ) -> Option<oneshot::Receiver<Arc<V::Block>>>;
 
     /// Subscribe to a block's availability by its commitment.
     ///
@@ -106,11 +106,11 @@ pub trait Buffer<V: Variant>: Clone + Send + Sync + 'static {
     fn subscribe_by_commitment(
         &self,
         commitment: V::Commitment,
-    ) -> Option<oneshot::Receiver<V::Block>>;
+    ) -> Option<oneshot::Receiver<Arc<V::Block>>>;
 
     /// Notify the buffer that a block has been finalized.
     fn finalized(&self, commitment: V::Commitment);
 
     /// Send a block to peers.
-    fn send(&self, round: Round, block: V::Block, recipients: Recipients<Self::PublicKey>);
+    fn send(&self, round: Round, block: Arc<V::Block>, recipients: Recipients<Self::PublicKey>);
 }

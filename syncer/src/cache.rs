@@ -5,7 +5,9 @@ use commonware_consensus::{
     simplex::types::{Finalization, Notarization},
     types::{Epoch, Height, Round, View},
 };
-use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
+use commonware_runtime::{
+    BufferPooler, Clock, Handle, Metrics, Spawner, Storage, buffer::paged::CacheRef,
+};
 use commonware_storage::{
     archive::{self, Archive as _, Identifier, MultiArchive as _, prunable},
     metadata::{self, Metadata},
@@ -269,16 +271,33 @@ impl<
         archive
     }
 
-    /// Add a verified block to the prunable archive.
-    pub(crate) async fn put_verified(&mut self, round: Round, commitment: B::Digest, block: B) {
+    /// Add a verified block to the prunable archive and start syncing it.
+    pub(crate) async fn put_verified(
+        &mut self,
+        round: Round,
+        commitment: B::Digest,
+        block: B,
+    ) -> Handle<()> {
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
-            return;
+            return Handle::ready(Ok(()));
         };
+        let view = round.view().get();
+        match cache.verified_blocks.has_at(view, &commitment).await {
+            Ok(true) => {
+                return Self::handle_start_result(
+                    cache.verified_blocks.start_sync().await,
+                    round,
+                    "verified",
+                );
+            }
+            Ok(false) => {}
+            Err(e) => panic!("failed to check verified blocks: {e}"),
+        }
         let result = cache
             .verified_blocks
-            .put_sync(round.view().get(), commitment, block)
+            .put_multi_start_sync(view, commitment, block)
             .await;
-        Self::handle_result(result, round, "verified");
+        Self::handle_start_result(result, round, "verified")
     }
 
     /// Add a certified block to the height-indexed archive.
@@ -293,9 +312,11 @@ impl<
             return;
         };
 
+        // A digest determines its height, so scoping the dedup to this height
+        // is exact and avoids fetching values.
         match cache
             .certified_blocks
-            .has(Identifier::Key(&commitment))
+            .has_at(height.get(), &commitment)
             .await
         {
             Ok(true) => return,
@@ -316,33 +337,38 @@ impl<
         }
     }
 
-    /// Add a notarized block to the prunable archive.
-    pub(crate) async fn put_block(&mut self, round: Round, commitment: B::Digest, block: B) {
+    /// Add a notarized block to the prunable archive and start syncing it.
+    pub(crate) async fn put_block(
+        &mut self,
+        round: Round,
+        commitment: B::Digest,
+        block: B,
+    ) -> Handle<()> {
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
-            return;
+            return Handle::ready(Ok(()));
         };
         let result = cache
             .notarized_blocks
-            .put_sync(round.view().get(), commitment, block)
+            .put_start_sync(round.view().get(), commitment, block)
             .await;
-        Self::handle_result(result, round, "notarized");
+        Self::handle_start_result(result, round, "notarized")
     }
 
-    /// Add a notarization to the prunable archive.
+    /// Add a notarization to the prunable archive and start syncing it.
     pub(crate) async fn put_notarization(
         &mut self,
         round: Round,
         commitment: B::Digest,
         notarization: Notarization<S, B::Digest>,
-    ) {
+    ) -> Handle<()> {
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
-            return;
+            return Handle::ready(Ok(()));
         };
         let result = cache
             .notarizations
-            .put_sync(round.view().get(), commitment, notarization)
+            .put_start_sync(round.view().get(), commitment, notarization)
             .await;
-        Self::handle_result(result, round, "notarization");
+        Self::handle_start_result(result, round, "notarization")
     }
 
     /// Add a finalization to the prunable archive.
@@ -377,6 +403,56 @@ impl<
         }
     }
 
+    fn handle_start_result(
+        result: Result<Handle<()>, archive::Error>,
+        round: Round,
+        name: &str,
+    ) -> Handle<()> {
+        match result {
+            Ok(handle) => {
+                debug!(?round, name, "cache sync started");
+                handle
+            }
+            Err(archive::Error::AlreadyPrunedTo(_)) => {
+                debug!(?round, name, "already pruned");
+                Handle::ready(Ok(()))
+            }
+            Err(e) => panic!("failed to persist {name}: {e}"),
+        }
+    }
+
+    /// Returns whether the verified archive holds `commitment` at `round`.
+    pub(crate) async fn has_verified(&self, round: Round, commitment: &B::Digest) -> bool {
+        let Some(cache) = self.caches.get(&round.epoch()) else {
+            return false;
+        };
+        cache
+            .verified_blocks
+            .has_at(round.view().get(), commitment)
+            .await
+            .expect("failed to check verified blocks")
+    }
+
+    /// Observe all verified-block writes accepted before this call.
+    pub(crate) async fn start_sync_verified(&mut self, round: Round) -> Handle<()> {
+        let Some(cache) = self.caches.get_mut(&round.epoch()) else {
+            return Handle::ready(Ok(()));
+        };
+        Self::handle_start_result(cache.verified_blocks.start_sync().await, round, "verified")
+    }
+
+    /// Observe all notarization writes accepted before this call.
+    pub(crate) async fn start_sync_notarizations(&mut self, round: Round) -> Handle<()> {
+        let Some(cache) = self.caches.get_mut(&round.epoch()) else {
+            return Handle::ready(Ok(()));
+        };
+        Self::handle_start_result(
+            cache.notarizations.start_sync().await,
+            round,
+            "notarization",
+        )
+    }
+
     /// Get a notarization from the prunable archive by round.
     pub(crate) async fn get_notarization(
         &self,
@@ -390,7 +466,11 @@ impl<
             .expect("failed to get notarization")
     }
 
-    /// Get the block previously persisted in the verified archive for `round`.
+    /// Get a block previously persisted in the verified archive for `round`.
+    ///
+    /// The archive can hold multiple candidates at one view when a leader
+    /// equivocates across a crash. This returns the first stored candidate;
+    /// callers must validate its digest and context before reuse.
     pub(crate) async fn get_verified(&self, round: Round) -> Option<B> {
         let cache = self.caches.get(&round.epoch())?;
         cache

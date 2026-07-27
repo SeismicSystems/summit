@@ -64,20 +64,20 @@ target/debug/summit --help
 
 ## Test
 
-### Unit & integration tests (153 tests)
+### Unit & integration tests
 
 ```bash
-cargo test                            # default features — 153 tests
-cargo test --all-features             # includes e2e test harness — 170 tests
+cargo test                            # default features
+cargo test --all-features             # includes e2e test harness
 ```
 
 Test breakdown by crate:
 
-- `summit` (node): 40 tests (syncer, checkpointing, execution requests, deposits, withdrawals)
-- `summit-finalizer`: 19 tests (validator lifecycle, fork handling, state queries)
-- `summit-syncer`: 11 tests
-- `summit-types`: 75 tests (codec, consensus state, headers, withdrawals, protocol params)
-- `summit-rpc`: 8 integration tests
+- `summit` (node): syncer, checkpointing, execution requests, observer, and engine integration tests
+- `summit-finalizer`: validator lifecycle, fork handling, and state query tests
+- `summit-syncer`: delivery, recovery, durability, resolver, subscription, and forwarding tests
+- `summit-types`: codec, consensus state, header, withdrawal, and protocol parameter tests
+- `summit-rpc`: JSON-RPC integration tests
 
 ### CI checks (must pass before PR)
 

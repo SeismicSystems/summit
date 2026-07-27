@@ -12,9 +12,8 @@ use commonware_cryptography::{Hasher, Sha256, ed25519};
 use commonware_formatting::from_hex;
 use commonware_formatting::hex;
 use commonware_parallel::Sequential;
-use commonware_utils::TryCollect;
 use commonware_utils::ordered::BiMap;
-use rand::rngs::OsRng;
+use commonware_utils::{TryCollect, sys_rng};
 use ssz::{Decode, Encode as SszEncode};
 use std::collections::BTreeMap;
 use std::{error, fmt};
@@ -380,7 +379,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
         .collect();
     participants.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut rng = OsRng;
+    let mut rng = sys_rng();
     let mut signing_set = participants.clone();
 
     for (i, finalized_header) in finalized_headers.iter().enumerate() {

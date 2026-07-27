@@ -76,7 +76,7 @@ impl<E: Context> Stream<E> {
         self.metadata.put(LATEST_KEY, height);
     }
 
-    pub(crate) async fn sync(&self) -> Result<(), metadata::Error> {
+    pub(crate) async fn sync(&mut self) -> Result<(), metadata::Error> {
         self.metadata.sync().await
     }
 }

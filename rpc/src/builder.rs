@@ -1,4 +1,4 @@
-use http::{HeaderValue, Method};
+use http::{HeaderValue, Method, StatusCode};
 use jsonrpsee::server::{BatchRequestConfig, ServerBuilder, ServerConfigBuilder, ServerHandle};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -122,9 +122,13 @@ impl RpcServerBuilder {
             .map(create_cors_layer)
             .transpose()?;
 
-        let http_middleware = ServiceBuilder::new()
-            .option_layer(cors_layer)
-            .layer(TimeoutLayer::new(self.request_timeout));
+        let http_middleware =
+            ServiceBuilder::new()
+                .option_layer(cors_layer)
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    self.request_timeout,
+                ));
 
         let server = ServerBuilder::new()
             .set_config(self.config.build())

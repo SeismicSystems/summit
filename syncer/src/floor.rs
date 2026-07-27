@@ -302,6 +302,7 @@ mod tests {
                 subscriber: Annotation::Finalized(Finalized::ByHeight {
                     height: subscriber_height
                 }),
+                ..
             } if subscriber_height == Height::new(6)
         ));
         assert!(matches!(
@@ -313,6 +314,7 @@ mod tests {
                 subscriber: Annotation::Notarization {
                     round: subscriber_round
                 },
+                ..
             } if request_round == round(6) && subscriber_round == round(6)
         ));
     }
@@ -408,6 +410,7 @@ mod tests {
                 subscriber: Annotation::Finalized(Finalized::ByHeight {
                     height: subscriber_height
                 }),
+                ..
             } if subscriber_height == Height::zero()
         ));
     }
