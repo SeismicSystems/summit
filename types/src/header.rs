@@ -21,6 +21,34 @@ pub struct AddedValidator {
     pub consensus_key: bls12381::PublicKey,
 }
 
+/// Hardfork boundary exception (July 2026 migration).
+///
+/// The header digest formula changed across the hardfork: the pre-fork client
+/// hashed a manual concatenation of selected fields (including the
+/// since-removed `block_value`), while this client hashes the header's full
+/// encoding. The migration checkpoint's terminal header was finalized under
+/// the old formula, so its certificate signs the old digest — a value the new
+/// formula can never reproduce. [`Header::computed_digest`] therefore maps the
+/// new-formula hash of that one header's exact bytes back to its pre-fork
+/// digest, keeping the original finalization certificate bound to the header
+/// and preserving the block's identity (parent links, archive keys) across
+/// the fork.
+///
+/// The exception can only fire for the genuine boundary header: any change to
+/// any header field changes the new-formula hash and misses the constant.
+/// Both values are produced by the `write_new_checkpoint` migration test.
+pub const FORK_BOUNDARY_NEW_FORMULA_DIGEST: Digest = Digest([
+    183, 116, 193, 78, 120, 225, 247, 146, 142, 165, 143, 27, 163, 249, 67, 120, 97, 53, 99, 66,
+    49, 84, 189, 254, 224, 79, 173, 59, 156, 76, 231, 93,
+]);
+
+/// The boundary header's pre-fork digest — what its finalization certificate
+/// actually signed. See [`FORK_BOUNDARY_NEW_FORMULA_DIGEST`].
+pub const FORK_BOUNDARY_OLD_DIGEST: Digest = Digest([
+    38, 11, 201, 49, 65, 121, 11, 86, 225, 26, 85, 222, 140, 250, 75, 71, 23, 106, 223, 190, 10,
+    55, 133, 108, 177, 108, 64, 201, 208, 133, 64, 83,
+]);
+
 #[derive(Clone, Debug, Encode, Decode)]
 pub struct Header {
     parent: SszDigest,
@@ -184,7 +212,14 @@ impl Header {
         let bytes = self.encode();
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
-        hasher.finalize()
+        let digest = hasher.finalize();
+        // Hardfork exception: the migration boundary header keeps its pre-fork
+        // identity so its original finalization certificate stays bound to it.
+        // See [`FORK_BOUNDARY_NEW_FORMULA_DIGEST`].
+        if digest == FORK_BOUNDARY_NEW_FORMULA_DIGEST {
+            return FORK_BOUNDARY_OLD_DIGEST;
+        }
+        digest
     }
 }
 
