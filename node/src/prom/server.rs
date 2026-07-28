@@ -49,6 +49,11 @@ impl MetricServer {
             cw_context,
         } = &self.config;
 
+        // Install the global recorder before any metrics are emitted or described —
+        // otherwise they hit the no-op recorder and are silently dropped.
+        let recorder = install_prometheus_recorder();
+        recorder.spawn_upkeep();
+
         let hooks = hooks.clone();
         let cw_context = cw_context.clone();
         self.start_endpoint(
@@ -84,6 +89,7 @@ impl MetricServer {
             .await
             .wrap_err("Could not bind to address")?;
 
+        let handle = install_prometheus_recorder();
         tokio::spawn(async move {
             let mut stop_signal = stop_signal.fuse();
             loop {
@@ -94,7 +100,6 @@ impl MetricServer {
                             continue;
                         };
 
-                        let handle = install_prometheus_recorder();
                         let hook = hook.clone();
                         let cw_context = cw_context.clone();
                         let service = tower::service_fn(move |_| {
