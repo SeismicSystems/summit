@@ -1,3 +1,4 @@
+use crate::FaultEvidence;
 use crate::durability::Durable as _;
 use commonware_actor::{
     Feedback,
@@ -189,6 +190,11 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
         /// The finalization.
         finalization: Finalization<S, B::Digest>,
     },
+    /// Evidence of Byzantine behavior (equivocation) reported by the consensus engine.
+    Fault {
+        /// The fault evidence.
+        evidence: FaultEvidence<B::Digest, S>,
+    },
     /// Attempts to set the sync starting point from a finalized commitment.
     ///
     /// If the verified finalization advances the current floor, the syncer
@@ -246,7 +252,8 @@ impl<S: Scheme<B::Digest>, B: Block> Message<S, B> {
             | Self::SetFloor { .. }
             | Self::Prune { .. }
             | Self::Notarization { .. }
-            | Self::Finalization { .. } => false,
+            | Self::Finalization { .. }
+            | Self::Fault { .. } => false,
         }
     }
 
@@ -268,7 +275,8 @@ impl<S: Scheme<B::Digest>, B: Block> Message<S, B> {
             | Self::SetFloor { .. }
             | Self::Prune { .. }
             | Self::Notarization { .. }
-            | Self::Finalization { .. } => false,
+            | Self::Finalization { .. }
+            | Self::Fault { .. } => false,
         }
     }
 }
@@ -726,6 +734,15 @@ impl<S: Scheme<B::Digest>, B: Block> Reporter for Mailbox<S, B> {
         let message = match activity {
             Activity::Notarization(notarization) => Message::Notarization { notarization },
             Activity::Finalization(finalization) => Message::Finalization { finalization },
+            Activity::ConflictingNotarize(evidence) => Message::Fault {
+                evidence: FaultEvidence::conflicting_notarize(evidence),
+            },
+            Activity::ConflictingFinalize(evidence) => Message::Fault {
+                evidence: FaultEvidence::conflicting_finalize(evidence),
+            },
+            Activity::NullifyFinalize(evidence) => Message::Fault {
+                evidence: FaultEvidence::nullify_finalize(evidence),
+            },
             _ => return Feedback::Ok,
         };
         self.sender.enqueue(message)

@@ -77,6 +77,7 @@ impl<B: Block, S: Scheme<B::Digest>> Reporter for Application<B, S> {
                     .unwrap()
                     .push(RecordedUpdate::Notarized(block.digest()));
             }
+            Update::Fault(_) => {}
         }
         Feedback::Ok
     }

@@ -30,7 +30,7 @@ use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::{Duration, Instant};
 use summit_orchestrator::Message;
-use summit_syncer::Update;
+use summit_syncer::{FaultEvidence, Update};
 use summit_types::account::ValidatorStatus;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{
@@ -584,6 +584,9 @@ impl<
                                         self.cancellation_token.cancel();
                                         break;
                                     }
+                                }
+                                Update::Fault(evidence) => {
+                                    self.handle_fault(evidence);
                                 }
                     }
                 }
@@ -1367,6 +1370,45 @@ impl<
             }
         }
         Ok(HandleOutcome::Applied)
+    }
+
+    /// Handles Byzantine fault evidence observed by the local consensus engine:
+    /// a committee member signed conflicting votes.
+    ///
+    /// This is not deterministic. Only nodes that saw both votes observe it.
+    fn handle_fault(
+        &self,
+        evidence: FaultEvidence<Digest, bls12381_multisig::Scheme<PublicKey, V>>,
+    ) {
+        // The signer index refers to the epoch committee sorted by node public
+        // key (the same order used to build the signing scheme). Resolution is
+        // only valid when the evidence epoch matches the current canonical
+        // state epoch.
+        let validator = (evidence.epoch.get() == self.canonical_state.get_epoch())
+            .then(|| {
+                self.canonical_state
+                    .get_current_epoch_validators()
+                    .into_iter()
+                    .nth(evidence.signer.get() as usize)
+                    .map(|(node_key, _)| node_key)
+            })
+            .flatten();
+        error!(
+            target: "critical",
+            epoch = evidence.epoch.get(),
+            view = evidence.view.get(),
+            signer_index = evidence.signer.get(),
+            ?validator,
+            kind = ?evidence.kind(),
+            "validator equivocated (Byzantine fault detected)"
+        );
+        #[cfg(feature = "prom")]
+        counter!(
+            "critical_errors_total",
+            "reason" => evidence.kind().as_reason(),
+            "severity" => "critical"
+        )
+        .increment(1);
     }
 
     async fn handle_notarized_block(&mut self, block: Block) -> Result<HandleOutcome> {
