@@ -153,7 +153,6 @@ cd testnet && ./reset.sh
 | ----------------------------------------- | ------------ | --------------------------------------------------- |
 | `summit`                                  | —            | Main validator node                                 |
 | `testnet`                                 | —            | Spin up 4-node local testnet (needs `reth` in PATH) |
-| `genesis`                                 | —            | Generate genesis files from validator list          |
 | `stake-and-checkpoint`                    | `e2e`        | E2E: stake validator + checkpoint test              |
 | `stake-and-join-with-outdated-checkpoint` | `e2e`        | E2E: join with outdated checkpoint                  |
 | `withdraw-and-exit`                       | `e2e`        | E2E: withdrawal flow test                           |
@@ -164,15 +163,15 @@ cd testnet && ./reset.sh
 ## Project Layout
 
 ```
-node/                  Main binary crate (summit, testnet, genesis)
+node/                  Main binary crate (summit, testnet)
   src/engine.rs          Central coordinator — component lifecycle, message routing
   src/args.rs            CLI argument parsing (clap)
   src/config.rs          Channel sizes, timeouts, default paths
   src/keys.rs            Key management (generate/show)
-  src/genesis.rs         Genesis file utilities (config digest)
+  src/genesis.rs         Genesis file utilities (set-validators/digest)
   src/test_harness/      Shared test harness for e2e tests
   src/tests/             Integration tests (syncer, checkpointing, execution requests)
-  src/bin/               Additional binaries (testnet, genesis, e2e, bench)
+  src/bin/               Additional binaries (testnet, e2e, bench)
 
 application/           Consensus interface — implements Simplex Automaton + Relay traits
   src/actor.rs           Propose, verify, broadcast blocks

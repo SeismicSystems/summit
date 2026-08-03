@@ -216,7 +216,16 @@ impl Genesis {
 
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let file_string = std::fs::read_to_string(path)?;
-        let genesis: Genesis = toml::from_str(&file_string)?;
+        Self::from_toml_str(&file_string)
+    }
+
+    /// Parse and validate a genesis from TOML text: the same path
+    /// [`load_from_file`](Self::load_from_file) takes once the bytes are read,
+    /// so a genesis accepted here is one a starting validator accepts. Lets a
+    /// tool that produces genesis bytes check them before they reach a disk or
+    /// a node.
+    pub fn from_toml_str(text: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let genesis: Genesis = toml::from_str(text)?;
         genesis.validate()?;
         Ok(genesis)
     }
