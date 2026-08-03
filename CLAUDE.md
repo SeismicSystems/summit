@@ -57,7 +57,7 @@ cargo build
 ```bash
 target/debug/summit --help
 # Usage: summit <COMMAND>
-# Commands: run, keys, help
+# Commands: run, keys, genesis, help
 ```
 
 ## Test
@@ -169,6 +169,7 @@ node/                  Main binary crate (summit, testnet, genesis)
   src/args.rs            CLI argument parsing (clap)
   src/config.rs          Channel sizes, timeouts, default paths
   src/keys.rs            Key management (generate/show)
+  src/genesis.rs         Genesis file utilities (config digest)
   src/test_harness/      Shared test harness for e2e tests
   src/tests/             Integration tests (syncer, checkpointing, execution requests)
   src/bin/               Additional binaries (testnet, genesis, e2e, bench)
