@@ -11,6 +11,7 @@ use commonware_cryptography::{Hasher as _, Sha256};
 use commonware_utils::{from_hex, from_hex_formatted};
 use serde::{Deserialize, Serialize};
 use ssz::Encode as _;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ssz_derive::Encode)]
@@ -207,10 +208,29 @@ impl Genesis {
     /// spec-stable, and complete — a new field is automatically included unless
     /// explicitly `#[ssz(skip_serializing)]`'d). Per-validator `ip_address` is
     /// skipped: it is network topology, not consensus identity.
+    ///
+    /// The validator list is put in node-key order before hashing. SSZ encodes a
+    /// list in its stored order, so without this the order an operator happened
+    /// to write the file in would be part of the chain identity: two files
+    /// naming the same validator set in different orders would derive different
+    /// domains, and their nodes could not authenticate each other. Canonicalizing
+    /// here makes the digest a function of the set, and means no emitter has to
+    /// be trusted to have sorted it.
+    ///
+    /// Panics if a validator's `node_public_key` is not hex, like
+    /// [`genesis_hash`](Self::genesis_hash) and for the same reason: `validate`
+    /// rejects it at load time. Refusing to return is the safe failure here — a
+    /// digest derived from a key we could not read would silently put this node
+    /// in a chain domain of its own.
     pub fn config_digest(&self) -> [u8; 32] {
+        let mut canonical = self.clone();
+        canonical.validators.sort_by_cached_key(|v| {
+            from_hex_formatted(&v.node_public_key).expect("bad validator node_public_key")
+        });
+
         let mut hasher = Sha256::new();
         hasher.update(GENESIS_CONFIG_DOMAIN_TAG);
-        hasher.update(&self.as_ssz_bytes());
+        hasher.update(&canonical.as_ssz_bytes());
         hasher.finalize().0
     }
 
@@ -222,6 +242,7 @@ impl Genesis {
     }
 
     fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.validate_no_duplicate_keys()?;
         // Genesis epoch length must satisfy the same bounds as a runtime
         // EpochLength protocol-parameter update (hence the shared ProtocolParam
         // validation). An oversized launch value defers every epoch-boundary
@@ -301,6 +322,55 @@ impl Genesis {
                 self.invalid_deposit_tax, MAX_INVALID_DEPOSIT_TAX
             )
             .into());
+        }
+        Ok(())
+    }
+
+    /// No identity may appear twice in the validator set.
+    ///
+    /// The genesis committee is inserted into consensus state keyed by node
+    /// public key (`get_initial_state` -> `set_account`), so a repeated node key
+    /// silently collapses the set: the network launches with fewer validators
+    /// than the file lists and computes quorum over the smaller set, while
+    /// startup reports the file's count. A repeated consensus key is rejected for
+    /// the same reason — it is a second name for one signing identity. Repeated
+    /// `withdrawal_credentials` are fine: one operator may run several validators
+    /// and be paid at one address.
+    ///
+    /// Comparison is on decoded bytes, so a key repeated in a different spelling
+    /// (`0x` prefix, upper case) is still caught; both spellings are accepted
+    /// everywhere else a key is read.
+    fn validate_no_duplicate_keys(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut node_keys = HashSet::with_capacity(self.validators.len());
+        let mut consensus_keys = HashSet::with_capacity(self.validators.len());
+        for validator in &self.validators {
+            let node_key = from_hex_formatted(&validator.node_public_key).ok_or_else(|| {
+                format!(
+                    "validator node_public_key is not valid hex: {:?}",
+                    validator.node_public_key
+                )
+            })?;
+            let consensus_key =
+                from_hex_formatted(&validator.consensus_public_key).ok_or_else(|| {
+                    format!(
+                        "validator consensus_public_key is not valid hex: {:?}",
+                        validator.consensus_public_key
+                    )
+                })?;
+            if !node_keys.insert(node_key) {
+                return Err(format!(
+                    "duplicate validator node_public_key: {:?}",
+                    validator.node_public_key
+                )
+                .into());
+            }
+            if !consensus_keys.insert(consensus_key) {
+                return Err(format!(
+                    "duplicate validator consensus_public_key: {:?}",
+                    validator.consensus_public_key
+                )
+                .into());
+            }
         }
         Ok(())
     }
@@ -668,6 +738,87 @@ mod tests {
                 "config_digest must change when `{label}` changes"
             );
         }
+    }
+
+    /// Validator order is how a file happens to be written, not who is in the
+    /// set, so it must not move the digest: two operators handed the same
+    /// validators in different orders have to derive the same chain domain.
+    #[test]
+    fn config_digest_ignores_validator_order() {
+        let base = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        let mut reordered = base.clone();
+        reordered.validators.reverse();
+
+        assert_ne!(
+            reordered.validators[0].node_public_key, base.validators[0].node_public_key,
+            "the reversal must actually have moved validators"
+        );
+        assert_eq!(reordered.config_digest(), base.config_digest());
+    }
+
+    /// Frozen digest for the committed example genesis, whose validators are
+    /// already in node-key order. Canonicalizing the order inside the digest
+    /// must leave every already-ordered genesis — which is every genesis Summit's
+    /// own tooling has emitted — hashing exactly as before.
+    #[test]
+    fn config_digest_matches_frozen_vector() {
+        let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        assert_eq!(
+            commonware_utils::hex(&genesis.config_digest()),
+            "659162923344cebe204fa4552cc431ad72d60caaae2611336cff4a600c9b64c2"
+        );
+    }
+
+    /// One repeated node key means the consensus state silently holds one fewer
+    /// validator than the file names, so genesis must refuse to load.
+    #[test]
+    fn rejects_duplicate_validator_node_key() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.validators[1].node_public_key = genesis.validators[0].node_public_key.clone();
+        assert!(genesis.validate().is_err());
+    }
+
+    /// The same key spelled differently is the same key: duplicates are compared
+    /// on decoded bytes, not on text.
+    #[test]
+    fn rejects_duplicate_validator_node_key_respelled() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.validators[1].node_public_key =
+            format!("0x{}", genesis.validators[0].node_public_key.to_uppercase());
+        assert!(genesis.validate().is_err());
+    }
+
+    /// Two validators sharing a consensus key are one signing identity wearing
+    /// two names, which the stake and quorum accounting would double-count.
+    #[test]
+    fn rejects_duplicate_validator_consensus_key() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.validators[1].consensus_public_key =
+            genesis.validators[0].consensus_public_key.clone();
+        assert!(genesis.validate().is_err());
+    }
+
+    /// Withdrawal credentials are an address, not an identity: one operator
+    /// running several validators pays out to a single address.
+    #[test]
+    fn accepts_repeated_withdrawal_credentials() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.validators[1].withdrawal_credentials =
+            genesis.validators[0].withdrawal_credentials.clone();
+        assert!(genesis.validate().is_ok());
+    }
+
+    /// A key that isn't hex can be neither compared nor ordered, so it cannot be
+    /// left to fail later at committee construction.
+    #[test]
+    fn rejects_non_hex_validator_keys() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.validators[0].node_public_key = "not-a-key".into();
+        assert!(genesis.validate().is_err());
+
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.validators[0].consensus_public_key = "not-a-key".into();
+        assert!(genesis.validate().is_err());
     }
 
     /// A validator's `ip_address` is network topology, not consensus identity,
