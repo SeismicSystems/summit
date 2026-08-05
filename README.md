@@ -47,21 +47,26 @@ cargo build --release
 
 ### 1. Generate Validator Keys
 ```bash
-cargo run -- keys generate --key-store-path /path/to/keys
+cargo run --bin summit -- keys generate --key-store-path /path/to/keys
 ```
 
 ### 2. View Your Public Key
 ```bash
-cargo run -- keys show --key-store-path /path/to/keys
+cargo run --bin summit -- keys show --key-store-path /path/to/keys
 ```
 
 ### 3. Configure Genesis
 Create a genesis file that references your EVM genesis configuration. See [example_genesis.toml](https://github.com/SeismicSystems/summit/blob/main/example_genesis.toml) for the required format.
 
+Print the config digest that identifies the chain it founds — every validator must agree on it, and the file is checked on the way in:
+```bash
+cargo run --bin summit -- genesis digest /path/to/genesis.toml
+```
+
 ### 4. Start Your Validator
 Ensure your EVM client is running, then:
 ```bash
-cargo run -- run \
+cargo run --bin summit -- run \
   --key-store-path /path/to/keys \
   --store-path /storage/directory \
   --engine-ipc-path /tmp/reth_engine_api.ipc \

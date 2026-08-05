@@ -1,6 +1,7 @@
 pub mod args;
 pub mod config;
 pub mod engine;
+mod genesis;
 mod keys;
 mod nat;
 pub mod telemetry;

@@ -4,6 +4,7 @@ use crate::{
         MESSAGE_BACKLOG, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
+    genesis::GenesisSubCmd,
     keys::KeySubCmd,
 };
 use clap::{Args, Parser, Subcommand};
@@ -80,6 +81,9 @@ pub enum Command {
     /// Key management utilities
     #[command(subcommand)]
     Keys(KeySubCmd),
+    /// Genesis file utilities
+    #[command(subcommand)]
+    Genesis(GenesisSubCmd),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -225,6 +229,8 @@ impl Command {
             Command::Run { flags } => self.run_node(flags),
 
             Command::Keys(cmd) => cmd.exec(),
+
+            Command::Genesis(cmd) => cmd.exec(),
         }
     }
 

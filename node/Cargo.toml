@@ -8,10 +8,6 @@ name = "testnet"
 path = "src/bin/testnet.rs"
 
 [[bin]]
-name = "genesis"
-path = "src/bin/genesis.rs"
-
-[[bin]]
 name = "stake-and-checkpoint"
 path = "src/bin/stake_and_checkpoint.rs"
 required-features = ["e2e"]
