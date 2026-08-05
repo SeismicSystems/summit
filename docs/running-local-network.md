@@ -73,7 +73,7 @@ This removes `node*/data/reth_db`, `node*/db`, and `./stores`. Keys in `testnet/
 
 ## Running distributed
 
-To run a fresh network on multiple systems you should install Summit on each server and then run `cargo run -- keys generate` and `cargo run -- keys show` to get the keys for each node.
+To run a fresh network on multiple systems you should install Summit on each server and then run `cargo run --bin summit -- keys generate` and `cargo run --bin summit -- keys show` to get the keys for each node.
 
 You will then recreate the example_genesis.toml file to have the keys and IPs of all your nodes.
 
