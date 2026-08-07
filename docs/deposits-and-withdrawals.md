@@ -5,7 +5,7 @@
 - Potential validators have to deposit at least **MINIMUM_STAKE** to join the network.
 - If a potential validator makes an initial deposit with *amount* < **MINIMUM_STAKE**, then the validator account is still created, but it won't be set to active.
 - Top-up deposits are allowed.
-- A potential validator will become active **VALIDATOR_NUM_WARM_UP_EPOCHS** after depositing at least **MINIMUM_STAKE**.
+- Once a processed deposit brings an inactive validator's balance to at least **MINIMUM_STAKE**, activation is scheduled **VALIDATOR_NUM_WARM_UP_EPOCHS** later. Deposit processing occurs near epoch end and is subject to **MAX_DEPOSITS_PER_EPOCH**, so activation may be delayed from submission.
 - Deposit requests with invalid signatures will be refunded as a withdrawal. K% of the deposited amount (**INVALID_DEPOSIT_TAX**, default 5%) is sent to the treasury address (the zero address by default, which effectively burns it). This prevents invalid deposits from becoming a DDOS vector.
 - if the deposit's keys are malformed, it is refunded with the same K% tax applied to invalid signatures.
 - If the deposit's consensus (BLS) key does not match the key already on the account (or is already used by another validator), the deposit is refunded with the same K% tax applied to invalid signatures.
@@ -13,11 +13,14 @@
 
 ## Withdrawals
 - Withdrawals follow the EIP-7002 spec.
-- Partial withdrawals are allowed.
-- If a partial withdrawal would leave the validator balance below **MINIMUM_STAKE**, then the withdrawal amount is capped such that the remaining balance is exactly **MINIMUM_STAKE**.
-- In order to withdraw a validator's full balance, a withdrawal request with amount=0 has to be submitted. This will initiate a validator exit.
-- If a full exit is submitted in epoch E, then the validator will exit the committee at the end of epoch E. The full balance will be payed out on the last block of  epoch **E + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**.
-- One exception: if the withdrawal lands on the last block of epoch E, then the request is deferred until the first block of epoch E+1, therefore the validator will remain active for epoch E+1 and exit at the end of epoch E+1. The payout will happen on the last block of epoch **E + 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**.
+- A withdrawal is accepted only when its source address matches the validator's withdrawal credentials and the validator has not reached **MAX_PENDING_WITHDRAWALS_PER_VALIDATOR**.
+- Partial withdrawals are allowed. Active validators retain at least **MINIMUM_STAKE**. Inactive validators have no minimum balance floor, and a withdrawal from a joining validator first cancels its activation.
+- For an active validator, amount=0 requests a full exit. The request is rejected if the exit would leave fewer than **MINIMUM_VALIDATOR_COUNT** active validators.
+- An accepted full exit processed in epoch E removes the validator at the end of E and schedules its payout for epoch **E + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**. **MAX_WITHDRAWALS_PER_EPOCH** may delay the payout.
+- Multiple partial withdrawals may be pending, up to **MAX_PENDING_WITHDRAWALS_PER_VALIDATOR**. At payout, each partial withdrawal is capped again using the current balance and prospective **MINIMUM_STAKE**.
+- **MAX_WITHDRAWALS_PER_EPOCH** is a total payout cap. Validator withdrawals take priority over deposit refunds, and overflow remains queued for a later epoch.
+- An invalid deposit may create separate refund and treasury withdrawals. Each withdrawal consumes one slot under the payout cap.
+- Requests included in the last block of epoch E remain buffered until the penultimate block of E+1. An accepted exit then occurs at the end of E+1, with payout scheduled for epoch **E + 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**, subject to the withdrawal cap.
 
 ## Validator Balance
 - All active validators must have a balance of at least **MINIMUM_STAKE**.
