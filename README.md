@@ -1,4 +1,3 @@
-# WIP
 # Summit
 
 <img alt="Summit consensus client" src="assets/graphic.png" />
@@ -94,6 +93,10 @@ Summit acts as the consensus layer, communicating with EVM execution clients thr
 - Deeper benchmarks
 - More optimizations (potentially DKG threshold signatures to improve throughput)
 - Full Audit and completeness Q4 2025
+
+## Documentation
+
+Detailed documentation for developers and auditors lives in [`docs/`](docs/README.md), covering the [architecture](docs/architecture.md), [security model](docs/security-model.md), [checkpointing](docs/checkpointing.md), [deposits and withdrawals](docs/deposits-and-withdrawals.md), and [running a local network](docs/running-local-network.md).
 
 ## Resources
 
