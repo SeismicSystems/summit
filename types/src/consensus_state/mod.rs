@@ -1011,7 +1011,9 @@ impl ConsensusState {
 
             // Behavior by status, now that the balance is credited:
             //   Inactive at or above the minimum stake: schedule activation after
-            //     the warm up (the branch below).
+            //     the warm up (the branch below), unless the validator has pending
+            //     withdrawals — those would drain the account before activation
+            //     and leave a stale entry in added_validators.
             //   Inactive below the minimum stake: stays inactive, keeping the
             //     credited balance until a later deposit lifts it to the minimum.
             //   Active or Joining: a top up. Balance credited, status unchanged
@@ -1022,6 +1024,7 @@ impl ConsensusState {
             //     exit payout; the validator is not re activated.
             if account.status == ValidatorStatus::Inactive
                 && account.balance >= self.get_minimum_stake()
+                && self.withdrawal_queue.pending_count(&node_pubkey_bytes) == 0
             {
                 let activation_epoch = self.get_epoch() + warm_up_epochs;
                 account.status = ValidatorStatus::Joining;

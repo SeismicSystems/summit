@@ -1429,3 +1429,230 @@ fn test_deposit_and_withdrawal_same_block() {
         context.auditor().state()
     })
 }
+
+/// Regression: an inactive validator whose two pending withdrawals and a
+/// later top-up deposit must not create a stale activation entry that panics
+/// the committee transition when the payouts delete the account.
+///
+/// Epoch schedule (10 blocks per epoch, 2-epoch warm-up, 2-epoch withdrawal
+/// hold):
+///
+///   Epoch 0, block  5: below-minimum deposit (31 ETH)
+///     → processed at penultimate (block 8): Inactive, 31 ETH
+///   Epoch 1, block 12: withdrawal 1 (31 ETH)
+///     → processed at penultimate (block 18): due epoch 3
+///   Epoch 1, block 13: withdrawal 2 (31 ETH)
+///     → processed at penultimate (block 18): due epoch 3
+///   Epoch 2, block 22: top-up deposit (1 ETH)
+///     → processed at penultimate (block 28): stays Inactive (pending
+///       withdrawals block activation), 32 ETH
+///   Epoch 3, block 38: penultimate — no new requests
+///   Epoch 3, block 39: terminal — payouts drain account to zero and delete it
+///   Epoch 3, block 39 boundary: apply_committee_transition — no stale
+///     activation queued, no panic
+///
+/// Stops at block 50, well past the epoch 3→4 boundary, and verifies the
+/// target account was deleted without any validator panicking.
+#[test_traced("INFO")]
+fn test_inactive_withdrawals_then_rejoin_panics_epoch_boundary() {
+    let n = 5;
+    let min_stake = 32_000_000_000;
+    let below_min = min_stake - 1_000_000_000; // 31 ETH
+    let topup_amount = 1_000_000_000; // 1 ETH
+    let link = Link {
+        latency: Duration::from_millis(80),
+        jitter: Duration::from_millis(10),
+        success_rate: 0.98,
+    };
+
+    let cfg = deterministic::Config::default().with_seed(0);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let (network, mut oracle) = Network::new(
+            context.with_label("network"),
+            simulated::Config {
+                max_size: 1024 * 1024,
+                disconnect_on_block: false,
+                tracked_peer_sets: NZUsize!(n as usize * 10),
+            },
+        );
+        network.start();
+
+        let mut key_stores = Vec::new();
+        let mut validators = Vec::new();
+        let mut addresses = Vec::new();
+        for i in 0..n {
+            let mut rng = StdRng::seed_from_u64(i as u64);
+            let node_key = PrivateKey::random(&mut rng);
+            let node_public_key = node_key.public_key();
+            let consensus_key = bls12381::PrivateKey::random(&mut rng);
+            let consensus_public_key = consensus_key.public_key();
+            let key_store = KeyStore {
+                node_key,
+                consensus_key,
+            };
+            key_stores.push(key_store);
+            validators.push((node_public_key, consensus_public_key));
+            addresses.push(Address::from([i as u8; 20]));
+        }
+        validators.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        key_stores.sort_by_key(|ks| ks.node_key.public_key());
+        addresses.sort();
+
+        // Fresh keys for the inactive target validator.
+        let mut rng = StdRng::seed_from_u64(n as u64);
+        let target_node_key = PrivateKey::random(&mut rng);
+        let target_node_pubkey = target_node_key.public_key();
+        let target_bls_key = bls12381::PrivateKey::random(&mut rng);
+
+        let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
+        let mut registrations = common::register_validators(&oracle, &node_public_keys).await;
+        common::link_validators(&mut oracle, &node_public_keys, link, None).await;
+
+        let genesis_hash =
+            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash: [u8; 32] = genesis_hash
+            .try_into()
+            .expect("failed to convert genesis hash");
+
+        // Withdrawal credentials from which the target requests withdrawals.
+        let withdrawal_address = addresses[0];
+        let mut withdrawal_creds = [0u8; 32];
+        withdrawal_creds[0] = 0x01;
+        withdrawal_creds[12..32].copy_from_slice(withdrawal_address.as_ref());
+
+        let domain = common::get_domain();
+        let (below_min_deposit, _, _) = common::create_deposit_request(
+            n as u64,
+            below_min,
+            domain,
+            Some(target_node_key.clone()),
+            Some(target_bls_key.clone()),
+            Some(withdrawal_creds),
+        );
+        let (topup_deposit, _, _) = common::create_deposit_request(
+            n as u64 + 1,
+            topup_amount,
+            domain,
+            Some(target_node_key.clone()),
+            Some(target_bls_key.clone()),
+            Some(withdrawal_creds),
+        );
+
+        let target_pubkey_bytes: [u8; 32] = target_node_pubkey.as_ref().try_into().unwrap();
+        let wd1 =
+            common::create_withdrawal_request(withdrawal_address, target_pubkey_bytes, below_min);
+        let wd2 =
+            common::create_withdrawal_request(withdrawal_address, target_pubkey_bytes, below_min);
+
+        let mut execution_requests_map = HashMap::new();
+        execution_requests_map.insert(
+            5,
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(
+                below_min_deposit,
+            )]),
+        );
+        execution_requests_map.insert(
+            12,
+            common::execution_requests_to_requests(vec![
+                ExecutionRequest::Withdrawal(wd1),
+                ExecutionRequest::Withdrawal(wd2),
+            ]),
+        );
+        execution_requests_map.insert(
+            22,
+            common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(topup_deposit)]),
+        );
+
+        // Stop well past the epoch 3→4 boundary (block 39) to verify the fix
+        // prevents a panic at that boundary.
+        let stop_height = 50;
+        let engine_client_network = MockEngineNetworkBuilder::new(genesis_hash)
+            .with_execution_requests(execution_requests_map)
+            .with_stop_at(stop_height)
+            .build();
+
+        let initial_state =
+            get_initial_state(genesis_hash, &validators, Some(&addresses), None, min_stake);
+
+        let mut public_keys = HashSet::new();
+        let mut consensus_state_queries = HashMap::new();
+        for (idx, key_store) in key_stores.into_iter().enumerate() {
+            let public_key = key_store.node_key.public_key();
+            public_keys.insert(public_key.clone());
+
+            let uid = format!("validator_{public_key}");
+            let namespace = String::from("_SUMMIT");
+
+            let engine_client = engine_client_network.create_client(uid.clone());
+
+            let config = get_default_engine_config(
+                engine_client,
+                SimulatedOracle::new(oracle.clone()),
+                uid.clone(),
+                genesis_hash,
+                namespace,
+                key_store,
+                validators.clone(),
+                initial_state.clone(),
+            );
+            let engine = Engine::new(context.with_label(&uid), config).await;
+            consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
+
+            let (pending, recovered, resolver, orchestrator, broadcast) =
+                registrations.remove(&public_key).unwrap();
+            engine.start(pending, recovered, resolver, orchestrator, broadcast);
+        }
+
+        // Poll consensus state until all validators reach the stop height past
+        // the epoch 3→4 boundary.
+        let mut height_reached = HashSet::new();
+        loop {
+            let metrics = context.encode();
+            for line in metrics.lines() {
+                if !line.starts_with("validator_") {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+                if metric.ends_with("_peers_blocked") {
+                    assert_eq!(value.parse::<u64>().unwrap(), 0);
+                }
+            }
+
+            for (idx, query) in consensus_state_queries.iter() {
+                if query.get_latest_height().await >= stop_height {
+                    height_reached.insert(*idx);
+                }
+            }
+
+            if height_reached.len() as u32 == n {
+                break;
+            }
+
+            context.sleep(Duration::from_secs(1)).await;
+        }
+
+        // The target validator's account was drained to zero and deleted.
+        let state_query = consensus_state_queries.get(&0).unwrap();
+        assert!(
+            state_query
+                .get_validator_balance(target_node_pubkey.clone())
+                .await
+                .is_none(),
+            "target validator account must be deleted after payouts drained it to zero"
+        );
+
+        // Verify consensus is consistent across all nodes.
+        assert!(
+            engine_client_network
+                .verify_consensus(None, Some(stop_height))
+                .is_ok()
+        );
+
+        common::assert_state_root_consensus_synced(&context, &consensus_state_queries, &[]).await;
+
+        context.auditor().state()
+    })
+}
