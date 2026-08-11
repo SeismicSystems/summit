@@ -313,3 +313,95 @@ fn partial_then_full_exit_pays_balance_once_and_removes_account() {
     state.apply_withdrawal_payouts(WITHDRAWAL_EPOCHS, &block);
     assert!(state.get_account(&key).is_none());
 }
+
+// Regression: two withdrawals from an inactive validator are independently
+// valid against its unchanged balance. A later deposit credits the balance
+// but does not schedule activation while the withdrawal queue still has
+// pending entries for this validator, preventing a stale activation that
+// would otherwise be drained before it takes effect.
+#[test]
+fn inactive_withdrawals_then_rejoin_do_not_leave_stale_activation() {
+    let mut state = interaction_state();
+    let node = ed25519::PrivateKey::from_seed(61);
+    let bls = bls12381::PrivateKey::from_seed(61);
+    let key = seed(&mut state, &node, &bls, ValidatorStatus::Inactive, MIN - 1);
+
+    // Epoch 1: both requests are valid against the unchanged 31 ETH balance and
+    // are scheduled for epoch 3.
+    state.set_epoch(1);
+    partial_withdrawal(&mut state, key, MIN - 1);
+    partial_withdrawal(&mut state, key, MIN - 1);
+    assert_eq!(state.get_withdrawals_for_epoch(3).len(), 2);
+
+    // Epoch 2: a 1 ETH top-up reaches the minimum but pending withdrawals
+    // block activation — the validator stays Inactive.
+    state.set_epoch(2);
+    land_deposit(&mut state, &node, &bls, 1);
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.balance, MIN);
+    assert_eq!(account.status, ValidatorStatus::Inactive);
+    assert!(!state.has_added_validators(4));
+
+    // Epoch 3: the payouts drain the account to zero without leaving a stale
+    // activation behind.
+    state.set_epoch(3);
+    let block = state.emit_withdrawal_payouts(3);
+    assert_eq!(
+        block
+            .iter()
+            .map(|withdrawal| withdrawal.amount)
+            .collect::<Vec<_>>(),
+        vec![MIN - 1, 1]
+    );
+    state.apply_withdrawal_payouts(3, &block);
+    assert!(state.get_account(&key).is_none());
+    assert!(!state.has_added_validators(4));
+
+    // No panic — no stale activation was queued.
+    state.apply_committee_transition(&node.public_key());
+}
+
+// Regression: a pending partial withdrawal prevents a Joining validator from
+// being scheduled in the first place. A deposit that reaches the minimum stake
+// does not activate while withdrawals are pending, avoiding a scenario where
+// the withdrawal subsequently drains the validator below the minimum before
+// activation.
+#[test]
+fn joining_validator_drained_below_minimum_is_not_activated() {
+    let mut state = interaction_state();
+    let node = ed25519::PrivateKey::from_seed(62);
+    let bls = bls12381::PrivateKey::from_seed(62);
+    let key = seed(&mut state, &node, &bls, ValidatorStatus::Inactive, MIN - 1);
+
+    // Epoch 1: schedule one 31 ETH withdrawal for epoch 3.
+    state.set_epoch(1);
+    partial_withdrawal(&mut state, key, MIN - 1);
+    assert_eq!(state.get_withdrawals_for_epoch(3).len(), 1);
+
+    // Epoch 2: a 1 ETH deposit reaches the minimum but pending withdrawals
+    // block activation — the validator stays Inactive.
+    state.set_epoch(2);
+    land_deposit(&mut state, &node, &bls, 1);
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.balance, MIN);
+    assert_eq!(account.status, ValidatorStatus::Inactive);
+
+    // Epoch 3: the pending withdrawal is paid, leaving 1 ETH. Balance stays
+    // below minimum, no activation was ever scheduled.
+    state.set_epoch(3);
+    let block = state.emit_withdrawal_payouts(3);
+    assert_eq!(
+        block
+            .iter()
+            .map(|withdrawal| withdrawal.amount)
+            .collect::<Vec<_>>(),
+        vec![MIN - 1]
+    );
+    state.apply_withdrawal_payouts(3, &block);
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.balance, 1);
+    assert_eq!(account.status, ValidatorStatus::Inactive);
+
+    // No stale activation to cancel — the committee transition is a no-op.
+    state.apply_committee_transition(&node.public_key());
+}
