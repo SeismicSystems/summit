@@ -108,7 +108,7 @@ pub struct RunFlags {
     /// Prometheus address
     #[arg(long, default_value_t = String::from("0.0.0.0"))]
     pub prom_ip: String,
-    /// Port Consensus runs on
+    /// Port the Prometheus metrics endpoint runs on
     #[arg(long, default_value_t = 9090)]
     pub prom_port: u16,
 
