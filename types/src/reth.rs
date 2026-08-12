@@ -6,7 +6,7 @@ use rand::Rng;
 use std::{
     borrow::Cow,
     ffi::OsString,
-    fs::create_dir,
+    fs::create_dir_all,
     io::{BufRead, BufReader},
     net::SocketAddr,
     path::PathBuf,
@@ -23,6 +23,32 @@ const API: &str = "eth,net,web3,txpool,trace,rpc,reth,ots,admin,debug";
 
 /// The reth command
 const RETH: &str = "reth";
+
+/// Env var naming the seismic-reth binary to spawn. When unset, `reth` is
+/// resolved from `$PATH`. Lets CI and local runs pin a specific build.
+pub const SRETH_BIN_ENV: &str = "SRETH_BIN";
+
+/// Returns a [`Reth`] builder for local-network node `slot`, carrying the
+/// flags every local-network binary needs: built-in purpose keys (local
+/// networks run no key custodian), the per-slot Engine API IPC socket, and
+/// a per-slot metrics port. Callers chain any further flags on the
+/// returned builder.
+pub fn reth_spawner(slot: u16, data_dir: impl Into<PathBuf>) -> Reth {
+    let reth = match std::env::var_os(SRETH_BIN_ENV) {
+        Some(bin) => Reth::at(bin),
+        None => Reth::new(),
+    };
+    reth.instance(slot + 1)
+        .keep_stdout()
+        .data_dir(data_dir)
+        .arg("--seismic.purpose-keys-source")
+        .arg("built-in")
+        .arg("--auth-ipc")
+        .arg("--auth-ipc.path")
+        .arg(format!("/tmp/reth_engine_api{slot}.ipc"))
+        .arg("--metrics")
+        .arg(format!("0.0.0.0:{}", 9001 + slot))
+}
 
 /// The default HTTP port for Reth.
 const DEFAULT_HTTP_PORT: u16 = 8545;
@@ -531,9 +557,9 @@ impl Reth {
         if let Some(data_dir) = &self.data_dir {
             cmd.arg("--datadir").arg(data_dir);
 
-            // create the directory if it doesn't exist
+            // create the directory (and any missing parents) if it doesn't exist
             if !data_dir.exists() {
-                create_dir(data_dir).map_err(NodeError::CreateDirError)?;
+                create_dir_all(data_dir).map_err(NodeError::CreateDirError)?;
             }
         }
 

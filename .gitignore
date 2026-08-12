@@ -1,8 +1,8 @@
 /target
 .idea/
-testnet/
 .vscode/*
 .nvim.lua
+.DS_Store
 
 # cargo-fuzz build artifacts + generated corpus / crashes
 fuzz/target/

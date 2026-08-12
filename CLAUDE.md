@@ -101,6 +101,7 @@ The `testnet` binary spins up a multi-node network locally — this is the main 
   ```bash
   ln -s /path/to/seismic-reth ~/.cargo/bin/reth
   ```
+  Alternatively, set the `SRETH_BIN` env var to the path of a specific binary; it takes precedence over PATH.
 
 ### Quick start
 
@@ -143,9 +144,9 @@ cd testnet && ./reset.sh
 
 ### Config files (`testnet/`)
 
-- `dev.json` — Ethereum genesis with pre-funded test accounts
-- `jwt.hex` — Engine API auth token
 - `node{0-3}/` — per-node keys (`consensus_key.pem`, `node_key.pem`) and data directories
+- `bin/` — the `testnet` launcher crate
+- `../example_genesis.toml` (repo root) — the genesis the launcher points nodes at
 
 ## Binaries
 
@@ -163,7 +164,7 @@ cd testnet && ./reset.sh
 ## Project Layout
 
 ```
-node/                  Main binary crate (summit, testnet)
+node/                  Main binary crate (summit)
   src/engine.rs          Central coordinator — component lifecycle, message routing
   src/args.rs            CLI argument parsing (clap)
   src/config.rs          Channel sizes, timeouts, default paths
@@ -171,7 +172,7 @@ node/                  Main binary crate (summit, testnet)
   src/genesis.rs         Genesis file utilities (set-validators/digest)
   src/test_harness/      Shared test harness for e2e tests
   src/tests/             Integration tests (syncer, checkpointing, execution requests)
-  src/bin/               Additional binaries (testnet, e2e, bench)
+  src/bin/               Additional binaries (e2e, bench)
 
 application/           Consensus interface — implements Simplex Automaton + Relay traits
   src/actor.rs           Propose, verify, broadcast blocks
@@ -203,7 +204,9 @@ types/                 Shared types & engine client
   src/scheme.rs          BLS12-381 multisig scheme
 
 docs/                  Architecture docs, protocol descriptions
-testnet/               Local testnet config (4 validators, genesis JSON)
+testnet/               Local-network home: per-node keys, reset.sh
+  bin/                   The `testnet` launcher (own crate so the reth spawn
+                         machinery stays out of production builds)
 ```
 
 ## Architecture

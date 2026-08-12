@@ -4,10 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "testnet"
-path = "src/bin/testnet.rs"
-
-[[bin]]
 name = "stake-and-checkpoint"
 path = "src/bin/stake_and_checkpoint.rs"
 required-features = ["e2e"]
@@ -82,7 +78,6 @@ ethereum_ssz.workspace = true
 jsonrpsee.workspace = true
 
 # testnet bin deps
-alloy-node-bindings.workspace = true
 alloy-network = { workspace = true }
 alloy-primitives.workspace = true
 alloy-provider = { version = "1.0.30", features = ["reqwest-rustls-tls"] }

@@ -1,0 +1,26 @@
+[package]
+name = "summit-testnet"
+version.workspace = true
+edition.workspace = true
+
+# The `testnet` local-network launcher lives in its own crate so it can
+# enable summit-types/e2e (the reth spawn machinery) without that feature
+# leaking into default builds of the production `summit` binary.
+[[bin]]
+name = "testnet"
+path = "src/main.rs"
+
+[dependencies]
+summit = { path = "../../node" }
+summit-rpc.workspace = true
+summit-types = { workspace = true, features = ["e2e"] }
+
+clap.workspace = true
+commonware-runtime.workspace = true
+console-subscriber = { workspace = true, optional = true }
+futures.workspace = true
+tracing.workspace = true
+
+[features]
+bench = ["summit/bench"]
+tokio-console = ["console-subscriber", "summit/tokio-console"]

@@ -246,19 +246,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alloy-hardforks"
-version = "0.2.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819a3620fe125e0fff365363315ee5e24c23169173b19747dfd6deba33db8990"
-dependencies = [
- "alloy-chains",
- "alloy-eip2124",
- "alloy-primitives",
- "auto_impl",
- "dyn-clone",
-]
-
-[[package]]
 name = "alloy-json-abi"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -322,27 +309,6 @@ dependencies = [
  "alloy-primitives",
  "alloy-serde",
  "serde",
-]
-
-[[package]]
-name = "alloy-node-bindings"
-version = "1.0.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f70cdf0ba711fb6f1a427fd026e149bd6d64c9da4c020c1c96c69245c4721ac1"
-dependencies = [
- "alloy-genesis",
- "alloy-hardforks",
- "alloy-network",
- "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
- "k256",
- "rand 0.8.5",
- "serde_json",
- "tempfile",
- "thiserror 2.0.12",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -5959,7 +5925,6 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-network",
- "alloy-node-bindings",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-client",
@@ -6172,6 +6137,20 @@ dependencies = [
  "summit-types",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "summit-testnet"
+version = "0.0.3-alpha"
+dependencies = [
+ "clap",
+ "commonware-runtime",
+ "console-subscriber",
+ "futures",
+ "summit",
+ "summit-rpc",
+ "summit-types",
+ "tracing",
 ]
 
 [[package]]
