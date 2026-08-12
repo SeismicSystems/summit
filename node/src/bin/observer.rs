@@ -44,7 +44,7 @@ use summit_types::consensus_state::ConsensusState;
 use summit_types::ext_private_key::derive_child_public;
 use summit_types::genesis::Genesis;
 use summit_types::header::FinalizedHeader;
-use summit_types::reth::Reth;
+use summit_types::reth::reth_spawner;
 use summit_types::rpc::CheckpointRes;
 use summit_types::scheme::MultisigScheme;
 use tokio::sync::mpsc;
@@ -134,20 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let data_dir = format!("{}/node{}/data/reth_db", args.data_dir, x);
                 fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
-                let reth_builder = Reth::new()
-                    .instance(x + 1)
-                    .keep_stdout()
-                    .data_dir(data_dir)
-                    .arg("--enclave.mock-server")
-                    .arg("--enclave.endpoint-port")
-                    .arg(format!("1744{x}"))
-                    .arg("--auth-ipc")
-                    .arg("--auth-ipc.path")
-                    .arg(format!("/tmp/reth_engine_api{x}.ipc"))
-                    .arg("--metrics")
-                    .arg(format!("0.0.0.0:{}", 9001 + x));
-
-                let mut reth = reth_builder.spawn();
+                let mut reth = reth_spawner(x, data_dir).spawn();
                 let stdout = reth.stdout().expect("Failed to get stdout");
                 let log_dir = args.log_dir.clone();
                 context.clone().spawn(async move |_| {
@@ -247,20 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Failed to write observer BLS key");
 
             println!("******* STARTING RETH FOR OBSERVER");
-            let observer_reth_builder = Reth::new()
-                .instance(OBSERVER_SLOT as u16 + 1)
-                .keep_stdout()
-                .data_dir(observer_reth_data_dir)
-                .arg("--enclave.mock-server")
-                .arg("--enclave.endpoint-port")
-                .arg(format!("1744{}", OBSERVER_SLOT))
-                .arg("--auth-ipc")
-                .arg("--auth-ipc.path")
-                .arg(format!("/tmp/reth_engine_api{}.ipc", OBSERVER_SLOT))
-                .arg("--metrics")
-                .arg(format!("0.0.0.0:{}", 9001 + OBSERVER_SLOT));
-
-            let mut observer_reth = observer_reth_builder.spawn();
+            let mut observer_reth = reth_spawner(OBSERVER_SLOT as u16, observer_reth_data_dir).spawn();
             let observer_stdout = observer_reth.stdout().expect("Failed to get observer stdout");
             let log_dir = args.log_dir.clone();
             context.clone().spawn(async move |_| {

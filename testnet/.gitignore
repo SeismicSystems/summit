@@ -1,0 +1,5 @@
+# Everything under node*/ is runtime state (reth datadir, consensus store)
+# except the checked-in node keys. bin/ is the launcher crate, kept visible.
+node*/*
+!node*/*.pem
+stores/

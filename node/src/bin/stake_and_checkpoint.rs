@@ -38,7 +38,7 @@ use summit_types::consensus_state::ConsensusState;
 use summit_types::deposit_signature_domain;
 use summit_types::execution_request::DepositRequest;
 use summit_types::genesis::Genesis;
-use summit_types::reth::Reth;
+use summit_types::reth::reth_spawner;
 use tokio::sync::mpsc;
 use tracing::Level;
 
@@ -130,21 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
                 // Build and spawn reth instance
-                let reth_builder = Reth::new()
-                    .instance(x + 1)
-                    .keep_stdout()
-                    //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
-                    .data_dir(data_dir)
-                    .arg("--enclave.mock-server")
-                    .arg("--enclave.endpoint-port")
-                    .arg(format!("1744{x}"))
-                    .arg("--auth-ipc")
-                    .arg("--auth-ipc.path")
-                    .arg(format!("/tmp/reth_engine_api{x}.ipc"))
-                    .arg("--metrics")
-                    .arg(format!("0.0.0.0:{}", 9001 + x));
-
-                let mut reth = reth_builder.spawn();
+                let mut reth = reth_spawner(x, data_dir).spawn();
 
                 // Get stdout handle
                 let stdout = reth.stdout().expect("Failed to get stdout");
@@ -403,20 +389,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Failed to copy static_files directory");
 
             // Restart nodeß's reth instance
-            //let reth_builder = Reth::new()
-            //    .instance((source_node + 1) as u16)
-            //    .keep_stdout()
-            //    //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
-            //    .data_dir(source_data_dir.clone())
-            //    .arg("--enclave.mock-server")
-            //    .arg("--enclave.endpoint-port")
-            //    .arg(format!("1744{source_node}"))
-            //    .arg("--auth-ipc")
-            //    .arg("--auth-ipc.path")
-            //    .arg(format!("/tmp/reth_engine_api{source_node}.ipc"))
-            //    .arg("--metrics")
-            //    .arg(format!("0.0.0.0:{}", 9001 + source_node));
-            //let reth = reth_builder.spawn();
+            //let reth = reth_spawner(source_node as u16, source_data_dir.clone()).spawn();
             //handles.push_front(reth);
 
             // Restart node0's consensus engine in a new runtime/thread
@@ -455,20 +428,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             //node_runtimes.insert(source_node, NodeRuntime { thread, stop_tx });
 
             // Start node4's reth instance
-            let reth_builder = Reth::new()
-                .instance(x + 1)
-                .keep_stdout()
-                .data_dir(data_dir)
-                .arg("--enclave.mock-server")
-                .arg("--enclave.endpoint-port")
-                .arg(format!("1744{x}"))
-                .arg("--auth-ipc")
-                .arg("--auth-ipc.path")
-                .arg(format!("/tmp/reth_engine_api{x}.ipc"))
-                .arg("--metrics")
-                .arg(format!("0.0.0.0:{}", 9001 + x));
-
-            let mut reth = reth_builder.spawn();
+            let mut reth = reth_spawner(x, data_dir).spawn();
 
             let stdout = reth.stdout().expect("Failed to get stdout");
 

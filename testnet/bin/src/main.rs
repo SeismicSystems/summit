@@ -15,11 +15,11 @@ use std::{
     path::PathBuf,
 };
 
-use alloy_node_bindings::Reth;
 use clap::Parser;
 use commonware_runtime::{Metrics as _, Runner as _, Spawner as _, tokio};
 use futures::future::try_join_all;
 use summit::args::{RunFlags, run_node_local};
+use summit_types::reth::reth_spawner;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -81,21 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Start Reth
                 println!("******* STARTING RETH FOR NODE {x}");
                 // Build and spawn reth instance
-                let reth_builder = Reth::new()
-                    .instance(x + 1)
-                    .keep_stdout()
-                    //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
-                    .data_dir(format!("testnet/node{x}/data/reth_db"))
-                    .arg("--enclave.mock-server")
-                    .arg("--enclave.endpoint-port")
-                    .arg(format!("1744{x}"))
-                    .arg("--auth-ipc")
-                    .arg("--auth-ipc.path")
-                    .arg(format!("/tmp/reth_engine_api{x}.ipc"))
-                    .arg("--metrics")
-                    .arg(format!("0.0.0.0:{}", 9001 + x));
-
-                let mut reth = reth_builder.spawn();
+                let mut reth = reth_spawner(x, format!("testnet/node{x}/data/reth_db")).spawn();
 
                 // Get stdout handle
                 let stdout = reth.stdout().expect("Failed to get stdout");

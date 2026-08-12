@@ -60,7 +60,7 @@ use summit_types::PublicKey;
 use summit_types::deposit_signature_domain;
 use summit_types::execution_request::DepositRequest;
 use summit_types::genesis::Genesis;
-use summit_types::reth::Reth;
+use summit_types::reth::reth_spawner;
 use tokio::sync::mpsc;
 use tracing::Level;
 
@@ -145,21 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
                 // Build and spawn reth instance
-                let reth_builder = Reth::new()
-                    .instance(x + 1)
-                    .keep_stdout()
-                    //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
-                    .data_dir(data_dir)
-                    .arg("--enclave.mock-server")
-                    .arg("--enclave.endpoint-port")
-                    .arg(format!("1744{x}"))
-                    .arg("--auth-ipc")
-                    .arg("--auth-ipc.path")
-                    .arg(format!("/tmp/reth_engine_api{x}.ipc"))
-                    .arg("--metrics")
-                    .arg(format!("0.0.0.0:{}", 9001 + x));
-
-                let mut reth = reth_builder.spawn();
+                let mut reth = reth_spawner(x, data_dir).spawn();
 
                 // Get stdout handle
                 let stdout = reth.stdout().expect("Failed to get stdout");
@@ -452,20 +438,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let new_node_data_dir = format!("{}/node{}/data/reth_db", args.data_dir, x);
             fs::create_dir_all(&new_node_data_dir).expect("Failed to create data directory");
 
-            let reth_builder = Reth::new()
-                .instance(x + 1)
-                .keep_stdout()
-                .data_dir(new_node_data_dir)
-                .arg("--enclave.mock-server")
-                .arg("--enclave.endpoint-port")
-                .arg(format!("1744{x}"))
-                .arg("--auth-ipc")
-                .arg("--auth-ipc.path")
-                .arg(format!("/tmp/reth_engine_api{x}.ipc"))
-                .arg("--metrics")
-                .arg(format!("0.0.0.0:{}", 9001 + x));
-
-            let mut reth = reth_builder.spawn();
+            let mut reth = reth_spawner(x, new_node_data_dir).spawn();
 
             let stdout = reth.stdout().expect("Failed to get stdout");
             let log_dir = args.log_dir.clone();

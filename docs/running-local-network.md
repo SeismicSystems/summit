@@ -4,7 +4,7 @@ Easiest way to run a network locally is to use the testnet bin. This will start 
 
 ## Prerequisites
 
-1. Make sure you have a `reth` binary installed and in your `PATH`. The testnet bin passes Seismic-specific flags (e.g. `--enclave.endpoint-port`) to the execution client, so a vanilla upstream `reth` will not work - build `seismic-reth`:
+1. Make sure you have a `reth` binary installed and in your `PATH` (or point the `SRETH_BIN` env var at a specific binary). The testnet bin passes Seismic-specific flags (e.g. `--seismic.purpose-keys-source`) to the execution client, so a vanilla upstream `reth` will not work - build `seismic-reth`:
    ```bash
    git clone https://github.com/SeismicSystems/seismic-reth.git && cd seismic-reth && cargo build --release
    ```
