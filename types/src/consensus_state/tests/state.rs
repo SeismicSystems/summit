@@ -41,9 +41,12 @@ fn active_exit_counter_preserves_minimum_validator_count() {
 fn exit_floor_honors_queued_minimum_validator_count_raise() {
     // Removals staged this epoch take effect next epoch, at the same boundary
     // a queued MinimumValidatorCount change applies — so the floor check must
-    // use the prospective value, not the current one.
+    // use the prospective value, not the current one. This must hold when the
+    // change and the exit land in the same penultimate block, so exercise it
+    // through process_buffered_requests rather than pushing the change directly.
     let mut state = ConsensusState::default();
     state.set_minimum_validator_count(2);
+    state.set_epoch(5);
     for i in 0..3u8 {
         state.set_account(
             [i + 1; 32],
@@ -51,19 +54,41 @@ fn exit_floor_honors_queued_minimum_validator_count_raise() {
         );
     }
 
-    // 3 active, floor 2: one exit is acceptable (3 - 1 >= 2).
+    // 3 active, floor 2: one exit is acceptable without the queued raise.
     assert!(state.can_accept_active_validator_exit());
 
-    // Queue a raise to floor 3. The prospective floor now governs: 3 - 1 = 2 < 3.
-    state.push_protocol_param_change(ProtocolParam::MinimumValidatorCount(3));
-    assert_eq!(state.prospective_minimum_validator_count(), 3);
-    assert!(!state.can_accept_active_validator_exit());
+    // Buffer a MinimumValidatorCount(3) protocol param change and a full-exit
+    // withdrawal for validator [1;32] in the same penultimate block.
+    // Entry: 0xFF | param_id(0x07) | param_len(8) | u64_le(3).
+    let mut param_bytes = vec![0xFF, 0x07, 8];
+    param_bytes.extend_from_slice(&3u64.to_le_bytes());
+    state.push_pending_execution_request(alloy_primitives::Bytes::from(param_bytes));
 
-    // A queued lowering is likewise honored before it is applied.
-    state.protocol_param_changes.clear();
-    state.push_protocol_param_change(ProtocolParam::MinimumValidatorCount(1));
-    assert_eq!(state.prospective_minimum_validator_count(), 1);
-    assert!(state.can_accept_active_validator_exit());
+    // Entry: 0x01 | source_address(20) | padding(16) | pubkey(32) | amount(8 LE).
+    let mut wd_bytes = vec![0x01];
+    wd_bytes.extend_from_slice(&[1u8; 20]); // source_address
+    wd_bytes.extend_from_slice(&[0u8; 16]); // BLS key padding
+    wd_bytes.extend_from_slice(&[1u8; 32]); // validator_pubkey
+    wd_bytes.extend_from_slice(&0u64.to_le_bytes()); // amount = 0 (full exit)
+    state.push_pending_execution_request(alloy_primitives::Bytes::from(wd_bytes));
+
+    // Process them through the real code path. The queued
+    // MinimumValidatorCount(3) must be visible to the exit check, blocking
+    // the full exit. Under the bug the batch is pushed only after the loop,
+    // so the exit slips through.
+    state.process_buffered_requests(
+        sha256::Digest([0u8; 32]), // deposit_signature_domain — no deposits to verify
+        2,                         // warm_up_epochs
+        2,                         // withdrawal_num_epochs
+    );
+    assert_eq!(
+        state.pending_active_validator_exits, 0,
+        "same-block MinimumValidatorCount increase must block a full exit"
+    );
+    assert!(
+        state.get_removed_validators().is_empty(),
+        "no validators should be staged for removal when the exit is blocked"
+    );
 }
 
 #[test]
