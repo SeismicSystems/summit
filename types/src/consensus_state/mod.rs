@@ -1049,15 +1049,17 @@ impl ConsensusState {
         }
     }
 
-    /// Process the buffered execution requests for the epoch in a single pass.
+    /// Process the buffered execution requests for the epoch.
     ///
-    /// Takes and clears the raw request buffer, decodes each entry, and routes it:
-    /// deposits go to the deposit queue, withdrawal requests are validated and
-    /// enqueued, protocol param requests are batched, and a malformed deposit chunk
-    /// is refunded. After routing, the batched protocol param changes are queued
-    /// and the deposit queue is drained up to the per epoch cap. Withdrawal
-    /// enqueues defer any needed subtree rebuild to a single batch rebuild after
-    /// the routing loop.
+    /// Takes and clears the raw request buffer, then runs two passes over it.
+    /// The first pass decodes and queues every protocol-param change before any
+    /// withdrawal is routed, so a same-block change (e.g. a
+    /// `MinimumValidatorCount` increase) is visible to the exit floor check. The
+    /// second pass routes the remaining requests in order: deposits go to the
+    /// deposit queue, withdrawal requests are validated and enqueued, and a
+    /// malformed deposit chunk is refunded. After routing, the deposit queue is
+    /// drained up to the per epoch cap. Withdrawal enqueues defer any needed
+    /// subtree rebuild to a single batch rebuild after the routing loop.
     ///
     /// Requests that arrive after this runs (on the last block of the epoch) stay
     /// buffered and are processed in the next epoch, which is the last block
@@ -1069,9 +1071,34 @@ impl ConsensusState {
         withdrawal_num_epochs: u64,
     ) {
         let buffered = self.take_pending_execution_requests();
-        let mut protocol_param_batch: Vec<ProtocolParam> = Vec::new();
-        let mut withdrawal_tree_stale = false;
 
+        // First pass: decode and queue every protocol-param change from this
+        // block before routing withdrawals, so same-block floor changes are
+        // visible to the exit check.
+        let mut protocol_param_batch: Vec<ProtocolParam> = Vec::new();
+        for entry in &buffered {
+            let Ok(parsed_requests) = ExecutionRequest::parse_eth_entry(entry.as_ref()) else {
+                continue;
+            };
+            for parsed in parsed_requests {
+                if let ParsedExecutionRequest::Valid(ExecutionRequest::ProtocolParam(
+                    param_request,
+                )) = parsed
+                {
+                    match ProtocolParam::try_from(param_request) {
+                        Ok(param) => protocol_param_batch.push(param),
+                        Err(e) => warn!("failed to parse protocol param request: {e}"),
+                    }
+                }
+            }
+        }
+        if !protocol_param_batch.is_empty() {
+            self.push_protocol_param_changes(protocol_param_batch);
+        }
+
+        // Second pass: route deposits, withdrawals, and malformed deposits in
+        // order, now that protocol params are already staged.
+        let mut withdrawal_tree_stale = false;
         for entry in &buffered {
             match ExecutionRequest::parse_eth_entry(entry.as_ref()) {
                 Ok(parsed_requests) => {
@@ -1088,12 +1115,9 @@ impl ConsensusState {
                                     withdrawal_num_epochs,
                                 );
                             }
-                            ParsedExecutionRequest::Valid(ExecutionRequest::ProtocolParam(
-                                param_request,
-                            )) => match ProtocolParam::try_from(param_request) {
-                                Ok(param) => protocol_param_batch.push(param),
-                                Err(e) => warn!("failed to parse protocol param request: {e}"),
-                            },
+                            ParsedExecutionRequest::Valid(ExecutionRequest::ProtocolParam(_)) => {
+                                // Already queued in the first pass.
+                            }
                             ParsedExecutionRequest::MalformedDeposit(chunk) => {
                                 self.refund_deposit(
                                     chunk.withdrawal_credentials,
@@ -1117,11 +1141,6 @@ impl ConsensusState {
         // tree.
         if withdrawal_tree_stale {
             self.rebuild_withdrawal_tree();
-        }
-
-        // Queue the decoded protocol param changes in one subtree rebuild.
-        if !protocol_param_batch.is_empty() {
-            self.push_protocol_param_changes(protocol_param_batch);
         }
 
         // Drain the deposit queue (verify, credit, activate) up to the cap.
