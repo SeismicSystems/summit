@@ -859,6 +859,13 @@ impl ConsensusState {
                     amount,
                     "failed to parse withdrawal credentials for deposit refund: {e}"
                 );
+                #[cfg(feature = "prom")]
+                counter!(
+                    "critical_errors_total",
+                    "reason" => "withdrawal_credentials_parse",
+                    "severity" => "critical"
+                )
+                .increment(1);
                 return;
             }
         };
@@ -993,6 +1000,13 @@ impl ConsensusState {
                             target: "critical",
                             "failed to parse withdrawal credentials for new validator deposit"
                         );
+                        #[cfg(feature = "prom")]
+                        counter!(
+                            "warning_errors_total",
+                            "reason" => "withdrawal_credentials_parse",
+                            "severity" => "warning"
+                        )
+                        .increment(1);
                         continue;
                     };
                     ValidatorAccount {
