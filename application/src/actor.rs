@@ -900,21 +900,28 @@ impl<
 }
 
 /// Returns `true` if the EIP-7685 execution-request list is ordered by request
-/// type byte in strictly ascending order, with no empty elements.
+/// type byte in strictly ascending order, with no empty or request_data-less
+/// elements.
 ///
 /// The engine API requires request-list elements to be sorted by type
-/// (`OutOfOrderExecutionRequest` / `DuplicatedExecutionRequestType` otherwise).
-/// Seismic's protocol-param request (type `0xFF`) is the maximum type, so it must
-/// come last. We sort the list we propose; this predicate lets us reject a peer's
-/// block that violates the ordering rather than relaying it into a payload the EL
-/// will refuse.
+/// (`OutOfOrderExecutionRequest` / `DuplicatedExecutionRequestType` otherwise) and
+/// to carry non-empty request data (`EmptyExecutionRequest` otherwise, for
+/// elements of one byte or shorter). Seismic's protocol-param request (type
+/// `0xFF`) is the maximum type, so it must come last. We sort the list we
+/// propose; this predicate lets us reject a peer's block that violates these
+/// rules rather than relaying it into a payload the EL will refuse. A single
+/// type byte with no data must be caught here, since the EL would treat it as
+/// a fatal engine error rather than a block-level invalid payload.
 fn execution_requests_ascending(requests: &[impl AsRef<[u8]>]) -> bool {
     let mut prev: Option<u8> = None;
     for req in requests {
-        let Some(&request_type) = req.as_ref().first() else {
-            // An element with no type byte is malformed.
+        let req = req.as_ref();
+        // A bare type byte has no request_data. The EL rejects it with
+        // `EmptyExecutionRequest`, so surface it as a block rejection here.
+        if req.len() <= 1 {
             return false;
-        };
+        }
+        let request_type = req[0];
         if prev.is_some_and(|p| request_type <= p) {
             // Out of order or a duplicate request type.
             return false;
@@ -1299,6 +1306,12 @@ mod tests {
 
         // An element with no type byte is malformed.
         assert!(!execution_requests_ascending(&[Vec::<u8>::new()]));
+
+        // A bare type byte with no request_data is also malformed; the EL
+        // rejects it as "EmptyExecutionRequest".
+        assert!(!execution_requests_ascending(&[vec![0x00]]));
+        assert!(!execution_requests_ascending(&[vec![0x01]]));
+        assert!(!execution_requests_ascending(&[vec![0xFF]]));
     }
 
     fn empty_payload(height: u64, parent_hash: [u8; 32], timestamp: u64) -> ExecutionPayloadV3 {
