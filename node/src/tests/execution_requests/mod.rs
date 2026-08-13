@@ -1,5 +1,6 @@
 mod deposit_withdrawal_combined;
 mod deposits;
+mod malformed_requests;
 mod protocol_params;
 mod validator_set;
 mod withdrawals;
