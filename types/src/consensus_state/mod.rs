@@ -1595,7 +1595,7 @@ impl ConsensusState {
                 continue;
             }
             let balance = *running.entry(entry.pubkey).or_insert(account.balance);
-            let active = account.status == ValidatorStatus::Active;
+            let active = account.status.is_current_epoch_signer();
             let payout = Self::withdrawal_payout_amount(entry, balance, active, min_stake);
             running.insert(entry.pubkey, balance.saturating_sub(payout));
             if payout > 0 {
@@ -1657,7 +1657,7 @@ impl ConsensusState {
             if entry.inner.address != account.withdrawal_credentials {
                 continue;
             }
-            let active = account.status == ValidatorStatus::Active;
+            let active = account.status.is_current_epoch_signer();
             let payout = Self::withdrawal_payout_amount(&entry, account.balance, active, min_stake);
             account.balance = account.balance.saturating_sub(payout);
             if account.balance == 0 {
