@@ -314,6 +314,60 @@ fn partial_then_full_exit_pays_balance_once_and_removes_account() {
     assert!(state.get_account(&key).is_none());
 }
 
+// Partial withdrawals queued while a validator is active, then a full exit
+// requested before those partials pay out, must keep the minimum-stake floor on
+// the partials until the validator has actually left the committee. The partials
+// may not drain the retained stake; only the full-exit payout may empty the
+// account after the exit.
+#[test]
+fn partials_keep_minimum_floor_for_staged_exit() {
+    let mut state = interaction_state();
+    let node = ed25519::PrivateKey::from_seed(63);
+    let bls = bls12381::PrivateKey::from_seed(63);
+    let key = seed(&mut state, &node, &bls, ValidatorStatus::Active, 2 * MIN);
+
+    // Two partials queued while active, due two epochs later.
+    state.set_epoch(1);
+    partial_withdrawal(&mut state, key, MIN);
+    partial_withdrawal(&mut state, key, MIN);
+    assert_eq!(state.get_withdrawals_for_epoch(3).len(), 2);
+
+    // The full exit is requested in the epoch the partials become due.
+    state.set_epoch(3);
+    full_exit(&mut state, key);
+    assert_eq!(
+        state.get_account(&key).unwrap().status,
+        ValidatorStatus::SubmittedExitRequest
+    );
+
+    // The partials are still floored: only one fills, leaving the minimum stake.
+    let block = state.emit_withdrawal_payouts(3);
+    assert_eq!(
+        block.iter().map(|w| w.amount).collect::<Vec<_>>(),
+        vec![MIN]
+    );
+    state.apply_withdrawal_payouts(3, &block);
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.balance, MIN);
+    assert_eq!(account.status, ValidatorStatus::SubmittedExitRequest);
+
+    // After the validator leaves the committee, the full-exit payout drains the
+    // retained stake and removes the account.
+    assert!(state.apply_committee_transition(&node.public_key()));
+    assert_eq!(
+        state.get_account(&key).unwrap().status,
+        ValidatorStatus::FullPayoutPending
+    );
+    state.set_epoch(5);
+    let block = state.emit_withdrawal_payouts(5);
+    assert_eq!(
+        block.iter().map(|w| w.amount).collect::<Vec<_>>(),
+        vec![MIN]
+    );
+    state.apply_withdrawal_payouts(5, &block);
+    assert!(state.get_account(&key).is_none());
+}
+
 // Regression: two withdrawals from an inactive validator are independently
 // valid against its unchanged balance. A later deposit credits the balance
 // but does not schedule activation while the withdrawal queue still has
