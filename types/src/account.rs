@@ -50,6 +50,17 @@ impl ValidatorStatus {
         matches!(self, Self::Active | Self::SubmittedExitRequest)
     }
 
+    /// Whether the validator retains a minimum-stake floor on its pending
+    /// partial withdrawals. Active validators and validators with a full exit in
+    /// progress (still signing, or awaiting payout after leaving the committee)
+    /// keep the floor; inactive validators have none.
+    pub fn has_minimum_stake_floor(&self) -> bool {
+        matches!(
+            self,
+            Self::Active | Self::SubmittedExitRequest | Self::FullPayoutPending
+        )
+    }
+
     /// Whether the validator is outside the committee. Both inactive validators
     /// and validators awaiting a full payout are excluded from the committee and
     /// from the active validator count.

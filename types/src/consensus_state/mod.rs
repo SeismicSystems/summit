@@ -1534,7 +1534,7 @@ impl ConsensusState {
     fn withdrawal_payout_amount(
         entry: &PendingWithdrawal,
         balance: u64,
-        active: bool,
+        has_floor: bool,
         min_stake: u64,
     ) -> u64 {
         match entry.kind {
@@ -1543,7 +1543,7 @@ impl ConsensusState {
                 if entry.inner.amount == 0 {
                     balance
                 } else {
-                    let floor = if active { min_stake } else { 0 };
+                    let floor = if has_floor { min_stake } else { 0 };
                     entry.inner.amount.min(balance.saturating_sub(floor))
                 }
             }
@@ -1595,8 +1595,8 @@ impl ConsensusState {
                 continue;
             }
             let balance = *running.entry(entry.pubkey).or_insert(account.balance);
-            let active = account.status.is_current_epoch_signer();
-            let payout = Self::withdrawal_payout_amount(entry, balance, active, min_stake);
+            let has_floor = account.status.has_minimum_stake_floor();
+            let payout = Self::withdrawal_payout_amount(entry, balance, has_floor, min_stake);
             running.insert(entry.pubkey, balance.saturating_sub(payout));
             if payout > 0 {
                 let mut withdrawal = entry.inner;
@@ -1657,8 +1657,9 @@ impl ConsensusState {
             if entry.inner.address != account.withdrawal_credentials {
                 continue;
             }
-            let active = account.status.is_current_epoch_signer();
-            let payout = Self::withdrawal_payout_amount(&entry, account.balance, active, min_stake);
+            let has_floor = account.status.has_minimum_stake_floor();
+            let payout =
+                Self::withdrawal_payout_amount(&entry, account.balance, has_floor, min_stake);
             account.balance = account.balance.saturating_sub(payout);
             if account.balance == 0 {
                 self.remove_account(&entry.pubkey);
