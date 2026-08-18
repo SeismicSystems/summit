@@ -512,7 +512,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             flags.key_store_path = format!("{}/node{}/data", args.data_dir, x);
-            flags.ip = Some("127.0.0.1:26640".to_string());
+            flags.ip = Some(std::net::Ipv4Addr::LOCALHOST.into());
 
             // Create a bootstrappers.toml file with one of the genesis validators
             // Read the genesis to get a validator's public key
