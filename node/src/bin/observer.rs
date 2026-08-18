@@ -285,7 +285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             observer_flags.observer = Some(OBSERVER_DERIVE_IDX);
             // Pin the observer's advertised IP so it does NOT inherit the master
             // validator's genesis IP (which is already bound by validator 1).
-            observer_flags.ip = Some(format!("127.0.0.1:{}", 26600 + OBSERVER_SLOT * 10));
+            observer_flags.ip = Some(std::net::Ipv4Addr::LOCALHOST.into());
 
             println!(
                 "Starting observer consensus engine (master = node{}, derive index = {})",

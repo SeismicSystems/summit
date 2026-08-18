@@ -517,7 +517,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fs::write(&consensus_key_path, encoded_consensus_key).expect("Unable to write consensus key to disk");
 
             flags.key_store_path = format!("{}/node{}/data", args.data_dir, x);
-            flags.ip = Some("127.0.0.1:26640".to_string());
+            flags.ip = Some(std::net::Ipv4Addr::LOCALHOST.into());
 
             println!(
                 "Starting consensus engine for node {} with checkpoint",
