@@ -200,9 +200,15 @@ pub struct RunFlags {
     #[arg(long, requires = "checkpoint_path")]
     pub unsafe_skip_checkpoint_verification: bool,
 
-    /// IP address for this node (optional, will use genesis if not provided)
+    /// Public IP address this node advertises to its peers, paired with
+    /// `--port` to form the address they dial. Optional: a node in the genesis
+    /// committee takes the address recorded there, and one that is not resolves
+    /// its public IP at startup. Set it whenever the node's own view of its
+    /// address is the authoritative one — a node joining an existing network
+    /// has no committee entry to read, and an operator who knows the address
+    /// need not have it discovered.
     #[arg(long)]
-    pub ip: Option<String>,
+    pub ip: Option<IpAddr>,
 
     /// Path to a TOML file containing bootstrapper nodes (pubkey and address) for syncing
     #[arg(long)]
@@ -410,6 +416,42 @@ mod genesis_path_tests {
         let listen = wildcard_listen_for(dialable, 26000);
         assert_eq!(listen, "0.0.0.0:26000".parse::<SocketAddr>().unwrap());
         assert!(listen.is_ipv4());
+    }
+
+    /// Parse `summit run <args>` and return the run flags.
+    fn run_flags(args: &[&str]) -> RunFlags {
+        let argv = [&["summit", "run"], args].concat();
+        match CliArgs::try_parse_from(argv)
+            .expect("flags should parse")
+            .cmd
+        {
+            Command::Run { flags } => *flags,
+            other => panic!("expected the run subcommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn advertised_ip_is_a_bare_address() {
+        // --ip carries the host only; --port supplies the port the peers dial,
+        // the same one the node listens on, so the two cannot disagree.
+        let flags = run_flags(&["--ip", "203.0.113.7", "--port", "26000"]);
+        assert_eq!(flags.ip, Some("203.0.113.7".parse::<IpAddr>().unwrap()));
+        assert_eq!(flags.port, 26000);
+    }
+
+    #[test]
+    fn advertised_ip_accepts_ipv6_unbracketed() {
+        let flags = run_flags(&["--ip", "2001:db8::7"]);
+        assert_eq!(flags.ip, Some("2001:db8::7".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn advertised_ip_rejects_a_socket_address() {
+        // A port here would be a second, silently authoritative copy of --port.
+        // Rejecting it at parse time keeps the failure a usage error the
+        // operator sees immediately.
+        let argv = ["summit", "run", "--ip", "203.0.113.7:18551"];
+        assert!(CliArgs::try_parse_from(argv).is_err());
     }
 
     #[test]
@@ -1225,10 +1267,8 @@ async fn get_node_ip(
     key_store: &KeyStore<PrivateKey>,
     committee: &[Validator],
 ) -> SocketAddr {
-    if let Some(ref ip_str) = flags.ip {
-        ip_str
-            .parse::<SocketAddr>()
-            .expect("Invalid IP address format")
+    if let Some(ip) = flags.ip {
+        SocketAddr::new(ip, flags.port)
     } else if let Some(addr) = committee.iter().find_map(|v| {
         if v.node_public_key == key_store.node_key.public_key() {
             Some(v.ip_address)
