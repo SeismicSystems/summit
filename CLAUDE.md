@@ -62,20 +62,40 @@ target/debug/summit --help
 
 ## Test
 
-### Unit & integration tests (153 tests)
+### Unit & integration tests (613 tests)
 
 ```bash
-cargo test                            # default features — 153 tests
-cargo test --all-features             # includes e2e test harness — 170 tests
+cargo test                            # default features — 613 tests
+cargo test --all-features             # 644 tests
 ```
 
-Test breakdown by crate:
+Test breakdown by crate (default / all features):
 
-- `summit` (node): 40 tests (syncer, checkpointing, execution requests, deposits, withdrawals)
-- `summit-finalizer`: 19 tests (validator lifecycle, fork handling, state queries)
-- `summit-syncer`: 11 tests
-- `summit-types`: 75 tests (codec, consensus state, headers, withdrawals, protocol params)
-- `summit-rpc`: 8 integration tests
+| Crate | Default | All features | Covers |
+| --- | --- | --- | --- |
+| `summit-types` | 406 | 408 | codec, consensus state, headers, withdrawals, protocol params |
+| `summit` (node) | 91 | 93 | syncer, checkpointing, execution requests, deposits, withdrawals |
+| `summit-finalizer` | 55 | 55 | validator lifecycle, fork handling, state queries |
+| `summit-application` | 23 | 23 | propose/verify, Automaton + Relay |
+| `summit-rpc` | 22 | 35 | integration tests; `permissioned` adds the auth suite |
+| `summit-syncer` | 13 | 27 | block cache, backfill, subscriptions |
+| `summit-orchestrator` | 3 | 3 | epoch transitions |
+
+`--all-features` runs a strict superset of the default test *names* — no test
+exists only under default features. The two runs are still not redundant,
+because some features change behavior in place instead of adding tests:
+
+- `bench` swaps `start_building_block` for a variant that takes a height and
+  drops the state root (`application/src/actor.rs`)
+- `bad-blocks` swaps in `BadBlockEngineClient` (`node/src/args.rs`)
+- `permissioned` changes the RPC auth path (`rpc/src/server.rs`)
+
+So `--all-features` never exercises the production block-building path. The
+default run is what covers it.
+
+Runtime is dominated by the `summit` lib test binary — heavy multi-node
+integration tests, ~5 minutes of the ~8 minute total. Every other crate
+finishes in about a second.
 
 ### CI checks (must pass before PR)
 
@@ -242,7 +262,7 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 1. **rustfmt** — `cargo +nightly fmt --all --check`
 2. **build** — default, no-default-features, `prom`, `jemalloc`, all-features
 3. **warnings** — `RUSTFLAGS="-D warnings" cargo check` (default + all-features)
-4. **test** — `cargo test` + `cargo test --all-features`
+4. **test** — two parallel matrix jobs: `cargo test` and `cargo test --all-features`
 
 ## Troubleshooting
 

@@ -58,16 +58,28 @@ jobs:
       - name: check warnings with all features
         run: RUSTFLAGS="-D warnings" cargo check --all-features
 
+  # The two feature sets are not redundant: `bench` and `bad-blocks` swap in
+  # alternative engine clients, so `--all-features` never exercises the
+  # production block-building path that the default run covers.
   test:
+    name: test (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default features
+            features: ""
+            cache-key: "test-cache-default"
+          - name: all features
+            features: "--all-features"
+            cache-key: "test-cache-all-features"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "test-cache"
-      - name: cargo test with default features
-        run: cargo test
-      - name: cargo test with all features
-        run: cargo test --all-features
+          shared-key: ${{ matrix.cache-key }}
+      - name: cargo test
+        run: cargo test ${{ matrix.features }}
