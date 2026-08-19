@@ -24,6 +24,7 @@ use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_formatting::from_hex;
 use futures::{FutureExt, channel::oneshot};
 use governor::Quota;
+use serde::Deserialize;
 use ssz::Decode;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -174,30 +175,18 @@ pub struct RunFlags {
     #[arg(long)]
     pub checkpoint_or_default: bool,
 
-    /// Trusted finalized-header epoch used as the weak-subjectivity anchor for checkpoint verification
-    #[arg(
-        long,
-        requires = "checkpoint_path",
-        requires = "weak_subjectivity_header_digest"
-    )]
-    pub weak_subjectivity_epoch: Option<u64>,
-
-    /// Trusted finalized-header digest used as the weak-subjectivity anchor for checkpoint verification
-    #[arg(
-        long,
-        requires = "checkpoint_path",
-        requires = "weak_subjectivity_epoch"
-    )]
-    pub weak_subjectivity_header_digest: Option<String>,
+    /// Path to a TOML file containing the independently trusted weak-subjectivity anchor
+    #[arg(long, requires = "checkpoint_path")]
+    pub weak_subjectivity_path: Option<String>,
 
     /// Import a checkpoint WITHOUT verifying it against a finalized-header chain.
     ///
     /// UNSAFE: the imported consensus state is trusted entirely from the supplied
     /// checkpoint artifact. By default, checkpoint startup requires a checkpoint
     /// directory containing finalized_headers/ together with
-    /// --weak-subjectivity-epoch and --weak-subjectivity-header-digest. Set this
-    /// flag to bypass that requirement (e.g. to import a standalone checkpoint
-    /// file). Only use it when the checkpoint source is fully trusted.
+    /// --weak-subjectivity-path. Set this flag to bypass that requirement (e.g.
+    /// to import a standalone checkpoint file). Only use it when the checkpoint
+    /// source is fully trusted.
     #[arg(long, requires = "checkpoint_path")]
     pub unsafe_skip_checkpoint_verification: bool,
 
@@ -518,7 +507,10 @@ async fn run_node_inner(
     // Decide how to treat the supplied checkpoint artifacts. By default a
     // checkpoint MUST be verified against a finalized-headers chain; see
     // classify_checkpoint_startup.
-    let weak_subjectivity = weak_subjectivity_from_flags(&flags);
+    let weak_subjectivity = flags
+        .weak_subjectivity_path
+        .as_deref()
+        .map(|path| read_weak_subjectivity(path).unwrap_or_else(|e| panic!("{e}")));
     // The signature-verified chain terminal, used below to complete the
     // checkpoint from the verified history rather than an unverified file.
     let mut verified_terminal_header: Option<FinalizedHeader<MultisigScheme>> = None;
@@ -538,8 +530,8 @@ async fn run_node_inner(
                 .as_ref()
                 .expect("finalized-headers chain present on the verify path");
             let weak_subjectivity = weak_subjectivity.as_ref().expect(
-                "checkpoint verification requires --weak-subjectivity-epoch and \
-                 --weak-subjectivity-header-digest when finalized_headers/ is present",
+                "checkpoint verification requires --weak-subjectivity-path when \
+                 finalized_headers/ is present",
             );
             checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
                 &genesis,
@@ -580,8 +572,7 @@ async fn run_node_inner(
             // checkpoint or explicitly waive verification.
             error!(
                 "refusing to import an unverified checkpoint: supply a checkpoint directory \
-                 with finalized_headers/ plus --weak-subjectivity-epoch and \
-                 --weak-subjectivity-header-digest, or pass \
+                 with finalized_headers/ plus --weak-subjectivity-path, or pass \
                  --unsafe-skip-checkpoint-verification to import without verification (NOT recommended)"
             );
             std::process::exit(1);
@@ -589,7 +580,7 @@ async fn run_node_inner(
         CheckpointStartupDecision::SkipUnsafe => {
             if weak_subjectivity.is_some() {
                 warn!(
-                    "--weak-subjectivity-* ignored: no finalized_headers chain present and \
+                    "--weak-subjectivity-path ignored: no finalized_headers chain present and \
                      --unsafe-skip-checkpoint-verification was set; skipping verification"
                 );
             }
@@ -1174,31 +1165,32 @@ fn get_initial_state(
     })
 }
 
-fn weak_subjectivity_from_flags(
-    flags: &RunFlags,
-) -> Option<checkpoint::WeakSubjectivityHeaderDigest> {
-    match (
-        flags.weak_subjectivity_epoch,
-        flags.weak_subjectivity_header_digest.as_ref(),
-    ) {
-        (Some(epoch), Some(header_digest)) => Some(checkpoint::WeakSubjectivityHeaderDigest {
-            epoch,
-            header_digest: parse_digest_arg(header_digest, "--weak-subjectivity-header-digest"),
-        }),
-        (None, None) => None,
-        _ => panic!(
-            "--weak-subjectivity-epoch and --weak-subjectivity-header-digest must be supplied together"
-        ),
-    }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WeakSubjectivityFile {
+    epoch: u64,
+    header_digest: String,
 }
 
-fn parse_digest_arg(value: &str, arg_name: &str) -> summit_types::Digest {
-    let bytes =
-        from_hex(value).unwrap_or_else(|| panic!("{arg_name} must be a 32-byte hex digest"));
+pub(crate) fn read_weak_subjectivity(
+    path: &str,
+) -> Result<checkpoint::WeakSubjectivityHeaderDigest, String> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read weak-subjectivity file {path}: {e}"))?;
+    let file: WeakSubjectivityFile = toml::from_str(&contents)
+        .map_err(|e| format!("failed to parse weak-subjectivity file {path}: {e}"))?;
+
+    let bytes = from_hex(&file.header_digest).ok_or_else(|| {
+        "weak_subjectivity.header_digest must be a 32-byte hex digest".to_string()
+    })?;
     let bytes: [u8; 32] = bytes
         .try_into()
-        .unwrap_or_else(|_| panic!("{arg_name} must be a 32-byte hex digest"));
-    bytes.into()
+        .map_err(|_| "weak_subjectivity.header_digest must be a 32-byte hex digest".to_string())?;
+
+    Ok(checkpoint::WeakSubjectivityHeaderDigest {
+        epoch: file.epoch,
+        header_digest: bytes.into(),
+    })
 }
 
 /// Returns the wildcard listen address whose family matches the node's

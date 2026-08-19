@@ -1,6 +1,6 @@
 use crate::args::{
     CheckpointStartupDecision, check_last_block_binding, classify_checkpoint_startup,
-    read_checkpoint,
+    read_checkpoint, read_weak_subjectivity,
 };
 use alloy_primitives::Address;
 use ssz::Encode as _;
@@ -71,6 +71,58 @@ fn last_block_binding_rejects_mismatch() {
     let committed: Digest = [7u8; 32].into();
     let unrelated: Digest = [9u8; 32].into();
     assert!(check_last_block_binding(Some(unrelated), committed).is_err());
+}
+
+#[test]
+fn weak_subjectivity_file_loads_anchor() {
+    let path = std::env::temp_dir().join(format!(
+        "summit_weak_subjectivity_valid_{}.toml",
+        std::process::id()
+    ));
+    let contents = format!("epoch = 7421\nheader_digest = \"0x{}\"\n", "ab".repeat(32));
+    std::fs::write(&path, contents).unwrap();
+
+    let loaded = read_weak_subjectivity(path.to_str().unwrap());
+    let _ = std::fs::remove_file(&path);
+    let loaded = loaded.expect("valid weak-subjectivity file must load");
+
+    let expected_digest: Digest = [0xabu8; 32].into();
+    assert_eq!(loaded.epoch, 7421);
+    assert_eq!(loaded.header_digest, expected_digest);
+}
+
+#[test]
+fn weak_subjectivity_file_rejects_invalid_digest() {
+    let path = std::env::temp_dir().join(format!(
+        "summit_weak_subjectivity_invalid_digest_{}.toml",
+        std::process::id()
+    ));
+    std::fs::write(&path, "epoch = 7421\nheader_digest = \"0x01\"\n").unwrap();
+
+    let result = read_weak_subjectivity(path.to_str().unwrap());
+    let _ = std::fs::remove_file(&path);
+
+    let error = result.expect_err("short header digest must be rejected");
+    assert!(error.contains("must be a 32-byte hex digest"));
+}
+
+#[test]
+fn weak_subjectivity_file_rejects_unknown_fields() {
+    let path = std::env::temp_dir().join(format!(
+        "summit_weak_subjectivity_unknown_field_{}.toml",
+        std::process::id()
+    ));
+    let contents = format!(
+        "epoch = 7421\nheader_digest = \"0x{}\"\nunexpected = true\n",
+        "ab".repeat(32)
+    );
+    std::fs::write(&path, contents).unwrap();
+
+    let result = read_weak_subjectivity(path.to_str().unwrap());
+    let _ = std::fs::remove_file(&path);
+
+    let error = result.expect_err("unknown fields must be rejected");
+    assert!(error.contains("unknown field"));
 }
 
 // #214 single-file path: a standalone checkpoint file decodes to a
