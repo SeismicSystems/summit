@@ -58,7 +58,7 @@ where
     R: P2pReceiver<PublicKey = P>,
     P: PublicKey,
 {
-    let (sender, receiver) = mailbox::new(context.child("handler"), config.mailbox_size);
+    let (sender, receiver) = mailbox::new_unreliable(context.child("handler"), config.mailbox_size);
     let handler = handler::Handler::new(sender);
     let (resolver_engine, resolver) = p2p::Engine::new(
         context.child("resolver"),
