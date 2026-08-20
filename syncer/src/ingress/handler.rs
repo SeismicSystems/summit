@@ -1,5 +1,7 @@
 use bytes::{Buf, BufMut, Bytes};
-use commonware_actor::mailbox::{self, Overflow, Policy, Sender};
+use commonware_actor::mailbox::{
+    self, Overflow, UnreliablePolicy, UnreliableReceiver, UnreliableSender,
+};
 use commonware_codec::{EncodeSize, Error as CodecError, Read, ReadExt, Write};
 use commonware_consensus::types::{Height, Round};
 use commonware_cryptography::Digest;
@@ -81,14 +83,23 @@ impl<D: Digest> Overflow<Message<D>> for Pending<D> {
     }
 }
 
-impl<D: Digest> Policy for Message<D> {
+impl<D: Digest> UnreliablePolicy for Message<D> {
     type Overflow = Pending<D>;
 
-    fn handle(overflow: &mut Self::Overflow, message: Self) {
+    fn handle(overflow: &mut Self::Overflow, message: Self) -> bool {
         if message.response_closed() {
-            return;
+            return true;
         }
-        overflow.0.push_back(message);
+
+        match message {
+            // Responses to our own fetches must reach the syncer for validation.
+            message @ Self::Deliver { .. } => {
+                overflow.0.push_back(message);
+                true
+            }
+            // Reject peer-initiated work rather than retaining an unbounded serve backlog.
+            Self::Produce { .. } => false,
+        }
     }
 }
 
@@ -98,29 +109,29 @@ impl<D: Digest> Policy for Message<D> {
 /// resolver, and acts as a bridge to the main actor loop.
 #[derive(Clone)]
 pub struct Handler<D: Digest> {
-    sender: Sender<Message<D>>,
+    sender: UnreliableSender<Message<D>>,
 }
 
 impl<D: Digest> Handler<D> {
     /// Creates a new handler.
-    pub const fn new(sender: Sender<Message<D>>) -> Self {
+    pub const fn new(sender: UnreliableSender<Message<D>>) -> Self {
         Self { sender }
     }
 }
 
 /// Creates a resolver receiver and handler pair.
 pub fn init<D: Digest>(metrics: impl Metrics, capacity: NonZeroUsize) -> (Receiver<D>, Handler<D>) {
-    let (sender, receiver) = mailbox::new(metrics, capacity);
+    let (sender, receiver) = mailbox::new_unreliable(metrics, capacity);
     (Receiver::new(receiver), Handler::new(sender))
 }
 
 /// Receiver for resolver handler messages.
 pub struct Receiver<D: Digest> {
-    inner: mailbox::Receiver<Message<D>>,
+    inner: UnreliableReceiver<Message<D>>,
 }
 
 impl<D: Digest> Receiver<D> {
-    pub(crate) const fn new(inner: mailbox::Receiver<Message<D>>) -> Self {
+    pub(crate) const fn new(inner: UnreliableReceiver<Message<D>>) -> Self {
         Self { inner }
     }
 
@@ -490,32 +501,83 @@ mod tests {
         Hasher as _,
         sha256::{Digest as Sha256Digest, Sha256},
     };
+    use commonware_runtime::{Runner as _, deterministic};
+    use commonware_utils::{NZUsize, vec::NonEmptyVec};
     use std::collections::BTreeSet;
 
     type D = Sha256Digest;
 
     #[test]
+    fn full_mailbox_rejects_produce_and_retains_deliver() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut receiver, mut handler) = init::<D>(context, NZUsize!(1));
+
+            let first = handler.produce(Key::Finalized { height: 1 });
+            let rejected = handler.produce(Key::Finalized { height: 2 });
+
+            let round = Round::new(Epoch::new(1), View::new(1));
+            let delivered = handler.deliver(
+                Delivery {
+                    key: Key::Notarized { round },
+                    subscribers: NonEmptyVec::new((
+                        Annotation::Notarization { round },
+                        tracing::Span::none(),
+                    )),
+                },
+                Bytes::new(),
+            );
+
+            assert!(rejected.await.is_err());
+
+            let Message::Produce { key, response } = receiver.recv().await.unwrap() else {
+                panic!("first message should be produce");
+            };
+            assert_eq!(key, Key::Finalized { height: 1 });
+            response.send(Bytes::from_static(b"first")).unwrap();
+            assert_eq!(first.await.unwrap(), Bytes::from_static(b"first"));
+
+            let Message::Deliver {
+                delivery, response, ..
+            } = receiver.recv().await.unwrap()
+            else {
+                panic!("deliver message should be retained");
+            };
+            assert_eq!(delivery.key, Key::Notarized { round });
+            response.send(true).unwrap();
+            assert!(delivered.await.unwrap());
+        });
+    }
+
+    #[test]
     fn handler_drain_skips_closed_responses() {
         let mut overflow = Pending::<D>::default();
+        let make_message = |height, response| Message::Deliver {
+            delivery: Delivery {
+                key: Key::Finalized { height },
+                subscribers: NonEmptyVec::new((
+                    Annotation::Finalized(Finalized::ByHeight {
+                        height: Height::new(height),
+                    }),
+                    tracing::Span::none(),
+                )),
+            },
+            value: Bytes::new(),
+            response,
+        };
 
         let (closed_response, closed_receiver) = oneshot::channel();
-        Message::handle(
+        assert!(Message::handle(
             &mut overflow,
-            Message::Produce {
-                key: Key::Finalized { height: 1 },
-                response: closed_response,
-            },
-        );
+            make_message(1, closed_response),
+        ));
         drop(closed_receiver);
 
         let (open_response, _open_receiver) = oneshot::channel();
-        Message::handle(
+        assert!(Message::handle(
             &mut overflow,
-            Message::Produce {
-                key: Key::Finalized { height: 2 },
-                response: open_response,
-            },
-        );
+            make_message(2, open_response),
+        ));
 
         let mut messages = Vec::new();
         Overflow::drain(&mut overflow, |message| {
@@ -526,8 +588,11 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert!(matches!(
             messages.pop(),
-            Some(Message::Produce {
-                key: Key::Finalized { height: 2 },
+            Some(Message::Deliver {
+                delivery: Delivery {
+                    key: Key::Finalized { height: 2 },
+                    ..
+                },
                 ..
             })
         ));

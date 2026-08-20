@@ -133,7 +133,7 @@ mod tests {
         mailbox::Identifier,
     };
     use crate::mocks::fixtures::{Fixture, bls12381_threshold};
-    use commonware_actor::{Feedback, mailbox};
+    use commonware_actor::{Feedback, Unreliable, mailbox};
     use commonware_broadcast::{Broadcaster as _, buffered};
     use commonware_codec::Encode;
     use commonware_consensus::Reporter;
@@ -334,12 +334,12 @@ mod tests {
         fetches: Arc<Mutex<Vec<Fetch<Key<D>, Annotation>>>>,
         active_fetches: Arc<Mutex<Vec<Fetch<Key<D>, Annotation>>>>,
         targeted: Arc<Mutex<Vec<(Key<D>, NonEmptyVec<K>)>>>,
-        sender: Option<mailbox::Sender<handler::Message<D>>>,
+        sender: Option<mailbox::UnreliableSender<handler::Message<D>>>,
     }
 
     impl RecordingResolver {
         fn holding(metrics: impl commonware_runtime::Metrics) -> (handler::Receiver<D>, Self) {
-            let (sender, receiver) = mailbox::new(metrics, NZUsize!(100));
+            let (sender, receiver) = mailbox::new_unreliable(metrics, NZUsize!(100));
             (
                 handler::Receiver::new(receiver),
                 Self {
@@ -353,7 +353,7 @@ mod tests {
             self.fetches.lock().unwrap().clone()
         }
 
-        fn enqueue(&self, message: handler::Message<D>) -> Feedback {
+        fn enqueue(&self, message: handler::Message<D>) -> Unreliable<Feedback> {
             self.sender
                 .as_ref()
                 .expect("recording resolver sender missing")
