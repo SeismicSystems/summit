@@ -6,7 +6,8 @@ use std::sync::Arc;
 #[cfg(feature = "permissioned")]
 use std::sync::atomic::AtomicBool;
 use summit_rpc::{
-    PathSender, start_rpc_server_for_genesis_with_handle, start_rpc_server_pair_with_handle,
+    PathSender, RpcBodyLimits, start_deposit_rpc_server_with_handle,
+    start_rpc_server_for_genesis_with_handle, start_rpc_server_pair_with_handle,
     start_rpc_server_with_handle, start_rpc_server_with_handle_and_batch_limit,
 };
 use utils::{
@@ -927,6 +928,50 @@ async fn test_get_deposit_signature_not_on_public_listener() {
 
     handles.public_handle.stop().unwrap();
     handles.admin_handle.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_deposit_rpc_server_only_serves_admin_api_on_loopback() {
+    use jsonrpsee::core::ClientError;
+    use jsonrpsee::types::error::ErrorCode;
+    use summit_rpc::{SummitAdminApiClient, SummitApiClient};
+
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+    let (handle, addr) = start_deposit_rpc_server_with_handle(
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        RpcBodyLimits::default(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        addr.ip().is_loopback(),
+        "deposit RPC listener must be bound to loopback; bound to {}",
+        addr.ip()
+    );
+
+    let client = HttpClientBuilder::default()
+        .build(format!("http://{addr}"))
+        .unwrap();
+    let address = format!("0x{}", "a".repeat(40));
+    let response = SummitAdminApiClient::get_deposit_signature(&client, 32_000_000_000, address)
+        .await
+        .expect("deposit RPC should serve getDepositSignature");
+    assert_eq!(response.node_signature.len(), 64);
+    assert_eq!(response.consensus_signature.len(), 96);
+
+    match SummitApiClient::health(&client).await {
+        Err(ClientError::Call(err)) => {
+            assert_eq!(err.code(), ErrorCode::MethodNotFound.code());
+        }
+        other => panic!("deposit RPC must not serve the public API; got {other:?}"),
+    }
+
+    handle.stop().unwrap();
 }
 
 #[tokio::test]

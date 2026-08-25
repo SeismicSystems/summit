@@ -63,6 +63,60 @@ impl Default for RpcBodyLimits {
     }
 }
 
+pub async fn start_deposit_rpc_server(
+    key_store_path: String,
+    genesis_hash: [u8; 32],
+    namespace: Vec<u8>,
+    port: u16,
+    body_limits: RpcBodyLimits,
+    stop_signal: Signal,
+) -> anyhow::Result<()> {
+    let (handle, addr) = start_deposit_rpc_server_with_handle(
+        key_store_path,
+        genesis_hash,
+        namespace,
+        port,
+        body_limits,
+    )
+    .await?;
+
+    tracing::info!("Deposit RPC Server listening on http://{addr}");
+
+    let sig = stop_signal.await?;
+    tracing::info!("Deposit RPC server stopped: {sig}");
+    handle.stop()?;
+
+    Ok(())
+}
+
+/// Starts only the localhost-bound deposit-signature RPC listener. It does not
+/// require consensus state and does not start P2P, consensus, storage, or an
+/// execution client. Passing `0` asks the OS to allocate a free port.
+pub async fn start_deposit_rpc_server_with_handle(
+    key_store_path: String,
+    genesis_hash: [u8; 32],
+    namespace: Vec<u8>,
+    port: u16,
+    body_limits: RpcBodyLimits,
+) -> anyhow::Result<(ServerHandle, SocketAddr)> {
+    let rpc_impl = server::SummitDepositRpcServer::new(key_store_path, genesis_hash, &namespace);
+    let methods = SummitAdminApiServer::into_rpc(rpc_impl);
+
+    let server = builder::RpcServerBuilder::new_localhost(port)
+        .with_max_connections(1000)
+        .with_max_request_body_size(body_limits.max_request_body_size)
+        .with_max_response_body_size(body_limits.max_response_body_size)
+        .with_request_timeout(body_limits.request_timeout)
+        .with_batch_limit(body_limits.max_batch_size)
+        .build()
+        .await?;
+
+    let addr = server.local_addr()?;
+    let handle = server.start(methods);
+
+    Ok((handle, addr))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn start_rpc_server(
     state_query: ConsensusStateQuery<MultisigScheme>,

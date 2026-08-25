@@ -15,7 +15,8 @@ use commonware_runtime::Supervisor as _;
 use commonware_runtime::{Handle, Runner, Spawner, tokio};
 use summit_rpc::{
     DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_MAX_BATCH_SIZE, DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
-    PathSender, RpcBodyLimits, start_rpc_server, start_rpc_server_for_genesis,
+    PathSender, RpcBodyLimits, start_deposit_rpc_server, start_rpc_server,
+    start_rpc_server_for_genesis,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -80,12 +81,32 @@ pub enum Command {
         #[command(flatten)]
         flags: Box<RunFlags>,
     },
+    /// Start only the localhost deposit-signature RPC server
+    DepositRpc {
+        #[command(flatten)]
+        flags: DepositRpcFlags,
+    },
     /// Key management utilities
     #[command(subcommand)]
     Keys(KeySubCmd),
     /// Genesis file utilities
     #[command(subcommand)]
     Genesis(GenesisSubCmd),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DepositRpcFlags {
+    /// Path to your keystore directory containing node_key.pem and consensus_key.pem
+    #[arg(long, default_value_t = String::from("~/.seismic/consensus/keys"))]
+    pub key_store_path: String,
+
+    /// Path to the genesis file that defines the deposit-signature domain
+    #[arg(long, default_value_t = String::from("./example_genesis.toml"))]
+    pub genesis_path: String,
+
+    /// Port for the localhost-only deposit-signature RPC server
+    #[arg(long, default_value_t = 3031)]
+    pub port: u16,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -217,11 +238,41 @@ impl Command {
     pub fn exec(&self) {
         match self {
             Command::Run { flags } => self.run_node(flags),
-
+            Command::DepositRpc { flags } => self.run_deposit_rpc(flags),
             Command::Keys(cmd) => cmd.exec(),
 
             Command::Genesis(cmd) => cmd.exec(),
         }
+    }
+
+    fn run_deposit_rpc(&self, flags: &DepositRpcFlags) {
+        let _critical_log_guard = crate::telemetry::init(Level::INFO, None);
+        let genesis = Genesis::load_from_file(&flags.genesis_path)
+            .unwrap_or_else(|e| panic!("Failed to load genesis file: {e}"));
+
+        // Validate that both validator keys are present before accepting requests.
+        let _key_store = expect_key_store(&flags.key_store_path);
+
+        let key_store_path = flags.key_store_path.clone();
+        let genesis_hash = genesis.genesis_hash();
+        let namespace = genesis.namespace.into_bytes();
+        let port = flags.port;
+        let executor = tokio::Runner::default();
+
+        executor.start(|context| async move {
+            if let Err(e) = start_deposit_rpc_server(
+                key_store_path,
+                genesis_hash,
+                namespace,
+                port,
+                RpcBodyLimits::default(),
+                context.stopped(),
+            )
+            .await
+            {
+                error!("Deposit RPC server failed: {e}");
+            }
+        });
     }
 
     pub fn run_node(&self, flags: &RunFlags) {
