@@ -1540,6 +1540,16 @@ impl ConsensusState {
         self.withdrawal_queue.get_for_epoch(epoch)
     }
 
+    /// Iterate all withdrawals in the withdrawal queue.
+    pub fn withdrawals_iter(&self) -> impl Iterator<Item = &PendingWithdrawal> {
+        self.withdrawal_queue.withdrawals_iter()
+    }
+
+    /// Iterate all refunds in the withdrawal queue.
+    pub fn refunds_iter(&self) -> impl Iterator<Item = &PendingWithdrawal> {
+        self.withdrawal_queue.refunds_iter()
+    }
+
     /// Payout amount for one due withdrawal against `balance`, the validator's
     /// available balance at this point in the sweep. Deposit refunds pay their
     /// fixed amount and ignore the balance. A validator full exit (marker amount

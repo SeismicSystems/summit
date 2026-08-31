@@ -320,6 +320,16 @@ impl WithdrawalQueue {
         self.withdrawals.iter().chain(self.refunds.iter())
     }
 
+    /// Iterate all withdrawals in the queue.
+    pub fn withdrawals_iter(&self) -> impl Iterator<Item = &PendingWithdrawal> {
+        self.withdrawals.iter()
+    }
+
+    /// Iterate all refunds in the queue.
+    pub fn refunds_iter(&self) -> impl Iterator<Item = &PendingWithdrawal> {
+        self.refunds.iter()
+    }
+
     fn pop_kind(&mut self, epoch: u64, kind: WithdrawalKind) -> Option<PendingWithdrawal> {
         // Pop the front only if it is due (its earliest-processable epoch has arrived).
         if self.deque(kind).front().is_some_and(|w| w.epoch <= epoch) {
