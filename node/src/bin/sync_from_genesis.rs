@@ -276,7 +276,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let pub_key_bytes = from_hex_formatted("f205c8c88d5d1753843dd0fc9810390efd00d6f752dd555c0ad4000bfcac2226").ok_or("PublicKey bad format").unwrap();
             let pub_key_bytes_ar: [u8; 32] = pub_key_bytes.try_into().unwrap();
             let _public_key = PublicKey::decode(&pub_key_bytes_ar[..]).map_err(|_| "Unable to decode Public Key").unwrap();
-            let withdrawal_amount = VALIDATOR_MINIMUM_STAKE;
+            // Amount 0 is a full exit (EIP-7002): the validator leaves the
+            // committee and its whole balance is paid out. A positive amount would
+            // be a partial withdrawal clamped to leave the minimum stake, which for
+            // a validator at exactly the minimum clamps to zero and is a no-op.
+            let withdrawal_amount = 0u64;
             let withdrawal_fee = U256::from(1000000000000000u64); // 0.001 ETH fee
 
             // Check balance before withdrawal
@@ -329,7 +333,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let balance_after = node0_provider.get_balance(withdrawal_credentials).await.expect("Failed to get balance after withdrawal");
             println!("Withdrawal credentials balance after: {} wei", balance_after);
 
-            // The withdrawal amount was VALIDATOR_MINIMUM_STAKE (32 ETH in gwei)
+            // A full exit pays out the validator's whole balance, which is
+            // VALIDATOR_MINIMUM_STAKE (32 ETH in gwei).
             // Converting to wei: 32_000_000_000 gwei * 10^9 = 32 * 10^18 wei
             let expected_difference = U256::from(VALIDATOR_MINIMUM_STAKE) * U256::from(1_000_000_000u64);
             let actual_difference = balance_after - balance_before;

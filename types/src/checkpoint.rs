@@ -752,6 +752,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
 
 #[cfg(test)]
 mod tests {
+    use crate::account::{ValidatorAccount, ValidatorStatus};
     use crate::checkpoint::Checkpoint;
     use crate::consensus_state::ConsensusState;
     use crate::dynamic_epocher::DynamicEpocher;
@@ -798,7 +799,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -807,6 +807,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -830,7 +831,6 @@ mod tests {
 
     #[test]
     fn test_checkpoint_ssz_encode_decode_with_populated_state() {
-        use crate::account::{ValidatorAccount, ValidatorStatus};
         use crate::execution_request::DepositRequest;
         use crate::withdrawal::PendingWithdrawal;
         use alloy_eips::eip4895::Withdrawal;
@@ -872,7 +872,6 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
-            balance_deduction: 8_000_000_000,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };
@@ -884,8 +883,6 @@ mod tests {
             balance: 32_000_000_000, // 32 ETH
 
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 100,
         };
@@ -897,8 +894,6 @@ mod tests {
             balance: 16_000_000_000, // 16 ETH
 
             status: ValidatorStatus::SubmittedExitRequest,
-            has_pending_deposit: false,
-            has_pending_withdrawal: true,
             joining_epoch: 0,
             last_deposit_index: 101,
         };
@@ -932,7 +927,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -941,6 +935,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -989,7 +984,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -998,6 +992,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1070,7 +1065,6 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
-            balance_deduction: 8_000_000_000,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };
@@ -1082,8 +1076,6 @@ mod tests {
             balance: 32_000_000_000, // 32 ETH
 
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 100,
         };
@@ -1095,8 +1087,6 @@ mod tests {
             balance: 16_000_000_000, // 16 ETH
 
             status: ValidatorStatus::SubmittedExitRequest,
-            has_pending_deposit: false,
-            has_pending_withdrawal: true,
             joining_epoch: 0,
             last_deposit_index: 101,
         };
@@ -1130,7 +1120,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1139,6 +1128,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1192,7 +1182,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1201,6 +1190,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1259,7 +1249,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1268,6 +1257,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1322,7 +1312,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1331,6 +1320,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1438,7 +1428,6 @@ mod tests {
                 amount: 8_000_000_000, // 8 ETH in gwei
             },
             pubkey: [5u8; 32],
-            balance_deduction: 8_000_000_000,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };
@@ -1450,8 +1439,6 @@ mod tests {
             balance: 32_000_000_000, // 32 ETH
 
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 100,
         };
@@ -1483,7 +1470,6 @@ mod tests {
             forkchoice: Default::default(),
             epoch_genesis_hash: [0u8; 32],
             validator_minimum_stake: 32_000_000_000, // 32 ETH in gwei
-            validator_maximum_stake: 32_000_000_000, // 32 ETH in gwei
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO,
             max_deposits_per_epoch: 3,
@@ -1492,6 +1478,7 @@ mod tests {
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
             epocher: DynamicEpocher::new(NonZeroU64::new(10).unwrap()),
             ssz_tree: SszStateTree::default(),
             proof_tree: Arc::new(SszStateTree::default()),
@@ -1589,8 +1576,6 @@ mod tests {
                 withdrawal_credentials,
                 balance: 32_000_000_000,
                 status: ValidatorStatus::Active,
-                has_pending_deposit: false,
-                has_pending_withdrawal: false,
                 joining_epoch: 0,
                 last_deposit_index: 0,
             };
@@ -1612,7 +1597,6 @@ mod tests {
             max_message_size_bytes: 1_048_576,
             namespace: namespace.clone(),
             validator_minimum_stake: 32_000_000_000,
-            validator_maximum_stake: 64_000_000_000,
             blocks_per_epoch: 10,
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO.to_string(),
@@ -1621,12 +1605,12 @@ mod tests {
             observers_per_validator: 0,
             minimum_validator_count: 1,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
         };
 
         let mut state = ConsensusState::new(
             Default::default(),
             32_000_000_000,
-            64_000_000_000,
             NonZeroU64::new(10).unwrap(),
             10_000,
             Address::ZERO,
@@ -1635,6 +1619,7 @@ mod tests {
             0,
             1,
             0,
+            3,
         );
         state.set_validator_accounts(validator_accounts);
         // Let the test introduce any decoded-state inconsistency before the
@@ -1971,8 +1956,6 @@ mod tests {
                         withdrawal_credentials: Address::from([50u8; 20]),
                         balance: 32_000_000_000,
                         status: ValidatorStatus::Joining,
-                        has_pending_deposit: false,
-                        has_pending_withdrawal: false,
                         joining_epoch: 1,
                         last_deposit_index: 0,
                     },
@@ -2186,8 +2169,6 @@ mod tests {
             withdrawal_credentials: Address::from([99u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Joining,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 5,
             last_deposit_index: 0,
         };
@@ -2205,6 +2186,78 @@ mod tests {
             ),
             "verifier must reject a checkpoint carrying an extra Joining account not \
              committed by the terminal finalized header, got {result:?}"
+        );
+    }
+
+    // Checkpoint data encodes the state before set_pending_checkpoint runs
+    // (nested pending checkpoints are rejected at decode), so a restore has to
+    // repopulate the field from the outer checkpoint and re-capture the root
+    // to land in the exact state a live peer had at the penultimate block.
+    // This pins the mechanism the restore path relies on: a decode-rebuilt SSZ
+    // tree plus the pending digest leaf plus a capture equals the live,
+    // incrementally built tree. The live root here is what the epoch terminal
+    // block commits as parent_beacon_block_root.
+    #[test]
+    fn restored_state_with_repopulated_pending_checkpoint_matches_live() {
+        let mut live = ConsensusState::new(
+            Default::default(),
+            32_000_000_000,
+            NonZeroU64::new(10).unwrap(),
+            10_000,
+            Address::ZERO,
+            3,
+            16,
+            0,
+            1,
+            0,
+            3,
+        );
+        let node_key: [u8; 32] = ed25519::PrivateKey::from_seed(42)
+            .public_key()
+            .as_ref()
+            .try_into()
+            .expect("ed25519 public key is 32 bytes");
+        live.set_account(
+            node_key,
+            ValidatorAccount {
+                consensus_public_key: bls12381::PrivateKey::from_seed(42).public_key(),
+                withdrawal_credentials: Address::from([3u8; 20]),
+                balance: 32_000_000_000,
+                status: ValidatorStatus::Active,
+                joining_epoch: 0,
+                last_deposit_index: 0,
+            },
+        );
+        live.rebuild_ssz_tree();
+
+        // The finalizer's penultimate-block flow: create the checkpoint, set
+        // it as pending, then capture the root the terminal block commits.
+        let checkpoint = Checkpoint::new(&live);
+        live.set_pending_checkpoint(Some(checkpoint.clone()));
+        live.capture_state_root(live.get_latest_height());
+
+        // Without repopulation the restored root is missing the pending
+        // checkpoint digest leaf and cannot match the live root. If this ever
+        // becomes equal, the assertions below pin nothing.
+        let mut restored = ConsensusState::try_from(&checkpoint).expect("checkpoint must decode");
+        assert_ne!(
+            restored.get_state_root(),
+            live.get_state_root(),
+            "a restore without repopulation must diverge from the live root"
+        );
+
+        restored.set_pending_checkpoint(Some(checkpoint.clone()));
+        restored.capture_state_root(restored.get_latest_height());
+
+        assert_eq!(
+            restored.get_pending_checkpoint().map(|cp| cp.digest),
+            Some(checkpoint.digest),
+            "repopulation must install the restored checkpoint as pending"
+        );
+        assert_eq!(
+            restored.get_state_root(),
+            live.get_state_root(),
+            "a repopulated restore must reproduce the live penultimate state root"
         );
     }
 }

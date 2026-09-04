@@ -92,6 +92,7 @@ impl SszHashTreeRoot for ValidatorStatus {
             ValidatorStatus::Inactive => 1,
             ValidatorStatus::SubmittedExitRequest => 2,
             ValidatorStatus::Joining => 3,
+            ValidatorStatus::FullPayoutPending => 4,
         };
         let mut chunk = [0u8; 32];
         chunk[0] = val;
@@ -104,15 +105,15 @@ impl SszHashTreeRoot for ProtocolParam {
     fn hash_tree_root(&self) -> [u8; 32] {
         let (tag, value_hash) = match self {
             ProtocolParam::MinimumStake(v) => (0u64, v.hash_tree_root()),
-            ProtocolParam::MaximumStake(v) => (1u64, v.hash_tree_root()),
-            ProtocolParam::EpochLength(v) => (2u64, v.hash_tree_root()),
-            ProtocolParam::AllowedTimestampFuture(v) => (3u64, v.hash_tree_root()),
-            ProtocolParam::TreasuryAddress(addr) => (4u64, addr.hash_tree_root()),
-            ProtocolParam::MaxDepositsPerEpoch(v) => (5u64, v.hash_tree_root()),
-            ProtocolParam::MaxWithdrawalsPerEpoch(v) => (6u64, v.hash_tree_root()),
-            ProtocolParam::ObserversPerValidator(v) => (7u64, v.hash_tree_root()),
-            ProtocolParam::MinimumValidatorCount(v) => (8u64, v.hash_tree_root()),
-            ProtocolParam::InvalidDepositTax(v) => (9u64, v.hash_tree_root()),
+            ProtocolParam::EpochLength(v) => (1u64, v.hash_tree_root()),
+            ProtocolParam::AllowedTimestampFuture(v) => (2u64, v.hash_tree_root()),
+            ProtocolParam::TreasuryAddress(addr) => (3u64, addr.hash_tree_root()),
+            ProtocolParam::MaxDepositsPerEpoch(v) => (4u64, v.hash_tree_root()),
+            ProtocolParam::MaxWithdrawalsPerEpoch(v) => (5u64, v.hash_tree_root()),
+            ProtocolParam::ObserversPerValidator(v) => (6u64, v.hash_tree_root()),
+            ProtocolParam::MinimumValidatorCount(v) => (7u64, v.hash_tree_root()),
+            ProtocolParam::InvalidDepositTax(v) => (8u64, v.hash_tree_root()),
+            ProtocolParam::MaxPendingWithdrawalsPerValidator(v) => (9u64, v.hash_tree_root()),
         };
         merkleize(&[tag.hash_tree_root(), value_hash])
     }
@@ -129,16 +130,14 @@ impl SszHashTreeRoot for WithdrawalKind {
 // --- Containers ---
 
 impl SszHashTreeRoot for ValidatorAccount {
-    /// 8-field container: consensus_public_key, withdrawal_credentials, balance,
-    /// status, has_pending_deposit, has_pending_withdrawal, joining_epoch, last_deposit_index.
+    /// 6-field container: consensus_public_key, withdrawal_credentials, balance,
+    /// status, joining_epoch, last_deposit_index.
     fn hash_tree_root(&self) -> [u8; 32] {
         merkleize(&[
             self.consensus_public_key.hash_tree_root(),
             self.withdrawal_credentials.hash_tree_root(),
             self.balance.hash_tree_root(),
             self.status.hash_tree_root(),
-            self.has_pending_deposit.hash_tree_root(),
-            self.has_pending_withdrawal.hash_tree_root(),
             self.joining_epoch.hash_tree_root(),
             self.last_deposit_index.hash_tree_root(),
         ])
@@ -162,8 +161,8 @@ impl SszHashTreeRoot for DepositRequest {
 }
 
 impl SszHashTreeRoot for PendingWithdrawal {
-    /// 8-field container: index, validator_index, address, amount,
-    /// pubkey, balance_deduction, epoch, kind.
+    /// 7-field container: index, validator_index, address, amount,
+    /// pubkey, epoch, kind.
     fn hash_tree_root(&self) -> [u8; 32] {
         merkleize(&[
             self.inner.index.hash_tree_root(),
@@ -171,7 +170,6 @@ impl SszHashTreeRoot for PendingWithdrawal {
             self.inner.address.hash_tree_root(),
             self.inner.amount.hash_tree_root(),
             self.pubkey.hash_tree_root(),
-            self.balance_deduction.hash_tree_root(),
             self.epoch.hash_tree_root(),
             self.kind.hash_tree_root(),
         ])
@@ -320,8 +318,8 @@ mod tests {
     #[test]
     fn protocol_param_different_variants() {
         let min = ProtocolParam::MinimumStake(100);
-        let max = ProtocolParam::MaximumStake(100);
-        assert_ne!(min.hash_tree_root(), max.hash_tree_root());
+        let other = ProtocolParam::EpochLength(100);
+        assert_ne!(min.hash_tree_root(), other.hash_tree_root());
     }
 
     #[test]
@@ -339,8 +337,6 @@ mod tests {
             withdrawal_credentials: Address::from([1u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 42,
         };
@@ -359,8 +355,6 @@ mod tests {
             withdrawal_credentials: Address::from([1u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0,
         };
@@ -373,14 +367,6 @@ mod tests {
         let mut m = base.clone();
         m.status = ValidatorStatus::Inactive;
         assert_ne!(base_root, m.hash_tree_root(), "status");
-
-        let mut m = base.clone();
-        m.has_pending_deposit = true;
-        assert_ne!(base_root, m.hash_tree_root(), "has_pending_deposit");
-
-        let mut m = base.clone();
-        m.has_pending_withdrawal = true;
-        assert_ne!(base_root, m.hash_tree_root(), "has_pending_withdrawal");
 
         let mut m = base.clone();
         m.joining_epoch = 42;
@@ -409,7 +395,6 @@ mod tests {
                 amount: 1000,
             },
             pubkey: [4u8; 32],
-            balance_deduction: 1000,
             epoch: 5,
             kind: WithdrawalKind::Validator,
         };

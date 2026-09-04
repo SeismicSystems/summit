@@ -276,8 +276,6 @@ impl SummitApiServer for SummitRpcServer {
                 withdrawal_credentials: a.withdrawal_credentials.0.0,
                 balance: a.balance,
                 status: format!("{:?}", a.status),
-                has_pending_deposit: a.has_pending_deposit,
-                has_pending_withdrawal: a.has_pending_withdrawal,
                 joining_epoch: a.joining_epoch,
                 last_deposit_index: a.last_deposit_index,
             }),
@@ -288,11 +286,6 @@ impl SummitApiServer for SummitRpcServer {
     async fn get_minimum_stake(&self) -> RpcResult<u64> {
         let minimum_stake = self.state_query.get_minimum_stake().await;
         Ok(minimum_stake)
-    }
-
-    async fn get_maximum_stake(&self) -> RpcResult<u64> {
-        let maximum_stake = self.state_query.get_maximum_stake().await;
-        Ok(maximum_stake)
     }
 
     async fn get_epoch_length(&self) -> RpcResult<u64> {
@@ -365,7 +358,6 @@ impl SummitApiServer for SummitRpcServer {
                 address: w.inner.address.0.0,
                 amount: w.inner.amount,
                 pubkey: w.pubkey,
-                balance_deduction: w.balance_deduction,
                 epoch: w.epoch,
             }),
             None => Err(RpcError::WithdrawalNotFound.into()),

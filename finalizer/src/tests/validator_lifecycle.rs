@@ -122,14 +122,6 @@ fn full_exit_withdrawal_entry(
     entry.into()
 }
 
-/// Encode a MaximumStake protocol-param change as a type-0xFF EIP-7685 entry.
-/// Layout: 0xFF | param_id(0x01 = MaximumStake) | length(8) | value (LE u64).
-fn maximum_stake_protocol_param_entry(new_max_stake: u64) -> alloy_primitives::Bytes {
-    let mut entry = vec![0xFFu8, 0x01u8, 8u8];
-    entry.extend_from_slice(&new_max_stake.to_le_bytes());
-    entry.into()
-}
-
 /// Create a minimal initial ConsensusState for testing
 fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -> ConsensusState {
     use rand::SeedableRng;
@@ -148,8 +140,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
             withdrawal_credentials: Address::from([i as u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0,
         };
@@ -166,7 +156,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
     let mut state = ConsensusState::new(
         forkchoice,
         32_000_000_000,
-        64_000_000_000,
         epoch_length,
         10_000,
         Address::ZERO,
@@ -175,9 +164,46 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         0,
         3,
         0,
+        3,
     );
     state.set_validator_accounts(validator_accounts);
     state
+}
+
+/// Build a `FinalizerConfig` with the settings shared across these tests. Only
+/// the fields that vary between cases (persistence prefix, page cache, genesis
+/// hash, initial state, this node's key, and cancellation token) are passed in.
+#[allow(clippy::too_many_arguments)]
+fn finalizer_cfg(
+    db_prefix: &str,
+    page_cache: CacheRef,
+    genesis_hash: [u8; 32],
+    initial_state: ConsensusState,
+    node_public_key: PublicKey,
+    cancellation_token: CancellationToken,
+) -> FinalizerConfig<MockEngineClient, MockNetworkOracle, MinPk> {
+    FinalizerConfig {
+        mailbox_size: 100,
+        db_prefix: db_prefix.to_string(),
+        engine_client: MockEngineClient::new(),
+        oracle: MockNetworkOracle,
+        protocol_consts: ProtocolConsts {
+            validator_num_warm_up_epochs: 2,
+            validator_withdrawal_num_epochs: 2,
+        },
+        page_cache,
+        genesis_hash,
+        initial_state,
+        protocol_version: 1,
+        node_public_key,
+        cancellation_token,
+        drain_interval: Duration::from_millis(100),
+        buffered_blocks_warn_threshold: 100,
+        pending_notarized_max: 1000,
+        namespace: Vec::new(),
+        observer_domain: Vec::new(),
+        _variant_marker: PhantomData,
+    }
 }
 
 #[test]
@@ -199,7 +225,6 @@ fn test_checkpoint_restart_keeps_submitted_exit_request_validator_in_current_epo
             .clone();
         exiting_account.status = ValidatorStatus::SubmittedExitRequest;
         exiting_account.balance = 0;
-        exiting_account.has_pending_withdrawal = true;
         initial_state.set_account(exiting_pubkey_bytes, exiting_account);
         initial_state.push_removed_validator(exiting_node_pubkey.clone());
 
@@ -673,8 +698,6 @@ fn test_joining_validator_peer_tier_follows_activation() {
             withdrawal_credentials: Address::from([99u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Joining,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             // Activates at epoch 2: still Joining across the epoch-1 boundary,
             // promoted to Active at the epoch-2 boundary.
             joining_epoch: 2,
@@ -829,8 +852,6 @@ fn epoch_transition_deltas_are_cleared_before_persisted_state_ack() {
                 withdrawal_credentials: Address::from([10u8; 20]),
                 balance: 32_000_000_000,
                 status: ValidatorStatus::Joining,
-                has_pending_deposit: false,
-                has_pending_withdrawal: false,
                 joining_epoch: 1,
                 last_deposit_index: 0,
             },
@@ -1148,163 +1169,6 @@ fn epoch_boundary_commit_failure_withholds_ack_and_shuts_down() {
     });
 }
 
-/// An active validator's full exit on the last block of an epoch must
-/// dominate a concurrent `MaximumStake` reduction at the same boundary:
-/// the buffered exit replays on the first block of the next epoch and the
-/// validator transitions to `SubmittedExitRequest` with balance zeroed,
-/// rather than being clipped to the new maximum by stake-bound enforcement.
-#[test]
-fn last_block_exit_dominates_concurrent_max_stake_reduction() {
-    let cfg = deterministic::Config::default().with_seed(57);
-    let executor = Runner::from(cfg);
-    executor.start(|context| async move {
-        let genesis_hash = [0x57u8; 32];
-
-        let local_node_key = ed25519::PrivateKey::from_seed(1);
-        let local_node_pubkey = local_node_key.public_key();
-        let exiting_node_key = ed25519::PrivateKey::from_seed(0);
-        let exiting_node_pubkey = exiting_node_key.public_key();
-        let exiting_pubkey_bytes: [u8; 32] = exiting_node_pubkey.as_ref().try_into().unwrap();
-        let exiting_withdrawal_address = Address::from([0u8; 20]);
-        let initial_balance: u64 = 32_000_000_000;
-        let reduced_max_stake: u64 = initial_balance - 1_000_000_000;
-
-        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
-
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
-        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
-
-        let cancellation_token = CancellationToken::new();
-
-        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
-            mailbox_size: 100,
-            db_prefix: "test_last_block_exit_dominates_max_stake".to_string(),
-            engine_client: MockEngineClient::new(),
-            oracle: MockNetworkOracle,
-            protocol_consts: ProtocolConsts {
-                validator_num_warm_up_epochs: 2,
-                validator_withdrawal_num_epochs: 2,
-            },
-            page_cache: CacheRef::from_pooler(
-                &context,
-                std::num::NonZero::new(4096).unwrap(),
-                NZUsize!(100),
-            ),
-            genesis_hash,
-            initial_state,
-            protocol_version: 1,
-            node_public_key: local_node_pubkey,
-            cancellation_token,
-            drain_interval: Duration::from_millis(100),
-            buffered_blocks_warn_threshold: 100,
-            pending_notarized_max: 1000,
-            namespace: Vec::new(),
-            observer_domain: Vec::new(),
-            _variant_marker: PhantomData,
-        };
-
-        let (finalizer, _state, mut mailbox, _state_query) =
-            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
-                finalizer_cfg,
-            )
-            .await;
-
-        let _handle = finalizer.start(orchestrator_mailbox);
-        context.sleep(Duration::from_millis(50)).await;
-
-        let genesis_block = Block::genesis(genesis_hash);
-        let mut parent_digest = genesis_block.digest();
-
-        let schemes = create_test_schemes(4);
-        let quorum = 3;
-
-        // Block 1: empty.
-        let b1 = create_test_block_with_epoch(parent_digest, 1, 2, 18001, 0);
-        parent_digest = b1.digest();
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b1, None), ack))
-            .await;
-        context.sleep(Duration::from_millis(30)).await;
-
-        // Block 2: queue MaximumStake reduction (activates at the epoch boundary).
-        let b2 = create_test_block_with_requests(
-            parent_digest,
-            2,
-            3,
-            18002,
-            0,
-            vec![maximum_stake_protocol_param_entry(reduced_max_stake)],
-        );
-        parent_digest = b2.digest();
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b2, None), ack))
-            .await;
-        context.sleep(Duration::from_millis(30)).await;
-
-        // Block 3: empty (penultimate of epoch 0).
-        let b3 = create_test_block_with_epoch(parent_digest, 3, 4, 18003, 0);
-        parent_digest = b3.digest();
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b3, None), ack))
-            .await;
-        context.sleep(Duration::from_millis(30)).await;
-
-        // Block 4 (LAST of epoch 0): full exit for the exiting validator.
-        let b4 = create_test_block_with_requests(
-            parent_digest,
-            4,
-            5,
-            18004,
-            0,
-            vec![full_exit_withdrawal_entry(
-                exiting_pubkey_bytes,
-                exiting_withdrawal_address,
-            )],
-        );
-        let b4_digest = b4.digest();
-        parent_digest = b4_digest;
-        let finalization4 = make_finalization(b4_digest, 4, 3, &schemes, quorum);
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b4, Some(finalization4)), ack))
-            .await;
-        context.sleep(Duration::from_millis(50)).await;
-
-        // Block 5 (first of epoch 1): the buffered exit replays.
-        let b5 = create_test_block_with_epoch(parent_digest, 5, 6, 18005, 1);
-        let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((b5, None), ack))
-            .await;
-        context.sleep(Duration::from_millis(50)).await;
-
-        let account = mailbox
-            .get_validator_account(exiting_node_pubkey.clone())
-            .await
-            .expect("exiting validator account must still exist after the deferred exit replays");
-
-        assert_eq!(
-            account.status,
-            ValidatorStatus::SubmittedExitRequest,
-            "full exit must take effect on replay; validator should be in SubmittedExitRequest"
-        );
-        assert_eq!(
-            account.balance, 0,
-            "full exit must zero the balance, not leave it clipped to {reduced_max_stake} gwei"
-        );
-        assert!(
-            account.has_pending_withdrawal,
-            "the full-exit withdrawal must be scheduled"
-        );
-
-        context.auditor().state()
-    });
-}
-
 /// A `NetworkOracle` that records every `track` call so a test can assert
 /// exactly which keys the finalizer advertises to the P2P/observer layer
 /// for each epoch.
@@ -1323,16 +1187,12 @@ impl NetworkOracle<PublicKey> for RecordingOracle {
 ///
 /// A validator that has processed a new-validator deposit but is still in its
 /// warm-up window (`status == Joining`, `joining_epoch > current_epoch`)
-/// submits a valid full withdrawal before activation. The finalizer must both
-/// cancel the pending activation AND flip the account out of `Joining`, so the
-/// canceled validator is excluded from the active-or-joining set advertised to
-/// the network oracle at the next epoch transition (and therefore from its
-/// derived observer keys) — while its withdrawal record stays processable.
-///
-/// Before #187, the cancellation branch left the zero-balance account as
-/// `Joining`, so `get_active_or_joining_validators()` kept returning it and the
-/// finalizer tracked its primary + observer keys for an epoch it would never
-/// enter.
+/// submits a valid full withdrawal before activation. The withdrawal is buffered
+/// and processed at the penultimate block: it cancels the pending activation and
+/// flips the account to `FullPayoutPending` (full exit), so the canceled
+/// validator is excluded from the active-or-joining set advertised to the
+/// network oracle at the next epoch transition (and therefore from its derived
+/// observer keys). The balance is retained until the payout epoch.
 #[test]
 fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
     let cfg = deterministic::Config::default().with_seed(59);
@@ -1369,8 +1229,6 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
                 withdrawal_credentials: joining_withdrawal_address,
                 balance: 32_000_000_000,
                 status: ValidatorStatus::Joining,
-                has_pending_deposit: false,
-                has_pending_withdrawal: false,
                 joining_epoch: 1,
                 last_deposit_index: 0,
             },
@@ -1484,14 +1342,13 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
             );
         assert_eq!(
             account.status,
-            ValidatorStatus::Inactive,
-            "canceled joining validator must leave the Joining state"
+            ValidatorStatus::FullPayoutPending,
+            "canceled joining validator must leave Joining for the full-exit payout state"
         );
-        assert!(
-            account.has_pending_withdrawal,
-            "the full-exit withdrawal must remain scheduled/processable"
+        assert_eq!(
+            account.balance, 32_000_000_000,
+            "balance is retained until the payout epoch, reduced only at payout"
         );
-        assert_eq!(account.balance, 0, "full exit must zero the balance");
 
         // The epoch-1 oracle update must NOT advertise the canceled validator's
         // key (and hence none of its derived observer keys), while still
@@ -1516,6 +1373,319 @@ fn joining_validator_withdrawal_excludes_it_from_oracle_tracking() {
                 "genuine active validator (seed {seed}) must still be tracked for epoch 1"
             );
         }
+
+        context.auditor().state()
+    });
+}
+
+/// A validator that is still mid-warmup (Joining, scheduled to activate in a
+/// future epoch) must survive a restart with its pending activation intact. Here
+/// the validator is scheduled for epoch 2, the finalizer is driven only across
+/// the epoch 0 -> 1 boundary (before activation), and then restarted. On reload
+/// it must still be Joining, still carry joining_epoch 2 and its added_validators
+/// entry, and not yet be an active signer. Losing any of these on restart would
+/// silently drop an onboarding validator or activate it in the wrong epoch.
+#[test]
+fn restart_mid_warmup_preserves_pending_joining_validator() {
+    let executor = Runner::from(deterministic::Config::default().with_seed(77));
+    executor.start(|context| async move {
+        use rand::SeedableRng;
+
+        let genesis_hash = [0x77u8; 32];
+        let db_prefix = "test_restart_mid_warmup_preserves_joining".to_string();
+        let local_node_key = ed25519::PrivateKey::from_seed(1);
+        let joining_node_key = ed25519::PrivateKey::from_seed(10);
+        let joining_node_pubkey = joining_node_key.public_key();
+        let joining_pubkey_bytes: [u8; 32] = joining_node_pubkey.as_ref().try_into().unwrap();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(77);
+        let joining_consensus_key = bls12381::PrivateKey::random(&mut rng);
+        let joining_consensus_pubkey = joining_consensus_key.public_key();
+
+        // A joining validator scheduled to activate in epoch 2 (two boundaries
+        // away), so a single epoch transition does not activate it.
+        let mut initial_state =
+            create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+        initial_state.set_account(
+            joining_pubkey_bytes,
+            ValidatorAccount {
+                consensus_public_key: joining_consensus_pubkey.clone(),
+                withdrawal_credentials: Address::from([10u8; 20]),
+                balance: 32_000_000_000,
+                status: ValidatorStatus::Joining,
+                joining_epoch: 2,
+                last_deposit_index: 0,
+            },
+        );
+        initial_state.add_validator(
+            2,
+            AddedValidator {
+                node_key: joining_node_pubkey.clone(),
+                consensus_key: joining_consensus_pubkey,
+            },
+        );
+
+        let page_cache = CacheRef::from_pooler(
+            &context,
+            std::num::NonZero::new(4096).unwrap(),
+            NZUsize!(100),
+        );
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg(
+                    &db_prefix,
+                    page_cache.clone(),
+                    genesis_hash,
+                    initial_state.clone(),
+                    local_node_key.public_key(),
+                    CancellationToken::new(),
+                ),
+            )
+            .await;
+        let handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(50)).await;
+
+        // Finalize epoch 0 (blocks 1-3 plus the boundary at 4), crossing only the
+        // 0 -> 1 transition. The joining validator (epoch 2) stays mid-warmup.
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 77000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, ack_waiter) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            ack_waiter.await.expect("non-boundary block must be acked");
+        }
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+        let boundary = create_test_block_with_epoch(parent_digest, 4, 5, 77004, 0);
+        let boundary_digest = boundary.digest();
+        let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
+        let (ack, ack_waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
+            .await;
+        ack_waiter
+            .await
+            .expect("epoch boundary block must be acked");
+
+        // Restart: drop the running finalizer and reboot on the same persistence
+        // prefix and page cache so the reloaded state comes from durable storage.
+        drop(mailbox);
+        handle.abort();
+        context.sleep(Duration::from_millis(50)).await;
+
+        let (restarted, reloaded_state, _mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer_restart"),
+                finalizer_cfg(
+                    &db_prefix,
+                    page_cache,
+                    genesis_hash,
+                    initial_state,
+                    local_node_key.public_key(),
+                    CancellationToken::new(),
+                ),
+            )
+            .await;
+        drop(restarted);
+
+        // The transition advanced to epoch 1, but the validator scheduled for
+        // epoch 2 must still be mid-warmup with its activation intact.
+        assert_eq!(
+            reloaded_state.get_epoch(),
+            1,
+            "restarted finalizer must load the persisted post-transition epoch"
+        );
+        let account = reloaded_state
+            .get_account(&joining_pubkey_bytes)
+            .expect("joining validator account must survive the restart");
+        assert_eq!(
+            account.status,
+            ValidatorStatus::Joining,
+            "a validator scheduled for a later epoch must stay Joining across the restart"
+        );
+        assert_eq!(
+            account.joining_epoch, 2,
+            "the pending activation epoch must be preserved"
+        );
+        assert!(
+            reloaded_state.has_added_validators(2),
+            "the scheduled activation (added_validators for epoch 2) must survive the restart"
+        );
+        assert!(
+            !reloaded_state
+                .get_active_validators()
+                .iter()
+                .any(|(node_key, _)| node_key == &joining_node_pubkey),
+            "the mid-warmup validator must not be an active signer before its activation epoch"
+        );
+
+        context.auditor().state()
+    });
+}
+
+/// A validator whose full-exit payout is still pending (FullPayoutPending, left
+/// the committee but not yet paid out) must survive a restart with both its
+/// status and its queued withdrawal intact, so the payout still fires post
+/// restart. Here the payout is scheduled for epoch 2, the finalizer is driven
+/// only across the epoch 0 -> 1 boundary (before the payout epoch), and then
+/// restarted. On reload the account must still be FullPayoutPending and the
+/// queued withdrawal for epoch 2 must still be present. Losing either on restart
+/// would strand the validator's balance (never paid out).
+#[test]
+fn restart_preserves_pending_full_exit_payout() {
+    use summit_types::execution_request::WithdrawalRequest;
+
+    let executor = Runner::from(deterministic::Config::default().with_seed(88));
+    executor.start(|context| async move {
+        use rand::SeedableRng;
+
+        let genesis_hash = [0x88u8; 32];
+        let db_prefix = "test_restart_preserves_pending_payout".to_string();
+        let local_node_key = ed25519::PrivateKey::from_seed(1);
+        let exiting_node_key = ed25519::PrivateKey::from_seed(11);
+        let exiting_node_pubkey = exiting_node_key.public_key();
+        let exiting_pubkey_bytes: [u8; 32] = exiting_node_pubkey.as_ref().try_into().unwrap();
+        let exit_address = Address::from([11u8; 20]);
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(88);
+        let exiting_consensus_key = bls12381::PrivateKey::random(&mut rng);
+
+        // A validator that has already left the committee and is awaiting its
+        // full-exit payout, with the payout queued for epoch 2.
+        let mut initial_state =
+            create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
+        initial_state.set_account(
+            exiting_pubkey_bytes,
+            ValidatorAccount {
+                consensus_public_key: exiting_consensus_key.public_key(),
+                withdrawal_credentials: exit_address,
+                balance: 20_000_000_000,
+                status: ValidatorStatus::FullPayoutPending,
+                joining_epoch: 0,
+                last_deposit_index: 0,
+            },
+        );
+        // Full-exit marker (amount 0): the payout pays the live balance at epoch 2.
+        initial_state.push_withdrawal_request(
+            WithdrawalRequest {
+                source_address: exit_address,
+                validator_pubkey: exiting_pubkey_bytes,
+                amount: 0,
+            },
+            2,
+        );
+        assert_eq!(
+            initial_state.get_withdrawals_for_epoch(2).len(),
+            1,
+            "precondition: one payout queued for epoch 2"
+        );
+
+        let page_cache = CacheRef::from_pooler(
+            &context,
+            std::num::NonZero::new(4096).unwrap(),
+            NZUsize!(100),
+        );
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg(
+                    &db_prefix,
+                    page_cache.clone(),
+                    genesis_hash,
+                    initial_state.clone(),
+                    local_node_key.public_key(),
+                    CancellationToken::new(),
+                ),
+            )
+            .await;
+        let handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(50)).await;
+
+        // Finalize epoch 0 (blocks 1-3 plus the boundary at 4), crossing only the
+        // 0 -> 1 transition. The payout epoch (2) is not reached, so it stays
+        // queued.
+        let genesis_block = Block::genesis(genesis_hash);
+        let mut parent_digest = genesis_block.digest();
+        for height in 1..4 {
+            let block =
+                create_test_block_with_epoch(parent_digest, height, height + 1, 88000 + height, 0);
+            parent_digest = block.digest();
+            let (ack, ack_waiter) = Exact::handle();
+            mailbox
+                .report(Update::FinalizedBlock((block, None), ack))
+                .await;
+            ack_waiter.await.expect("non-boundary block must be acked");
+        }
+
+        let schemes = create_test_schemes(4);
+        let quorum = 3;
+        let boundary = create_test_block_with_epoch(parent_digest, 4, 5, 88004, 0);
+        let boundary_digest = boundary.digest();
+        let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
+        let (ack, ack_waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
+            .await;
+        ack_waiter
+            .await
+            .expect("epoch boundary block must be acked");
+
+        // Restart on the same persistence prefix and page cache.
+        drop(mailbox);
+        handle.abort();
+        context.sleep(Duration::from_millis(50)).await;
+
+        let (restarted, reloaded_state, _mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer_restart"),
+                finalizer_cfg(
+                    &db_prefix,
+                    page_cache,
+                    genesis_hash,
+                    initial_state,
+                    local_node_key.public_key(),
+                    CancellationToken::new(),
+                ),
+            )
+            .await;
+        drop(restarted);
+
+        // The pending payout survived: status and the queued withdrawal are intact.
+        let account = reloaded_state
+            .get_account(&exiting_pubkey_bytes)
+            .expect("exiting validator account must survive the restart");
+        assert_eq!(
+            account.status,
+            ValidatorStatus::FullPayoutPending,
+            "a validator awaiting its payout must stay FullPayoutPending across the restart"
+        );
+        assert_eq!(
+            account.balance, 20_000_000_000,
+            "the balance to be paid out must be preserved"
+        );
+        let queued = reloaded_state.get_withdrawals_for_epoch(2);
+        assert_eq!(
+            queued.len(),
+            1,
+            "the pending payout for epoch 2 must survive the restart"
+        );
+        assert_eq!(
+            queued[0].pubkey, exiting_pubkey_bytes,
+            "the queued payout must still target the exiting validator"
+        );
 
         context.auditor().state()
     });

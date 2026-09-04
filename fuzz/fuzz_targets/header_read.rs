@@ -14,8 +14,7 @@ fuzz_target!(|data: &[u8]| {
 
     let encoded = value.encode();
     let mut rebuf: &[u8] = encoded.as_ref();
-    let redecoded =
-        Header::read(&mut rebuf).expect("encoded Header must decode back successfully");
+    let redecoded = Header::read(&mut rebuf).expect("encoded Header must decode back successfully");
 
     let re_encoded = redecoded.encode();
     assert_eq!(

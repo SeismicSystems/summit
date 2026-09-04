@@ -107,8 +107,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
             withdrawal_credentials: Address::from([i as u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0,
         };
@@ -125,7 +123,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
     let mut state = ConsensusState::new(
         forkchoice,
         32_000_000_000,
-        64_000_000_000,
         epoch_length,
         10_000,
         Address::ZERO,
@@ -134,6 +131,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         0,
         3,
         0,
+        3,
     );
     state.set_validator_accounts(validator_accounts);
     state

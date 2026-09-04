@@ -48,8 +48,6 @@ pub struct Genesis {
     pub namespace: String,
     /// Minimum validator stake in gwei
     pub validator_minimum_stake: u64,
-    /// Maximum validator stake in gwei
-    pub validator_maximum_stake: u64,
     /// Number of blocks in each epoch
     pub blocks_per_epoch: u64,
     /// Maximum allowed delta (in milliseconds) between a block's timestamp
@@ -79,6 +77,13 @@ pub struct Genesis {
     /// Percentage tax applied to invalid-deposit refunds. Must be between 0 and 100.
     #[serde(default = "default_invalid_deposit_tax")]
     pub invalid_deposit_tax: u64,
+    /// Maximum number of outstanding withdrawal-queue entries per validator.
+    /// Requests beyond the cap are dropped at intake; full-exit markers count
+    /// toward it. Mutable via the
+    /// [`MaxPendingWithdrawalsPerValidator`](crate::protocol_params::ProtocolParam::MaxPendingWithdrawalsPerValidator)
+    /// execution request.
+    #[serde(default = "default_max_pending_withdrawals_per_validator")]
+    pub max_pending_withdrawals_per_validator: u64,
 }
 
 fn default_treasury_address() -> String {
@@ -102,7 +107,11 @@ fn default_minimum_validator_count() -> u64 {
 }
 
 fn default_invalid_deposit_tax() -> u64 {
-    0
+    5
+}
+
+fn default_max_pending_withdrawals_per_validator() -> u64 {
+    crate::protocol_params::DEFAULT_MAX_PENDING_WITHDRAWALS_PER_VALIDATOR
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ssz_derive::Encode)]
@@ -238,13 +247,6 @@ impl Genesis {
         // queued param changes — until that boundary, turning epoch functionality
         // into a liveness failure.
         ProtocolParam::EpochLength(self.blocks_per_epoch).validate()?;
-        if self.validator_minimum_stake > self.validator_maximum_stake {
-            return Err(format!(
-                "validator_minimum_stake {} exceeds validator_maximum_stake {}",
-                self.validator_minimum_stake, self.validator_maximum_stake
-            )
-            .into());
-        }
         // The P2P message ceiling must hold the largest legitimate message (full
         // blocks, checkpoints) yet stay bounded against per-message allocation DoS,
         // and must not exceed u32::MAX (the p2p config converts it with `as u32`,
@@ -295,6 +297,10 @@ impl Genesis {
         ProtocolParam::MaxDepositsPerEpoch(self.max_deposits_per_epoch).validate()?;
         ProtocolParam::MaxWithdrawalsPerEpoch(self.max_withdrawals_per_epoch).validate()?;
         ProtocolParam::ObserversPerValidator(u64::from(self.observers_per_validator)).validate()?;
+        ProtocolParam::MaxPendingWithdrawalsPerValidator(
+            self.max_pending_withdrawals_per_validator,
+        )
+        .validate()?;
         // `minimum_validator_count` has no scalar bound in `ProtocolParam::validate`
         // (it carries no `ParamBoundsError` variant), so its floor is enforced here.
         if self.minimum_validator_count < MIN_MINIMUM_VALIDATOR_COUNT {
@@ -342,19 +348,6 @@ impl Genesis {
         Ok(validators)
     }
 
-    pub fn get_consensus_keys(
-        &self,
-    ) -> Result<Vec<bls12381::PublicKey>, Box<dyn std::error::Error>> {
-        let mut keys = Vec::new();
-        for validator in &self.validators {
-            let key_bytes = from_hex_formatted(&validator.consensus_public_key)
-                .ok_or("Invalid hex format for consensus public key")?;
-            let key = bls12381::PublicKey::decode(&*key_bytes)?;
-            keys.push(key);
-        }
-        Ok(keys)
-    }
-
     pub fn get_validator_keys(
         &self,
     ) -> Result<Vec<(PublicKey, bls12381::PublicKey)>, Box<dyn std::error::Error>> {
@@ -379,6 +372,7 @@ mod tests {
     use super::*;
     use crate::protocol_params::{
         MAX_EPOCH_LENGTH, MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR,
+        MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX, MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN,
         MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_EPOCH_LENGTH,
     };
 
@@ -438,9 +432,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_inverted_validator_stake_interval() {
+    fn accepts_max_pending_withdrawals_per_validator_at_bounds() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        genesis.validator_minimum_stake = genesis.validator_maximum_stake + 1;
+        genesis.max_pending_withdrawals_per_validator = MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN;
+        assert!(genesis.validate().is_ok());
+        genesis.max_pending_withdrawals_per_validator = MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX;
+        assert!(genesis.validate().is_ok());
+    }
+
+    /// A zero cap would silently drop every withdrawal request, including full
+    /// exits, so genesis must reject it.
+    #[test]
+    fn rejects_max_pending_withdrawals_per_validator_outside_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_pending_withdrawals_per_validator = 0;
+        assert!(genesis.validate().is_err());
+        genesis.max_pending_withdrawals_per_validator =
+            MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX + 1;
         assert!(genesis.validate().is_err());
     }
 
@@ -615,10 +623,6 @@ mod tests {
                 "validator_minimum_stake",
                 Box::new(|g| g.validator_minimum_stake += 1),
             ),
-            (
-                "validator_maximum_stake",
-                Box::new(|g| g.validator_maximum_stake += 1),
-            ),
             ("blocks_per_epoch", Box::new(|g| g.blocks_per_epoch += 1)),
             (
                 "allowed_timestamp_future_ms",
@@ -635,6 +639,10 @@ mod tests {
             (
                 "max_withdrawals_per_epoch",
                 Box::new(|g| g.max_withdrawals_per_epoch += 1),
+            ),
+            (
+                "max_pending_withdrawals_per_validator",
+                Box::new(|g| g.max_pending_withdrawals_per_validator += 1),
             ),
             (
                 "observers_per_validator",

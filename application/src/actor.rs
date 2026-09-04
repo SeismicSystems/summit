@@ -782,8 +782,8 @@ impl<
 
         //  aux_data.forkchoice.head_block_hash = parent_block.eth_block_hash().into();
 
-        // Add pending withdrawals to the block
-        let withdrawals = pending_withdrawals.into_iter().map(|w| w.inner).collect();
+        // Add the EIP-4895 withdrawals (re-clamped payouts) to the block.
+        let withdrawals = pending_withdrawals;
         let payload_id = {
             #[cfg(feature = "bench")]
             {
@@ -900,21 +900,28 @@ impl<
 }
 
 /// Returns `true` if the EIP-7685 execution-request list is ordered by request
-/// type byte in strictly ascending order, with no empty elements.
+/// type byte in strictly ascending order, with no empty or request_data-less
+/// elements.
 ///
 /// The engine API requires request-list elements to be sorted by type
-/// (`OutOfOrderExecutionRequest` / `DuplicatedExecutionRequestType` otherwise).
-/// Seismic's protocol-param request (type `0xFF`) is the maximum type, so it must
-/// come last. We sort the list we propose; this predicate lets us reject a peer's
-/// block that violates the ordering rather than relaying it into a payload the EL
-/// will refuse.
+/// (`OutOfOrderExecutionRequest` / `DuplicatedExecutionRequestType` otherwise) and
+/// to carry non-empty request data (`EmptyExecutionRequest` otherwise, for
+/// elements of one byte or shorter). Seismic's protocol-param request (type
+/// `0xFF`) is the maximum type, so it must come last. We sort the list we
+/// propose; this predicate lets us reject a peer's block that violates these
+/// rules rather than relaying it into a payload the EL will refuse. A single
+/// type byte with no data must be caught here, since the EL would treat it as
+/// a fatal engine error rather than a block-level invalid payload.
 fn execution_requests_ascending(requests: &[impl AsRef<[u8]>]) -> bool {
     let mut prev: Option<u8> = None;
     for req in requests {
-        let Some(&request_type) = req.as_ref().first() else {
-            // An element with no type byte is malformed.
+        let req = req.as_ref();
+        // A bare type byte has no request_data. The EL rejects it with
+        // `EmptyExecutionRequest`, so surface it as a block rejection here.
+        if req.len() <= 1 {
             return false;
-        };
+        }
+        let request_type = req[0];
         if prev.is_some_and(|p| request_type <= p) {
             // Out of order or a duplicate request type.
             return false;
@@ -1153,10 +1160,11 @@ fn handle_verify<ES: Epocher>(
         return false;
     }
 
-    // Validate withdrawals
-    let expected_withdrawals: Vec<_> = aux_data.withdrawals.iter().map(|w| w.inner).collect();
+    // Validate withdrawals: the block's EIP-4895 withdrawals must equal the
+    // re-clamped payouts the finalizer emitted into the aux data.
+    let expected_withdrawals: &[_] = &aux_data.withdrawals;
     let actual_withdrawals: &[_] = &block.payload.payload_inner.withdrawals;
-    if actual_withdrawals != expected_withdrawals.as_slice() {
+    if actual_withdrawals != expected_withdrawals {
         warn!(
             expected_count = expected_withdrawals.len(),
             actual_count = actual_withdrawals.len(),
@@ -1298,6 +1306,12 @@ mod tests {
 
         // An element with no type byte is malformed.
         assert!(!execution_requests_ascending(&[Vec::<u8>::new()]));
+
+        // A bare type byte with no request_data is also malformed; the EL
+        // rejects it as "EmptyExecutionRequest".
+        assert!(!execution_requests_ascending(&[vec![0x00]]));
+        assert!(!execution_requests_ascending(&[vec![0x01]]));
+        assert!(!execution_requests_ascending(&[vec![0xFF]]));
     }
 
     fn empty_payload(height: u64, parent_hash: [u8; 32], timestamp: u64) -> ExecutionPayloadV3 {

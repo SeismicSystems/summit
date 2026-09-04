@@ -1,7 +1,6 @@
 use crate::config::ProtocolConsts;
 use crate::db::{Config as StateConfig, FinalizerState};
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
-use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use anyhow::{Result, anyhow};
 #[allow(unused)]
@@ -11,7 +10,7 @@ use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_consensus::simplex::types::Finalization;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
-use commonware_cryptography::{Digestible, Signer, Verifier as _, bls12381};
+use commonware_cryptography::{Digestible, Signer};
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
 use commonware_storage::translator::EightCap;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
@@ -23,34 +22,27 @@ use metrics::{counter, histogram};
 #[cfg(debug_assertions)]
 use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::num::NonZero;
 use std::time::{Duration, Instant};
 use summit_orchestrator::Message;
 use summit_syncer::Update;
-use summit_types::account::{ValidatorAccount, ValidatorStatus};
+use summit_types::account::ValidatorStatus;
 use summit_types::checkpoint::Checkpoint;
 use summit_types::consensus_state_query::{
     ConsensusStateQuery, ConsensusStateRequest, ConsensusStateResponse,
 };
-use summit_types::execution_request::{
-    DepositRequest, ExecutionRequest, ParsedExecutionRequest, WithdrawalRequest,
-};
-use summit_types::execution_request_origin::ExecutionRequestOrigin;
 use summit_types::ext_private_key::derive_observer_keys;
 use summit_types::network_oracle::NetworkOracle;
-use summit_types::protocol_params::ProtocolParam;
 use summit_types::scheme::EpochTransition;
 use summit_types::ssz_state_tree::{SszStateTree, StateProofEntry};
 use summit_types::ssz_tree_key::SszStateKey;
 use summit_types::utils::{
-    invalid_deposit_refund_split, is_first_block_of_epoch, is_last_block_of_epoch,
-    is_penultimate_block_of_epoch, parse_withdrawal_credentials,
+    is_first_block_of_epoch, is_last_block_of_epoch, is_penultimate_block_of_epoch,
 };
 use summit_types::{
-    AddedValidator, Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, Signature,
-    deposit_signature_domain,
+    Block, BlockAuxData, Digest, FinalizedHeader, PublicKey, deposit_signature_domain,
 };
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
@@ -127,163 +119,6 @@ fn generate_state_proofs(
                 .map(|field| StateProofEntry { field, key: None }),
         })
         .collect()
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DepositRejectionReason {
-    Refund,
-    InvalidSignature,
-    /// Deposit chunk's Ed25519 / BLS key bytes did not decode. A single
-    /// malformed chunk in a grouped EIP-7685 deposit entry must not poison
-    /// the valid chunks alongside it. Routing this through the same refund
-    /// branch as `InvalidSignature` keeps the malformed chunk's depositor
-    /// whole.
-    MalformedKey,
-}
-
-fn deposit_refund_key(domain_tag: u8, withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
-    let mut key = [0u8; 32];
-    key[0] = domain_tag;
-    key[1..9].copy_from_slice(&deposit_index.to_le_bytes());
-    key[12..32].copy_from_slice(withdrawal_address.as_ref());
-    key
-}
-
-fn refunded_deposit_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
-    deposit_refund_key(0xFE, withdrawal_address, deposit_index)
-}
-
-fn invalid_signature_refund_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
-    deposit_refund_key(0xFF, withdrawal_address, deposit_index)
-}
-
-fn invalid_deposit_tax_key(treasury_address: Address, deposit_index: u64) -> [u8; 32] {
-    deposit_refund_key(0xFD, treasury_address, deposit_index)
-}
-
-fn push_invalid_deposit_withdrawals(
-    state: &mut ConsensusState,
-    withdrawal_credentials: Address,
-    refund_pubkey: [u8; 32],
-    deposit_index: u64,
-    amount: u64,
-    withdrawal_epoch: u64,
-) {
-    let (refund_amount, tax_amount) =
-        invalid_deposit_refund_split(amount, state.get_invalid_deposit_tax());
-
-    if refund_amount > 0 {
-        state.push_refund_withdrawal_request(
-            WithdrawalRequest {
-                source_address: withdrawal_credentials,
-                validator_pubkey: refund_pubkey,
-                amount: refund_amount,
-            },
-            withdrawal_epoch,
-            0, // deposit was never credited to balance
-        );
-    }
-
-    if tax_amount > 0 {
-        let treasury_address = state.get_treasury_address();
-        state.push_refund_withdrawal_request(
-            WithdrawalRequest {
-                source_address: treasury_address,
-                validator_pubkey: invalid_deposit_tax_key(treasury_address, deposit_index),
-                amount: tax_amount,
-            },
-            withdrawal_epoch,
-            0, // invalid-deposit tax was never credited to a validator balance
-        );
-    }
-}
-
-/// Scan `state.pending_execution_requests` for buffered withdrawal entries
-/// and return the set of validator pubkeys with a deferred full exit
-/// waiting to replay.
-///
-/// Deferral happens in `parse_execution_requests` when a validator-
-/// submitted withdrawal lands on the last block of an epoch. Summit does
-/// not support partial withdrawals — admission rewrites the amount to the
-/// validator's full balance before the deferral — so every withdrawal
-/// entry in this buffer is a full exit by construction.
-fn pubkeys_with_buffered_full_exit(state: &ConsensusState) -> BTreeSet<[u8; 32]> {
-    let mut pubkeys = BTreeSet::new();
-    for entry in state.pending_execution_requests() {
-        let Ok(parsed) = ExecutionRequest::parse_eth_entry(entry.as_ref()) else {
-            continue;
-        };
-        for req in parsed {
-            if let ParsedExecutionRequest::Valid(ExecutionRequest::Withdrawal(w)) = req {
-                pubkeys.insert(w.validator_pubkey);
-            }
-        }
-    }
-    pubkeys
-}
-
-fn malformed_deposit_refund_key(withdrawal_address: Address, deposit_index: u64) -> [u8; 32] {
-    deposit_refund_key(0xFD, withdrawal_address, deposit_index)
-}
-
-/// Queue an immediate refund withdrawal for a deposit that was rejected
-/// before any balance was credited. Shared between `verify_deposit_request`
-/// failures (`Refund` / `InvalidSignature`) and per-chunk parse failures
-/// (`MalformedKey`) so a malformed deposit chunk follows the same
-/// no-account, balance_deduction=0 refund path as a signature-invalid one.
-fn queue_deposit_refund(
-    state: &mut ConsensusState,
-    withdrawal_credentials_bytes: [u8; 32],
-    amount: u64,
-    deposit_index: u64,
-    reason: DepositRejectionReason,
-    consts: &ProtocolConsts,
-) {
-    let withdrawal_address = match parse_withdrawal_credentials(withdrawal_credentials_bytes) {
-        Ok(addr) => addr,
-        Err(e) => {
-            // The deposited funds are lost in this case. The deposit
-            // contract verifies that withdrawal credentials follow the
-            // expected format, so this should never happen.
-            error!(
-                target: "critical",
-                reason = "failed to parse withdrawal credentials (this is not a Summit error)",
-                withdrawal_credentials = ?withdrawal_credentials_bytes,
-                amount,
-                deposit_index,
-                rejection_reason = ?reason,
-            );
-            #[cfg(feature = "prom")]
-            counter!(
-                "critical_errors_total",
-                "reason" => "invalid_withdrawal_credentials",
-                "severity" => "critical",
-            )
-            .increment(1);
-            warn!("Failed to parse withdrawal credentials: {e}");
-            return;
-        }
-    };
-
-    let refund_pubkey = match reason {
-        DepositRejectionReason::Refund => refunded_deposit_key(withdrawal_address, deposit_index),
-        DepositRejectionReason::InvalidSignature => {
-            invalid_signature_refund_key(withdrawal_address, deposit_index)
-        }
-        DepositRejectionReason::MalformedKey => {
-            malformed_deposit_refund_key(withdrawal_address, deposit_index)
-        }
-    };
-
-    let withdrawal_epoch = state.get_epoch() + consts.validator_withdrawal_num_epochs;
-    push_invalid_deposit_withdrawals(
-        state,
-        withdrawal_address,
-        refund_pubkey,
-        deposit_index,
-        amount,
-        withdrawal_epoch,
-    );
 }
 
 /// Tracks the consensus state for a notarized (but not yet finalized) block
@@ -910,7 +745,7 @@ impl<
         // canonical height; the finalized path must do the same. We must still ACK the
         // duplicate so the syncer's pending-ack pipeline doesn't stall, and we must NOT
         // re-execute it — re-execution would re-run the EL payload check, re-process
-        // deposits/withdrawals, regress the height, or trip the epoch assertion in
+        // deposits/withdrawals, regress the height, or fail the epoch check in
         // `execute_block` when the canonical state has already advanced past an epoch
         // boundary.
         let latest_height = self.canonical_state.get_latest_height();
@@ -1307,36 +1142,22 @@ impl<
                 );
             }
 
-            // Apply protocol parameter changes
-            let stake_changed = match self.canonical_state.apply_protocol_parameter_changes() {
-                Ok(stake_changed) => stake_changed,
-                Err(e) => {
-                    warn!("skipping invalid protocol parameter changes at epoch boundary: {e}");
-                    false
-                }
-            };
+            // Apply pending protocol parameter changes durably at the boundary.
+            // Stake-bound enforcement now happens in enforce_minimum_stake during
+            // the penultimate-block processing, so the returned flag is unused.
+            if let Err(e) = self.canonical_state.apply_protocol_parameter_changes() {
+                warn!("skipping invalid protocol parameter changes at epoch boundary: {e}");
+            }
 
             // Build the committee for the next epoch.
-            self.validator_exit = self.update_validator_committee(stake_changed);
+            self.validator_exit = self.update_validator_committee();
 
-            // Reschedule any overflow withdrawals that exceeded the per-epoch
-            // total withdrawal cap to the next epoch.
-            let current_epoch = self.canonical_state.get_epoch();
-            if self
-                .canonical_state
-                .get_withdrawal_count_for_epoch(current_epoch)
-                > 0
-            {
-                let overflow_count = self
-                    .canonical_state
-                    .get_withdrawal_count_for_epoch(current_epoch);
-                info!(
-                    current_epoch,
-                    overflow_count, "rescheduling overflow withdrawals to next epoch"
-                );
-                self.canonical_state
-                    .reschedule_withdrawal_epoch(current_epoch, current_epoch + 1);
-            }
+            // Withdrawals that exceeded this epoch's per-epoch cap need no
+            // rescheduling: they stay in the queue with their original (earliest)
+            // epoch and are picked up next epoch via the `epoch <= current` due
+            // check. Explicitly rescheduling them here would be an O(backlog) scan
+            // plus a full withdrawal-subtree rebuild at every boundary for no
+            // change in behavior.
 
             #[cfg(feature = "prom")]
             let db_operations_start = Instant::now();
@@ -1378,7 +1199,8 @@ impl<
             // Set the epoch genesis hash for the next epoch
             self.canonical_state
                 .set_epoch_genesis_hash(block.digest().0);
-            self.canonical_state.reset_pending_active_validator_exits();
+            // The active-exit budget is reset inside apply_committee_transition (run
+            // earlier this block), so no explicit reset is needed here.
 
             // Clear transition deltas before persisting the next-epoch consensus state.
             self.canonical_state
@@ -2032,17 +1854,10 @@ impl<
                     self.genesis_hash.into()
                 };
 
-            // `max_withdrawals_per_epoch` is a single total cap on the terminal
-            // block's withdrawals. Validator exits take strict priority and fill
-            // the budget first; deposit refunds use only the remaining capacity,
-            // so refunds can neither starve exits (#226) nor inflate the cap.
-            let current_epoch = state.get_epoch();
-            let max_withdrawals = state.get_max_withdrawals_per_epoch() as usize;
-            let ready_withdrawals: Vec<_> = state
-                .get_withdrawals_for_epoch_with_total_cap(current_epoch, max_withdrawals)
-                .into_iter()
-                .cloned()
-                .collect();
+            // The re-clamped EIP-4895 payouts for the terminal block, under the
+            // single per-epoch total cap with validator exits taking strict
+            // priority over deposit refunds (#226). Commit applies the same set.
+            let ready_withdrawals = state.emit_withdrawal_payouts(state.get_epoch());
             let next_epoch = state.get_epoch() + 1;
 
             BlockAuxData {
@@ -2113,12 +1928,13 @@ impl<
                 let mut key_bytes = [0u8; 32];
                 key_bytes.copy_from_slice(&public_key);
 
-                let balance = self.canonical_state.get_account(&key_bytes).map(|account| {
-                    account.balance
-                        + self
-                            .canonical_state
-                            .get_pending_withdrawal_amount(&key_bytes)
-                });
+                // Balance is not debited until payout, so account.balance already
+                // reflects the current balance including any not-yet-paid queued
+                // withdrawal. Reporting balance + pending would double-count.
+                let balance = self
+                    .canonical_state
+                    .get_account(&key_bytes)
+                    .map(|account| account.balance);
                 let _ = sender.send(ConsensusStateResponse::ValidatorBalance(balance));
             }
             ConsensusStateRequest::GetValidatorAccount(public_key) => {
@@ -2135,10 +1951,6 @@ impl<
             ConsensusStateRequest::GetMinimumStake => {
                 let stake = self.canonical_state.get_minimum_stake();
                 let _ = sender.send(ConsensusStateResponse::MinimumStake(stake));
-            }
-            ConsensusStateRequest::GetMaximumStake => {
-                let stake = self.canonical_state.get_maximum_stake();
-                let _ = sender.send(ConsensusStateResponse::MaximumStake(stake));
             }
             ConsensusStateRequest::GetEpochLength => {
                 let length = self.canonical_state.get_epocher().current_length();
@@ -2236,182 +2048,13 @@ impl<
         }
     }
 
-    fn update_validator_committee(&mut self, stake_changed: bool) -> bool {
-        // Add and remove validators for the next epoch
-        let mut validator_exit = false;
-        let next_epoch = self.canonical_state.get_epoch() + 1;
-        let staged_removed_validator_pubkeys: BTreeSet<[u8; 32]> = self
-            .canonical_state
-            .get_removed_validators()
-            .iter()
-            .map(|key| key.as_ref().try_into().expect("PublicKey is 32 bytes"))
-            .collect();
-        if self.canonical_state.has_added_validators(next_epoch)
-            || !self.canonical_state.get_removed_validators().is_empty()
-        {
-            // Activate validators for the coming epoch.
-            // Clone to release the immutable borrow on canonical_state so we can call set_account.
-            if let Some(added_validators) = self
-                .canonical_state
-                .get_added_validators(next_epoch)
-                .cloned()
-            {
-                for validator in &added_validators {
-                    let key_bytes: [u8; 32] = validator.node_key.as_ref().try_into().unwrap();
-                    let mut account = self
-                        .canonical_state
-                        .get_account(&key_bytes)
-                        .expect(
-                            "only validators with accounts are added to the added_validators queue",
-                        )
-                        .clone();
-                    account.status = ValidatorStatus::Active;
-                    self.canonical_state.set_account(key_bytes, account);
-                    info!(
-                        next_epoch,
-                        validator = hex::encode(key_bytes),
-                        "activated validator for next epoch"
-                    );
-                }
-            }
-
-            let removed_validators = self.canonical_state.get_removed_validators().clone();
-            for key in &removed_validators {
-                // Check if this node exits the validator set
-                if key == &self.node_public_key {
-                    validator_exit = true;
-                    warn!(next_epoch, "this node is being removed from validator set");
-                }
-
-                let key_bytes: [u8; 32] = key.as_ref().try_into().unwrap();
-                if let Some(mut account) = self.canonical_state.get_account(&key_bytes).cloned() {
-                    account.status = ValidatorStatus::Inactive;
-                    self.canonical_state.set_account(key_bytes, account);
-                    info!(
-                        next_epoch,
-                        validator = hex::encode(key_bytes),
-                        "deactivated validator"
-                    );
-                }
-            }
-        }
-
-        // Check stake bounds independently of validator additions/removals
-        if stake_changed {
-            // In case the min or max stake parameters changed, we check that the balance of
-            // all validators is in the allowed range [min_stake, max_stake]
-            // Withdrawals happen at the end of the current epoch (last block)
-            let withdrawal_epoch = self.canonical_state.get_epoch() + 1;
-
-            // A validator-submitted full exit landing on this same last
-            // block has been deferred into pending_execution_requests by
-            // parse_execution_requests (so it appears in the next epoch's
-            // last-block `removed_validators` header). The deferred exit
-            // will replay on the next block's parse and zero the balance
-            // then; scheduling a stake-bound withdrawal here would duplicate
-            // the already-accepted deferred exit.
-            let pending_exit_pubkeys = pubkeys_with_buffered_full_exit(&self.canonical_state);
-
-            let validators_to_process: Vec<([u8; 32], u64, Address)> = self
-                .canonical_state
-                .validator_accounts_iter()
-                .filter_map(|(key, acc)| {
-                    if !acc.has_pending_deposit
-                        && !pending_exit_pubkeys.contains(key)
-                        && (acc.balance < self.canonical_state.get_minimum_stake()
-                            || acc.balance > self.canonical_state.get_maximum_stake())
-                    {
-                        Some((*key, acc.balance, acc.withdrawal_credentials))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            for (key, balance, withdrawal_credentials) in validators_to_process {
-                if balance < self.canonical_state.get_minimum_stake() {
-                    if let Some(account) = self.canonical_state.get_account(&key)
-                        && account.status == ValidatorStatus::Active
-                        && !staged_removed_validator_pubkeys.contains(&key)
-                    {
-                        info!(
-                            validator = hex::encode(key),
-                            balance,
-                            min_stake = self.canonical_state.get_minimum_stake(),
-                            minimum_validator_count =
-                                self.canonical_state.get_minimum_validator_count(),
-                            "skipping stake-bound full withdrawal for active validator that was not staged for removal"
-                        );
-                        continue;
-                    }
-                    // Nothing to withdraw and nothing in the committee to
-                    // remove. Setting has_pending_withdrawal here would never
-                    // get cleared because the zero-balance_deduction
-                    // completion path is a refund-style short-circuit.
-                    // Node: this is a defensive check and not strictly necessary.
-                    if balance == 0 {
-                        continue;
-                    }
-                    // Remove the validator from the committee and withdraw the full balance
-                    // Update account first: move balance to pending_withdrawal_amount
-                    if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
-                        account.status = ValidatorStatus::Inactive;
-                        account.balance = 0;
-                        account.has_pending_withdrawal = true;
-                        self.canonical_state.set_account(key, account);
-                    }
-
-                    info!(
-                        validator = hex::encode(key),
-                        balance,
-                        min_stake = self.canonical_state.get_minimum_stake(),
-                        "validator below minimum stake, scheduling full withdrawal"
-                    );
-
-                    let withdrawal_request = WithdrawalRequest {
-                        source_address: withdrawal_credentials,
-                        validator_pubkey: key,
-                        amount: balance,
-                    };
-                    self.canonical_state.push_withdrawal_request(
-                        withdrawal_request,
-                        withdrawal_epoch,
-                        balance,
-                    );
-                } else if balance > self.canonical_state.get_maximum_stake() {
-                    // Withdraw the portion of the balance exceeding `validator_maximum_stake`
-                    let excess_amount = balance - self.canonical_state.get_maximum_stake();
-
-                    // Move excess from balance
-                    if let Some(mut account) = self.canonical_state.get_account(&key).cloned() {
-                        account.balance -= excess_amount;
-                        account.has_pending_withdrawal = true;
-                        self.canonical_state.set_account(key, account);
-                    }
-
-                    info!(
-                        validator = hex::encode(key),
-                        balance,
-                        max_stake = self.canonical_state.get_maximum_stake(),
-                        excess_amount,
-                        "validator above maximum stake, scheduling partial withdrawal"
-                    );
-
-                    let withdrawal_request = WithdrawalRequest {
-                        source_address: withdrawal_credentials,
-                        validator_pubkey: key,
-                        amount: excess_amount,
-                    };
-                    self.canonical_state.push_withdrawal_request(
-                        withdrawal_request,
-                        withdrawal_epoch,
-                        excess_amount,
-                    );
-                }
-            }
-        }
-
-        validator_exit
+    fn update_validator_committee(&mut self) -> bool {
+        // Apply the staged committee deltas: activate added validators and route
+        // removed ones out (FullPayoutPending for voluntary exits, Inactive for
+        // stake-bound removals). Returns whether this node was removed so the
+        // caller can coordinate its own shutdown.
+        self.canonical_state
+            .apply_committee_transition(&self.node_public_key)
     }
 }
 
@@ -2450,6 +2093,25 @@ async fn execute_block<
     #[cfg(feature = "prom")]
     let block_processing_start = Instant::now();
 
+    // The block's declared epoch must match the finalizer's deterministic epoch
+    // counter (unchanged for the duration of this call; the boundary advance runs
+    // in the finalized-block handler, not here). Verify binds this on the notarized
+    // path, but this function also executes certified blocks the local node never
+    // verified (finalized catch up), so recheck it here, BEFORE check_payload and
+    // the EL forkchoice adoption. A mismatch is fail stop territory (a byzantine
+    // 2/3+1 quorum or an epoch computation bug): route it through the InvalidPayload
+    // policy so the node rejects cleanly instead of panicking after the EL already
+    // adopted the block.
+    if block.epoch() != state.get_epoch() {
+        warn!(
+            height = block.height(),
+            block_epoch = block.epoch(),
+            state_epoch = state.get_epoch(),
+            "block epoch does not match consensus state epoch; rejecting"
+        );
+        return Ok(ExecuteOutcome::InvalidPayload);
+    }
+
     // check the payload
     #[cfg(feature = "prom")]
     let payload_check_start = Instant::now();
@@ -2474,8 +2136,34 @@ async fn execute_block<
     }
 
     // Validate block against execution layer state
-    // Note: withdrawals are validated in the application layer before voting
     if !payload_status.is_valid() {
+        return Ok(ExecuteOutcome::InvalidPayload);
+    }
+
+    // The EL only checks the withdrawals list against the header's
+    // withdrawalsRoot, so an internally consistent bogus list is VALID to it.
+    // Verify enforces equality against the emitted payouts before voting, so
+    // reaching this path with a mismatched list requires a certificate from a
+    // malicious 2/3+1 quorum (honest committees never certify such a block).
+    // This path also executes certified blocks the local node never verified
+    // (finalized catch up, notarized forks), so recheck here, before the EL
+    // forkchoice adoption and any state mutation. A mismatch is fail stop
+    // territory: route it through the InvalidPayload policy (fatal shutdown on
+    // the finalized path, discard on the fork path) instead of the raw assert
+    // in apply_withdrawal_payouts, which would panic after the EL already
+    // adopted the block.
+    let expected_withdrawals = if is_last_block_of_epoch(state.get_epocher(), new_height) {
+        state.emit_withdrawal_payouts(state.get_epoch())
+    } else {
+        Vec::new()
+    };
+    if block.payload.payload_inner.withdrawals.as_slice() != expected_withdrawals.as_slice() {
+        warn!(
+            height = new_height,
+            expected_count = expected_withdrawals.len(),
+            actual_count = block.payload.payload_inner.withdrawals.len(),
+            "block withdrawals do not match consensus state payouts; rejecting"
+        );
         return Ok(ExecuteOutcome::InvalidPayload);
     }
 
@@ -2518,10 +2206,16 @@ async fn execute_block<
 
     state.set_forkchoice_head(eth_hash.into());
 
-    // Parse execution requests
+    // Buffer this block's raw execution requests. They are parsed and processed
+    // in a single pass at the epoch end (penultimate block), so requests landing
+    // on the last block naturally defer into the next epoch.
+    state.buffer_execution_requests(&block.execution_requests);
+
+    // Process the buffered requests (epoch end), apply payouts, and complete the
+    // epoch's stake/committee bookkeeping.
     #[cfg(feature = "prom")]
-    let parse_requests_start = Instant::now();
-    parse_execution_requests(
+    let process_requests_start = Instant::now();
+    process_execution_requests(
         context,
         block,
         new_height,
@@ -2530,17 +2224,6 @@ async fn execute_block<
         consts,
     )
     .await;
-
-    #[cfg(feature = "prom")]
-    {
-        let parse_requests_duration = parse_requests_start.elapsed().as_millis() as f64;
-        histogram!("parse_execution_requests_duration_millis").record(parse_requests_duration);
-    }
-
-    // Add validators that deposited to the validator set
-    #[cfg(feature = "prom")]
-    let process_requests_start = Instant::now();
-    process_execution_requests(context, block, new_height, state, consts).await;
     #[cfg(feature = "prom")]
     {
         let process_requests_duration = process_requests_start.elapsed().as_millis() as f64;
@@ -2550,7 +2233,10 @@ async fn execute_block<
     state.set_latest_height(new_height);
     state.set_view(block.view());
     state.set_head_digest(block.digest());
-    assert_eq!(block.epoch(), state.get_epoch());
+    // Guaranteed by the epoch check at the top of this function; the boundary
+    // advance runs in the finalized-block handler, not here, so the epoch is
+    // unchanged across execution.
+    debug_assert_eq!(block.epoch(), state.get_epoch());
 
     // Periodically persist state to database as a blob
     // We build the checkpoint one height before the epoch end which
@@ -2598,353 +2284,6 @@ async fn execute_block<
     Ok(ExecuteOutcome::Applied)
 }
 
-async fn parse_execution_requests<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
->(
-    #[allow(unused)] context: &ContextCell<R>,
-    block: &Block,
-    new_height: u64,
-    state: &mut ConsensusState,
-    deposit_signature_domain: Digest,
-    consts: &ProtocolConsts,
-) {
-    // Combine any pending execution requests with the current block's requests.
-    // Keep origin explicit so deferred replay can distinguish itself from a
-    // fresh request in the block currently being executed.
-    let pending_requests = state.take_pending_execution_requests();
-    let pending_requests = pending_requests
-        .iter()
-        .map(|request| (request.as_ref(), ExecutionRequestOrigin::Deferred));
-    let current_requests = block
-        .execution_requests
-        .iter()
-        .map(|request| (request.as_ref(), ExecutionRequestOrigin::CurrentBlock));
-
-    // Validators that already had an exit deferred during this parse pass. A single
-    // block can carry multiple withdrawal requests for the same validator (and a
-    // replayed deferral can coincide with a fresh resubmission); deferring each one
-    // would re-queue the exit and, for active validators, double-count the active-exit
-    // budget, and therefore starving other validators' legitimate exits in the same block.
-    let mut deferred_exit_pubkeys: HashSet<[u8; 32]> = HashSet::new();
-
-    // accumulate decoded protocol param changes across every request in this
-    // block and flush them through a single subtree rebuild after the loop.
-    // pushing per record rebuilds the whole pending param subtree each time,
-    // which is o(n^2) over a grouped batch of 0xFF records.
-    let mut protocol_param_batch: Vec<ProtocolParam> = Vec::new();
-
-    for (request_bytes, origin) in pending_requests.chain(current_requests) {
-        let is_deferred = origin.is_deferred();
-        match ExecutionRequest::parse_eth_entry(request_bytes) {
-            Ok(parsed_requests) => {
-                for parsed in parsed_requests {
-                    match parsed {
-                        ParsedExecutionRequest::MalformedDeposit(chunk) => {
-                            // EIP-6110 grouping concatenates same-block deposit logs
-                            // into one entry; a single contract-accepted but
-                            // parser-invalid chunk must not poison the others.
-                            // Route it through the same refund branch as a
-                            // signature-invalid deposit.
-                            info!(
-                                reason = chunk.reason,
-                                amount = chunk.amount,
-                                index = chunk.index,
-                                "refunding malformed deposit chunk",
-                            );
-                            queue_deposit_refund(
-                                state,
-                                chunk.withdrawal_credentials,
-                                chunk.amount,
-                                chunk.index,
-                                DepositRejectionReason::MalformedKey,
-                                consts,
-                            );
-                        }
-                        ParsedExecutionRequest::Valid(ExecutionRequest::Deposit(
-                            deposit_request,
-                        )) => {
-                            match verify_deposit_request(
-                                context,
-                                &deposit_request,
-                                state,
-                                deposit_signature_domain,
-                                new_height,
-                                state.get_minimum_stake(),
-                                state.get_maximum_stake(),
-                            ) {
-                                Ok(()) => {
-                                    // Mark account as having a pending deposit
-                                    let validator_pubkey: [u8; 32] =
-                                        deposit_request.node_pubkey.as_ref().try_into().unwrap();
-                                    if let Some(mut account) =
-                                        state.get_account(&validator_pubkey).cloned()
-                                    {
-                                        account.has_pending_deposit = true;
-                                        state.set_account(validator_pubkey, account);
-                                    } else {
-                                        // Create account early with Inactive status for new validators
-                                        let withdrawal_credentials =
-                                            match parse_withdrawal_credentials(
-                                                deposit_request.withdrawal_credentials,
-                                            ) {
-                                                Ok(withdrawal_credentials) => {
-                                                    withdrawal_credentials
-                                                }
-                                                Err(e) => {
-                                                    // The deposited funds would be lost in this case.
-                                                    // The deposit contract verifies that the withdrawal credentials
-                                                    // follow the expected format, so this should never happen.
-                                                    error!(target: "critical", reason = "failed to parse withdrawal credentials (this is not a Summit error)", ?deposit_request);
-                                                    #[cfg(feature = "prom")]
-                                                    counter!("critical_errors_total", "reason" => "invalid_withdrawal_credentials", "severity" => "critical").increment(1);
-                                                    warn!(
-                                                        "Failed to parse withdrawal credentials: {e}"
-                                                    );
-                                                    continue;
-                                                }
-                                            };
-                                        let new_account = ValidatorAccount {
-                                            consensus_public_key: deposit_request
-                                                .consensus_pubkey
-                                                .clone(),
-                                            withdrawal_credentials,
-                                            balance: 0, // Balance will be set when deposit is processed
-                                            status: ValidatorStatus::Inactive,
-                                            has_pending_deposit: true,
-                                            has_pending_withdrawal: false,
-                                            joining_epoch: 0, // Will be set when deposit is processed
-                                            last_deposit_index: deposit_request.index,
-                                        };
-                                        state.set_account(validator_pubkey, new_account);
-                                    }
-                                    state.push_deposit(deposit_request.clone());
-                                }
-                                Err(reason) => {
-                                    queue_deposit_refund(
-                                        state,
-                                        deposit_request.withdrawal_credentials,
-                                        deposit_request.amount,
-                                        deposit_request.index,
-                                        reason,
-                                        consts,
-                                    );
-                                }
-                            }
-                        }
-                        ParsedExecutionRequest::Valid(ExecutionRequest::Withdrawal(
-                            mut withdrawal_request,
-                        )) => {
-                            // Only add the withdrawal request if the validator exists and has sufficient balance
-                            if let Some(mut account) = state
-                                .get_account(&withdrawal_request.validator_pubkey)
-                                .cloned()
-                            {
-                                // If the validator already has a pending deposit request, we skip this withdrawal request
-                                if account.has_pending_deposit {
-                                    info!(
-                                        "Skipping withdrawal request because the validator has a pending deposit request: {withdrawal_request:?}"
-                                    );
-                                    continue; // Skip this withdrawal request
-                                }
-
-                                // If the validator already has a pending withdrawal request, we skip this withdrawal request
-                                if account.has_pending_withdrawal {
-                                    if is_deferred {
-                                        info!(
-                                            "Replaying deferred withdrawal request for validator with pending withdrawal flag: {withdrawal_request:?}"
-                                        );
-                                    } else {
-                                        info!(
-                                            "Skipping withdrawal request because the validator already has a pending withdrawal request: {withdrawal_request:?}"
-                                        );
-                                        continue; // Skip this withdrawal request
-                                    }
-                                }
-
-                                // The balance minus any pending withdrawals have to be larger than the amount of the withdrawal request
-                                if account.balance < withdrawal_request.amount {
-                                    info!(
-                                        "Skipping withdrawal request due to insufficient balance: {withdrawal_request:?}"
-                                    );
-                                    continue; // Skip this withdrawal request
-                                }
-
-                                // The source address must match the validators withdrawal address
-                                if withdrawal_request.source_address
-                                    != account.withdrawal_credentials
-                                {
-                                    info!(
-                                        "Skipping withdrawal request because the source address doesn't match the withdrawal credentials: {withdrawal_request:?}"
-                                    );
-                                    continue; // Skip this withdrawal request
-                                }
-
-                                // Skip the request if the public key is malformatted
-                                let Ok(public_key) =
-                                    PublicKey::decode(&withdrawal_request.validator_pubkey[..])
-                                else {
-                                    info!(
-                                        "Skipping withdrawal request because the public key is malformatted: {withdrawal_request:?}"
-                                    );
-                                    continue; // Skip this withdrawal request
-                                };
-
-                                // We don't support partial withdrawals, so the withdrawal amount will be
-                                // set to the entire balance
-                                let remaining_balance = account.balance;
-                                withdrawal_request.amount = remaining_balance;
-                                let is_active_exit = account.status == ValidatorStatus::Active;
-
-                                if is_active_exit && !state.can_accept_active_validator_exit() {
-                                    info!(
-                                        validator =
-                                            hex::encode(withdrawal_request.validator_pubkey),
-                                        current_epoch_active_validators =
-                                            state.current_epoch_active_validator_count(),
-                                        pending_active_validator_exits =
-                                            state.get_pending_active_validator_exits(),
-                                        minimum_validator_count =
-                                            state.get_minimum_validator_count(),
-                                        "skipping active validator exit because it would reduce the active validator set below the configured minimum"
-                                    );
-                                    continue;
-                                }
-
-                                if is_last_block_of_epoch(state.get_epocher(), new_height) {
-                                    // On the last block of an epoch, buffer the withdrawal request
-                                    // to be processed at the penultimate block of the next epoch.
-                                    // This ensures the validator is included in removed_validators
-                                    // which can be properly reflected in the header.
-                                    //
-                                    // Deduplicate by validator: the deferred path does not write
-                                    // `has_pending_withdrawal` back (the replay next epoch relies on
-                                    // it staying false to be admitted), so the guard above cannot
-                                    // catch same-block duplicates. Without this, repeated requests
-                                    // for one validator would each be re-queued and each active exit
-                                    // would consume the active-exit budget, skipping other
-                                    // validators' legitimate exits in the same block.
-                                    if !deferred_exit_pubkeys
-                                        .insert(withdrawal_request.validator_pubkey)
-                                    {
-                                        info!(
-                                            validator =
-                                                hex::encode(withdrawal_request.validator_pubkey),
-                                            "skipping duplicate withdrawal request for validator already deferred this block"
-                                        );
-                                        continue;
-                                    }
-                                    if is_active_exit {
-                                        state.increment_pending_active_validator_exits();
-                                    }
-                                    info!(
-                                        validator =
-                                            hex::encode(withdrawal_request.validator_pubkey),
-                                        current_epoch = state.get_epoch(),
-                                        "buffering withdrawal request for active validator on last block of epoch"
-                                    );
-                                    let mut deferred_request = vec![0x01];
-                                    withdrawal_request.write(&mut deferred_request);
-                                    account.has_pending_withdrawal = true;
-                                    state.set_account(withdrawal_request.validator_pubkey, account);
-                                    state.push_pending_execution_request(deferred_request.into());
-                                    continue;
-                                } else if account.joining_epoch > state.get_epoch() {
-                                    // If the validator is in the warm-up phase after depositing the stake
-                                    // and before joining the committee, then the onboarding is aborted
-                                    if state
-                                        .remove_added_validator(account.joining_epoch, &public_key)
-                                    {
-                                        info!(
-                                            validator = ?public_key,
-                                            activation_epoch = account.joining_epoch,
-                                            current_epoch = state.get_epoch(),
-                                            "cancelled pending validator activation due to withdrawal request"
-                                        );
-                                    }
-                                    account.status = ValidatorStatus::Inactive;
-                                } else {
-                                    // Validator is already active - add to removed_validators
-                                    state.push_removed_validator(public_key);
-                                    if is_active_exit {
-                                        state.increment_pending_active_validator_exits();
-                                    }
-                                    account.status = ValidatorStatus::SubmittedExitRequest;
-                                }
-
-                                // Move balance out
-                                account.balance = 0;
-                                account.has_pending_withdrawal = true;
-                                state.set_account(withdrawal_request.validator_pubkey, account);
-
-                                // The withdrawal will be completed in `validator_withdrawal_num_epochs` epochs
-                                let withdrawal_epoch =
-                                    state.get_epoch() + consts.validator_withdrawal_num_epochs;
-                                info!(
-                                    validator = hex::encode(withdrawal_request.validator_pubkey),
-                                    amount = remaining_balance,
-                                    withdrawal_epoch,
-                                    current_epoch = state.get_epoch(),
-                                    "scheduled full withdrawal for validator"
-                                );
-                                state.push_withdrawal_request(
-                                    withdrawal_request.clone(),
-                                    withdrawal_epoch,
-                                    remaining_balance,
-                                );
-                            }
-                        }
-                        ParsedExecutionRequest::Valid(ExecutionRequest::ProtocolParam(
-                            protocol_param_request,
-                        )) => {
-                            info!("Received protocol param request: {protocol_param_request:?}");
-
-                            // Buffer protocol param requests landing on the last block of
-                            // an epoch. Stake bound force removals are staged at the
-                            // penultimate block so they can appear in the last block's
-                            // removed_validators header delta. A request arriving on the
-                            // last block itself misses that window, so we defer it via
-                            // the pending execution request queue, mirroring how
-                            // withdrawal requests are handled. The request will replay
-                            // at the first block of the next epoch and apply naturally
-                            // at the next epoch boundary.
-                            if is_last_block_of_epoch(state.get_epocher(), new_height) {
-                                info!(
-                                    new_height,
-                                    current_epoch = state.get_epoch(),
-                                    "buffering protocol param request on last block of epoch: {protocol_param_request:?}"
-                                );
-                                let mut deferred_request = vec![0xFF];
-                                protocol_param_request.write(&mut deferred_request);
-                                state.push_pending_execution_request(deferred_request.into());
-                                continue;
-                            }
-
-                            match ProtocolParam::try_from(protocol_param_request) {
-                                Ok(protocol_param) => {
-                                    info!("Adding protocol param change: {protocol_param:?}");
-                                    protocol_param_batch.push(protocol_param);
-                                }
-                                Err(e) => {
-                                    warn!("Failed to parse protocol param request: {e}");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("Failed to parse execution request: {}", e);
-            }
-        }
-    }
-
-    // flush every protocol param change decoded above through a single subtree
-    // rebuild, rather than rebuilding once per record.
-    if !protocol_param_batch.is_empty() {
-        state.push_protocol_param_changes(protocol_param_batch);
-    }
-}
-
 async fn process_execution_requests<
     R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
@@ -2952,512 +2291,29 @@ async fn process_execution_requests<
     block: &Block,
     new_height: u64,
     state: &mut ConsensusState,
+    deposit_signature_domain: Digest,
     consts: &ProtocolConsts,
 ) {
+    // At the penultimate block, process the epoch's buffered execution requests
+    // in one pass (deposits verified/credited/activated, withdrawal requests
+    // validated and enqueued, protocol params batched) and enforce any pending
+    // minimum stake change against the committee.
     if is_penultimate_block_of_epoch(state.get_epocher(), new_height) {
-        // pop deposits without rebuilding the deposit subtree per pop, then
-        // rebuild once after the loop. front removal shifts every remaining
-        // item, so a per pop rebuild is o(cap * backlog) inside this
-        // consensus-critical block.
-        let mut drained_any_deposit = false;
-        for _ in 0..state.get_max_deposits_per_epoch() as usize {
-            // Break on empty queue so an oversized max_deposits_per_epoch
-            // cannot spin the consensus-critical penultimate block in a
-            // long-running no-op loop.
-            if let Some(request) = state.pop_deposit_deferred() {
-                drained_any_deposit = true;
-                let node_pubkey_bytes: [u8; 32] = request.node_pubkey.as_ref().try_into().unwrap();
-
-                // Account should always exist (created early in parse_execution_requests)
-                let Some(mut account) = state.get_account(&node_pubkey_bytes).cloned() else {
-                    warn!("Deposit request has no corresponding account, skipping: {request:?}");
-                    continue;
-                };
-
-                // Clear the pending deposit flag since we're processing it now
-                account.has_pending_deposit = false;
-
-                if account.status == ValidatorStatus::Inactive {
-                    // A nonzero balance means this is not a fresh new-validator
-                    // placeholder. Placeholders are created with balance 0 at parse
-                    // time (see `parse_execution_requests`); an Inactive account that
-                    // still holds a balance is a validator that was staged for
-                    // stake-bound removal and marked Inactive at the epoch boundary,
-                    // with this top-up left queued behind it. The boundary stake-bound
-                    // withdrawal scan skips accounts with `has_pending_deposit`, so the
-                    // bonded balance was never withdrawn there. Honor the removal
-                    // exactly as that scan would have: withdraw the full bonded balance
-                    // and refund the top-up separately, so the original stake is never
-                    // silently dropped.
-                    if account.balance > 0 {
-                        let bonded_balance = account.balance;
-                        let withdrawal_credentials = account.withdrawal_credentials;
-                        let withdrawal_epoch =
-                            state.get_epoch() + consts.validator_withdrawal_num_epochs;
-
-                        info!(
-                            validator = hex::encode(node_pubkey_bytes),
-                            balance = bonded_balance,
-                            deposit_amount = request.amount,
-                            "queued top-up resolved against staged-removal validator: withdrawing bonded balance and refunding top-up"
-                        );
-
-                        // Withdraw the full pre-existing bonded balance. This stake was
-                        // credited on the EL, so balance_deduction = balance. Mirrors
-                        // the stake-bound full-exit path; the account is removed by the
-                        // withdrawal-completion path once its balance reaches 0.
-                        account.balance = 0;
-                        account.has_pending_withdrawal = true;
-                        state.set_account(node_pubkey_bytes, account);
-
-                        state.push_withdrawal_request(
-                            WithdrawalRequest {
-                                source_address: withdrawal_credentials,
-                                validator_pubkey: node_pubkey_bytes,
-                                amount: bonded_balance,
-                            },
-                            withdrawal_epoch,
-                            bonded_balance,
-                        );
-
-                        // Refund the top-up in full, untaxed. Unlike the
-                        // invalid-deposit refund paths, this top-up was valid in
-                        // shape, signature, and resulting balance (it passed
-                        // admission and would have landed in range) — it is refunded
-                        // only because the independent stake-bound removal wins. The
-                        // depositor is blameless, the bonded balance above is also
-                        // returned untaxed, and the canonical stake-bound exit applies
-                        // no tax, so `invalid_deposit_tax` must not apply here. The
-                        // top-up was never credited to the balance, so
-                        // balance_deduction = 0.
-                        let refund_pubkey =
-                            refunded_deposit_key(withdrawal_credentials, request.index);
-                        state.push_refund_withdrawal_request(
-                            WithdrawalRequest {
-                                source_address: withdrawal_credentials,
-                                validator_pubkey: refund_pubkey,
-                                amount: request.amount,
-                            },
-                            withdrawal_epoch,
-                            0,
-                        );
-
-                        continue;
-                    }
-
-                    // New validator: account was created early with Inactive status
-                    let new_balance = request.amount;
-
-                    // Revalidate in case stake bounds changed since deposit was parsed
-                    if new_balance < state.get_minimum_stake()
-                        || new_balance > state.get_maximum_stake()
-                    {
-                        info!(
-                            "New validator deposit {} outside valid range [{}, {}], initiating refund: {request:?}",
-                            new_balance,
-                            state.get_minimum_stake(),
-                            state.get_maximum_stake()
-                        );
-                        let refund_pubkey =
-                            refunded_deposit_key(account.withdrawal_credentials, request.index);
-                        let withdrawal_epoch =
-                            state.get_epoch() + consts.validator_withdrawal_num_epochs;
-
-                        push_invalid_deposit_withdrawals(
-                            state,
-                            account.withdrawal_credentials,
-                            refund_pubkey,
-                            request.index,
-                            request.amount,
-                            withdrawal_epoch,
-                        );
-                        // Remove the inactive account since validator won't be joining
-                        state.remove_account(&node_pubkey_bytes);
-                        continue;
-                    }
-
-                    // Activate the new validator
-                    let activation_epoch = state.get_epoch() + consts.validator_num_warm_up_epochs;
-                    let consensus_key = account.consensus_public_key.clone();
-                    account.balance = new_balance;
-                    account.status = ValidatorStatus::Joining;
-                    account.joining_epoch = activation_epoch;
-                    account.last_deposit_index = request.index;
-                    state.set_account(node_pubkey_bytes, account);
-
-                    state.add_validator(
-                        activation_epoch,
-                        AddedValidator {
-                            node_key: request.node_pubkey.clone(),
-                            consensus_key,
-                        },
-                    );
-
-                    info!(
-                        validator = hex::encode(node_pubkey_bytes),
-                        balance = new_balance,
-                        activation_epoch,
-                        current_epoch = state.get_epoch(),
-                        "processing new validator deposit"
-                    );
-
-                    #[cfg(debug_assertions)]
-                    {
-                        use commonware_codec::Encode;
-                        let gauge: Gauge = Gauge::default();
-                        gauge.set(request.amount as i64);
-                        context.register(
-                            format!(
-                                "<creds>{}</creds><pubkey>{}</pubkey>_<index>{}</index>_deposit_validator_balance",
-                                hex::encode(request.withdrawal_credentials),
-                                hex::encode(request.node_pubkey.encode()),
-                                request.index,
-                            ),
-                            "Validator balance",
-                            gauge,
-                        );
-                    }
-                } else {
-                    // Top-up deposit for existing validator
-                    let new_balance = account.balance + request.amount;
-
-                    // Check if new balance would be within valid range
-                    if new_balance >= state.get_minimum_stake()
-                        && new_balance <= state.get_maximum_stake()
-                    {
-                        info!(
-                            validator = hex::encode(node_pubkey_bytes),
-                            previous_balance = account.balance,
-                            deposit_amount = request.amount,
-                            new_balance,
-                            "processing top-up deposit for existing validator"
-                        );
-                        account.balance = new_balance;
-                        state.set_account(node_pubkey_bytes, account);
-                    } else {
-                        // Invalid: new balance outside range, initiate immediate withdrawal
-                        info!(
-                            "Top-up deposit would result in balance {} outside valid range [{}, {}], initiating immediate withdrawal: {request:?}",
-                            new_balance,
-                            state.get_minimum_stake(),
-                            state.get_maximum_stake()
-                        );
-                        let refund_pubkey =
-                            refunded_deposit_key(account.withdrawal_credentials, request.index);
-                        let withdrawal_epoch =
-                            state.get_epoch() + consts.validator_withdrawal_num_epochs;
-
-                        push_invalid_deposit_withdrawals(
-                            state,
-                            account.withdrawal_credentials,
-                            refund_pubkey,
-                            request.index,
-                            request.amount,
-                            withdrawal_epoch,
-                        );
-                        // Persist the has_pending_deposit = false change
-                        state.set_account(node_pubkey_bytes, account);
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-
-        // rebuild the deposit subtree once for the whole drained batch. the
-        // per pop rebuild was deferred above, so the subtree is stale until
-        // here; nothing between the drain and the end of block root capture
-        // reads it.
-        if drained_any_deposit {
-            state.rebuild_deposit_tree();
-        }
-
-        // Stage stake-bound force-removals for the upcoming epoch boundary.
-        //
-        // Protocol-param changes themselves don't take effect until the last block of
-        // the epoch (see `apply_protocol_parameter_changes`), but any validator that
-        // will fall below the new minimum stake must show up in the last block's
-        // header delta. Otherwise a checkpoint verifier walking from genesis would
-        // reconstruct a different committee than live nodes.
-        //
-        // We split by activation status:
-        //   - Active validators: push to `removed_validators` so the delta lands in
-        //     the last block's header.
-        //   - Joining validators (joining_epoch > current_epoch): cancel the pending
-        //     activation via `remove_added_validator`. They were never in any
-        //     header's `added_validators` (next_epoch < joining_epoch up to now), so
-        //     no `removed_validators` delta is needed; cancelling the activation
-        //     keeps live state and verifier-reconstructed state in agreement.
-        //
-        // Balance zeroing, withdrawal scheduling, and status flips stay in the
-        // last-block path so the new bounds are only "effective" in the new epoch.
-        if state.has_pending_stake_bound_change() {
-            let prospective_min = state.prospective_minimum_stake();
-            let current_epoch = state.get_epoch();
-            let candidates: Vec<([u8; 32], u64, ValidatorStatus)> = state
-                .validator_accounts_iter()
-                .filter_map(|(key, account)| {
-                    if !account.has_pending_deposit && account.balance < prospective_min {
-                        Some((*key, account.joining_epoch, account.status.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let already_removed: HashSet<PublicKey> =
-                state.get_removed_validators().iter().cloned().collect();
-            for (key, joining_epoch, status) in candidates {
-                let Ok(public_key) = PublicKey::decode(&key[..]) else {
-                    continue;
-                };
-
-                if joining_epoch > current_epoch {
-                    // This is a joining validator. Cancel the pending activation instead of
-                    // staging a removal. The validator has not yet been emitted in
-                    // any header's `added_validators`, so removing the pending
-                    // activation is sufficient to keep verifier reconstruction
-                    // aligned with the live committee.
-                    if state.remove_added_validator(joining_epoch, &public_key) {
-                        info!(
-                            validator = hex::encode(public_key.as_ref()),
-                            joining_epoch,
-                            current_epoch,
-                            prospective_min,
-                            "cancelling Joining validator's pending activation at penultimate block (below new min stake)"
-                        );
-                    }
-                    continue;
-                }
-
-                if already_removed.contains(&public_key) {
-                    continue;
-                }
-                if status == ValidatorStatus::Active && !state.can_accept_active_validator_exit() {
-                    info!(
-                        validator = hex::encode(public_key.as_ref()),
-                        prospective_min,
-                        current_epoch,
-                        current_epoch_active_validators =
-                            state.current_epoch_active_validator_count(),
-                        pending_active_validator_exits = state.get_pending_active_validator_exits(),
-                        minimum_validator_count = state.get_minimum_validator_count(),
-                        "skipping stake-bound force-removal because it would reduce the active validator set below the configured minimum"
-                    );
-                    continue;
-                }
-                info!(
-                    validator = hex::encode(public_key.as_ref()),
-                    prospective_min,
-                    current_epoch,
-                    "staging force-removal at penultimate block for header delta"
-                );
-                state.push_removed_validator(public_key);
-                if status == ValidatorStatus::Active {
-                    state.increment_pending_active_validator_exits();
-                }
-            }
-        }
-    }
-
-    // Remove pending withdrawals that are included in the committed block
-    if !block.payload.payload_inner.withdrawals.is_empty() {
-        debug!(
-            new_height,
-            num_withdrawals = block.payload.payload_inner.withdrawals.len(),
-            "processing withdrawals from committed block"
+        state.process_buffered_requests(
+            deposit_signature_domain,
+            consts.validator_num_warm_up_epochs,
+            consts.validator_withdrawal_num_epochs,
         );
-    }
-    for withdrawal in &block.payload.payload_inner.withdrawals {
-        let current_epoch = state.get_epoch();
-        let pending_withdrawal = state.pop_withdrawal_by_index(current_epoch, withdrawal.index);
-        // these checks should never fail. we have to make sure that these withdrawals are
-        // verified when the block is verified. it is too late when the block is committed.
-        let pending_withdrawal = pending_withdrawal.expect("pending withdrawal must be in state");
-        assert_eq!(pending_withdrawal.inner, *withdrawal);
-
-        // If balance_deduction is 0, this is an immediate refund of a rejected deposit.
-        // No balance changes are needed — the money was never part of the account.
-        // Note: if a deposit request with an invalid amount (below minimum or above maximum stake) was submitted,
-        // a withdrawal request will be initiated immediately, without creating a validator account.
-        // These are the cases where we process a withdrawal request without having a validator account
-        // stored in the consensus state.
-        if pending_withdrawal.balance_deduction == 0 {
-            // If a validator account still exists and is carrying a
-            // has_pending_withdrawal flag from an earlier stake-bound
-            // force-removal that incorrectly enqueued a zero-amount
-            // withdrawal, clear the flag so the validator isn't permanently
-            // blocked from future deposit/withdrawal requests.
-            // Node: this is a defensive check and not strictly necessary.
-            if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned()
-                && account.has_pending_withdrawal
-            {
-                account.has_pending_withdrawal = false;
-                state.set_account(pending_withdrawal.pubkey, account);
-            }
-            continue;
-        }
-
-        // For balance_deduction > 0, the money was moved from balance when the withdrawal
-        // was created. The balance_deduction is tracked on the PendingWithdrawal in the queue.
-        if let Some(mut account) = state.get_account(&pending_withdrawal.pubkey).cloned() {
-            account.has_pending_withdrawal = false;
-
-            #[cfg(debug_assertions)]
-            {
-                let gauge: Gauge = Gauge::default();
-                gauge.set(account.balance as i64);
-                context.register(
-                    format!(
-                        "<creds>{}</creds><pubkey>{}</pubkey><height>{}</height>_withdrawal_validator_balance",
-                        hex::encode(account.withdrawal_credentials),
-                        hex::encode(pending_withdrawal.pubkey),
-                        state.get_latest_height(),
-                    ),
-                    "Validator balance",
-                    gauge,
-                );
-            }
-
-            // If balance is 0, remove the validator account.
-            if account.balance == 0 {
-                info!(
-                    validator = hex::encode(pending_withdrawal.pubkey),
-                    "removing validator account after full withdrawal"
-                );
-                state.remove_account(&pending_withdrawal.pubkey);
-            } else {
-                state.set_account(pending_withdrawal.pubkey, account);
-            }
-        }
-    }
-}
-
-fn verify_deposit_request<R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng>(
-    #[allow(unused)] context: &ContextCell<R>,
-    deposit_request: &DepositRequest,
-    state: &ConsensusState,
-    deposit_signature_domain: Digest,
-    #[allow(unused)] new_height: u64,
-    validator_minimum_stake: u64,
-    validator_maximum_stake: u64,
-) -> Result<(), DepositRejectionReason> {
-    // Check if validator already exists
-    let validator_pubkey: [u8; 32] = deposit_request.node_pubkey.as_ref().try_into().unwrap();
-    let account = state.get_account(&validator_pubkey);
-    let existing_balance = account.map(|acc| acc.balance).unwrap_or(0);
-
-    // Check for pending deposit or withdrawal (only if account exists)
-    if let Some(acc) = account {
-        // Top-up deposits must carry the same BLS consensus key already
-        // stored on the account. Otherwise the deposit shape and the
-        // validator's effective consensus key drift apart and the
-        // BLS-uniqueness invariant becomes harder to reason about (see also
-        // the cross-account duplicate-BLS scan below).
-        if acc.consensus_public_key != deposit_request.consensus_pubkey {
-            info!(
-                "Skipping deposit request: consensus_pubkey does not match the BLS key already stored on this validator account: {deposit_request:?}"
-            );
-            return Err(DepositRejectionReason::Refund);
-        }
-        if acc.has_pending_deposit {
-            info!(
-                "Skipping deposit request because the validator already has a pending deposit request: {deposit_request:?}"
-            );
-            return Err(DepositRejectionReason::Refund);
-        }
-        if acc.has_pending_withdrawal {
-            info!(
-                "Skipping deposit request because the validator already has a pending withdrawal request: {deposit_request:?}"
-            );
-            return Err(DepositRejectionReason::Refund);
-        }
+        state.enforce_minimum_stake();
     }
 
-    // Cross-account BLS uniqueness: reject if the submitted consensus_pubkey
-    // is already attached to a *different* validator account. Without this
-    // check, an actor controlling an already-used BLS private key could
-    // register a second validator identity under a fresh node key, and once
-    // both were active the orchestrator's BiMap construction would panic on
-    // the duplicate BLS value.
-    for (key, acc) in state.validator_accounts_iter() {
-        if key != &validator_pubkey && acc.consensus_public_key == deposit_request.consensus_pubkey
-        {
-            info!(
-                "Skipping deposit request: consensus_pubkey is already attached to a different validator account: {deposit_request:?}"
-            );
-            return Err(DepositRejectionReason::Refund);
-        }
+    // On the terminal block, apply the EIP-4895 payouts the block carries: debit
+    // balances, remove drained accounts, and consume the queue entries. These
+    // payouts were emitted from this same state at build time and pinned by the
+    // verifier, so they must equal what the block paid out.
+    if is_last_block_of_epoch(state.get_epocher(), new_height) {
+        state.apply_withdrawal_payouts(state.get_epoch(), &block.payload.payload_inner.withdrawals);
     }
-
-    let new_balance = existing_balance + deposit_request.amount;
-
-    // Validate that new balance is within valid range
-    if new_balance < validator_minimum_stake || new_balance > validator_maximum_stake {
-        info!(
-            "Deposit would result in balance {} outside valid range [{}, {}] (existing: {}, deposit: {}), initiating immediate withdrawal: {deposit_request:?}",
-            new_balance,
-            validator_minimum_stake,
-            validator_maximum_stake,
-            existing_balance,
-            deposit_request.amount
-        );
-        return Err(DepositRejectionReason::Refund);
-    }
-
-    let message = deposit_request.as_message(deposit_signature_domain);
-
-    let mut node_signature_bytes = &deposit_request.node_signature[..];
-    let Ok(node_signature) = Signature::read(&mut node_signature_bytes) else {
-        info!("Failed to parse node signature from deposit request: {deposit_request:?}");
-        return Err(DepositRejectionReason::InvalidSignature);
-    };
-    if !deposit_request
-        .node_pubkey
-        .verify(&[], &message, &node_signature)
-    {
-        #[cfg(debug_assertions)]
-        {
-            let gauge: Gauge = Gauge::default();
-            gauge.set(new_height as i64);
-            context.register(
-                format!(
-                    "<pubkey>{}</pubkey>_deposit_request_invalid_node_sig",
-                    hex::encode(&deposit_request.node_pubkey)
-                ),
-                "height",
-                gauge,
-            );
-        }
-        info!("Failed to verify node signature from deposit request: {deposit_request:?}");
-        return Err(DepositRejectionReason::InvalidSignature);
-    }
-
-    let mut consensus_signature_bytes = &deposit_request.consensus_signature[..];
-    let Ok(consensus_signature) = bls12381::Signature::read(&mut consensus_signature_bytes) else {
-        info!("Failed to parse consensus signature from deposit request: {deposit_request:?}");
-        return Err(DepositRejectionReason::InvalidSignature);
-    };
-    if !deposit_request
-        .consensus_pubkey
-        .verify(&[], &message, &consensus_signature)
-    {
-        #[cfg(debug_assertions)]
-        {
-            let gauge: Gauge = Gauge::default();
-            gauge.set(new_height as i64);
-            context.register(
-                format!(
-                    "<pubkey>{}</pubkey>_deposit_request_invalid_consensus_sig",
-                    hex::encode(&deposit_request.consensus_pubkey)
-                ),
-                "height",
-                gauge,
-            );
-        }
-        info!("Failed to verify consensus signature from deposit request: {deposit_request:?}");
-        return Err(DepositRejectionReason::InvalidSignature);
-    }
-    Ok(())
 }
 
 impl<

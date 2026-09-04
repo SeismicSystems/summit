@@ -52,9 +52,6 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "validator_minimum_stake" => {
             Ok(SszStateKey::Scalar(ssz_state_tree::VALIDATOR_MINIMUM_STAKE))
         }
-        "validator_maximum_stake" => {
-            Ok(SszStateKey::Scalar(ssz_state_tree::VALIDATOR_MAXIMUM_STAKE))
-        }
         "allowed_timestamp_future_ms" => Ok(SszStateKey::Scalar(
             ssz_state_tree::ALLOWED_TIMESTAMP_FUTURE_MS,
         )),
@@ -83,6 +80,9 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
             ssz_state_tree::PENDING_ACTIVE_VALIDATOR_EXITS,
         )),
         "invalid_deposit_tax" => Ok(SszStateKey::Scalar(ssz_state_tree::INVALID_DEPOSIT_TAX)),
+        "max_pending_withdrawals_per_validator" => Ok(SszStateKey::Scalar(
+            ssz_state_tree::MAX_PENDING_WITHDRAWALS_PER_VALIDATOR,
+        )),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"
@@ -178,8 +178,6 @@ fn parse_validator_field_name(name: &str) -> Result<usize, String> {
         "withdrawal_credentials" => Ok(ssz_state_tree::VALIDATOR_FIELD_WITHDRAWAL_CREDENTIALS),
         "balance" => Ok(ssz_state_tree::VALIDATOR_FIELD_BALANCE),
         "status" => Ok(ssz_state_tree::VALIDATOR_FIELD_STATUS),
-        "has_pending_deposit" => Ok(ssz_state_tree::VALIDATOR_FIELD_HAS_PENDING_DEPOSIT),
-        "has_pending_withdrawal" => Ok(ssz_state_tree::VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL),
         "joining_epoch" => Ok(ssz_state_tree::VALIDATOR_FIELD_JOINING_EPOCH),
         "last_deposit_index" => Ok(ssz_state_tree::VALIDATOR_FIELD_LAST_DEPOSIT_INDEX),
         _ => Err(format!("unknown validator field: {name}")),
@@ -208,7 +206,6 @@ fn parse_withdrawal_field_name(name: &str) -> Result<usize, String> {
         "address" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_ADDRESS),
         "amount" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_AMOUNT),
         "pubkey" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_PUBKEY),
-        "balance_deduction" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION),
         "epoch" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
         "kind" => Ok(ssz_state_tree::WITHDRAWAL_FIELD_KIND),
         _ => Err(format!("unknown withdrawal field: {name}")),
@@ -262,7 +259,7 @@ mod tests {
         assert_eq!(parse_key("latest_height").unwrap(), SszStateKey::Scalar(2));
         assert_eq!(
             parse_key("forkchoice_finalized_block_hash").unwrap(),
-            SszStateKey::Scalar(10)
+            SszStateKey::Scalar(9)
         );
         assert_eq!(
             parse_key("minimum_validator_count").unwrap(),
@@ -355,14 +352,6 @@ mod tests {
             ),
             ("balance", ssz_state_tree::VALIDATOR_FIELD_BALANCE),
             ("status", ssz_state_tree::VALIDATOR_FIELD_STATUS),
-            (
-                "has_pending_deposit",
-                ssz_state_tree::VALIDATOR_FIELD_HAS_PENDING_DEPOSIT,
-            ),
-            (
-                "has_pending_withdrawal",
-                ssz_state_tree::VALIDATOR_FIELD_HAS_PENDING_WITHDRAWAL,
-            ),
             (
                 "joining_epoch",
                 ssz_state_tree::VALIDATOR_FIELD_JOINING_EPOCH,
@@ -486,10 +475,6 @@ mod tests {
             ("address", ssz_state_tree::WITHDRAWAL_FIELD_ADDRESS),
             ("amount", ssz_state_tree::WITHDRAWAL_FIELD_AMOUNT),
             ("pubkey", ssz_state_tree::WITHDRAWAL_FIELD_PUBKEY),
-            (
-                "balance_deduction",
-                ssz_state_tree::WITHDRAWAL_FIELD_BALANCE_DEDUCTION,
-            ),
             ("epoch", ssz_state_tree::WITHDRAWAL_FIELD_EPOCH),
             ("kind", ssz_state_tree::WITHDRAWAL_FIELD_KIND),
         ];

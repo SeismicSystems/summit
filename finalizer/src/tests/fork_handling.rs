@@ -27,8 +27,21 @@ use summit_types::consensus_state::ConsensusState;
 use summit_types::{Block, Digest};
 use tokio_util::sync::CancellationToken;
 
-/// Helper to create a test block with specific parent and height
+/// Helper to create a test block with specific parent and height. Epoch is
+/// derived from the height (`height / 10`) to match the default epocher length.
 fn create_test_block(parent_digest: Digest, height: u64, view: u64, unique_seed: u64) -> Block {
+    create_test_block_with_epoch(parent_digest, height, height / 10, view, unique_seed)
+}
+
+/// Like [`create_test_block`] but with an explicit epoch, so tests can build a
+/// block whose declared epoch disagrees with its height.
+fn create_test_block_with_epoch(
+    parent_digest: Digest,
+    height: u64,
+    epoch: u64,
+    view: u64,
+    unique_seed: u64,
+) -> Block {
     let mut block_hash = [0u8; 32];
     block_hash[0..8].copy_from_slice(&unique_seed.to_le_bytes());
     block_hash[8..16].copy_from_slice(&height.to_le_bytes());
@@ -69,7 +82,7 @@ fn create_test_block(parent_digest: Digest, height: u64, view: u64, unique_seed:
         height * 12,
         payload,
         Vec::new(),
-        height / 10,
+        epoch,
         view,
         None,
         [0u8; 32].into(),
@@ -97,8 +110,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
             withdrawal_credentials: Address::from([i as u8; 20]),
             balance: 32_000_000_000,
             status: ValidatorStatus::Active,
-            has_pending_deposit: false,
-            has_pending_withdrawal: false,
             joining_epoch: 0,
             last_deposit_index: 0,
         };
@@ -115,7 +126,6 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
     let mut state = ConsensusState::new(
         forkchoice,
         32_000_000_000,
-        64_000_000_000,
         epoch_length,
         10_000,
         Address::ZERO,
@@ -124,6 +134,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         0,
         3,
         0,
+        3,
     );
     state.set_validator_accounts(validator_accounts);
     state
@@ -1506,6 +1517,96 @@ fn test_competing_fork_pruned_on_finalization() {
         assert!(
             !notify1b_after.await.unwrap(),
             "Block 1b should not match canonical at height 1"
+        );
+
+        context.auditor().state()
+    });
+}
+
+// A finalized block whose declared epoch disagrees with the finalizer's
+// deterministic epoch counter must be rejected as InvalidPayload BEFORE the EL
+// forkchoice is committed, not caught by an assert after the EL already adopted
+// the block. Reachable only via a Byzantine-certified block or an epoch
+// computation bug, but the node must fail-stop cleanly (no EL adoption, no
+// panic).
+#[test]
+fn test_finalized_epoch_mismatch_rejected_before_el_adoption() {
+    let cfg = deterministic::Config::default().with_seed(42);
+    let executor = Runner::from(cfg);
+    executor.start(|context| async move {
+        let genesis_hash = [0x42u8; 32];
+        let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
+
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
+
+        let node_key = ed25519::PrivateKey::from_seed(0);
+        let engine_client = MockEngineClient::new();
+        let engine_probe = engine_client.clone();
+        let cancellation_token = CancellationToken::new();
+
+        let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
+            mailbox_size: 100,
+            db_prefix: "test_finalized_epoch_mismatch".to_string(),
+            engine_client,
+            oracle: MockNetworkOracle,
+            protocol_consts: ProtocolConsts {
+                validator_num_warm_up_epochs: 2,
+                validator_withdrawal_num_epochs: 2,
+            },
+
+            page_cache: CacheRef::from_pooler(
+                &context,
+                std::num::NonZero::new(4096).unwrap(),
+                NZUsize!(100),
+            ),
+            genesis_hash,
+            initial_state,
+            protocol_version: 1,
+            node_public_key: node_key.public_key(),
+            cancellation_token: cancellation_token.clone(),
+            drain_interval: Duration::from_millis(100),
+            buffered_blocks_warn_threshold: 100,
+            pending_notarized_max: 1000,
+            namespace: Vec::new(),
+            observer_domain: Vec::new(),
+            _variant_marker: PhantomData,
+        };
+
+        let (finalizer, _state, mut mailbox, _state_query) =
+            Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
+                context.with_label("finalizer"),
+                finalizer_cfg,
+            )
+            .await;
+
+        let _handle = finalizer.start(orchestrator_mailbox);
+        context.sleep(Duration::from_millis(100)).await;
+
+        // Height 1 extends the canonical head (parent == genesis) so it is a
+        // contiguous finalized block that reaches execute_block, but its declared
+        // epoch is 1 while the finalizer is still at epoch 0.
+        let genesis_block = Block::genesis(genesis_hash);
+        let bad = create_test_block_with_epoch(genesis_block.digest(), 1, 1, 1, 7777);
+        assert_eq!(bad.epoch(), 1, "test block must declare a mismatched epoch");
+
+        let (ack, _waiter) = Exact::handle();
+        mailbox
+            .report(Update::FinalizedBlock((bad, None), ack))
+            .await;
+        context.sleep(Duration::from_millis(300)).await;
+
+        assert!(
+            cancellation_token.is_cancelled(),
+            "an epoch-mismatched finalized block must fail-stop the node"
+        );
+        // The epoch check precedes check_payload and the forkchoice commit, and
+        // startup never calls check_payload, so a zero count proves the block was
+        // rejected before any EL interaction (no adoption, no panic-after-commit).
+        assert_eq!(
+            engine_probe.check_payload_call_count(),
+            0,
+            "the block must be rejected before the EL sees it"
         );
 
         context.auditor().state()

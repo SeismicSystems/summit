@@ -122,7 +122,6 @@ fn test_checkpoint_verification_fixed_committee() {
             max_message_size_bytes: 1024 * 1024,
             namespace: namespace.to_string(),
             validator_minimum_stake: 32_000_000_000,
-            validator_maximum_stake: 32_000_000_000,
             blocks_per_epoch: common::DEFAULT_BLOCKS_PER_EPOCH,
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO.to_string(),
@@ -131,6 +130,7 @@ fn test_checkpoint_verification_fixed_committee() {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -498,7 +498,6 @@ fn test_checkpoint_verification_dynamic_committee() {
             max_message_size_bytes: 1024 * 1024,
             namespace: namespace.to_string(),
             validator_minimum_stake: min_stake,
-            validator_maximum_stake: min_stake,
             blocks_per_epoch: common::DEFAULT_BLOCKS_PER_EPOCH,
             allowed_timestamp_future_ms: 10_000,
             treasury_address: Address::ZERO.to_string(),
@@ -507,6 +506,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             observers_per_validator: 0,
             minimum_validator_count: 3,
             invalid_deposit_tax: 0,
+            max_pending_withdrawals_per_validator: 3,
         };
 
         let node_public_keys: Vec<_> = validators.iter().map(|(pk, _)| pk.clone()).collect();
@@ -527,8 +527,11 @@ fn test_checkpoint_verification_dynamic_committee() {
         let deposit_requests =
             common::execution_requests_to_requests(vec![ExecutionRequest::Deposit(deposit)]);
 
-        // Create a withdrawal for genesis validator 1 at block 15 (epoch 1)
-        // removed_validators will appear in epoch 1's finalized header
+        // Create a full-exit withdrawal for genesis validator 1 at block 15 (epoch 1).
+        // amount 0 = full exit: the validator is removed from the committee, so
+        // removed_validators appears in epoch 1's finalized header. (A positive
+        // amount here would be a partial clamped to leave the minimum stake, which
+        // for a validator at exactly min_stake clamps to zero and is a no-op.)
         let withdrawing_idx = 1;
         let withdrawing_pubkey = validators[withdrawing_idx].0.clone();
         let withdrawing_pubkey_bytes: [u8; 32] = withdrawing_pubkey
@@ -536,7 +539,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             .try_into()
             .expect("Public key must be 32 bytes");
         let withdrawal =
-            common::create_withdrawal_request(Address::ZERO, withdrawing_pubkey_bytes, min_stake);
+            common::create_withdrawal_request(Address::ZERO, withdrawing_pubkey_bytes, 0);
         let withdrawal_requests =
             common::execution_requests_to_requests(vec![ExecutionRequest::Withdrawal(withdrawal)]);
 

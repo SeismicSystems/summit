@@ -7,7 +7,6 @@ pub mod consensus_state_query;
 pub mod dynamic_epocher;
 pub mod engine_client;
 pub mod execution_request;
-pub mod execution_request_origin;
 pub mod ext_private_key;
 pub mod genesis;
 pub mod header;
@@ -26,6 +25,7 @@ pub mod ssz_tree_key;
 pub mod utils;
 pub mod withdrawal;
 
+use alloy_eips::eip4895;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 pub use block::*;
@@ -34,7 +34,6 @@ pub use engine_client::*;
 pub use genesis::*;
 pub use header::*;
 pub use key_paths::*;
-use withdrawal::PendingWithdrawal;
 
 use commonware_consensus::simplex::types::Activity as CActivity;
 
@@ -103,7 +102,7 @@ pub fn pause_signature_domain(genesis_hash: [u8; 32], namespace: &[u8]) -> Diges
 #[derive(Debug, Clone)]
 pub struct BlockAuxData {
     pub epoch: u64,
-    pub withdrawals: Vec<PendingWithdrawal>,
+    pub withdrawals: Vec<eip4895::Withdrawal>,
     pub checkpoint_hash: Option<Digest>,
     pub header_hash: Digest,
     pub added_validators: Vec<AddedValidator>,

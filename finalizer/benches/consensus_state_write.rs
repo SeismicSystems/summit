@@ -21,8 +21,6 @@ fn create_validator_account(index: u64, balance: u64) -> ValidatorAccount {
         withdrawal_credentials: Address::from([index as u8; 20]),
         balance,
         status: ValidatorStatus::Active,
-        has_pending_deposit: false,
-        has_pending_withdrawal: false,
         joining_epoch: 0,
         last_deposit_index: index,
     }
@@ -111,8 +109,8 @@ fn main() {
 
             // Measure store_consensus_state + commit
             let start = Instant::now();
-            db.store_consensus_state(height, &state).await;
-            db.commit().await;
+            db.store_consensus_state(height, &state).await.unwrap();
+            db.commit().await.unwrap();
             let duration = start.elapsed().as_micros();
             write_times.push((epoch, duration));
 
@@ -120,8 +118,9 @@ fn main() {
             let checkpoint = Checkpoint::new(&state);
             let checkpoint_start = Instant::now();
             db.store_finalized_checkpoint(epoch, &checkpoint, Block::genesis([0; 32]))
-                .await;
-            db.commit().await;
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
             let checkpoint_duration = checkpoint_start.elapsed().as_micros();
             checkpoint_times.push((epoch, checkpoint_duration));
 

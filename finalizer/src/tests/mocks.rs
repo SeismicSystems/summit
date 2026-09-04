@@ -88,6 +88,7 @@ pub struct MockEngineClient {
     check_payload_overrides: Arc<Mutex<VecDeque<PayloadStatus>>>,
     commit_hash_overrides: Arc<Mutex<VecDeque<ForkchoiceUpdated>>>,
     check_payload_calls: Arc<AtomicU64>,
+    commit_hash_calls: Arc<AtomicU64>,
     commit_hash_fails: Arc<AtomicBool>,
 }
 
@@ -97,6 +98,7 @@ impl MockEngineClient {
             check_payload_overrides: Arc::new(Mutex::new(VecDeque::new())),
             commit_hash_overrides: Arc::new(Mutex::new(VecDeque::new())),
             check_payload_calls: Arc::new(AtomicU64::new(0)),
+            commit_hash_calls: Arc::new(AtomicU64::new(0)),
             commit_hash_fails: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -114,6 +116,13 @@ impl MockEngineClient {
     #[allow(unused)]
     pub fn check_payload_call_count(&self) -> u64 {
         self.check_payload_calls.load(Ordering::SeqCst)
+    }
+
+    /// Number of times `commit_hash` has been invoked. Used to detect whether the
+    /// EL forkchoice was asked to adopt a block.
+    #[allow(unused)]
+    pub fn commit_hash_call_count(&self) -> u64 {
+        self.commit_hash_calls.load(Ordering::SeqCst)
     }
 
     /// Queue SYNCING responses for check_payload. After these are consumed,
@@ -246,6 +255,7 @@ impl EngineClient for MockEngineClient {
         &mut self,
         _fork_choice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdated, summit_types::EngineClientError> {
+        self.commit_hash_calls.fetch_add(1, Ordering::SeqCst);
         if self.commit_hash_fails.load(Ordering::SeqCst) {
             return Err(EngineClientError::custom("injected commit_hash failure"));
         }

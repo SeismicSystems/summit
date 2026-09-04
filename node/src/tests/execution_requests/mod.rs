@@ -1,5 +1,6 @@
 mod deposit_withdrawal_combined;
 mod deposits;
+mod malformed_requests;
 mod protocol_params;
 mod validator_set;
 mod withdrawals;
@@ -13,7 +14,6 @@ pub(crate) use crate::test_harness::common::{
 };
 pub(crate) use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 pub(crate) use alloy_primitives::Address;
-pub(crate) use commonware_codec::Encode;
 pub(crate) use commonware_consensus::types::{Epoch, Epocher, FixedEpocher};
 pub(crate) use commonware_cryptography::Signer;
 pub(crate) use commonware_cryptography::bls12381;
