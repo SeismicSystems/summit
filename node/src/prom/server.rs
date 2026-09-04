@@ -228,6 +228,10 @@ fn describe_critical_error_metrics() {
         "critical_errors_total",
         "Critical errors requiring immediate attention (labelled by reason)"
     );
+    describe_counter!(
+        "warning_errors_total",
+        "Warning errors not requiring immediate paging (labelled by reason)"
+    );
 }
 
 #[cfg(all(feature = "jemalloc", unix))]

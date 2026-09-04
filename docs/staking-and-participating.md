@@ -10,20 +10,29 @@ The changes were made to accommodate every consensus node having 2 keys to parti
 
 ## Becoming a Validator
 
-1. Deploy the Summit image on a TDX VM. This will start seismic-reth and Summit as well as the enclave.
-2. The deposit function requires a signature with the node's keys. Since they are only available from within the secure enclave, the node exposes a JSON-RPC method on port 3030 by default to produce the signed deposit calldata:
-   ```json
-   {
-     "jsonrpc": "2.0",
-     "method": "getDepositSignature",
-     "params": [32000000000, "0xYourWithdrawalAddressHere"],
-     "id": 1
-   }
+1. Provision the Summit validator keys and the network's genesis file on the TDX VM.
+2. Start only the localhost deposit-signature RPC server. This does not start the execution client, P2P, consensus, storage, or syncing:
+   ```bash
+   summit deposit-rpc \
+     --genesis-path /path/to/genesis.toml \
+     --key-store-path /path/to/keys \
+     --port 3031
+   ```
+3. From a local process on the VM, request the signed deposit data from `127.0.0.1:3031`:
+   ```bash
+   curl http://127.0.0.1:3031 \
+     -H 'Content-Type: application/json' \
+     --data '{
+       "jsonrpc": "2.0",
+       "method": "getDepositSignature",
+       "params": [32000000000, "0xYourWithdrawalAddressHere"],
+       "id": 1
+     }'
    ```
    The `amount` should be the staking amount and `address` should be the Ethereum address you want to be able to withdraw to. **Replace the `address` placeholder with an address you actually control** — withdrawals and exits are only honored from the exact address bound at deposit time, so a stake deposited against an address you cannot sign for is permanently unrecoverable.
-3. Send a signed transaction to the deposit contract with the calldata from the previous step, along with a value equal to the amount being staked (contract address: `0x00000000219ab540356cBB839Cbe05303d7705Fa`, same as Ethereum).
-4. Download the latest checkpoint and load it into the node.
-5. Keep your node running and it will start participating in the next epoch.
+4. Stop `summit deposit-rpc`, then send a signed transaction to the deposit contract using the returned deposit data, along with a value equal to the amount being staked (contract address: `0x00000000219ab540356cBB839Cbe05303d7705Fa`, same as Ethereum).
+5. Download the latest checkpoint and start the full node with `summit run`.
+6. Keep your node running and it will start participating after the validator warm-up period.
 
 ## How Summit Handles Deposits
 

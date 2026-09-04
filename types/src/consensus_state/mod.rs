@@ -21,7 +21,7 @@ use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Writ
 use commonware_cryptography::ed25519::Signature;
 use commonware_cryptography::{Verifier as _, bls12381, sha256};
 #[cfg(feature = "prom")]
-use metrics::histogram;
+use metrics::{counter, histogram};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -859,6 +859,13 @@ impl ConsensusState {
                     amount,
                     "failed to parse withdrawal credentials for deposit refund: {e}"
                 );
+                #[cfg(feature = "prom")]
+                counter!(
+                    "warning_errors_total",
+                    "reason" => "withdrawal_credentials_parse",
+                    "severity" => "warning"
+                )
+                .increment(1);
                 return;
             }
         };
@@ -993,6 +1000,13 @@ impl ConsensusState {
                             target: "critical",
                             "failed to parse withdrawal credentials for new validator deposit"
                         );
+                        #[cfg(feature = "prom")]
+                        counter!(
+                            "warning_errors_total",
+                            "reason" => "withdrawal_credentials_parse",
+                            "severity" => "warning"
+                        )
+                        .increment(1);
                         continue;
                     };
                     ValidatorAccount {
@@ -1524,6 +1538,16 @@ impl ConsensusState {
     /// Get all pending withdrawals for a specific epoch
     pub fn get_withdrawals_for_epoch(&self, epoch: u64) -> Vec<&PendingWithdrawal> {
         self.withdrawal_queue.get_for_epoch(epoch)
+    }
+
+    /// Iterate all withdrawals in the withdrawal queue.
+    pub fn withdrawals_iter(&self) -> impl Iterator<Item = &PendingWithdrawal> {
+        self.withdrawal_queue.withdrawals_iter()
+    }
+
+    /// Iterate all refunds in the withdrawal queue.
+    pub fn refunds_iter(&self) -> impl Iterator<Item = &PendingWithdrawal> {
+        self.withdrawal_queue.refunds_iter()
     }
 
     /// Payout amount for one due withdrawal against `balance`, the validator's

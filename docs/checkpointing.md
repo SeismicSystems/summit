@@ -196,17 +196,23 @@ checkpoint_dir/
 
 ### Checkpoint Verification on Startup
 
-When the `finalized_headers/` directory is present, the node loads the checkpoint artifacts from disk first, then verifies the checkpoint during startup after loading genesis. Verified checkpoint imports require an independently configured weak-subjectivity anchor:
+When the `finalized_headers/` directory is present, the node loads the checkpoint artifacts from disk first, then verifies the checkpoint during startup after loading genesis. Verified checkpoint imports require an independently trusted weak-subjectivity anchor supplied in a TOML file:
+
+```toml
+epoch = 7421
+header_digest = "0x8f4c..."
+```
+
+Pass the independently provisioned file separately from the checkpoint bundle:
 
 ```
 --checkpoint-path ./checkpoint_dir \
---weak-subjectivity-epoch 7421 \
---weak-subjectivity-header-digest 0x8f4c...
+--weak-subjectivity-path ./trusted/weak_subjectivity.toml
 ```
 
-The header digest is the finalized header's `header.digest` for the trusted epoch. It can be queried from a trusted node with `getFinalizedHeaderDigest(epoch)`.
+The header digest is the finalized header's `header.digest` for the trusted epoch. It can be queried from a trusted node with `getFinalizedHeaderDigest(epoch)`. Do not trust an anchor obtained from the same untrusted source as the checkpoint bundle.
 
-The checkpoint's terminal epoch must be within 5 epochs of `--weak-subjectivity-epoch`.
+The checkpoint's terminal epoch must be within 5 epochs of the TOML file's `epoch`.
 
 If the `finalized_headers/` directory is absent, verification is skipped and the node trusts the checkpoint as-is.
 
