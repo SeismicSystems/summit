@@ -1,10 +1,10 @@
 //! Consensus engine orchestrator for epoch transitions.
-use crate::{Mailbox, Message};
+use crate::{Mailbox, Message, reporter::SyncerActivityFilter};
 use summit_types::{Block, Digest, PublicKey, scheme::SummitSchemeProvider};
 
 use commonware_consensus::{
     CertifiableAutomaton, Relay,
-    simplex::{self, types::Context},
+    simplex::{self, scheme::reporter::AttributableReporter, types::Context},
     types::{Epoch, Epocher, ViewDelta},
 };
 use commonware_cryptography::Sha256;
@@ -346,6 +346,14 @@ where
 
         // Start the new engine
         let elector = simplex::elector::RoundRobin::<Sha256>::default();
+        let reporter = AttributableReporter::new(
+            self.context.child("activity_reporter"),
+            scheme.clone(),
+            self.syncer_mailbox.clone(),
+            St::default(),
+            true,
+        );
+        let reporter = SyncerActivityFilter::new(reporter);
         let engine = simplex::Engine::new(
             self.context
                 .child("consensus_engine")
@@ -356,7 +364,7 @@ where
                 blocker: self.oracle.clone(),
                 automaton: self.application.clone(),
                 relay: self.application.clone(),
-                reporter: self.syncer_mailbox.clone(),
+                reporter,
                 strategy: St::default(),
                 partition: format!("{}_consensus_{}", self.partition_prefix, epoch),
                 mailbox_size: NZUsize!(1024),

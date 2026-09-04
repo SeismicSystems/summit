@@ -7,3 +7,5 @@ mod committee_filter;
 
 mod ingress;
 pub use ingress::{Mailbox, Message};
+
+mod reporter;
