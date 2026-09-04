@@ -1,5 +1,5 @@
 use clap::Subcommand;
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::{from_hex, hex};
 use std::fs;
 use summit_types::{Genesis, GenesisValidator};
 
@@ -82,7 +82,7 @@ impl GenesisSubCmd {
             }
             GenesisSubCmd::Digest { genesis_path } => {
                 let genesis = load(genesis_path);
-                println!("0x{}", commonware_utils::hex(&genesis.config_digest()));
+                println!("0x{}", hex(&genesis.config_digest()));
             }
         }
     }
@@ -107,7 +107,7 @@ fn fill_template(
     let mut keyed = validators
         .into_iter()
         .map(|validator| {
-            let key = from_hex_formatted(&validator.node_public_key).ok_or_else(|| {
+            let key = from_hex(&validator.node_public_key).ok_or_else(|| {
                 format!(
                     "validator node_public_key is not valid hex: {:?}",
                     validator.node_public_key
@@ -173,7 +173,7 @@ mod tests {
         let keys: Vec<Vec<u8>> = built
             .validators
             .iter()
-            .map(|v| from_hex_formatted(&v.node_public_key).unwrap())
+            .map(|v| from_hex(&v.node_public_key).unwrap())
             .collect();
         assert_eq!(keys.len(), example.validators.len());
         assert!(
