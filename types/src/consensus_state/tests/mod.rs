@@ -2,6 +2,7 @@ mod buffered;
 mod codec;
 mod common;
 mod deposits;
+mod fixtures;
 mod guards;
 mod interactions;
 mod lifecycle;
