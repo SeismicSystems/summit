@@ -513,9 +513,16 @@ where
 
         let finalizer_handle = self.finalizer.start(self.orchestrator_mailbox);
         // start the syncer
+        //
+        // The engine must not retain any actor mailbox senders past this point:
+        // the buffered broadcast engine (a Commonware component that knows
+        // nothing about our cancellation token) only exits once its mailbox
+        // closes, so a sender held by this future would deadlock the
+        // cancellation arm below waiting for the buffer actor to finish.
+        // Mailboxes are therefore moved into their last users, not cloned.
         let syncer_handle = self.syncer.start(
-            self.finalizer_mailbox.clone(),
-            self.buffer_mailbox.clone(),
+            self.finalizer_mailbox,
+            self.buffer_mailbox,
             (resolver_rx, resolver),
             self.sync_start,
             self.checkpoint,
