@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use commonware_codec::DecodeExt;
 use commonware_cryptography::Signer;
 use commonware_cryptography::bls12381::PrivateKey as BlsPrivateKey;
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
 
 /// Helper struct for managing key paths and loading keys from a key store directory.
 ///
@@ -70,7 +70,7 @@ impl KeyPaths {
         warn_if_permissions_too_open(&path);
         let encoded_pk = std::fs::read_to_string(&path)
             .context(format!("Failed to read node key from {:?}", path))?;
-        let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for node key")?;
+        let key = from_hex(&encoded_pk).context("Invalid hex format for node key")?;
         let pk = PrivateKey::decode(&*key).context("Unable to decode node private key")?;
         Ok(pk)
     }
@@ -81,7 +81,7 @@ impl KeyPaths {
         warn_if_permissions_too_open(&path);
         let encoded_pk = std::fs::read_to_string(&path)
             .context(format!("Failed to read BLS key from {:?}", path))?;
-        let key = from_hex_formatted(&encoded_pk).context("Invalid hex format for BLS key")?;
+        let key = from_hex(&encoded_pk).context("Invalid hex format for BLS key")?;
         let pk = BlsPrivateKey::decode(&*key).context("Unable to decode BLS private key")?;
         Ok(pk)
     }

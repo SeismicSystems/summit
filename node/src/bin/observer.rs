@@ -24,8 +24,8 @@ Flow:
 use clap::Parser;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_cryptography::{Signer, bls12381, ed25519::PrivateKey};
-use commonware_runtime::{Clock, Runner as _, Spawner as _, tokio as cw_tokio};
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
+use commonware_runtime::{Clock, Runner as _, Spawner as _, Supervisor as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::http_client::HttpClientBuilder;
 use ssz::Decode;
@@ -150,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut reth = reth_builder.spawn();
                 let stdout = reth.stdout().expect("Failed to get stdout");
                 let log_dir = args.log_dir.clone();
-                context.clone().spawn(async move |_| {
+                context.child("reth").spawn(async move |_| {
                     let reader = BufReader::new(stdout);
                     let mut log_file = log_dir.as_ref().map(|dir| {
                         fs::File::create(format!("{}/node{}.log", dir, x))
@@ -189,7 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        let node_handle = node_context.child("node").spawn(move |ctx| async move {
                             // a coordinated shutdown (graceful stop or committee exit) returns
                             // ok; a genuine core task failure returns err and must fail the
                             // scenario instead of being masked as a clean node exit.
@@ -239,7 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Fresh BLS key for the observer — not in the validator set, so its
             // Simplex signatures are not accepted and don't collide with validator 1.
             let observer_bls_key = bls12381::PrivateKey::from_seed(0xDEAD_BEEF);
-            let observer_bls_encoded = commonware_utils::hex(&observer_bls_key.encode());
+            let observer_bls_encoded = commonware_formatting::hex(&observer_bls_key.encode());
             fs::write(
                 format!("{}/consensus_key.pem", observer_key_dir),
                 observer_bls_encoded,
@@ -263,7 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut observer_reth = observer_reth_builder.spawn();
             let observer_stdout = observer_reth.stdout().expect("Failed to get observer stdout");
             let log_dir = args.log_dir.clone();
-            context.clone().spawn(async move |_| {
+            context.child("reth").spawn(async move |_| {
                 let reader = BufReader::new(observer_stdout);
                 let mut log_file = log_dir.as_ref().map(|dir| {
                     fs::File::create(format!("{}/observer.log", dir))
@@ -306,7 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let executor = cw_tokio::Runner::new(cfg);
 
                 executor.start(|node_context| async move {
-                    let node_handle = node_context.clone().spawn(move |ctx| async move {
+                    let node_handle = node_context.child("node").spawn(move |ctx| async move {
                         // the observer is a required participant: a genuine core task failure
                         // (err) must fail the scenario rather than be masked as a clean exit.
                         if let Err(e) = run_node_local(ctx, observer_flags, None, None)
@@ -400,7 +400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
             .expect("failed to read master node key");
             let master_key_bytes =
-                from_hex_formatted(&master_key_hex).expect("invalid hex in master node key");
+                from_hex(&master_key_hex).expect("invalid hex in master node key");
             let master_priv_key = PrivateKey::decode(&master_key_bytes[..])
                 .expect("failed to decode master private key");
             // Observer child keys are separated by domain (#335) under the chain

@@ -21,9 +21,10 @@ use commonware_consensus::Reporter;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
-use commonware_runtime::{Clock, Metrics, Runner as _};
+use commonware_runtime::{Clock, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::channel::mpsc as futures_mpsc;
@@ -199,7 +200,7 @@ fn finalized_non_terminal_block_with_withdrawals_is_fatal() {
         let genesis_hash = [0x61u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let cancellation_token = CancellationToken::new();
         let engine_client = MockEngineClient::new();
@@ -219,7 +220,7 @@ fn finalized_non_terminal_block_with_withdrawals_is_fatal() {
         );
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -240,9 +241,7 @@ fn finalized_non_terminal_block_with_withdrawals_is_fatal() {
 
         let commits_before = engine_client.commit_hash_call_count();
         let (ack, ack_waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
 
         // Fail stop: the ack is withheld and the finalizer shuts down.
         assert!(
@@ -279,7 +278,7 @@ fn finalized_terminal_block_with_tampered_withdrawals_is_fatal() {
         let genesis_hash = [0x62u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let cancellation_token = CancellationToken::new();
         let engine_client = MockEngineClient::new();
@@ -299,7 +298,7 @@ fn finalized_terminal_block_with_tampered_withdrawals_is_fatal() {
         );
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -320,9 +319,7 @@ fn finalized_terminal_block_with_tampered_withdrawals_is_fatal() {
             );
             parent_digest = block.digest();
             let (ack, ack_waiter) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             ack_waiter.await.expect("clean block must be acked");
         }
 
@@ -341,9 +338,7 @@ fn finalized_terminal_block_with_tampered_withdrawals_is_fatal() {
 
         let commits_before = engine_client.commit_hash_call_count();
         let (ack, ack_waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((boundary, Some(finalization)), ack));
 
         assert!(
             ack_waiter.await.is_err(),
@@ -405,7 +400,7 @@ fn finalized_terminal_block_with_matching_withdrawals_applies() {
             "sanity: the partial should be emitted in full"
         );
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let cancellation_token = CancellationToken::new();
         let engine_client = MockEngineClient::new();
@@ -425,7 +420,7 @@ fn finalized_terminal_block_with_matching_withdrawals_applies() {
         );
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -445,9 +440,7 @@ fn finalized_terminal_block_with_matching_withdrawals_applies() {
             );
             parent_digest = block.digest();
             let (ack, ack_waiter) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             ack_waiter.await.expect("clean block must be acked");
         }
 
@@ -457,9 +450,7 @@ fn finalized_terminal_block_with_matching_withdrawals_applies() {
             create_test_block_with_withdrawals(parent_digest, 4, 5, 63004, 0, expected_payouts);
         let finalization = make_finalization(boundary.digest(), 4, 3, &schemes, 3);
         let (ack, ack_waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((boundary, Some(finalization)), ack));
         ack_waiter
             .await
             .expect("terminal block with matching withdrawals must be acked");

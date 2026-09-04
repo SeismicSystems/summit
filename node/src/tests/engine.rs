@@ -6,18 +6,21 @@ use crate::test_harness::common::{
     register_validators,
 };
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
+use commonware_actor::{Feedback, Unreliable};
 use commonware_cryptography::{Signer, bls12381};
+use commonware_formatting::from_hex;
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random;
 use commonware_p2p::{
     CheckedSender, LimitedSender, Message, Receiver, Recipients,
     simulated::{self, Network},
 };
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::{
-    Clock, IoBufs, Metrics, Runner as _,
+    Clock, IoBufs, Runner as _,
     deterministic::{self, Runner},
 };
-use commonware_utils::{NZUsize, from_hex_formatted};
+use commonware_utils::NZUsize;
 use futures::FutureExt;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -36,7 +39,7 @@ fn test_backfill_resolver_inherits_fetch_timeout() {
     let executor = Runner::from(deterministic::Config::default());
     executor.start(|context| async move {
         let (network, oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
@@ -54,7 +57,7 @@ fn test_backfill_resolver_inherits_fetch_timeout() {
             consensus_key,
         };
 
-        let genesis_hash: [u8; 32] = from_hex_formatted(GENESIS_HASH)
+        let genesis_hash: [u8; 32] = from_hex(GENESIS_HASH)
             .expect("failed to decode genesis hash")
             .try_into()
             .expect("failed to convert genesis hash");
@@ -76,7 +79,7 @@ fn test_backfill_resolver_inherits_fetch_timeout() {
         let fetch_timeout = Duration::from_secs(7);
         config.fetch_timeout = fetch_timeout;
 
-        let engine = Engine::new(context.with_label("engine"), config).await;
+        let engine = Engine::new(context.child("engine"), config).await;
         let resolver_config = engine.backfill_resolver_config();
         assert_eq!(resolver_config.timeout, fetch_timeout);
     });
@@ -90,14 +93,13 @@ struct DeadBackfillCheckedSender;
 
 impl CheckedSender for DeadBackfillCheckedSender {
     type PublicKey = PublicKey;
-    type Error = std::io::Error;
 
-    async fn send(
-        self,
-        _message: impl Into<IoBufs> + Send,
-        _priority: bool,
-    ) -> Result<Vec<PublicKey>, Self::Error> {
-        Ok(Vec::new())
+    fn recipients(&self) -> Vec<PublicKey> {
+        Vec::new()
+    }
+
+    fn send(self, _message: impl Into<IoBufs> + Send, _priority: bool) -> Unreliable<Feedback> {
+        Unreliable::Outcome(Feedback::Ok)
     }
 }
 
@@ -105,7 +107,7 @@ impl LimitedSender for DeadBackfillSender {
     type PublicKey = PublicKey;
     type Checked<'a> = DeadBackfillCheckedSender;
 
-    async fn check(
+    fn check(
         &mut self,
         _recipients: Recipients<PublicKey>,
     ) -> Result<Self::Checked<'_>, SystemTime> {
@@ -140,7 +142,7 @@ fn test_engine_detects_single_actor_clean_exit() {
     let executor = Runner::from(deterministic::Config::default());
     executor.start(|context| async move {
         let (network, oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
@@ -164,7 +166,7 @@ fn test_engine_detects_single_actor_clean_exit() {
         let (pending, recovered, resolver, broadcast, _backfill) =
             registrations.remove(&node_public_key).unwrap();
 
-        let genesis_hash: [u8; 32] = from_hex_formatted(GENESIS_HASH)
+        let genesis_hash: [u8; 32] = from_hex(GENESIS_HASH)
             .expect("failed to decode genesis hash")
             .try_into()
             .expect("failed to convert genesis hash");
@@ -184,7 +186,7 @@ fn test_engine_detects_single_actor_clean_exit() {
             initial_state,
         );
 
-        let engine = Engine::new(context.with_label("engine"), config).await;
+        let engine = Engine::new(context.child("engine"), config).await;
         let engine_handle = engine.start(
             pending,
             recovered,

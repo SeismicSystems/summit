@@ -17,7 +17,7 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random;
 use commonware_utils::N3f1;
 use commonware_utils::ordered::{BiMap, Map};
-use rand::{CryptoRng, RngCore};
+use rand_core::{CryptoRng, Rng};
 
 /// A test fixture consisting of ed25519 keys and signing schemes for each validator, and a single
 /// scheme verifier.
@@ -33,7 +33,7 @@ pub struct Fixture<S> {
 /// Generates ed25519 participants.
 pub fn ed25519_participants<R>(rng: &mut R, n: u32) -> Map<ed25519::PublicKey, ed25519::PrivateKey>
 where
-    R: RngCore + CryptoRng,
+    R: Rng + CryptoRng,
 {
     let mut pairs = Vec::with_capacity(n as usize);
     for _ in 0..n {
@@ -49,7 +49,7 @@ where
 /// Returns a [`Fixture`] whose keys and scheme instances share a consistent ordering.
 pub fn ed25519<R>(rng: &mut R, n: u32) -> Fixture<ed_scheme::Scheme>
 where
-    R: RngCore + CryptoRng,
+    R: Rng + CryptoRng,
 {
     assert!(n > 0);
 
@@ -79,7 +79,7 @@ pub fn bls12381_multisig<V, R>(
 ) -> Fixture<bls12381_multisig::Scheme<ed25519::PublicKey, V>>
 where
     V: Variant,
-    R: RngCore + CryptoRng,
+    R: Rng + CryptoRng,
 {
     assert!(n > 0);
 
@@ -118,7 +118,7 @@ pub fn bls12381_threshold<V, R>(
 ) -> Fixture<bls12381_threshold::standard::Scheme<ed25519::PublicKey, V>>
 where
     V: Variant,
-    R: RngCore + CryptoRng,
+    R: Rng + CryptoRng,
 {
     assert!(n > 0);
 
@@ -126,7 +126,7 @@ where
     let participants = ed25519_participants(rng, n).into_keys();
 
     let (output, shares_map) =
-        dkg::deal::<V, _, N3f1>(rng, Mode::NonZeroCounter, participants.clone())
+        dkg::feldman_desmedt::deal::<V, _, N3f1>(rng, Mode::NonZeroCounter, participants.clone())
             .expect("deal should succeed");
     let polynomial = output.public().clone();
 

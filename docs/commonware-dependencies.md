@@ -44,7 +44,7 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Key Components:**
 - `authenticated` - Authenticated P2P connections (production)
 - `simulated` - In-process network (deterministic tests)
-- `Manager`, `Provider`, `TrackedPeers`, `PeerSetUpdate` - Peer set management
+- `Manager`, `Provider`, `TrackedPeers`, `PeerSetSubscription` - Peer set management
 - `Sender`/`Receiver` - Message transmission
 - `Blocker`, `Ingress` - Connection filtering and admission
 
@@ -95,9 +95,12 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 
 **Key Components:**
 - `NZU64`, `NZUsize` - Non-zero integer types (and their constructor macros)
-- `from_hex_formatted`, `hex` - Hexadecimal encoding/decoding
+- `channel::{mpsc, oneshot}` - Inter-actor channels
+- `vec::NonEmptyVec`, `ordered` - Non-empty vectors and ordered sets/maps
 - `Hostname` - Validated hostname type for bootstrap configuration
 - `acknowledgement::{Acknowledgement, Exact}` - Activity acknowledgement tracking
+
+Hex encoding/decoding moved to `commonware-formatting` in 2026.5.0.
 
 ### 7. Codec (`commonware-codec`)
 
@@ -123,9 +126,11 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Used for**: Missing data resolution and backfill
 
 **Key Components:**
-- `Resolver` - Generic resolution interface
-- `Consumer`/`Producer` - Data request/response
-- `p2p::Producer` - P2P data resolution
+- `Resolver` / `TargetedResolver` - Fetch interfaces (broadcast and peer-targeted)
+- `Fetch` / `Delivery` - A fetch pairs a peer-visible `Key` with a local `Subscriber` annotation; deliveries return both so the consumer knows why the data was requested
+- `Consumer`/`Producer` - Data request/response; `Consumer::deliver` returns a `oneshot::Receiver<bool>` so response validity is judged off the resolver loop
+- `retain(predicate)` - Prunes outstanding fetches (e.g. below the syncer's processed floor)
+- `p2p::Engine` - P2P resolution engine
 
 ### 10. Macros (`commonware-macros`)
 
@@ -153,6 +158,25 @@ Summit leverages the [Commonware library](https://commonware.xyz) extensively fo
 **Key Components:**
 - `Strategy` - Abstraction over execution strategies
 - `Sequential` - Single-threaded execution strategy (used by the syncer and engine)
+
+### 13. Actor (`commonware-actor`)
+
+**Used for**: Actor mailboxes with explicit backpressure policies
+
+**Key Components:**
+- `mailbox::{new, Sender, Receiver}` - Bounded actor mailboxes with synchronous `enqueue`
+- `mailbox::{Policy, Overflow}` - Per-message overflow handling when a mailbox fills (e.g. the syncer coalesces finalization hints per height instead of blocking callers)
+- `Feedback` - Result of a synchronous send (`Ok`/`Backoff`/`Closed`), returned by `Reporter::report`, `Relay::broadcast`, and p2p oracle calls
+
+**Critical Usage:**
+- **Non-blocking control loops**: The orchestrator and application enqueue into the syncer mailbox without awaiting, so a slow syncer cannot park epoch transitions or consensus message handling
+
+### 14. Formatting (`commonware-formatting`)
+
+**Used for**: Hexadecimal encoding and decoding
+
+**Key Components:**
+- `hex` / `from_hex` - Hex encoding/decoding for keys, digests, and genesis configuration (moved out of `commonware-utils` in 2026.5.0)
 
 ## Security Analysis
 
@@ -240,15 +264,27 @@ use commonware_macros::test_traced;
 
 ### Upgrade Path
 
-Summit pins Commonware to a versioned release in the workspace `Cargo.toml`. All 12 `commonware-*` workspace dependencies are bumped in lockstep:
+Summit pins Commonware to a versioned release in the workspace `Cargo.toml`. All 14 `commonware-*` workspace dependencies are bumped in lockstep:
 
 ```toml
-commonware-consensus = "2026.4.0"
-commonware-cryptography = "2026.4.0"
+commonware-consensus = "2026.7.0"
+commonware-cryptography = "2026.7.0"
 # ...
 ```
 
 To upgrade, bump the version across every `commonware-*` entry in the root `Cargo.toml` and run `cargo update -p commonware-consensus` (etc.).
+
+### Syncer Durability
+
+Summit's syncer is a fork of Commonware marshal with additional application reporting and checkpoint behavior. It preserves marshal's durability model while reporting notarized blocks to the finalizer for speculative execution:
+
+- Proposed blocks are handed to the network before persistence starts so storage does not delay propagation.
+- Proposed, verified, and certified writes return durability handles to the mailbox caller, which awaits them without blocking the syncer actor.
+- Certified durability covers both the block and any accepted notarization for the round.
+- Summit's `CertifiableAutomaton::certify` waits for the certified durability barrier before returning `true`, so Simplex cannot cast a finalize vote before the block is recoverable locally.
+- Finalized blocks are not dispatched to the application until the finalized block and certificate archives are durable.
+- Direct consensus notarizations start storage asynchronously and are reported through `Update::NotarizedBlock` only after both the block and notarization are durable; storage failures remain fatal.
+- Resolver-delivered notarized data is made durable before repair and finalization bookkeeping advances.
 
 ## Audit Recommendations
 

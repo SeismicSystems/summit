@@ -12,9 +12,10 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
-use commonware_runtime::{Clock, Metrics, Runner as _};
+use commonware_runtime::{Clock, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::channel::mpsc as futures_mpsc;
@@ -185,7 +186,7 @@ fn test_generate_state_proof_preserves_batch_cardinality_for_missing_keys() {
         let genesis_hash = [0x56u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -220,7 +221,7 @@ fn test_generate_state_proof_preserves_batch_cardinality_for_missing_keys() {
 
         let (finalizer, _state, mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -280,7 +281,7 @@ fn test_get_latest_epoch() {
         let genesis_hash = [0x51u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -315,7 +316,7 @@ fn test_get_latest_epoch() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -341,9 +342,7 @@ fn test_get_latest_epoch() {
             parent_digest = block.digest();
 
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
 
@@ -364,9 +363,7 @@ fn test_get_latest_epoch() {
         let block4_digest = block4.digest();
         let finalization4 = make_finalization(block4_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block4, Some(finalization4)), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // Now should be epoch 1
@@ -428,11 +425,11 @@ fn test_epoch_boundary_resets_persisted_view() {
             _variant_marker: PhantomData,
         };
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -448,9 +445,7 @@ fn test_epoch_boundary_resets_persisted_view() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 20000 + height, 0);
             parent_digest = block.digest();
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
 
@@ -461,9 +456,7 @@ fn test_epoch_boundary_resets_persisted_view() {
         let block4_digest = block4.digest();
         let finalization4 = make_finalization(block4_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block4, Some(finalization4)), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         assert_eq!(
@@ -508,7 +501,7 @@ fn test_epoch_boundary_resets_persisted_view() {
         };
         let (_finalizer2, reloaded_state, _mailbox2, _state_query2) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer_reloaded"),
+                context.child("finalizer_reloaded"),
                 reload_cfg,
             )
             .await;
@@ -541,7 +534,7 @@ fn test_first_post_epoch_boundary_aux_data_uses_post_transition_state_root() {
         let initial_state = create_test_initial_state(genesis_hash, epoch_length);
         let mut expected_state = initial_state.clone();
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -576,7 +569,7 @@ fn test_first_post_epoch_boundary_aux_data_uses_post_transition_state_root() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -594,9 +587,7 @@ fn test_first_post_epoch_boundary_aux_data_uses_post_transition_state_root() {
             mirror_empty_block_execution_for_root(&mut expected_state, &block);
 
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
 
@@ -617,12 +608,10 @@ fn test_first_post_epoch_boundary_aux_data_uses_post_transition_state_root() {
 
         let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock(
-                (boundary_block, Some(finalization)),
-                ack,
-            ))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock(
+            (boundary_block, Some(finalization)),
+            ack,
+        ));
         context.sleep(Duration::from_millis(100)).await;
 
         assert_eq!(
@@ -672,7 +661,7 @@ fn test_epoch_boundary_post_transition_root_survives_restart() {
             std::num::NonZero::new(4096).unwrap(),
             NZUsize!(100),
         );
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let finalizer_cfg = FinalizerConfig::<MockEngineClient, MockNetworkOracle, MinPk> {
@@ -700,7 +689,7 @@ fn test_epoch_boundary_post_transition_root_survives_restart() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -715,9 +704,7 @@ fn test_epoch_boundary_post_transition_root_survives_restart() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 60000 + height, 0);
             parent_digest = block.digest();
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
 
@@ -727,9 +714,7 @@ fn test_epoch_boundary_post_transition_root_survives_restart() {
         let boundary_digest = boundary.digest();
         let finalization = make_finalization(boundary_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((boundary, Some(finalization)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((boundary, Some(finalization)), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // Live post-transition root advertised to the first block of the new epoch.
@@ -749,7 +734,7 @@ fn test_epoch_boundary_post_transition_root_survives_restart() {
         // same post-transition root, proving it was persisted post re-capture.
         let (restarted, reloaded_state, _mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer_restart"),
+                context.child("finalizer_restart"),
                 FinalizerConfig {
                     mailbox_size: 100,
                     db_prefix,
@@ -805,7 +790,7 @@ fn test_get_epoch_genesis_hash() {
         let genesis_hash = [0x53u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -840,7 +825,7 @@ fn test_get_epoch_genesis_hash() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -865,9 +850,7 @@ fn test_get_epoch_genesis_hash() {
             parent_digest = block.digest();
 
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
 
@@ -881,9 +864,7 @@ fn test_get_epoch_genesis_hash() {
         let block4_digest = block4.digest();
         let finalization4 = make_finalization(block4_digest, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block4, Some(finalization4)), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // Now in epoch 1, the epoch genesis hash should be block4's digest
@@ -909,7 +890,7 @@ fn test_get_epoch_genesis_hash_for_past_epoch() {
         let genesis_hash = [0x57u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let node_key = ed25519::PrivateKey::from_seed(0);
 
@@ -942,7 +923,7 @@ fn test_get_epoch_genesis_hash_for_past_epoch() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -960,18 +941,14 @@ fn test_get_epoch_genesis_hash_for_past_epoch() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 0);
             parent_digest = block.digest();
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
         let block4 = create_test_block_with_epoch(parent_digest, 4, 5, 13004, 0);
         let epoch1_genesis = block4.digest(); // genesis of epoch 1 == last block of epoch 0
         let finalization4 = make_finalization(epoch1_genesis, 4, 3, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block4, Some(finalization4)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block4, Some(finalization4)), ack));
         context.sleep(Duration::from_millis(100)).await;
         parent_digest = epoch1_genesis;
         assert_eq!(mailbox.get_latest_epoch().await, 1, "should be epoch 1");
@@ -982,18 +959,14 @@ fn test_get_epoch_genesis_hash_for_past_epoch() {
                 create_test_block_with_epoch(parent_digest, height, height + 1, 13000 + height, 1);
             parent_digest = block.digest();
             let (ack, _) = Exact::handle();
-            mailbox
-                .report(Update::FinalizedBlock((block, None), ack))
-                .await;
+            let _ = mailbox.report(Update::FinalizedBlock((block, None), ack));
             context.sleep(Duration::from_millis(50)).await;
         }
         let block9 = create_test_block_with_epoch(parent_digest, 9, 10, 13009, 1);
         let epoch2_genesis = block9.digest(); // genesis of epoch 2 == last block of epoch 1
         let finalization9 = make_finalization(epoch2_genesis, 9, 8, &schemes, quorum);
         let (ack, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block9, Some(finalization9)), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block9, Some(finalization9)), ack));
         context.sleep(Duration::from_millis(100)).await;
         assert_eq!(mailbox.get_latest_epoch().await, 2, "should be epoch 2");
 
@@ -1032,7 +1005,7 @@ fn test_get_epoch_genesis_hash_for_future_epoch() {
         let genesis_hash = [0x58u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(5).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
         let node_key = ed25519::PrivateKey::from_seed(0);
 
@@ -1065,7 +1038,7 @@ fn test_get_epoch_genesis_hash_for_future_epoch() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1095,7 +1068,7 @@ fn test_get_aux_data_from_canonical_chain() {
         let genesis_hash = [0x54u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -1130,7 +1103,7 @@ fn test_get_aux_data_from_canonical_chain() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1171,7 +1144,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
         let genesis_hash = [0x55u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -1206,7 +1179,7 @@ fn test_get_aux_data_returns_none_for_invalid_parent() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;

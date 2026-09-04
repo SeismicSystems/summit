@@ -2,7 +2,7 @@
 //! Mostly taken from: https://docs.rs/alloy/latest/alloy/node_bindings/struct.RethInstance.html
 
 use alloy_genesis::Genesis;
-use rand::Rng;
+use rand::RngExt as _;
 use std::{
     borrow::Cow,
     ffi::OsString,
@@ -282,7 +282,7 @@ impl Reth {
             auth_port: DEFAULT_AUTH_PORT,
             p2p_port: DEFAULT_P2P_PORT,
             block_time: None,
-            instance: rand::thread_rng().gen_range(1..200),
+            instance: rand::rng().random_range(1..200),
             discovery_enabled: true,
             program: None,
             ipc_path: None,

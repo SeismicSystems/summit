@@ -4,13 +4,15 @@ use crate::test_harness::common::DEFAULT_BLOCKS_PER_EPOCH;
 use crate::test_harness::common::{SimulatedOracle, get_default_engine_config, get_initial_state};
 use crate::test_harness::mock_engine_client::MockEngineNetworkBuilder;
 use commonware_cryptography::{Signer, bls12381};
+use commonware_formatting::from_hex;
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random;
 use commonware_p2p::simulated;
 use commonware_p2p::simulated::{Link, Network};
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::deterministic::Runner;
 use commonware_runtime::{Clock, Metrics, Runner as _, deterministic};
-use commonware_utils::{NZUsize, from_hex_formatted};
+use commonware_utils::NZUsize;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::{HashMap, HashSet};
@@ -34,7 +36,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -76,8 +78,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             common::register_validators(&oracle, &initial_node_public_keys).await;
         common::link_validators(&mut oracle, &initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -116,7 +117,11 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -172,7 +177,11 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             validators.clone(),
             initial_state, // pass initial state (start from genesis)
         );
-        let engine = Engine::new(context.with_label(&uid), config).await;
+        let engine = Engine::new(
+            context.child("engine").with_attribute("uid", uid.clone()),
+            config,
+        )
+        .await;
 
         // Get networking from late registrations
         let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -189,26 +198,20 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
             // Iterate over all lines
             let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-
-                // Split metric and value
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
                 // If ends with peers_blocked, ensure it is zero
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     if value >= stop_height {
-                        nodes_finished.insert(metric.to_string());
+                        nodes_finished.insert(sample.uid.clone());
                         if nodes_finished.len() as u32 == n {
                             success = true;
                             break;
@@ -260,7 +263,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
     executor.start(|context| async move {
         // Create simulated network
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -301,8 +304,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             common::register_validators(&oracle, &initial_node_public_keys).await;
         common::link_validators(&mut oracle, &initial_node_public_keys, link.clone(), None).await;
         // Create the engine clients
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -341,7 +343,11 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
                 initial_validators.to_vec(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             // Get networking
@@ -399,7 +405,11 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             initial_validators.to_vec(),
             initial_state, // pass initial state (start from genesis)
         );
-        let engine = Engine::new(context.with_label(&uid), config).await;
+        let engine = Engine::new(
+            context.child("engine").with_attribute("uid", uid.clone()),
+            config,
+        )
+        .await;
 
         // Get networking from late registrations
         let (pending, recovered, resolver, orchestrator, broadcast) =
@@ -416,27 +426,21 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
             // Iterate over all lines
             let mut success = false;
             for line in metrics.lines() {
-                // Ensure it is a metrics line
-                if !line.starts_with("validator_") {
+                let Some(sample) = common::parse_metric(line) else {
                     continue;
-                }
-
-                // Split metric and value
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
+                };
 
                 // If ends with peers_blocked, ensure it is zero
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    println!("{} -> {}", metric, value);
+                if sample.name.ends_with("_peers_blocked") {
+                    let value = sample.value.parse::<u64>().unwrap();
+                    println!("{} {} -> {}", sample.uid, sample.name, value);
                     assert_eq!(value, 0);
                 }
 
-                if metric.ends_with("finalizer_height") {
-                    let value = value.parse::<u64>().unwrap();
+                if sample.name.ends_with("finalizer_height") {
+                    let value = sample.value.parse::<u64>().unwrap();
                     if value >= stop_height {
-                        nodes_finished.insert(metric.to_string());
+                        nodes_finished.insert(sample.uid.clone());
                         if nodes_finished.len() as u32 == n {
                             success = true;
                             break;

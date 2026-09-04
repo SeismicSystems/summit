@@ -19,6 +19,7 @@ tests/
 ├── checkpointing/
 │   ├── creation.rs                    # Checkpoint creation
 │   ├── joining.rs                     # Joining network with checkpoint
+│   ├── startup.rs                     # Checkpoint startup policy and imports
 │   └── verification.rs               # Checkpoint integrity verification
 ├── execution_requests/
 │   ├── deposits.rs                    # Validator registration
@@ -26,7 +27,17 @@ tests/
 │   ├── protocol_params.rs            # Parameter updates
 │   ├── deposit_withdrawal_combined.rs # Mixed operations
 │   └── validator_set.rs              # Validator set transitions
-└── syncer.rs                          # Block sync & cache
+├── engine.rs                          # Engine lifecycle and configuration
+├── observer.rs                        # Observer sync and backfill
+└── syncer.rs                          # Block sync and cache
+```
+
+Test modules can be run independently with Cargo's name filter. For example:
+
+```bash
+cargo test -p summit --lib 'tests::checkpointing::'
+cargo test -p summit --lib 'tests::execution_requests::deposits::'
+cargo test -p summit --lib 'tests::execution_requests::withdrawals::'
 ```
 
 ## End-to-End Tests

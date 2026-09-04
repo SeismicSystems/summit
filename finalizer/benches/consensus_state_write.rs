@@ -95,6 +95,7 @@ fn main() {
                 ),
             },
             translator: EightCap,
+            init_cache_size: Some(NZUsize!(1024)),
         };
 
         let mut db =

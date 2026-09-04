@@ -1,6 +1,7 @@
 use super::*;
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::Bytes;
+use commonware_runtime::Supervisor as _;
 
 /// A single-byte execution request (a bare type byte with no request_data)
 /// mirrors the testnet PoC, where a malicious proposer replaces the request
@@ -25,7 +26,7 @@ fn test_single_byte_execution_request_block_is_rejected() {
     let executor = Runner::from(cfg);
     executor.start(|context| async move {
         let (network, mut oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
@@ -58,8 +59,7 @@ fn test_single_byte_execution_request_block_is_rejected() {
 
         common::link_validators(&mut oracle, &node_public_keys, link, None).await;
 
-        let genesis_hash =
-            from_hex_formatted(common::GENESIS_HASH).expect("failed to decode genesis hash");
+        let genesis_hash = from_hex(common::GENESIS_HASH).expect("failed to decode genesis hash");
         let genesis_hash: [u8; 32] = genesis_hash
             .try_into()
             .expect("failed to convert genesis hash");
@@ -99,7 +99,11 @@ fn test_single_byte_execution_request_block_is_rejected() {
                 validators.clone(),
                 initial_state.clone(),
             );
-            let engine = Engine::new(context.with_label(&uid), config).await;
+            let engine = Engine::new(
+                context.child("engine").with_attribute("uid", uid.clone()),
+                config,
+            )
+            .await;
             consensus_state_queries.insert(idx, engine.finalizer_mailbox.clone());
 
             let (pending, recovered, resolver, orchestrator, broadcast) =

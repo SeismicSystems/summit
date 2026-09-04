@@ -10,8 +10,10 @@ summit-finalizer.workspace = true
 
 anyhow.workspace = true
 tracing.workspace = true
+commonware-actor.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
 commonware-runtime.workspace = true
 commonware-macros.workspace = true
 commonware-utils.workspace = true

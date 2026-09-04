@@ -1,6 +1,6 @@
 use crate::error::RpcError;
 use alloy_primitives::{Address, Signature};
-use commonware_utils::from_hex_formatted;
+use commonware_formatting::from_hex;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -60,7 +60,7 @@ pub(crate) fn verify_action_with(
         return Err(RpcError::TimestampOutOfWindow);
     }
 
-    let sig_bytes = from_hex_formatted(signature_hex).ok_or(RpcError::InvalidSignature)?;
+    let sig_bytes = from_hex(signature_hex).ok_or(RpcError::InvalidSignature)?;
     let signature = Signature::from_raw(&sig_bytes).map_err(|_| RpcError::InvalidSignature)?;
 
     let message = format!("{DOMAIN}:{scope}:{action}:{timestamp_secs}");

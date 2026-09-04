@@ -11,16 +11,19 @@ use commonware_consensus::simplex::types::Finalization;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::{Digestible, Signer};
-use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell};
+use commonware_formatting::hex;
+#[cfg(debug_assertions)]
+use commonware_runtime::telemetry::metrics::{Gauge, MetricsExt as _};
+use commonware_runtime::{
+    BufferPooler, Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell,
+};
 use commonware_storage::translator::EightCap;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
-use commonware_utils::{NZU64, NZUsize, hex};
+use commonware_utils::{NZU64, NZUsize};
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt as _, select_biased};
 #[cfg(feature = "prom")]
 use metrics::{counter, histogram};
-#[cfg(debug_assertions)]
-use prometheus_client::metrics::gauge::Gauge;
 use rand::Rng;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
@@ -215,13 +218,14 @@ struct PendingNotarized {
 }
 
 pub struct Finalizer<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,
     V: Variant,
 > {
-    mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>, Block>>,
+    mailbox: mpsc::Receiver<FinalizerMessage<bls12381_multisig::Scheme<PublicKey, V>>>,
+    updates: mpsc::UnboundedReceiver<Update<Block, bls12381_multisig::Scheme<PublicKey, V>>>,
     state_query: mpsc::Receiver<StateQueryMessage<V>>,
     pending_height_notifys: BTreeMap<(u64, Digest), Vec<oneshot::Sender<bool>>>,
     context: ContextCell<R>,
@@ -290,7 +294,7 @@ pub struct Finalizer<
 }
 
 impl<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,
@@ -307,6 +311,7 @@ impl<
         ConsensusStateQuery<bls12381_multisig::Scheme<PublicKey, V>>,
     ) {
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
+        let (updates_tx, updates_rx) = mpsc::unbounded();
         let (state_query, state_query_rx) = ConsensusStateQuery::new(cfg.mailbox_size);
         let state_cfg = StateConfig {
             log: commonware_storage::journal::contiguous::variable::Config {
@@ -318,10 +323,11 @@ impl<
                 page_cache: cfg.page_cache,
             },
             translator: EightCap,
+            init_cache_size: Some(NZUsize!(1024)),
         };
 
         let db = FinalizerState::<R, V>::new(
-            context.with_label("finalizer_state"),
+            context.child("finalizer_state"),
             state_cfg,
             cfg.cancellation_token.clone(),
         )
@@ -351,21 +357,10 @@ impl<
 
         // Register debug gauges before moving context into ContextCell
         #[cfg(debug_assertions)]
-        let height_gauge = {
-            let gauge: Gauge = Gauge::default();
-            context.register("height", "chain height", gauge.clone());
-            gauge
-        };
+        let height_gauge = context.gauge("height", "chain height");
         #[cfg(debug_assertions)]
-        let consensus_state_stored_gauge = {
-            let gauge: Gauge = Gauge::default();
-            context.register(
-                "consensus_state_stored",
-                "consensus state stored",
-                gauge.clone(),
-            );
-            gauge
-        };
+        let consensus_state_stored_gauge =
+            context.gauge("consensus_state_stored", "consensus state stored");
 
         let shared_state = state.clone_with_shared_epocher();
 
@@ -373,6 +368,7 @@ impl<
             Self {
                 context: ContextCell::new(context),
                 mailbox: rx,
+                updates: updates_rx,
                 state_query: state_query_rx,
                 engine_client: cfg.engine_client,
                 oracle: cfg.oracle,
@@ -407,13 +403,13 @@ impl<
                 consensus_state_stored_gauge,
             },
             shared_state,
-            FinalizerMailbox::new(tx),
+            FinalizerMailbox::new(tx, updates_tx),
             state_query,
         )
     }
 
     pub fn start(mut self, orchestrator_mailbox: summit_orchestrator::Mailbox) -> Handle<()> {
-        spawn_cell!(self.context, self.run(orchestrator_mailbox).await)
+        spawn_cell!(self.context, self.run(orchestrator_mailbox))
     }
 
     pub async fn run(mut self, mut orchestrator_mailbox: summit_orchestrator::Mailbox) {
@@ -443,12 +439,10 @@ impl<
             )
             .await;
 
-        orchestrator_mailbox
-            .report(Message::Enter(EpochTransition {
-                epoch: Epoch::new(self.canonical_state.get_epoch()),
-                validator_keys: current_epoch_validators,
-            }))
-            .await;
+        let _ = orchestrator_mailbox.report(Message::Enter(EpochTransition {
+            epoch: Epoch::new(self.canonical_state.get_epoch()),
+            validator_keys: current_epoch_validators,
+        }));
 
         // Send initial forkchoice to the execution client so it knows the
         // chain head and can start P2P sync.
@@ -546,11 +540,9 @@ impl<
             futures::pin_mut!(query_message);
 
             select_biased! {
-                mailbox_message = self.mailbox.next() => {
-                    let mail = mailbox_message.expect("Finalizer mailbox closed");
-                    match mail {
-                        FinalizerMessage::SyncerUpdate { update } => {
-                            match update {
+                update = self.updates.next() => {
+                    let update = update.expect("Finalizer updates channel closed");
+                    match update {
                                 Update::Tip(_height, _digest) => {
                                     // I don't think we need this
                                 }
@@ -593,8 +585,11 @@ impl<
                                         break;
                                     }
                                 }
-                            }
-                        },
+                    }
+                }
+                mailbox_message = self.mailbox.next() => {
+                    let mail = mailbox_message.expect("Finalizer mailbox closed");
+                    match mail {
                         FinalizerMessage::NotifyAtHeight { height, block_digest, response } => {
                             if self.canonical_state.get_latest_height() > height {
                                 // This block proposal is trying to build a block at height + 1,
@@ -1129,17 +1124,18 @@ impl<
 
             #[cfg(debug_assertions)]
             {
-                let gauge: Gauge = Gauge::default();
-                gauge.set(new_height as i64);
-                self.context.register(
+                let gauge = self.context.gauge(
                     format!(
                         "<header>{}</header><prev_header>{}</prev_header>_finalized_header_stored",
                         hex::encode(finalized_header.header().get_digest()),
                         hex::encode(finalized_header.header().prev_epoch_header_hash())
                     ),
                     "chain height",
-                    gauge,
                 );
+                gauge.set(new_height as i64);
+                // Keep the registration alive: dropping a `Registered` handle
+                // removes the metric from the registry.
+                std::mem::forget(gauge);
             }
 
             // Apply pending protocol parameter changes durably at the boundary.
@@ -1313,12 +1309,10 @@ impl<
                 "signaling orchestrator to enter new epoch"
             );
 
-            orchestrator_mailbox
-                .report(Message::Enter(EpochTransition {
-                    epoch: Epoch::new(self.canonical_state.get_epoch()),
-                    validator_keys: active_validators,
-                }))
-                .await;
+            let _ = orchestrator_mailbox.report(Message::Enter(EpochTransition {
+                epoch: Epoch::new(self.canonical_state.get_epoch()),
+                validator_keys: active_validators,
+            }));
             epoch_change = true;
         } else {
             // Every block needs to be ack'ed.
@@ -1335,11 +1329,9 @@ impl<
                 old_epoch = self.canonical_state.get_epoch() - 1,
                 "signaling orchestrator to exit old epoch"
             );
-            orchestrator_mailbox
-                .report(Message::Exit(Epoch::new(
-                    self.canonical_state.get_epoch() - 1,
-                )))
-                .await;
+            let _ = orchestrator_mailbox.report(Message::Exit(Epoch::new(
+                self.canonical_state.get_epoch() - 1,
+            )));
         }
         let tx_count = block.payload.payload_inner.payload_inner.transactions.len();
         info!(
@@ -2018,7 +2010,7 @@ impl<
                 let root = self.canonical_state.get_state_root();
                 let el_block_number = self.canonical_state.get_proof_el_block_number();
                 self.context
-                    .with_label("state_proof")
+                    .child("state_proof")
                     .shared(true)
                     .spawn(move |_| async move {
                         let proofs = generate_state_proofs(
@@ -2077,7 +2069,7 @@ impl<
 /// is always finalized (never notarized+nullified).
 async fn execute_block<
     C: EngineClient,
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
     engine_client: &mut C,
     context: &ContextCell<R>,
@@ -2285,7 +2277,7 @@ async fn execute_block<
 }
 
 async fn process_execution_requests<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
 >(
     #[allow(unused)] context: &ContextCell<R>,
     block: &Block,
@@ -2317,7 +2309,7 @@ async fn process_execution_requests<
 }
 
 impl<
-    R: Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
+    R: BufferPooler + Storage + Metrics + Clock + Spawner + governor::clock::Clock + Rng,
     C: EngineClient,
     O: NetworkOracle<PublicKey>,
     S: Signer<PublicKey = PublicKey>,

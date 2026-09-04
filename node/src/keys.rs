@@ -101,16 +101,16 @@ impl KeySubCmd {
         create_keystore_dir(&keystore_dir).expect("Unable to create keystore directory");
 
         // Generate ed25519 node key
-        let node_private_key = PrivateKey::random(&mut rand::thread_rng());
+        let node_private_key = PrivateKey::random(commonware_utils::sys_rng());
         let node_pub_key = node_private_key.public_key();
-        let encoded_node_key = commonware_utils::hex(&node_private_key.encode());
+        let encoded_node_key = commonware_formatting::hex(&node_private_key.encode());
         write_private_key_file(&node_key_path, &encoded_node_key)
             .expect("Unable to write node key to disk");
 
         // Generate BLS consensus key
-        let consensus_private_key = BlsPrivateKey::random(&mut rand::thread_rng());
+        let consensus_private_key = BlsPrivateKey::random(commonware_utils::sys_rng());
         let consensus_pub_key = consensus_private_key.public_key();
-        let encoded_consensus_key = commonware_utils::hex(&consensus_private_key.encode());
+        let encoded_consensus_key = commonware_formatting::hex(&consensus_private_key.encode());
         write_private_key_file(&consensus_key_path, &encoded_consensus_key)
             .expect("Unable to write consensus key to disk");
 

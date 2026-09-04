@@ -21,6 +21,7 @@ use governor::clock::Clock as GClock;
 use rand::{CryptoRng, Rng};
 use std::marker::PhantomData;
 use std::num::NonZero;
+use std::num::NonZeroUsize;
 #[cfg(feature = "permissioned")]
 use std::sync::Arc;
 #[cfg(feature = "permissioned")]
@@ -114,7 +115,7 @@ pub struct Engine<
     orchestrator_mailbox: summit_orchestrator::Mailbox,
     oracle: O,
     node_public_key: PublicKey,
-    mailbox_size: usize,
+    mailbox_size: NonZeroUsize,
     fetch_timeout: Duration,
     sync_start: SyncStart,
     checkpoint: Option<SyncCheckpoint<Block, MultisigScheme>>,
@@ -173,9 +174,9 @@ where
 
         // create finalizer
         let (finalizer, initial_state, finalizer_mailbox, finalizer_state_query) = Finalizer::new(
-            context.with_label("finalizer"),
+            context.child("finalizer"),
             FinalizerConfig {
-                mailbox_size: cfg.mailbox_size,
+                mailbox_size: cfg.mailbox_size.get(),
                 db_prefix: cfg.partition_prefix.clone(),
                 engine_client: cfg.engine_client.clone(),
                 oracle: cfg.oracle.clone(),
@@ -206,10 +207,10 @@ where
 
         // create application
         let (application, application_mailbox) = summit_application::Actor::new(
-            context.with_label("application"),
+            context.child("application"),
             ApplicationConfig {
                 engine_client: cfg.engine_client,
-                mailbox_size: cfg.mailbox_size,
+                mailbox_size: cfg.mailbox_size.get(),
                 partition_prefix: cfg.partition_prefix.clone(),
                 genesis_hash: cfg.genesis_hash,
                 max_message_size_bytes: cfg.max_message_size_bytes,
@@ -224,7 +225,7 @@ where
 
         // create the buffer
         let (buffer, buffer_mailbox) = buffered::Engine::new(
-            context.with_label("buffer"),
+            context.child("buffer"),
             buffered::Config {
                 public_key: node_public_key.clone(),
                 mailbox_size: cfg.mailbox_size,
@@ -238,7 +239,7 @@ where
         // create the syncer
         // Initialize finalizations by height archive
         let finalizations_by_height = immutable::Archive::init(
-            context.with_label("finalizations_by_height"),
+            context.child("finalizations_by_height"),
             immutable::Config {
                 metadata_partition: format!(
                     "{}-finalizations-by-height-metadata",
@@ -279,7 +280,7 @@ where
 
         // Initialize finalized blocks archive
         let finalized_blocks = immutable::Archive::init(
-            context.with_label("finalized_blocks"),
+            context.child("finalized_blocks"),
             immutable::Config {
                 metadata_partition: format!("{}-finalized_blocks-metadata", cfg.partition_prefix),
                 freezer_table_partition: format!(
@@ -331,7 +332,7 @@ where
         };
 
         let (syncer, syncer_mailbox) = summit_syncer::Actor::init(
-            context.with_label("syncer"),
+            context.child("syncer"),
             finalizations_by_height,
             finalized_blocks,
             syncer_config,
@@ -340,15 +341,15 @@ where
 
         // create orchestrator
         let (orchestrator, orchestrator_mailbox) = summit_orchestrator::Actor::new(
-            context.with_label("orchestrator"),
+            context.child("orchestrator"),
             summit_orchestrator::Config {
                 oracle: cfg.oracle.clone(),
                 application: application_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 syncer_mailbox: syncer_mailbox.clone(),
                 namespace: consensus_domain.clone(),
-                muxer_size: cfg.mailbox_size,
-                mailbox_size: cfg.mailbox_size,
+                muxer_size: cfg.mailbox_size.get(),
+                mailbox_size: cfg.mailbox_size.get(),
                 epocher: epocher.clone(),
                 partition_prefix: cfg.partition_prefix.clone(),
                 leader_timeout: cfg.leader_timeout,
@@ -456,7 +457,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<anyhow::Result<()>> {
-        self.context.clone().spawn(|_| {
+        self.context.child("engine_run").spawn(|_| {
             self.run(
                 pending_network,
                 recovered_network,
@@ -504,8 +505,11 @@ where
         let buffer_handle = self.buffer.start(broadcast_network);
 
         // Initialize resolver for backfill
-        let (resolver_rx, resolver) =
-            summit_syncer::resolver::p2p::init(&self.context, resolver_config, backfill_network);
+        let (resolver_rx, resolver) = summit_syncer::resolver::p2p::init(
+            self.context.child("backfill"),
+            resolver_config,
+            backfill_network,
+        );
 
         let finalizer_handle = self.finalizer.start(self.orchestrator_mailbox);
         // start the syncer

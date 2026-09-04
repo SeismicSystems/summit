@@ -38,7 +38,7 @@ where
     pub partition_prefix: String,
 
     /// Size of backfill request/response mailbox.
-    pub mailbox_size: usize,
+    pub mailbox_size: NonZeroUsize,
 
     /// Minimum number of views to retain temporary data after the application processes a block.
     ///

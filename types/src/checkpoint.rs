@@ -9,12 +9,11 @@ use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Writ
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
 use commonware_cryptography::{Hasher, Sha256, ed25519};
+use commonware_formatting::from_hex;
+use commonware_formatting::hex;
 use commonware_parallel::Sequential;
-use commonware_utils::TryCollect;
-use commonware_utils::from_hex_formatted;
-use commonware_utils::hex;
 use commonware_utils::ordered::BiMap;
-use rand::rngs::OsRng;
+use commonware_utils::{TryCollect, sys_rng};
 use ssz::{Decode, Encode as SszEncode};
 use std::collections::BTreeMap;
 use std::{error, fmt};
@@ -348,7 +347,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
     // `prev_epoch_header_hash` must equal the eth genesis hash (see
     // finalizer/src/actor.rs where `prev_header_hash` falls back to
     // `self.genesis_hash` when no prior finalized header exists).
-    let genesis_hash: Digest = from_hex_formatted(&genesis.eth_genesis_hash)
+    let genesis_hash: Digest = from_hex(&genesis.eth_genesis_hash)
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
         .map(Digest::from)
         .ok_or_else(|| {
@@ -380,7 +379,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
         .collect();
     participants.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut rng = OsRng;
+    let mut rng = sys_rng();
     let mut signing_set = participants.clone();
 
     for (i, finalized_header) in finalized_headers.iter().enumerate() {
@@ -771,7 +770,7 @@ mod tests {
 
     fn parse_public_key(public_key: &str) -> ed25519::PublicKey {
         ed25519::PublicKey::decode(
-            commonware_utils::from_hex_formatted(public_key)
+            commonware_formatting::from_hex(public_key)
                 .unwrap()
                 .as_ref(),
         )
@@ -1535,9 +1534,9 @@ mod tests {
         use commonware_consensus::types::{Epoch, Round, View};
         use commonware_cryptography::bls12381::primitives::group;
         use commonware_cryptography::bls12381::primitives::variant::{MinPk, Variant};
+        use commonware_formatting::hex;
         use commonware_parallel::Sequential;
         use commonware_utils::TryCollect;
-        use commonware_utils::hex;
         use commonware_utils::ordered::BiMap;
 
         let namespace = "checkpoint-typed-header-test".to_string();

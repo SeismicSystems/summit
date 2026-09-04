@@ -11,9 +11,10 @@ use commonware_consensus::Reporter;
 use commonware_cryptography::bls12381::primitives::variant::MinPk;
 use commonware_cryptography::{Signer as _, bls12381, ed25519};
 use commonware_math::algebra::Random;
+use commonware_runtime::Supervisor as _;
 use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::deterministic::{self, Runner};
-use commonware_runtime::{Clock, Metrics, Runner as _};
+use commonware_runtime::{Clock, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::{FutureExt as _, channel::mpsc as futures_mpsc};
@@ -151,7 +152,7 @@ fn test_orphaned_block_processed_when_parent_arrives() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -186,7 +187,7 @@ fn test_orphaned_block_processed_when_parent_arrives() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -206,11 +207,11 @@ fn test_orphaned_block_processed_when_parent_arrives() {
         let block2_digest = block2.digest();
 
         // Send block2 first (orphaned - parent block1 not yet processed)
-        mailbox.report(Update::NotarizedBlock(block2.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block2.clone()));
         context.sleep(Duration::from_millis(50)).await;
 
         // Now send block1 (parent is genesis/canonical)
-        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         // Verify both blocks are in fork_states
@@ -247,7 +248,7 @@ fn test_fork_aux_data_does_not_finalize_unfinalized_fork_head() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -282,7 +283,7 @@ fn test_fork_aux_data_does_not_finalize_unfinalized_fork_head() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -297,7 +298,7 @@ fn test_fork_aux_data_does_not_finalize_unfinalized_fork_head() {
         // fork_states as a speculative fork head; canonical finalized stays at genesis.
         let block1 = create_test_block(genesis_digest, 1, 2, 1001);
         let block1_digest = block1.digest();
-        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         let in_forks = mailbox
@@ -356,7 +357,7 @@ fn test_losing_height_waiter_resolves_false_on_conflicting_finalization() {
         let genesis_hash = [0x49u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -391,7 +392,7 @@ fn test_losing_height_waiter_resolves_false_on_conflicting_finalization() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -414,9 +415,7 @@ fn test_losing_height_waiter_resolves_false_on_conflicting_finalization() {
         drop(dropped_losing_notify);
 
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((winning_block.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((winning_block.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         assert_eq!(mailbox.get_latest_height().await, 1);
@@ -446,7 +445,7 @@ fn test_competing_digest_waiter_stays_pending_until_finalization() {
         let genesis_hash = [0x50u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -481,7 +480,7 @@ fn test_competing_digest_waiter_stays_pending_until_finalization() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -499,9 +498,7 @@ fn test_competing_digest_waiter_stays_pending_until_finalization() {
         let pending_probe = mailbox.notify_at_height(1, block1b_digest).await;
         let losing_notify = mailbox.notify_at_height(1, block1b_digest).await;
 
-        mailbox
-            .report(Update::NotarizedBlock(block1a.clone()))
-            .await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1a.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         assert_eq!(
@@ -511,9 +508,7 @@ fn test_competing_digest_waiter_stays_pending_until_finalization() {
         );
 
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1a.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1a.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         assert_eq!(
@@ -537,7 +532,7 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
         let genesis_hash = [0x51u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -572,7 +567,7 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -587,8 +582,8 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
         let block1_digest = block1.digest();
         let block2 = create_test_block(block1_digest, 2, 3, 8202);
 
-        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
-        mailbox.report(Update::NotarizedBlock(block2.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1.clone()));
+        let _ = mailbox.report(Update::NotarizedBlock(block2.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         let stale_block = create_test_block(genesis_digest, 1, 2, 8203);
@@ -599,15 +594,11 @@ fn test_finalization_resolves_lower_waiters_and_preserves_future_waiters() {
         // Finalize sequentially (the syncer never skips a height): canonical
         // advances 0 -> 1 -> 2.
         let (ack1, _waiter1) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1.clone(), None), ack1))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1.clone(), None), ack1));
         context.sleep(Duration::from_millis(100)).await;
 
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block2.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block2.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         assert_eq!(mailbox.get_latest_height().await, 2);
@@ -636,7 +627,7 @@ fn test_multiple_forks_tracked() {
         let genesis_hash = [0x43u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -671,7 +662,7 @@ fn test_multiple_forks_tracked() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -691,12 +682,8 @@ fn test_multiple_forks_tracked() {
 
         assert_ne!(block1a_digest, block1b_digest);
 
-        mailbox
-            .report(Update::NotarizedBlock(block1a.clone()))
-            .await;
-        mailbox
-            .report(Update::NotarizedBlock(block1b.clone()))
-            .await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1a.clone()));
+        let _ = mailbox.report(Update::NotarizedBlock(block1b.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         // Both should be in fork_states
@@ -723,7 +710,7 @@ fn test_dead_fork_block_discarded() {
         let genesis_hash = [0x44u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -758,7 +745,7 @@ fn test_dead_fork_block_discarded() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -774,9 +761,7 @@ fn test_dead_fork_block_discarded() {
         let block1_digest = block1.digest();
 
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         assert_eq!(mailbox.get_latest_height().await, 1);
@@ -785,9 +770,7 @@ fn test_dead_fork_block_discarded() {
         let wrong_parent: Digest = [0xDEu8; 32].into();
         let dead_fork_block = create_test_block(wrong_parent, 2, 3, 3002);
 
-        mailbox
-            .report(Update::NotarizedBlock(dead_fork_block.clone()))
-            .await;
+        let _ = mailbox.report(Update::NotarizedBlock(dead_fork_block.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         // Canonical chain should still be at height 1
@@ -797,9 +780,7 @@ fn test_dead_fork_block_discarded() {
         let valid_block2 = create_test_block(block1_digest, 2, 3, 3003);
         let valid_block2_digest = valid_block2.digest();
 
-        mailbox
-            .report(Update::NotarizedBlock(valid_block2.clone()))
-            .await;
+        let _ = mailbox.report(Update::NotarizedBlock(valid_block2.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         let notify_valid = mailbox.notify_at_height(2, valid_block2_digest).await;
@@ -826,7 +807,7 @@ fn test_fork_states_pruned_after_finalization() {
         let genesis_hash = [0x45u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -861,7 +842,7 @@ fn test_fork_states_pruned_after_finalization() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -883,9 +864,9 @@ fn test_fork_states_pruned_after_finalization() {
         let block3_digest = block3.digest();
 
         // Send all as notarized (they go to fork_states)
-        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
-        mailbox.report(Update::NotarizedBlock(block2.clone())).await;
-        mailbox.report(Update::NotarizedBlock(block3.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1.clone()));
+        let _ = mailbox.report(Update::NotarizedBlock(block2.clone()));
+        let _ = mailbox.report(Update::NotarizedBlock(block3.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         // Verify all three are in fork_states
@@ -901,16 +882,12 @@ fn test_fork_states_pruned_after_finalization() {
         // monotonic height order with no gaps, so the finalizer advances
         // canonical 0 -> 1 -> 2 rather than jumping straight to height 2.
         let (ack1, _waiter1) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1.clone(), None), ack1))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1.clone(), None), ack1));
         context.sleep(Duration::from_millis(100)).await;
 
         // Now finalize block2 (height 2)
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block2.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block2.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // Canonical height should be 2
@@ -957,7 +934,7 @@ fn test_losing_fork_descendant_rejected_after_conflicting_ancestor_finalizes() {
         let genesis_hash = [0x49u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -992,7 +969,7 @@ fn test_losing_fork_descendant_rejected_after_conflicting_ancestor_finalizes() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1012,12 +989,8 @@ fn test_losing_fork_descendant_rejected_after_conflicting_ancestor_finalizes() {
 
         assert_ne!(block_a1_digest, block_b1_digest);
 
-        mailbox
-            .report(Update::NotarizedBlock(block_a1.clone()))
-            .await;
-        mailbox
-            .report(Update::NotarizedBlock(block_a2.clone()))
-            .await;
+        let _ = mailbox.report(Update::NotarizedBlock(block_a1.clone()));
+        let _ = mailbox.report(Update::NotarizedBlock(block_a2.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         let notify_a2 = mailbox.notify_at_height(2, block_a2_digest).await;
@@ -1027,9 +1000,7 @@ fn test_losing_fork_descendant_rejected_after_conflicting_ancestor_finalizes() {
         );
 
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block_b1.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block_b1.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         assert_eq!(mailbox.get_latest_height().await, 1);
@@ -1081,7 +1052,7 @@ fn test_finalized_dead_fork_descendant_out_of_sequence_halts() {
         let genesis_hash = [0x51u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -1120,7 +1091,7 @@ fn test_finalized_dead_fork_descendant_out_of_sequence_halts() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1141,23 +1112,15 @@ fn test_finalized_dead_fork_descendant_out_of_sequence_halts() {
         let block_b1 = create_test_block(genesis_digest, 1, 5, 9004);
         assert_ne!(block_a1_digest, block_b1.digest());
 
-        mailbox
-            .report(Update::NotarizedBlock(block_a1.clone()))
-            .await;
-        mailbox
-            .report(Update::NotarizedBlock(block_a2.clone()))
-            .await;
-        mailbox
-            .report(Update::NotarizedBlock(block_a3.clone()))
-            .await;
+        let _ = mailbox.report(Update::NotarizedBlock(block_a1.clone()));
+        let _ = mailbox.report(Update::NotarizedBlock(block_a2.clone()));
+        let _ = mailbox.report(Update::NotarizedBlock(block_a3.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         // Finalize the conflicting ancestor B1; this prunes the A-fork and
         // advances canonical to height 1.
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block_b1.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block_b1.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
         assert_eq!(mailbox.get_latest_height().await, 1);
         assert!(
@@ -1168,9 +1131,7 @@ fn test_finalized_dead_fork_descendant_out_of_sequence_halts() {
         // Deliver the pruned descendant A3 (height 3) as a finalized block while
         // canonical is only at height 1. The strict guard must reject it.
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block_a3.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block_a3.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         assert!(
@@ -1199,7 +1160,7 @@ fn test_orphaned_blocks_pruned_after_finalization() {
         let genesis_hash = [0x46u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -1234,7 +1195,7 @@ fn test_orphaned_blocks_pruned_after_finalization() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1260,24 +1221,16 @@ fn test_orphaned_blocks_pruned_after_finalization() {
         let orphan_digest = orphan_block.digest();
 
         // Send the orphan first (goes to orphaned_blocks)
-        mailbox
-            .report(Update::NotarizedBlock(orphan_block.clone()))
-            .await;
+        let _ = mailbox.report(Update::NotarizedBlock(orphan_block.clone()));
         context.sleep(Duration::from_millis(50)).await;
 
         // Finalize blocks 1, 2, 3 on the canonical chain
         let (ack1, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1.clone(), None), ack1))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1.clone(), None), ack1));
         let (ack2, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block2.clone(), None), ack2))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block2.clone(), None), ack2));
         let (ack3, _) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block3.clone(), None), ack3))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block3.clone(), None), ack3));
         context.sleep(Duration::from_millis(100)).await;
 
         // Canonical height should be 3
@@ -1313,7 +1266,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
         let genesis_hash = [0x47u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -1348,7 +1301,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1364,7 +1317,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
         let block1_digest = block1.digest();
 
         // Step 1: Send as notarized
-        mailbox.report(Update::NotarizedBlock(block1.clone())).await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         // Step 2: Verify it's in fork_states
@@ -1383,9 +1336,7 @@ fn test_fork_state_reused_when_notarized_then_finalized() {
 
         // Step 3: Now finalize the same block
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // Step 4: Verify block1 is now canonical
@@ -1423,7 +1374,7 @@ fn test_competing_fork_pruned_on_finalization() {
         let genesis_hash = [0x48u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -1458,7 +1409,7 @@ fn test_competing_fork_pruned_on_finalization() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1482,12 +1433,8 @@ fn test_competing_fork_pruned_on_finalization() {
         );
 
         // Both notarized
-        mailbox
-            .report(Update::NotarizedBlock(block1a.clone()))
-            .await;
-        mailbox
-            .report(Update::NotarizedBlock(block1b.clone()))
-            .await;
+        let _ = mailbox.report(Update::NotarizedBlock(block1a.clone()));
+        let _ = mailbox.report(Update::NotarizedBlock(block1b.clone()));
         context.sleep(Duration::from_millis(100)).await;
 
         // Both should be in fork_states
@@ -1498,9 +1445,7 @@ fn test_competing_fork_pruned_on_finalization() {
 
         // Finalize block1a
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((block1a.clone(), None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((block1a.clone(), None), ack));
         context.sleep(Duration::from_millis(100)).await;
 
         // block1a should be canonical
@@ -1537,7 +1482,7 @@ fn test_finalized_epoch_mismatch_rejected_before_el_adoption() {
         let genesis_hash = [0x42u8; 32];
         let initial_state = create_test_initial_state(genesis_hash, NonZeroU64::new(10).unwrap());
 
-        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::channel(100);
+        let (orchestrator_tx, _orchestrator_rx) = futures_mpsc::unbounded();
         let orchestrator_mailbox = summit_orchestrator::Mailbox::new(orchestrator_tx);
 
         let node_key = ed25519::PrivateKey::from_seed(0);
@@ -1575,7 +1520,7 @@ fn test_finalized_epoch_mismatch_rejected_before_el_adoption() {
 
         let (finalizer, _state, mut mailbox, _state_query) =
             Finalizer::<_, MockEngineClient, MockNetworkOracle, ed25519::PrivateKey, MinPk>::new(
-                context.with_label("finalizer"),
+                context.child("finalizer"),
                 finalizer_cfg,
             )
             .await;
@@ -1591,9 +1536,7 @@ fn test_finalized_epoch_mismatch_rejected_before_el_adoption() {
         assert_eq!(bad.epoch(), 1, "test block must declare a mismatched epoch");
 
         let (ack, _waiter) = Exact::handle();
-        mailbox
-            .report(Update::FinalizedBlock((bad, None), ack))
-            .await;
+        let _ = mailbox.report(Update::FinalizedBlock((bad, None), ack));
         context.sleep(Duration::from_millis(300)).await;
 
         assert!(

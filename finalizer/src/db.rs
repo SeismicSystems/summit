@@ -3,7 +3,7 @@ use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::simplex::scheme::bls12381_multisig;
 use commonware_cryptography::bls12381::primitives::variant::Variant;
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_runtime::{Clock, Metrics, Storage};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
 use commonware_storage::qmdb::store::db::{self, Db};
 use commonware_storage::translator::EightCap;
 use commonware_utils::sequence::FixedBytes;
@@ -26,12 +26,12 @@ const LATEST_CONSENSUS_STATE_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 0];
 const LATEST_FINALIZED_HEADER_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const LATEST_CHECKPOINT_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 2];
 
-pub struct FinalizerState<E: Clock + Storage + Metrics, V: Variant> {
+pub struct FinalizerState<E: BufferPooler + Clock + Storage + Metrics, V: Variant> {
     store: Db<E, FixedBytes<64>, Value<V>, EightCap>,
     cancellation_token: CancellationToken,
 }
 
-impl<E: Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
+impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, V> {
     pub async fn new(
         context: E,
         cfg: Config<EightCap, ((), ())>,
@@ -460,6 +460,7 @@ mod tests {
                 ),
             },
             translator: EightCap,
+            init_cache_size: Some(NZUsize!(1024)),
         };
         FinalizerState::<E, V>::new(context, config, CancellationToken::new()).await
     }

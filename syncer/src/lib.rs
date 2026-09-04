@@ -62,18 +62,23 @@
 //! - Uses [`broadcast::buffered`](`commonware_broadcast::buffered`) for broadcasting and receiving
 //!   uncertified blocks from the network.
 
+mod acks;
 pub mod actor;
 pub use actor::Actor;
 pub mod cache;
 pub mod config;
 pub use config::{Config, SyncCheckpoint, SyncStart};
+mod delivery;
+mod durability;
+mod floor;
 pub mod ingress;
 pub use ingress::mailbox::Mailbox;
 pub mod resolver;
 pub mod standard;
 pub use standard::Standard;
+mod stream;
 pub mod variant;
-pub use variant::{Buffer, IntoBlock, Variant};
+pub use variant::{Buffer, Variant};
 
 use commonware_consensus::Block;
 use commonware_consensus::simplex::scheme::Scheme;
@@ -84,7 +89,8 @@ use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 ///
 /// Finalized tips are reported as soon as known, whether or not we hold all blocks up to that height.
 /// Finalized blocks are reported to the application in monotonically increasing order (no gaps permitted).
-/// Notarized blocks are sent without ordering guarantees to enable execution before finalization.
+/// Notarized blocks are sent without ordering guarantees after the block and notarization are
+/// durably stored, enabling execution before finalization without exposing non-durable data.
 #[derive(Clone, Debug)]
 pub enum Update<B: Block, S: Scheme<B::Digest>, A: Acknowledgement = Exact> {
     /// A new finalized tip.
@@ -100,8 +106,10 @@ pub enum Update<B: Block, S: Scheme<B::Digest>, A: Acknowledgement = Exact> {
     FinalizedBlock((B, Option<Finalization<S, B::Digest>>), A),
     /// A notarized (but not yet finalized) block.
     ///
-    /// These blocks do not require acknowledgement and may arrive out of order. They enable proposers
-    /// to build on notarized blocks without waiting for finalization.
+    /// These blocks do not require acknowledgement and may arrive out of order. They are reported
+    /// only after the block and notarization are durable, and enable proposers to build on notarized
+    /// blocks without waiting for finalization. For a given block, this update is reported before
+    /// its [`Self::FinalizedBlock`] update.
     NotarizedBlock(B),
 }
 
@@ -111,15 +119,25 @@ pub mod mocks;
 #[cfg(all(test, feature = "test-mocks"))]
 mod tests {
     use super::{
-        actor,
+        actor, cache,
         config::{Config, SyncStart},
-        mocks::{application::Application, block::Block},
+        mocks::{
+            application::{Application, RecordedUpdate},
+            block::Block,
+        },
         resolver::p2p as resolver,
     };
-    use crate::ingress::mailbox::Identifier;
+    use crate::durability::Durable as _;
+    use crate::ingress::{
+        handler::{self, Annotation, Finalized, Key},
+        mailbox::Identifier,
+    };
     use crate::mocks::fixtures::{Fixture, bls12381_threshold};
-    use commonware_broadcast::buffered;
+    use commonware_actor::{Feedback, Unreliable, mailbox};
+    use commonware_broadcast::{Broadcaster as _, buffered};
+    use commonware_codec::Encode;
     use commonware_consensus::Reporter;
+    use commonware_consensus::marshal::store::{Blocks, Certificates};
     use commonware_consensus::simplex::scheme::bls12381_threshold;
     use commonware_consensus::simplex::types::{
         Activity, Finalization, Finalize, Notarization, Notarize, Proposal,
@@ -130,25 +148,30 @@ mod tests {
     use commonware_cryptography::{
         Digestible, Hasher as _,
         bls12381::primitives::variant::MinPk,
-        certificate::ConstantProvider,
+        certificate::{ConstantProvider, Verifier as _},
         ed25519::PublicKey,
         sha256::{Digest as Sha256Digest, Sha256},
     };
     use commonware_macros::test_traced;
     use commonware_p2p::{
-        Manager,
+        Manager, Recipients,
         simulated::{self, Link, Network, Oracle},
     };
     use commonware_parallel::Sequential;
+    use commonware_resolver::{Delivery, Fetch, Resolver, TargetedResolver};
     use commonware_runtime::{
-        Clock, Metrics, Quota, Runner, buffer::paged::CacheRef, deterministic,
+        Clock, Quota, Runner, Supervisor as _, buffer::paged::CacheRef, deterministic,
     };
-    use commonware_storage::archive::immutable;
-    use commonware_utils::{NZU64, NZUsize, ordered};
-    use rand::{Rng, seq::SliceRandom};
+    use commonware_storage::{
+        archive::{immutable, prunable},
+        translator::EightCap,
+    };
+    use commonware_utils::{NZU64, NZUsize, channel::oneshot, ordered, vec::NonEmptyVec};
+    use rand::{RngExt as _, seq::SliceRandom};
     use std::{
         collections::BTreeMap,
         num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize},
+        sync::{Arc, Mutex},
         time::{Duration, Instant},
     };
     use tracing::info;
@@ -180,6 +203,381 @@ mod tests {
 
     const TEST_QUOTA: Quota = Quota::per_second(NonZeroU32::MAX);
 
+    struct PacedStore<T> {
+        inner: T,
+        context: deterministic::Context,
+        pace: Duration,
+        fail_sync: bool,
+    }
+
+    impl<T: Blocks> Blocks for PacedStore<T> {
+        type Block = T::Block;
+        type Error = T::Error;
+
+        async fn put(&mut self, block: Self::Block) -> Result<(), Self::Error> {
+            self.inner.put(block).await
+        }
+
+        async fn sync(&mut self) -> Result<(), Self::Error> {
+            self.context.sleep(self.pace).await;
+            self.inner.sync().await
+        }
+
+        async fn start_sync(&mut self) -> Result<commonware_runtime::Handle<()>, Self::Error> {
+            let inner = self.inner.start_sync().await?;
+            let sleep = self.context.sleep(self.pace);
+            let fail_sync = self.fail_sync;
+            Ok(commonware_runtime::Handle::from_future(async move {
+                sleep.await;
+                inner.await?;
+                if fail_sync {
+                    Err(commonware_runtime::Error::WriteFailed)
+                } else {
+                    Ok(())
+                }
+            }))
+        }
+
+        async fn get(
+            &self,
+            id: commonware_storage::archive::Identifier<'_, <Self::Block as Digestible>::Digest>,
+        ) -> Result<Option<Self::Block>, Self::Error> {
+            self.inner.get(id).await
+        }
+
+        async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
+            self.inner.prune(min).await
+        }
+
+        fn missing_items(&self, start: Height, max: usize) -> Vec<Height> {
+            self.inner.missing_items(start, max)
+        }
+
+        fn next_gap(&self, value: Height) -> (Option<Height>, Option<Height>) {
+            self.inner.next_gap(value)
+        }
+
+        fn last_index(&self) -> Option<Height> {
+            self.inner.last_index()
+        }
+    }
+
+    impl<T: Certificates> Certificates for PacedStore<T> {
+        type BlockDigest = T::BlockDigest;
+        type Commitment = T::Commitment;
+        type Scheme = T::Scheme;
+        type Error = T::Error;
+
+        async fn put(
+            &mut self,
+            height: Height,
+            digest: Self::BlockDigest,
+            finalization: Finalization<Self::Scheme, Self::Commitment>,
+        ) -> Result<(), Self::Error> {
+            self.inner.put(height, digest, finalization).await
+        }
+
+        async fn sync(&mut self) -> Result<(), Self::Error> {
+            self.context.sleep(self.pace).await;
+            self.inner.sync().await
+        }
+
+        async fn start_sync(&mut self) -> Result<commonware_runtime::Handle<()>, Self::Error> {
+            let inner = self.inner.start_sync().await?;
+            let sleep = self.context.sleep(self.pace);
+            let fail_sync = self.fail_sync;
+            Ok(commonware_runtime::Handle::from_future(async move {
+                sleep.await;
+                inner.await?;
+                if fail_sync {
+                    Err(commonware_runtime::Error::WriteFailed)
+                } else {
+                    Ok(())
+                }
+            }))
+        }
+
+        async fn get(
+            &self,
+            id: commonware_storage::archive::Identifier<'_, Self::BlockDigest>,
+        ) -> Result<Option<Finalization<Self::Scheme, Self::Commitment>>, Self::Error> {
+            self.inner.get(id).await
+        }
+
+        async fn has(&self, height: Height) -> Result<bool, Self::Error> {
+            self.inner.has(height).await
+        }
+
+        async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
+            self.inner.prune(min).await
+        }
+
+        fn last_index(&self) -> Option<Height> {
+            self.inner.last_index()
+        }
+
+        fn ranges_from(&self, from: Height) -> impl Iterator<Item = (Height, Height)> {
+            self.inner.ranges_from(from)
+        }
+    }
+
+    #[derive(Clone, Copy, Default)]
+    enum FinalizedSyncFailure {
+        #[default]
+        None,
+        Blocks,
+        Finalizations,
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingResolver {
+        fetches: Arc<Mutex<Vec<Fetch<Key<D>, Annotation>>>>,
+        active_fetches: Arc<Mutex<Vec<Fetch<Key<D>, Annotation>>>>,
+        targeted: Arc<Mutex<Vec<(Key<D>, NonEmptyVec<K>)>>>,
+        sender: Option<mailbox::UnreliableSender<handler::Message<D>>>,
+    }
+
+    impl RecordingResolver {
+        fn holding(metrics: impl commonware_runtime::Metrics) -> (handler::Receiver<D>, Self) {
+            let (sender, receiver) = mailbox::new_unreliable(metrics, NZUsize!(100));
+            (
+                handler::Receiver::new(receiver),
+                Self {
+                    sender: Some(sender),
+                    ..Self::default()
+                },
+            )
+        }
+
+        fn fetches(&self) -> Vec<Fetch<Key<D>, Annotation>> {
+            self.fetches.lock().unwrap().clone()
+        }
+
+        fn enqueue(&self, message: handler::Message<D>) -> Unreliable<Feedback> {
+            self.sender
+                .as_ref()
+                .expect("recording resolver sender missing")
+                .enqueue(message)
+        }
+    }
+
+    impl Resolver for RecordingResolver {
+        type Key = Key<D>;
+        type Subscriber = Annotation;
+
+        fn fetch<F>(&mut self, fetch: F) -> Feedback
+        where
+            F: Into<Fetch<Self::Key, Self::Subscriber>> + Send,
+        {
+            let fetch = fetch.into();
+            self.fetches.lock().unwrap().push(fetch.clone());
+            self.active_fetches.lock().unwrap().push(fetch);
+            Feedback::Ok
+        }
+
+        fn fetch_all<F>(&mut self, fetches: Vec<F>) -> Feedback
+        where
+            F: Into<Fetch<Self::Key, Self::Subscriber>> + Send,
+        {
+            for fetch in fetches {
+                let _ = self.fetch(fetch);
+            }
+            Feedback::Ok
+        }
+
+        fn retain(
+            &mut self,
+            predicate: impl Fn(&Self::Key, &Self::Subscriber) -> bool + Send + 'static,
+        ) -> Feedback {
+            self.active_fetches
+                .lock()
+                .unwrap()
+                .retain(|fetch| predicate(&fetch.key, &fetch.subscriber));
+            Feedback::Ok
+        }
+    }
+
+    impl TargetedResolver for RecordingResolver {
+        type PublicKey = K;
+
+        fn fetch_targeted(
+            &mut self,
+            fetch: impl Into<Fetch<Self::Key, Self::Subscriber>> + Send,
+            targets: NonEmptyVec<Self::PublicKey>,
+        ) -> Feedback {
+            self.targeted
+                .lock()
+                .unwrap()
+                .push((fetch.into().key, targets));
+            Feedback::Ok
+        }
+
+        fn fetch_all_targeted<F>(
+            &mut self,
+            fetches: Vec<(F, NonEmptyVec<Self::PublicKey>)>,
+        ) -> Feedback
+        where
+            F: Into<Fetch<Self::Key, Self::Subscriber>> + Send,
+        {
+            for (fetch, targets) in fetches {
+                let _ = self.fetch_targeted(fetch, targets);
+            }
+            Feedback::Ok
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn paced_finalized_stores(
+        context: &deterministic::Context,
+        partition_prefix: &str,
+        pace: Duration,
+        failure: FinalizedSyncFailure,
+    ) -> (
+        PacedStore<prunable::Archive<EightCap, deterministic::Context, D, Finalization<S, D>>>,
+        PacedStore<prunable::Archive<EightCap, deterministic::Context, D, B>>,
+    ) {
+        let page_cache = CacheRef::from_pooler(context, PAGE_SIZE, PAGE_CACHE_SIZE);
+        let finalizations_by_height = prunable::Archive::init(
+            context.child("paced_finalizations"),
+            prunable::Config {
+                translator: EightCap,
+                key_partition: format!("{partition_prefix}-fbh-key"),
+                key_page_cache: page_cache.clone(),
+                value_partition: format!("{partition_prefix}-fbh-value"),
+                compression: None,
+                codec_config: S::certificate_codec_config_unbounded(),
+                items_per_section: NZU64!(10),
+                key_write_buffer: NZUsize!(1024),
+                value_write_buffer: NZUsize!(1024),
+                replay_buffer: NZUsize!(1024),
+            },
+        )
+        .await
+        .expect("failed to initialize paced finalizations archive");
+        let finalized_blocks = prunable::Archive::init(
+            context.child("paced_blocks"),
+            prunable::Config {
+                translator: EightCap,
+                key_partition: format!("{partition_prefix}-fb-key"),
+                key_page_cache: page_cache,
+                value_partition: format!("{partition_prefix}-fb-value"),
+                compression: None,
+                codec_config: (),
+                items_per_section: NZU64!(10),
+                key_write_buffer: NZUsize!(1024),
+                value_write_buffer: NZUsize!(1024),
+                replay_buffer: NZUsize!(1024),
+            },
+        )
+        .await
+        .expect("failed to initialize paced blocks archive");
+        (
+            PacedStore {
+                inner: finalizations_by_height,
+                context: context.child("finalizations_pacer"),
+                pace,
+                fail_sync: matches!(failure, FinalizedSyncFailure::Finalizations),
+            },
+            PacedStore {
+                inner: finalized_blocks,
+                context: context.child("blocks_pacer"),
+                pace,
+                fail_sync: matches!(failure, FinalizedSyncFailure::Blocks),
+            },
+        )
+    }
+
+    async fn wait_until(
+        context: &deterministic::Context,
+        timeout: Duration,
+        description: &str,
+        mut predicate: impl FnMut() -> bool,
+    ) {
+        let deadline = context.current() + timeout;
+        while !predicate() {
+            assert!(
+                context.current() < deadline,
+                "timed out waiting for {description}"
+            );
+            context.sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    async fn setup_paced_validator(
+        context: deterministic::Context,
+        oracle: &mut Oracle<K, deterministic::Context>,
+        validator: K,
+        provider: P,
+        partition_prefix: &str,
+        pace: Duration,
+        max_pending_acks: NonZeroUsize,
+        failure: FinalizedSyncFailure,
+    ) -> (
+        Application<B, S>,
+        crate::ingress::mailbox::Mailbox<S, B>,
+        buffered::Mailbox<K, B>,
+        RecordingResolver,
+        commonware_runtime::Handle<()>,
+    ) {
+        let config = Config {
+            scheme_provider: provider,
+            epocher: FixedEpocher::new(BLOCKS_PER_EPOCH),
+            mailbox_size: NZUsize!(100),
+            namespace: NAMESPACE.to_vec(),
+            view_retention_timeout: ViewDelta::new(10),
+            max_repair: NZUsize!(10),
+            max_pending_acks,
+            block_codec_config: (),
+            partition_prefix: partition_prefix.to_string(),
+            prunable_items_per_section: NZU64!(10),
+            replay_buffer: NZUsize!(1024),
+            key_write_buffer: NZUsize!(1024),
+            value_write_buffer: NZUsize!(1024),
+            page_cache: CacheRef::from_pooler(&context, PAGE_SIZE, PAGE_CACHE_SIZE),
+            strategy: Sequential,
+        };
+
+        let control = oracle.control(validator.clone());
+        let (broadcast_engine, buffer) = buffered::Engine::new(
+            context.child("broadcast"),
+            buffered::Config {
+                public_key: validator,
+                mailbox_size: config.mailbox_size,
+                deque_size: 10,
+                priority: false,
+                codec_config: (),
+                peer_provider: oracle.manager(),
+            },
+        );
+        let network = control.register(2, TEST_QUOTA).await.unwrap();
+        broadcast_engine.start(network);
+
+        let (finalizations_by_height, finalized_blocks) =
+            paced_finalized_stores(&context, partition_prefix, pace, failure).await;
+        let (actor, mailbox) = actor::Actor::init(
+            context.child("actor"),
+            finalizations_by_height,
+            finalized_blocks,
+            config,
+        )
+        .await;
+        let (resolver_rx, resolver) = RecordingResolver::holding(context.child("resolver"));
+        let application = Application::<B, S>::default();
+        let test_buffer = buffer.clone();
+        let handle = actor.start(
+            application.clone(),
+            buffer,
+            (resolver_rx, resolver.clone()),
+            SyncStart {
+                height: 0,
+                epoch: 0,
+                view: 0,
+            },
+            None,
+        );
+        (application, mailbox, test_buffer, resolver, handle)
+    }
+
     async fn setup_validator(
         context: deterministic::Context,
         oracle: &mut Oracle<K, deterministic::Context>,
@@ -193,7 +591,7 @@ mod tests {
         let config = Config {
             scheme_provider: provider,
             epocher: FixedEpocher::new(BLOCKS_PER_EPOCH),
-            mailbox_size: 100,
+            mailbox_size: NZUsize!(100),
             namespace: NAMESPACE.to_vec(),
             view_retention_timeout: ViewDelta::new(10),
             max_repair: NZUsize!(10),
@@ -222,7 +620,7 @@ mod tests {
             priority_requests: false,
             priority_responses: false,
         };
-        let resolver = resolver::init(&context, resolver_cfg, backfill);
+        let resolver = resolver::init(context.child("resolver"), resolver_cfg, backfill);
 
         // Create a buffered broadcast engine and get its mailbox
         let broadcast_config = buffered::Config {
@@ -233,14 +631,15 @@ mod tests {
             codec_config: (),
             peer_provider: oracle.manager(),
         };
-        let (broadcast_engine, buffer) = buffered::Engine::new(context.clone(), broadcast_config);
+        let (broadcast_engine, buffer) =
+            buffered::Engine::new(context.child("broadcast"), broadcast_config);
         let network = control.register(2, TEST_QUOTA).await.unwrap();
         broadcast_engine.start(network);
 
         // Initialize finalizations by height
         let start = Instant::now();
         let finalizations_by_height = immutable::Archive::init(
-            context.with_label("finalizations_by_height"),
+            context.child("finalizations_by_height"),
             immutable::Config {
                 metadata_partition: format!(
                     "{}-finalizations-by-height-metadata",
@@ -283,7 +682,7 @@ mod tests {
         // Initialize finalized blocks
         let start = Instant::now();
         let finalized_blocks = immutable::Archive::init(
-            context.with_label("finalized_blocks"),
+            context.child("finalized_blocks"),
             immutable::Config {
                 metadata_partition: format!(
                     "{}-finalized_blocks-metadata",
@@ -320,13 +719,8 @@ mod tests {
         .expect("failed to initialize finalized blocks archive");
         info!(elapsed = ?start.elapsed(), "restored finalized blocks archive");
 
-        let (actor, mailbox) = actor::Actor::init(
-            context.clone(),
-            finalizations_by_height,
-            finalized_blocks,
-            config,
-        )
-        .await;
+        let (actor, mailbox) =
+            actor::Actor::init(context, finalizations_by_height, finalized_blocks, config).await;
         let application = Application::<B, S>::default();
 
         // Start the application
@@ -343,6 +737,130 @@ mod tests {
         );
 
         (application, mailbox, Height::zero())
+    }
+
+    async fn setup_validator_with_prefix(
+        context: deterministic::Context,
+        oracle: &mut Oracle<K, deterministic::Context>,
+        validator: K,
+        provider: P,
+        partition_prefix: &str,
+    ) -> (
+        Application<B, S>,
+        crate::ingress::mailbox::Mailbox<S, B>,
+        commonware_runtime::Handle<()>,
+    ) {
+        let config = Config {
+            scheme_provider: provider,
+            epocher: FixedEpocher::new(BLOCKS_PER_EPOCH),
+            mailbox_size: NZUsize!(100),
+            namespace: NAMESPACE.to_vec(),
+            view_retention_timeout: ViewDelta::new(10),
+            max_repair: NZUsize!(10),
+            max_pending_acks: NZUsize!(1),
+            block_codec_config: (),
+            partition_prefix: partition_prefix.to_string(),
+            prunable_items_per_section: NZU64!(10),
+            replay_buffer: NZUsize!(1024),
+            key_write_buffer: NZUsize!(1024),
+            value_write_buffer: NZUsize!(1024),
+            page_cache: CacheRef::from_pooler(&context, PAGE_SIZE, PAGE_CACHE_SIZE),
+            strategy: Sequential,
+        };
+
+        let control = oracle.control(validator.clone());
+        let backfill = control.register(1, TEST_QUOTA).await.unwrap();
+        let resolver_cfg = resolver::Config {
+            public_key: validator.clone(),
+            provider: oracle.manager(),
+            blocker: control.clone(),
+            mailbox_size: config.mailbox_size,
+            initial: Duration::from_secs(1),
+            timeout: Duration::from_secs(2),
+            fetch_retry_timeout: Duration::from_millis(100),
+            priority_requests: false,
+            priority_responses: false,
+        };
+        let resolver = resolver::init(context.child("resolver"), resolver_cfg, backfill);
+
+        let (broadcast_engine, buffer) = buffered::Engine::new(
+            context.child("broadcast"),
+            buffered::Config {
+                public_key: validator,
+                mailbox_size: config.mailbox_size,
+                deque_size: 10,
+                priority: false,
+                codec_config: (),
+                peer_provider: oracle.manager(),
+            },
+        );
+        let network = control.register(2, TEST_QUOTA).await.unwrap();
+        broadcast_engine.start(network);
+
+        let finalizations_by_height = immutable::Archive::init(
+            context.child("finalizations_by_height"),
+            immutable::Config {
+                metadata_partition: format!("{partition_prefix}-finalizations-metadata"),
+                freezer_table_partition: format!("{partition_prefix}-finalizations-table"),
+                freezer_table_initial_size: 64,
+                freezer_table_resize_frequency: 10,
+                freezer_table_resize_chunk_size: 10,
+                freezer_key_partition: format!("{partition_prefix}-finalizations-key"),
+                freezer_key_page_cache: config.page_cache.clone(),
+                freezer_value_partition: format!("{partition_prefix}-finalizations-value"),
+                freezer_value_target_size: 1024,
+                freezer_value_compression: None,
+                ordinal_partition: format!("{partition_prefix}-finalizations-ordinal"),
+                items_per_section: NZU64!(10),
+                codec_config: (),
+                replay_buffer: config.replay_buffer,
+                freezer_key_write_buffer: config.key_write_buffer,
+                freezer_value_write_buffer: config.value_write_buffer,
+                ordinal_write_buffer: config.key_write_buffer,
+            },
+        )
+        .await
+        .expect("failed to initialize finalizations by height archive");
+        let finalized_blocks = immutable::Archive::init(
+            context.child("finalized_blocks"),
+            immutable::Config {
+                metadata_partition: format!("{partition_prefix}-blocks-metadata"),
+                freezer_table_partition: format!("{partition_prefix}-blocks-table"),
+                freezer_table_initial_size: 64,
+                freezer_table_resize_frequency: 10,
+                freezer_table_resize_chunk_size: 10,
+                freezer_key_partition: format!("{partition_prefix}-blocks-key"),
+                freezer_key_page_cache: config.page_cache.clone(),
+                freezer_value_partition: format!("{partition_prefix}-blocks-value"),
+                freezer_value_target_size: 1024,
+                freezer_value_compression: None,
+                ordinal_partition: format!("{partition_prefix}-blocks-ordinal"),
+                items_per_section: NZU64!(10),
+                codec_config: (),
+                replay_buffer: config.replay_buffer,
+                freezer_key_write_buffer: config.key_write_buffer,
+                freezer_value_write_buffer: config.value_write_buffer,
+                ordinal_write_buffer: config.key_write_buffer,
+            },
+        )
+        .await
+        .expect("failed to initialize finalized blocks archive");
+
+        let (actor, mailbox) =
+            actor::Actor::init(context, finalizations_by_height, finalized_blocks, config).await;
+        let application = Application::<B, S>::default();
+        let handle = actor.start(
+            application.clone(),
+            buffer,
+            resolver,
+            SyncStart {
+                height: 0,
+                epoch: 0,
+                view: 0,
+            },
+            None,
+        );
+        (application, mailbox, handle)
     }
 
     fn make_finalization(proposal: Proposal<D>, schemes: &[S], quorum: u32) -> Finalization<S, D> {
@@ -374,7 +892,7 @@ mod tests {
         tracked_peer_sets: NonZeroUsize,
     ) -> Oracle<K, deterministic::Context> {
         let (network, oracle) = Network::new(
-            context.with_label("network"),
+            context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
@@ -432,7 +950,7 @@ mod tests {
                 .with_timeout(Some(Duration::from_secs(300))),
         );
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(3));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(3));
             let Fixture {
                 participants,
                 schemes,
@@ -445,12 +963,10 @@ mod tests {
 
             // Register the initial peer set.
             let mut manager = oracle.manager();
-            manager
-                .track(0, ordered::Set::try_from(participants.clone()).unwrap())
-                .await;
+            let _ = manager.track(0, ordered::Set::try_from(participants.clone()).unwrap());
             for (i, validator) in participants.iter().enumerate() {
                 let (application, actor, _processed_height) = setup_validator(
-                    context.with_label(&format!("validator_{i}")),
+                    context.child("validator").with_attribute("index", i),
                     &mut oracle,
                     validator.clone(),
                     ConstantProvider::new(schemes[i].clone()),
@@ -490,8 +1006,8 @@ mod tests {
                 // Broadcast block by one validator
                 let actor_index: usize = (height.get() % (NUM_VALIDATORS as u64)) as usize;
                 let mut actor = actors[actor_index].clone();
-                actor.proposed(round, block.clone()).await;
-                actor.verified(round, block.clone()).await;
+                assert!(actor.proposed(round, block.clone()).await);
+                assert!(actor.verified(round, block.clone()).await);
 
                 // Wait for the block to be broadcast, but due to jitter, we may or may not receive
                 // the block before continuing.
@@ -504,9 +1020,7 @@ mod tests {
                     payload: block.digest(),
                 };
                 let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
-                actor
-                    .report(Activity::Notarization(notarization.clone()))
-                    .await;
+                let _ = actor.report(Activity::Notarization(notarization.clone()));
 
                 // Finalize block by all validators
                 let fin = make_finalization(proposal, &schemes, QUORUM);
@@ -515,10 +1029,10 @@ mod tests {
                     // Otherwise, finalize randomly.
                     if height == Height::new(NUM_BLOCKS)
                         || height == bounds.last()
-                        || context.gen_bool(0.2)
+                        || context.random_bool(0.2)
                     // 20% chance to finalize randomly
                     {
-                        actor.report(Activity::Finalization(fin.clone())).await;
+                        let _ = actor.report(Activity::Finalization(fin.clone()));
                     }
                 }
             }
@@ -559,7 +1073,7 @@ mod tests {
     fn test_subscribe_basic_block_delivery() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -569,7 +1083,7 @@ mod tests {
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
                 let (_application, actor, _processed_height) = setup_validator(
-                    context.with_label(&format!("validator_{i}")),
+                    context.child("validator").with_attribute("index", i),
                     &mut oracle,
                     validator.clone(),
                     ConstantProvider::new(schemes[i].clone()),
@@ -585,13 +1099,14 @@ mod tests {
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
 
-            let subscription_rx = actor
-                .subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment)
-                .await;
+            let subscription_rx =
+                actor.subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment);
 
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(1)), block.clone())
-                .await;
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(1)), block.clone())
+                    .await
+            );
 
             let proposal = Proposal {
                 round: Round::new(Epoch::new(0), View::new(1)),
@@ -599,10 +1114,10 @@ mod tests {
                 payload: commitment,
             };
             let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
-            actor.report(Activity::Notarization(notarization)).await;
+            let _ = actor.report(Activity::Notarization(notarization));
 
             let finalization = make_finalization(proposal, &schemes, QUORUM);
-            actor.report(Activity::Finalization(finalization)).await;
+            let _ = actor.report(Activity::Finalization(finalization));
 
             let received_block = subscription_rx.await.unwrap();
             assert_eq!(received_block.digest(), block.digest());
@@ -614,7 +1129,7 @@ mod tests {
     fn test_subscribe_multiple_subscriptions() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -624,7 +1139,7 @@ mod tests {
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
                 let (_application, actor, _processed_height) = setup_validator(
-                    context.with_label(&format!("validator_{i}")),
+                    context.child("validator").with_attribute("index", i),
                     &mut oracle,
                     validator.clone(),
                     ConstantProvider::new(schemes[i].clone()),
@@ -642,22 +1157,23 @@ mod tests {
             let commitment1 = block1.digest();
             let commitment2 = block2.digest();
 
-            let sub1_rx = actor
-                .subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1)
-                .await;
-            let sub2_rx = actor
-                .subscribe(Some(Round::new(Epoch::new(0), View::new(2))), commitment2)
-                .await;
-            let sub3_rx = actor
-                .subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1)
-                .await;
+            let sub1_rx =
+                actor.subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1);
+            let sub2_rx =
+                actor.subscribe(Some(Round::new(Epoch::new(0), View::new(2))), commitment2);
+            let sub3_rx =
+                actor.subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1);
 
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
-                .await;
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
-                .await;
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
+                    .await
+            );
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
+                    .await
+            );
 
             for (view, block) in [(1u64, block1.clone()), (2u64, block2.clone())] {
                 let proposal = Proposal {
@@ -666,10 +1182,10 @@ mod tests {
                     payload: block.digest(),
                 };
                 let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
-                actor.report(Activity::Notarization(notarization)).await;
+                let _ = actor.report(Activity::Notarization(notarization));
 
                 let finalization = make_finalization(proposal, &schemes, QUORUM);
-                actor.report(Activity::Finalization(finalization)).await;
+                let _ = actor.report(Activity::Finalization(finalization));
             }
 
             let received1_sub1 = sub1_rx.await.unwrap();
@@ -689,7 +1205,7 @@ mod tests {
     fn test_subscribe_canceled_subscriptions() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -699,7 +1215,7 @@ mod tests {
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
                 let (_application, actor, _processed_height) = setup_validator(
-                    context.with_label(&format!("validator_{i}")),
+                    context.child("validator").with_attribute("index", i),
                     &mut oracle,
                     validator.clone(),
                     ConstantProvider::new(schemes[i].clone()),
@@ -717,21 +1233,23 @@ mod tests {
             let commitment1 = block1.digest();
             let commitment2 = block2.digest();
 
-            let sub1_rx = actor
-                .subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1)
-                .await;
-            let sub2_rx = actor
-                .subscribe(Some(Round::new(Epoch::new(0), View::new(2))), commitment2)
-                .await;
+            let sub1_rx =
+                actor.subscribe(Some(Round::new(Epoch::new(0), View::new(1))), commitment1);
+            let sub2_rx =
+                actor.subscribe(Some(Round::new(Epoch::new(0), View::new(2))), commitment2);
 
             drop(sub1_rx);
 
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
-                .await;
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
-                .await;
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
+                    .await
+            );
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
+                    .await
+            );
 
             for (view, block) in [(1u64, block1.clone()), (2u64, block2.clone())] {
                 let proposal = Proposal {
@@ -740,10 +1258,10 @@ mod tests {
                     payload: block.digest(),
                 };
                 let notarization = make_notarization(proposal.clone(), &schemes, QUORUM);
-                actor.report(Activity::Notarization(notarization)).await;
+                let _ = actor.report(Activity::Notarization(notarization));
 
                 let finalization = make_finalization(proposal, &schemes, QUORUM);
-                actor.report(Activity::Finalization(finalization)).await;
+                let _ = actor.report(Activity::Finalization(finalization));
             }
 
             let received2 = sub2_rx.await.unwrap();
@@ -756,7 +1274,7 @@ mod tests {
     fn test_subscribe_blocks_from_different_sources() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -764,14 +1282,12 @@ mod tests {
             } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
 
             let mut manager = oracle.manager();
-            manager
-                .track(0, ordered::Set::try_from(participants.clone()).unwrap())
-                .await;
+            let _ = manager.track(0, ordered::Set::try_from(participants.clone()).unwrap());
 
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
                 let (_application, actor, _processed_height) = setup_validator(
-                    context.with_label(&format!("validator_{i}")),
+                    context.child("validator").with_attribute("index", i),
                     &mut oracle,
                     validator.clone(),
                     ConstantProvider::new(schemes[i].clone()),
@@ -790,16 +1306,18 @@ mod tests {
             let block4 = B::new::<Sha256>(block3.digest(), Height::new(4), 4);
             let block5 = B::new::<Sha256>(block4.digest(), Height::new(5), 5);
 
-            let sub1_rx = actor.subscribe(None, block1.digest()).await;
-            let sub2_rx = actor.subscribe(None, block2.digest()).await;
-            let sub3_rx = actor.subscribe(None, block3.digest()).await;
-            let sub4_rx = actor.subscribe(None, block4.digest()).await;
-            let sub5_rx = actor.subscribe(None, block5.digest()).await;
+            let sub1_rx = actor.subscribe(None, block1.digest());
+            let sub2_rx = actor.subscribe(None, block2.digest());
+            let sub3_rx = actor.subscribe(None, block3.digest());
+            let sub4_rx = actor.subscribe(None, block4.digest());
+            let sub5_rx = actor.subscribe(None, block5.digest());
 
             // Block1: Broadcasted by the actor
-            actor
-                .proposed(Round::new(Epoch::zero(), View::new(1)), block1.clone())
-                .await;
+            assert!(
+                actor
+                    .proposed(Round::new(Epoch::zero(), View::new(1)), block1.clone())
+                    .await
+            );
             context.sleep(Duration::from_millis(20)).await;
 
             // Block1: delivered
@@ -808,9 +1326,11 @@ mod tests {
             assert_eq!(received1.height, Height::new(1));
 
             // Block2: Verified by the actor
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
-                .await;
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
+                    .await
+            );
 
             // Block2: delivered
             let received2 = sub2_rx.await.unwrap();
@@ -824,10 +1344,12 @@ mod tests {
                 payload: block3.digest(),
             };
             let notarization3 = make_notarization(proposal3.clone(), &schemes, QUORUM);
-            actor.report(Activity::Notarization(notarization3)).await;
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(3)), block3.clone())
-                .await;
+            let _ = actor.report(Activity::Notarization(notarization3));
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(3)), block3.clone())
+                    .await
+            );
 
             // Block3: delivered
             let received3 = sub3_rx.await.unwrap();
@@ -844,10 +1366,12 @@ mod tests {
                 &schemes,
                 QUORUM,
             );
-            actor.report(Activity::Finalization(finalization4)).await;
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(4)), block4.clone())
-                .await;
+            let _ = actor.report(Activity::Finalization(finalization4));
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(4)), block4.clone())
+                    .await
+            );
 
             // Block4: delivered
             let received4 = sub4_rx.await.unwrap();
@@ -856,9 +1380,11 @@ mod tests {
 
             // Block5: Broadcasted by a remote node (different actor)
             let remote_actor = &mut actors[1].clone();
-            remote_actor
-                .proposed(Round::new(Epoch::zero(), View::new(5)), block5.clone())
-                .await;
+            assert!(
+                remote_actor
+                    .proposed(Round::new(Epoch::zero(), View::new(5)), block5.clone())
+                    .await
+            );
             context.sleep(Duration::from_millis(20)).await;
 
             // Block5: delivered
@@ -872,7 +1398,7 @@ mod tests {
     fn test_get_info_basic_queries_present_and_missing() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -882,7 +1408,7 @@ mod tests {
             // Single validator actor
             let me = participants[0].clone();
             let (_application, mut actor, _processed_height) = setup_validator(
-                context.with_label("validator_0"),
+                context.child("validator").with_attribute("index", 0),
                 &mut oracle,
                 me,
                 ConstantProvider::new(schemes[0].clone()),
@@ -900,7 +1426,7 @@ mod tests {
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let digest = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
-            actor.verified(round, block.clone()).await;
+            assert!(actor.verified(round, block.clone()).await);
 
             let proposal = Proposal {
                 round,
@@ -908,7 +1434,7 @@ mod tests {
                 payload: digest,
             };
             let finalization = make_finalization(proposal, &schemes, QUORUM);
-            actor.report(Activity::Finalization(finalization)).await;
+            let _ = actor.report(Activity::Finalization(finalization));
 
             // Latest should now be the finalized block
             assert_eq!(
@@ -938,7 +1464,7 @@ mod tests {
     fn test_get_info_latest_progression_multiple_finalizations() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -948,7 +1474,7 @@ mod tests {
             // Single validator actor
             let me = participants[0].clone();
             let (_application, mut actor, _processed_height) = setup_validator(
-                context.with_label("validator_0"),
+                context.child("validator").with_attribute("index", 0),
                 &mut oracle,
                 me,
                 ConstantProvider::new(schemes[0].clone()),
@@ -962,9 +1488,11 @@ mod tests {
             let parent0 = Sha256::hash(b"");
             let block1 = B::new::<Sha256>(parent0, Height::new(1), 1);
             let d1 = block1.digest();
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
-                .await;
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(1)), block1.clone())
+                    .await
+            );
             let f1 = make_finalization(
                 Proposal {
                     round: Round::new(Epoch::new(0), View::new(1)),
@@ -974,15 +1502,17 @@ mod tests {
                 &schemes,
                 QUORUM,
             );
-            actor.report(Activity::Finalization(f1)).await;
+            let _ = actor.report(Activity::Finalization(f1));
             let latest = actor.get_info(Identifier::Latest).await;
             assert_eq!(latest, Some((Height::new(1), d1)));
 
             let block2 = B::new::<Sha256>(d1, Height::new(2), 2);
             let d2 = block2.digest();
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
-                .await;
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(2)), block2.clone())
+                    .await
+            );
             let f2 = make_finalization(
                 Proposal {
                     round: Round::new(Epoch::new(0), View::new(2)),
@@ -992,15 +1522,17 @@ mod tests {
                 &schemes,
                 QUORUM,
             );
-            actor.report(Activity::Finalization(f2)).await;
+            let _ = actor.report(Activity::Finalization(f2));
             let latest = actor.get_info(Identifier::Latest).await;
             assert_eq!(latest, Some((Height::new(2), d2)));
 
             let block3 = B::new::<Sha256>(d2, Height::new(3), 3);
             let d3 = block3.digest();
-            actor
-                .verified(Round::new(Epoch::new(0), View::new(3)), block3.clone())
-                .await;
+            assert!(
+                actor
+                    .verified(Round::new(Epoch::new(0), View::new(3)), block3.clone())
+                    .await
+            );
             let f3 = make_finalization(
                 Proposal {
                     round: Round::new(Epoch::new(0), View::new(3)),
@@ -1010,7 +1542,7 @@ mod tests {
                 &schemes,
                 QUORUM,
             );
-            actor.report(Activity::Finalization(f3)).await;
+            let _ = actor.report(Activity::Finalization(f3));
             let latest = actor.get_info(Identifier::Latest).await;
             assert_eq!(latest, Some((Height::new(3), d3)));
         })
@@ -1020,7 +1552,7 @@ mod tests {
     fn test_get_block_by_height_and_latest() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1029,7 +1561,7 @@ mod tests {
 
             let me = participants[0].clone();
             let (application, mut actor, _height) = setup_validator(
-                context.with_label("validator_0"),
+                context.child("validator").with_attribute("index", 0),
                 &mut oracle,
                 me,
                 ConstantProvider::new(schemes[0].clone()),
@@ -1046,14 +1578,14 @@ mod tests {
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
-            actor.verified(round, block.clone()).await;
+            assert!(actor.verified(round, block.clone()).await);
             let proposal = Proposal {
                 round,
                 parent: View::new(0),
                 payload: commitment,
             };
             let finalization = make_finalization(proposal, &schemes, QUORUM);
-            actor.report(Activity::Finalization(finalization)).await;
+            let _ = actor.report(Activity::Finalization(finalization));
 
             // Get by height
             let by_height = actor.get_block(1).await.expect("missing block by height");
@@ -1079,7 +1611,7 @@ mod tests {
     fn test_get_block_by_commitment_from_sources_and_missing() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1088,7 +1620,7 @@ mod tests {
 
             let me = participants[0].clone();
             let (_application, mut actor, _processed_height) = setup_validator(
-                context.with_label("validator_0"),
+                context.child("validator").with_attribute("index", 0),
                 &mut oracle,
                 me,
                 ConstantProvider::new(schemes[0].clone()),
@@ -1100,7 +1632,7 @@ mod tests {
             let ver_block = B::new::<Sha256>(parent, Height::new(1), 1);
             let ver_commitment = ver_block.digest();
             let round1 = Round::new(Epoch::new(0), View::new(1));
-            actor.verified(round1, ver_block.clone()).await;
+            assert!(actor.verified(round1, ver_block.clone()).await);
             let got = actor
                 .get_block(&ver_commitment)
                 .await
@@ -1111,14 +1643,14 @@ mod tests {
             let fin_block = B::new::<Sha256>(ver_commitment, Height::new(2), 2);
             let fin_commitment = fin_block.digest();
             let round2 = Round::new(Epoch::new(0), View::new(2));
-            actor.verified(round2, fin_block.clone()).await;
+            assert!(actor.verified(round2, fin_block.clone()).await);
             let proposal = Proposal {
                 round: round2,
                 parent: View::new(1),
                 payload: fin_commitment,
             };
             let finalization = make_finalization(proposal, &schemes, QUORUM);
-            actor.report(Activity::Finalization(finalization)).await;
+            let _ = actor.report(Activity::Finalization(finalization));
             let got = actor
                 .get_block(&fin_commitment)
                 .await
@@ -1137,7 +1669,7 @@ mod tests {
     fn test_get_finalization_by_height() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1146,7 +1678,7 @@ mod tests {
 
             let me = participants[0].clone();
             let (_application, mut actor, _processed_height) = setup_validator(
-                context.with_label("validator_0"),
+                context.child("validator").with_attribute("index", 0),
                 &mut oracle,
                 me,
                 ConstantProvider::new(schemes[0].clone()),
@@ -1162,14 +1694,14 @@ mod tests {
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
-            actor.verified(round, block.clone()).await;
+            assert!(actor.verified(round, block.clone()).await);
             let proposal = Proposal {
                 round,
                 parent: View::new(0),
                 payload: commitment,
             };
             let finalization = make_finalization(proposal, &schemes, QUORUM);
-            actor.report(Activity::Finalization(finalization)).await;
+            let _ = actor.report(Activity::Finalization(finalization));
 
             // Get finalization by height
             let finalization = actor
@@ -1191,7 +1723,7 @@ mod tests {
     fn test_finalize_same_height_different_views() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1202,7 +1734,7 @@ mod tests {
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate().take(2) {
                 let (_app, actor, _height) = setup_validator(
-                    context.with_label(&format!("validator_{i}")),
+                    context.child("validator").with_attribute("index", i),
                     &mut oracle,
                     validator.clone(),
                     ConstantProvider::new(schemes[i].clone()),
@@ -1222,12 +1754,16 @@ mod tests {
             let commitment = block.digest();
 
             // Both validators verify the block at its original view (19).
-            actors[0]
-                .verified(Round::new(Epoch::new(0), View::new(19)), block.clone())
-                .await;
-            actors[1]
-                .verified(Round::new(Epoch::new(0), View::new(19)), block.clone())
-                .await;
+            assert!(
+                actors[0]
+                    .verified(Round::new(Epoch::new(0), View::new(19)), block.clone())
+                    .await
+            );
+            assert!(
+                actors[1]
+                    .verified(Round::new(Epoch::new(0), View::new(19)), block.clone())
+                    .await
+            );
 
             // Validator 0: finalize at the block's own view (19) — exact match.
             let proposal_v1 = Proposal {
@@ -1237,12 +1773,8 @@ mod tests {
             };
             let notarization_v1 = make_notarization(proposal_v1.clone(), &schemes, QUORUM);
             let finalization_v1 = make_finalization(proposal_v1.clone(), &schemes, QUORUM);
-            actors[0]
-                .report(Activity::Notarization(notarization_v1.clone()))
-                .await;
-            actors[0]
-                .report(Activity::Finalization(finalization_v1.clone()))
-                .await;
+            let _ = actors[0].report(Activity::Notarization(notarization_v1.clone()));
+            let _ = actors[0].report(Activity::Finalization(finalization_v1.clone()));
 
             // Validator 1: finalize the same terminal block via a same-digest
             // reproposal certified in a later view (21). Header view 19 < 21 and
@@ -1255,12 +1787,8 @@ mod tests {
             };
             let notarization_v2 = make_notarization(proposal_v2.clone(), &schemes, QUORUM);
             let finalization_v2 = make_finalization(proposal_v2.clone(), &schemes, QUORUM);
-            actors[1]
-                .report(Activity::Notarization(notarization_v2.clone()))
-                .await;
-            actors[1]
-                .report(Activity::Finalization(finalization_v2.clone()))
-                .await;
+            let _ = actors[1].report(Activity::Notarization(notarization_v2.clone()));
+            let _ = actors[1].report(Activity::Finalization(finalization_v2.clone()));
 
             // Wait for finalization processing
             context.sleep(Duration::from_millis(100)).await;
@@ -1295,14 +1823,10 @@ mod tests {
                 Some((Height::new(19), commitment))
             );
 
-            // Test that a validator receiving BOTH finalizations handles it correctly
-            // (the second one should be ignored since archive ignores duplicates for same height)
-            actors[0]
-                .report(Activity::Finalization(finalization_v2.clone()))
-                .await;
-            actors[1]
-                .report(Activity::Finalization(finalization_v1.clone()))
-                .await;
+            // Test that a validator receiving both finalizations retains its
+            // original finalization.
+            let _ = actors[0].report(Activity::Finalization(finalization_v2.clone()));
+            let _ = actors[1].report(Activity::Finalization(finalization_v1.clone()));
             context.sleep(Duration::from_millis(100)).await;
 
             // Validator 0 should still have the original finalization (view 19)
@@ -1319,7 +1843,7 @@ mod tests {
     fn test_broadcast_caches_block() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1329,7 +1853,7 @@ mod tests {
             // Set up one validator
             let (i, validator) = participants.iter().enumerate().next().unwrap();
             let (_application, mut actor, _processed_height) = setup_validator(
-                context.with_label(&format!("validator_{i}")),
+                context.child("validator").with_attribute("index", i),
                 &mut oracle,
                 validator.clone(),
                 ConstantProvider::new(schemes[i].clone()),
@@ -1342,9 +1866,11 @@ mod tests {
             let commitment = block.digest();
 
             // Broadcast the block
-            actor
-                .proposed(Round::new(Epoch::new(0), View::new(1)), block.clone())
-                .await;
+            assert!(
+                actor
+                    .proposed(Round::new(Epoch::new(0), View::new(1)), block.clone())
+                    .await
+            );
 
             // Ensure the block is cached and retrievable; This should hit the in-memory cache
             // via `buffered::Mailbox`.
@@ -1355,7 +1881,9 @@ mod tests {
 
             // Restart marshal, removing any in-memory cache
             let (_application, mut actor, _processed_height) = setup_validator(
-                context.with_label(&format!("validator_{i}_restart")),
+                context
+                    .child("validator_restart")
+                    .with_attribute("index", i),
                 &mut oracle,
                 validator.clone(),
                 ConstantProvider::new(schemes[i].clone()),
@@ -1374,7 +1902,7 @@ mod tests {
                 &schemes,
                 QUORUM,
             );
-            actor.report(Activity::Notarization(notarization)).await;
+            let _ = actor.report(Activity::Notarization(notarization));
 
             // Ensure the block is cached and retrievable
             let fetched = actor
@@ -1395,7 +1923,7 @@ mod tests {
         runner.start(|mut context| async move {
             use futures::FutureExt as _;
 
-            let mut oracle = setup_network(context.clone(), NZUsize!(1));
+            let mut oracle = setup_network(context.child("network_parent"), NZUsize!(1));
             let Fixture {
                 participants,
                 schemes,
@@ -1403,14 +1931,12 @@ mod tests {
             } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
 
             let mut manager = oracle.manager();
-            manager
-                .track(0, ordered::Set::try_from(participants.clone()).unwrap())
-                .await;
+            let _ = manager.track(0, ordered::Set::try_from(participants.clone()).unwrap());
 
             let mut actors = Vec::new();
             for (i, validator) in participants.iter().enumerate() {
                 let (_application, actor, _processed_height) = setup_validator(
-                    context.with_label(&format!("validator_{i}")),
+                    context.child("validator").with_attribute("index", i),
                     &mut oracle,
                     validator.clone(),
                     ConstantProvider::new(schemes[i].clone()),
@@ -1429,18 +1955,20 @@ mod tests {
             // The target and a bystander both wait for the block.
             let mut target = actors[1].clone();
             let mut bystander = actors[2].clone();
-            let target_rx = target.subscribe(None, commitment).await;
-            let bystander_rx = bystander.subscribe(None, commitment).await;
+            let target_rx = target.subscribe(None, commitment);
+            let bystander_rx = bystander.subscribe(None, commitment);
 
             // The source caches the block locally WITHOUT broadcasting it
             // (Message::Verified only populates the cache).
             let mut source = actors[0].clone();
-            source.verified(round, block.clone()).await;
+            assert!(source.verified(round, block.clone()).await);
 
             // Forward only to the target.
-            source
-                .forward(round, commitment, vec![participants[1].clone()])
-                .await;
+            let _ = source.forward(
+                round,
+                commitment,
+                Recipients::Some(vec![participants[1].clone()]),
+            );
 
             // The target receives the block via the targeted send.
             let received = target_rx.await.unwrap();
@@ -1452,6 +1980,917 @@ mod tests {
             assert!(
                 bystander_rx.now_or_never().is_none(),
                 "targeted forward must not reach non-recipients"
+            );
+        });
+    }
+
+    /// Port of marshal's durability/recovery contracts for proposed, verified,
+    /// certified, and same-round equivocated candidates.
+    #[test_traced("WARN")]
+    fn test_durable_block_acks_imply_recovery_after_restart() {
+        let runner = deterministic::Runner::timed(Duration::from_secs(60));
+        let ((validator, scheme, blocks), checkpoint) =
+            runner.start_and_recover(|mut context| async move {
+                let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+                let Fixture {
+                    participants,
+                    schemes,
+                    ..
+                } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+                let validator = participants[0].clone();
+                let scheme = schemes[0].clone();
+                let prefix = "durable-block-recovery";
+                let (_application, mut mailbox, actor_handle) = setup_validator_with_prefix(
+                    context.child("validator"),
+                    &mut oracle,
+                    validator.clone(),
+                    ConstantProvider::new(scheme.clone()),
+                    prefix,
+                )
+                .await;
+
+                let parent = Sha256::hash(b"");
+                let proposed = B::new::<Sha256>(parent, Height::new(1), 1);
+                let proposed_conflict = B::new::<Sha256>(parent, Height::new(1), 5);
+                let verified_a = B::new::<Sha256>(proposed.digest(), Height::new(2), 2);
+                let verified_b = B::new::<Sha256>(proposed.digest(), Height::new(2), 3);
+                let certified = B::new::<Sha256>(verified_a.digest(), Height::new(3), 4);
+                let proposed_round = Round::new(Epoch::zero(), View::new(1));
+                let equivocated_round = Round::new(Epoch::zero(), View::new(2));
+                let certified_round = Round::new(Epoch::zero(), View::new(3));
+
+                assert!(mailbox.proposed(proposed_round, proposed.clone()).await);
+                assert!(
+                    mailbox
+                        .proposed(proposed_round, proposed_conflict.clone())
+                        .await
+                );
+                assert!(
+                    mailbox
+                        .verified(equivocated_round, verified_a.clone())
+                        .await
+                );
+                assert!(
+                    mailbox
+                        .verified(equivocated_round, verified_b.clone())
+                        .await
+                );
+                assert!(mailbox.verified(certified_round, certified.clone()).await);
+                assert!(mailbox.certified(certified_round, certified.clone()).await);
+
+                actor_handle.abort();
+                (
+                    validator,
+                    scheme,
+                    vec![
+                        (proposed_round, proposed),
+                        (proposed_round, proposed_conflict),
+                        (equivocated_round, verified_a),
+                        (equivocated_round, verified_b),
+                        (certified_round, certified),
+                    ],
+                )
+            });
+
+        deterministic::Runner::from(checkpoint).start(|context| async move {
+            let mut oracle = setup_network(context.child("network_restart"), NZUsize!(1));
+            let (_application, mut mailbox, _actor_handle) = setup_validator_with_prefix(
+                context.child("validator_restart"),
+                &mut oracle,
+                validator,
+                ConstantProvider::new(scheme),
+                "durable-block-recovery",
+            )
+            .await;
+
+            let mut candidates_by_round: BTreeMap<Round, Vec<D>> = BTreeMap::new();
+            for (round, block) in blocks {
+                candidates_by_round
+                    .entry(round)
+                    .or_default()
+                    .push(block.digest());
+                assert_eq!(
+                    mailbox
+                        .get_block(&block.digest())
+                        .await
+                        .expect("durable block missing after restart"),
+                    block
+                );
+            }
+            for (round, candidates) in candidates_by_round {
+                let recovered = mailbox
+                    .get_verified(round)
+                    .await
+                    .expect("round must retain at least one verified candidate");
+                assert!(
+                    candidates.contains(&recovered.digest()),
+                    "round lookup returned a block outside its stored candidates"
+                );
+            }
+        });
+    }
+
+    /// Port of marshal's fatal durability policy: a real sync failure must
+    /// panic rather than become a recoverable `false` verification verdict.
+    #[test_traced("WARN")]
+    #[should_panic(expected = "failed to sync verified")]
+    fn test_verified_sync_failure_panics() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (_application, mut mailbox, _actor_handle) = setup_validator_with_prefix(
+                context.child("validator"),
+                &mut oracle,
+                participants[0].clone(),
+                ConstantProvider::new(schemes[0].clone()),
+                "verified-sync-failure",
+            )
+            .await;
+
+            context.storage_fault_config().write().sync_rate = Some(1.0);
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let _ = mailbox
+                .verified(Round::new(Epoch::zero(), View::new(1)), block)
+                .await;
+        });
+    }
+
+    /// Proposal propagation happens before persistence, but the proposal
+    /// durability handshake must still apply the fatal storage-failure policy.
+    #[test_traced("WARN")]
+    #[should_panic(expected = "failed to sync verified")]
+    fn test_proposed_sync_failure_panics() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (_application, mut mailbox, _actor_handle) = setup_validator_with_prefix(
+                context.child("validator"),
+                &mut oracle,
+                participants[0].clone(),
+                ConstantProvider::new(schemes[0].clone()),
+                "proposed-sync-failure",
+            )
+            .await;
+
+            context.storage_fault_config().write().sync_rate = Some(1.0);
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let _ = mailbox
+                .proposed(Round::new(Epoch::zero(), View::new(1)), block)
+                .await;
+        });
+    }
+
+    /// Port of marshal's certify-barrier failure test: failure of the composed
+    /// block and notarization sync handle is fatal.
+    #[test_traced("WARN")]
+    #[should_panic(expected = "failed to sync certified")]
+    fn test_certified_sync_failure_panics() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (_application, mut mailbox, _actor_handle) = setup_validator_with_prefix(
+                context.child("validator"),
+                &mut oracle,
+                participants[0].clone(),
+                ConstantProvider::new(schemes[0].clone()),
+                "certified-sync-failure",
+            )
+            .await;
+
+            context.storage_fault_config().write().sync_rate = Some(1.0);
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let _ = mailbox
+                .certified(Round::new(Epoch::zero(), View::new(1)), block)
+                .await;
+        });
+    }
+
+    /// Port of marshal's pooled notarization failure test: fire-and-forget
+    /// consensus input must not hide a storage sync failure.
+    #[test_traced("WARN")]
+    #[should_panic(expected = "failed to sync notarization")]
+    fn test_notarization_sync_failure_panics() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (_application, mut mailbox, _actor_handle) = setup_validator_with_prefix(
+                context.child("validator"),
+                &mut oracle,
+                participants[0].clone(),
+                ConstantProvider::new(schemes[0].clone()),
+                "notarization-sync-failure",
+            )
+            .await;
+
+            context.storage_fault_config().write().sync_rate = Some(1.0);
+            let round = Round::new(Epoch::zero(), View::new(1));
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let _ = mailbox.report(Activity::Notarization(make_notarization(
+                Proposal {
+                    round,
+                    parent: View::zero(),
+                    payload: block.digest(),
+                },
+                &schemes,
+                QUORUM,
+            )));
+            context.sleep(Duration::from_secs(5)).await;
+        });
+    }
+
+    /// A finalized block must not be dispatched when its archive fails to sync.
+    #[test_traced("WARN")]
+    #[should_panic(expected = "failed to sync finalized blocks")]
+    fn test_finalized_block_sync_failure_panics() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (_application, mut mailbox, _buffer, _resolver, _actor_handle) =
+                setup_paced_validator(
+                    context.child("validator"),
+                    &mut oracle,
+                    participants[0].clone(),
+                    ConstantProvider::new(schemes[0].clone()),
+                    "finalized-block-sync-failure",
+                    Duration::ZERO,
+                    NZUsize!(1),
+                    FinalizedSyncFailure::Blocks,
+                )
+                .await;
+
+            let round = Round::new(Epoch::zero(), View::new(1));
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            assert!(mailbox.verified(round, block.clone()).await);
+            let _ = mailbox.report(Activity::Finalization(make_finalization(
+                Proposal {
+                    round,
+                    parent: View::zero(),
+                    payload: block.digest(),
+                },
+                &schemes,
+                QUORUM,
+            )));
+            context.sleep(Duration::from_secs(5)).await;
+        });
+    }
+
+    /// A finalized block must not be dispatched when its certificate archive fails to sync.
+    #[test_traced("WARN")]
+    #[should_panic(expected = "failed to sync finalizations")]
+    fn test_finalization_certificate_sync_failure_panics() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (_application, mut mailbox, _buffer, _resolver, _actor_handle) =
+                setup_paced_validator(
+                    context.child("validator"),
+                    &mut oracle,
+                    participants[0].clone(),
+                    ConstantProvider::new(schemes[0].clone()),
+                    "finalization-certificate-sync-failure",
+                    Duration::ZERO,
+                    NZUsize!(1),
+                    FinalizedSyncFailure::Finalizations,
+                )
+                .await;
+
+            let round = Round::new(Epoch::zero(), View::new(1));
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            assert!(mailbox.verified(round, block.clone()).await);
+            let _ = mailbox.report(Activity::Finalization(make_finalization(
+                Proposal {
+                    round,
+                    parent: View::zero(),
+                    payload: block.digest(),
+                },
+                &schemes,
+                QUORUM,
+            )));
+            context.sleep(Duration::from_secs(5)).await;
+        });
+    }
+
+    /// Port of marshal's covering-sync test: a certify barrier must cover a
+    /// notarization write whose original handle was not awaited.
+    #[test_traced("WARN")]
+    fn test_start_sync_notarizations_covers_prior_write() {
+        let runner = deterministic::Runner::timed(Duration::from_secs(30));
+        let (round, checkpoint) = runner.start_and_recover(|mut context| async move {
+            let Fixture { schemes, .. } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let round = Round::new(Epoch::zero(), View::new(1));
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let notarization = make_notarization(
+                Proposal {
+                    round,
+                    parent: View::zero(),
+                    payload: block.digest(),
+                },
+                &schemes,
+                QUORUM,
+            );
+            let config = cache::Config {
+                partition_prefix: "covering-notarization-sync".to_string(),
+                prunable_items_per_section: NZU64!(10),
+                replay_buffer: NZUsize!(1024),
+                key_write_buffer: NZUsize!(1024),
+                value_write_buffer: NZUsize!(1024),
+                key_page_cache: CacheRef::from_pooler(&context, PAGE_SIZE, PAGE_CACHE_SIZE),
+            };
+            let mut manager =
+                cache::Manager::<_, B, S>::init(context.child("cache"), config, ()).await;
+            drop(
+                manager
+                    .put_notarization(round, block.digest(), notarization)
+                    .await,
+            );
+            manager
+                .start_sync_notarizations(round)
+                .await
+                .await
+                .expect("failed to sync notarizations");
+            round
+        });
+
+        deterministic::Runner::from(checkpoint).start(|context| async move {
+            let config = cache::Config {
+                partition_prefix: "covering-notarization-sync".to_string(),
+                prunable_items_per_section: NZU64!(10),
+                replay_buffer: NZUsize!(1024),
+                key_write_buffer: NZUsize!(1024),
+                value_write_buffer: NZUsize!(1024),
+                key_page_cache: CacheRef::from_pooler(&context, PAGE_SIZE, PAGE_CACHE_SIZE),
+            };
+            let mut manager =
+                cache::Manager::<_, B, S>::init(context.child("cache_restart"), config, ()).await;
+            manager.load_persisted_epochs().await;
+            assert!(manager.get_notarization(round).await.is_some());
+        });
+    }
+
+    /// The notarization half of the certified durability barrier must
+    /// re-surface a failure from an earlier write even when that write's
+    /// original handle was dropped.
+    #[test_traced("WARN")]
+    #[should_panic(expected = "failed to sync certified")]
+    fn test_certified_prior_notarization_sync_failure_panics() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let Fixture { schemes, .. } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let round = Round::new(Epoch::zero(), View::new(1));
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let notarization = make_notarization(
+                Proposal {
+                    round,
+                    parent: View::zero(),
+                    payload: block.digest(),
+                },
+                &schemes,
+                QUORUM,
+            );
+            let config = cache::Config {
+                partition_prefix: "certified-notarization-sync-failure".to_string(),
+                prunable_items_per_section: NZU64!(10),
+                replay_buffer: NZUsize!(1024),
+                key_write_buffer: NZUsize!(1024),
+                value_write_buffer: NZUsize!(1024),
+                key_page_cache: CacheRef::from_pooler(&context, PAGE_SIZE, PAGE_CACHE_SIZE),
+            };
+            let mut manager =
+                cache::Manager::<_, B, S>::init(context.child("cache"), config, ()).await;
+
+            context.storage_fault_config().write().sync_rate = Some(1.0);
+            drop(
+                manager
+                    .put_notarization(round, block.digest(), notarization)
+                    .await,
+            );
+
+            manager
+                .start_sync_notarizations(round)
+                .await
+                .durable(round, "certified")
+                .await;
+        });
+    }
+
+    /// Summit reuses an epoch-terminal block digest in later views. Each view
+    /// must retain its own verified entry so view-based pruning cannot remove
+    /// the later reproposal together with the original.
+    #[test_traced("WARN")]
+    fn test_epoch_terminal_reproposal_stored_at_each_round() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (_application, mut mailbox, _height) = setup_validator(
+                context.child("validator"),
+                &mut oracle,
+                participants[0].clone(),
+                ConstantProvider::new(schemes[0].clone()),
+            )
+            .await;
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(19), 1);
+            let original = Round::new(Epoch::zero(), View::new(19));
+            let reproposal = Round::new(Epoch::zero(), View::new(21));
+
+            assert!(mailbox.verified(original, block.clone()).await);
+            assert!(mailbox.verified(reproposal, block.clone()).await);
+            assert_eq!(mailbox.get_verified(original).await, Some(block.clone()));
+            assert_eq!(mailbox.get_verified(reproposal).await, Some(block));
+        });
+    }
+
+    /// Port of marshal's buffer-waiter floor regression: a block delivered by
+    /// the broadcast buffer must both wake subscribers and install a pending floor.
+    #[test_traced("WARN")]
+    fn test_buffer_waiter_completion_installs_floor_anchor() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (application, mut mailbox, buffer, _resolver, _actor_handle) =
+                setup_paced_validator(
+                    context.child("validator"),
+                    &mut oracle,
+                    participants[0].clone(),
+                    ConstantProvider::new(schemes[0].clone()),
+                    "buffer-waiter-floor-anchor",
+                    Duration::ZERO,
+                    NZUsize!(1),
+                    FinalizedSyncFailure::None,
+                )
+                .await;
+
+            const ANCHOR_HEIGHT: u64 = 5;
+            let mut parent = Sha256::hash(b"");
+            let mut anchor = None;
+            for height in 1..=ANCHOR_HEIGHT {
+                let block = B::new::<Sha256>(parent, Height::new(height), height);
+                parent = block.digest();
+                anchor = Some(block);
+            }
+            let anchor = anchor.expect("anchor missing");
+            let subscription = mailbox.subscribe(None, anchor.digest());
+            let round = Round::new(Epoch::zero(), View::new(ANCHOR_HEIGHT));
+            mailbox.set_floor(make_finalization(
+                Proposal {
+                    round,
+                    parent: View::new(ANCHOR_HEIGHT - 1),
+                    payload: anchor.digest(),
+                },
+                &schemes,
+                QUORUM,
+            ));
+
+            assert!(
+                mailbox
+                    .get_block(Identifier::Height(Height::new(ANCHOR_HEIGHT)))
+                    .await
+                    .is_none()
+            );
+            assert!(buffer.broadcast(Recipients::All, anchor.clone()).accepted());
+            assert_eq!(
+                subscription.await.expect("floor subscription closed"),
+                anchor
+            );
+            wait_until(
+                &context,
+                Duration::from_secs(1),
+                "floor anchor dispatched",
+                || application.blocks().contains_key(&ANCHOR_HEIGHT),
+            )
+            .await;
+            assert_eq!(application.tip(), Some((ANCHOR_HEIGHT, anchor.digest())));
+        });
+    }
+
+    /// Summit-specific contract: after notarized data is durable, speculative
+    /// execution observes the update before finalization makes the block canonical.
+    #[test_traced("WARN")]
+    fn test_durable_notarized_block_reported_before_finalized_block() {
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (application, mut mailbox, _height) = setup_validator(
+                context.child("validator"),
+                &mut oracle,
+                participants[0].clone(),
+                ConstantProvider::new(schemes[0].clone()),
+            )
+            .await;
+            let round = Round::new(Epoch::zero(), View::new(1));
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let proposal = Proposal {
+                round,
+                parent: View::zero(),
+                payload: block.digest(),
+            };
+            assert!(mailbox.verified(round, block.clone()).await);
+            let _ = mailbox.report(Activity::Notarization(make_notarization(
+                proposal.clone(),
+                &schemes,
+                QUORUM,
+            )));
+            let _ = mailbox.report(Activity::Finalization(make_finalization(
+                proposal, &schemes, QUORUM,
+            )));
+
+            while application.updates().len() < 2 {
+                context.sleep(Duration::from_millis(1)).await;
+            }
+            assert_eq!(
+                application.updates(),
+                vec![
+                    RecordedUpdate::Notarized(block.digest()),
+                    RecordedUpdate::Finalized(block.digest()),
+                ]
+            );
+        });
+    }
+
+    /// Port of marshal's paced finalized-store regression: a non-blocking
+    /// finalized sync must keep the mailbox responsive while application
+    /// dispatch remains gated until both archives are durable.
+    #[test_traced("WARN")]
+    fn test_finalization_sync_does_not_block_mailbox() {
+        const PACE: Duration = Duration::from_millis(100);
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (application, mut mailbox, _buffer, _resolver, _actor_handle) =
+                setup_paced_validator(
+                    context.child("validator"),
+                    &mut oracle,
+                    participants[0].clone(),
+                    ConstantProvider::new(schemes[0].clone()),
+                    "paced-finalized-sync",
+                    PACE,
+                    NZUsize!(1),
+                    FinalizedSyncFailure::None,
+                )
+                .await;
+
+            let round = Round::new(Epoch::zero(), View::new(1));
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            assert!(mailbox.verified(round, block.clone()).await);
+            let _ = mailbox.report(Activity::Finalization(make_finalization(
+                Proposal {
+                    round,
+                    parent: View::zero(),
+                    payload: block.digest(),
+                },
+                &schemes,
+                QUORUM,
+            )));
+
+            wait_until(
+                &context,
+                Duration::from_secs(1),
+                "finalized tip buffered",
+                || application.tip() == Some((1, block.digest())),
+            )
+            .await;
+            let finalized_at = context.current();
+
+            context.sleep(Duration::from_millis(1)).await;
+            let requested_at = context.current();
+            assert_eq!(mailbox.get_verified(round).await, Some(block.clone()));
+            let elapsed = context
+                .current()
+                .duration_since(requested_at)
+                .expect("time went backwards");
+            assert!(
+                elapsed < Duration::from_millis(5),
+                "get_verified queued behind finalized sync: took {elapsed:?}"
+            );
+
+            assert!(
+                !application.blocks().contains_key(&1),
+                "block dispatched before finalized archives were durable"
+            );
+            context.sleep(Duration::from_millis(90)).await;
+            assert!(
+                !application.blocks().contains_key(&1),
+                "block dispatched before finalized archives were durable"
+            );
+            wait_until(
+                &context,
+                Duration::from_millis(50),
+                "finalized block dispatched",
+                || application.blocks().contains_key(&1),
+            )
+            .await;
+            let dispatched = context
+                .current()
+                .duration_since(finalized_at)
+                .expect("time went backwards");
+            assert!(
+                dispatched >= PACE,
+                "block dispatched before paced sync completed: {dispatched:?}"
+            );
+        });
+    }
+
+    /// Port of marshal's overlapping finalized-sync regression: each completed
+    /// sync releases only the writes in the batch it covers.
+    #[test_traced("WARN")]
+    fn test_overlapping_finalized_syncs_release_per_batch() {
+        const PACE: Duration = Duration::from_millis(100);
+        const STAGGER: Duration = Duration::from_millis(50);
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (application, mut mailbox, _buffer, _resolver, _actor_handle) =
+                setup_paced_validator(
+                    context.child("validator"),
+                    &mut oracle,
+                    participants[0].clone(),
+                    ConstantProvider::new(schemes[0].clone()),
+                    "overlapping-finalized-syncs",
+                    PACE,
+                    NZUsize!(4),
+                    FinalizedSyncFailure::None,
+                )
+                .await;
+
+            let first_round = Round::new(Epoch::zero(), View::new(1));
+            let first = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 100);
+            assert!(mailbox.verified(first_round, first.clone()).await);
+            let second_round = Round::new(Epoch::zero(), View::new(2));
+            let second = B::new::<Sha256>(first.digest(), Height::new(2), 200);
+            assert!(mailbox.verified(second_round, second.clone()).await);
+
+            let started_at = context.current();
+            let _ = mailbox.report(Activity::Finalization(make_finalization(
+                Proposal {
+                    round: first_round,
+                    parent: View::zero(),
+                    payload: first.digest(),
+                },
+                &schemes,
+                QUORUM,
+            )));
+            context.sleep(STAGGER).await;
+            let _ = mailbox.report(Activity::Finalization(make_finalization(
+                Proposal {
+                    round: second_round,
+                    parent: View::new(1),
+                    payload: second.digest(),
+                },
+                &schemes,
+                QUORUM,
+            )));
+
+            wait_until(
+                &context,
+                Duration::from_millis(150),
+                "first block dispatched",
+                || application.blocks().contains_key(&1),
+            )
+            .await;
+            let first_dispatched = context
+                .current()
+                .duration_since(started_at)
+                .expect("time went backwards");
+            assert!(
+                first_dispatched >= PACE,
+                "block dispatched before its sync completed: {first_dispatched:?}"
+            );
+            assert!(
+                first_dispatched < STAGGER + PACE,
+                "first block waited for the second sync: {first_dispatched:?}"
+            );
+
+            assert!(
+                !application.blocks().contains_key(&2),
+                "block dispatched before its sync completed"
+            );
+            context.sleep(Duration::from_millis(20)).await;
+            assert!(
+                !application.blocks().contains_key(&2),
+                "block dispatched before its sync completed"
+            );
+            wait_until(
+                &context,
+                Duration::from_millis(50),
+                "second block dispatched",
+                || application.blocks().contains_key(&2),
+            )
+            .await;
+            let second_dispatched = context
+                .current()
+                .duration_since(started_at)
+                .expect("time went backwards");
+            assert!(
+                second_dispatched >= STAGGER + PACE,
+                "block dispatched before its sync completed: {second_dispatched:?}"
+            );
+        });
+    }
+
+    /// Port of marshal's stale-floor regression: finalized repair writes must
+    /// gate dispatch from the moment they are buffered, even when a later item
+    /// in the same resolver batch triggers dispatch before the pooled sync starts.
+    #[test_traced("WARN")]
+    fn test_stale_floor_anchor_holds_dispatch_until_durable() {
+        const PACE: Duration = Duration::from_millis(100);
+        deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (application, mut mailbox, _buffer, resolver, _actor_handle) =
+                setup_paced_validator(
+                    context.child("validator"),
+                    &mut oracle,
+                    participants[0].clone(),
+                    ConstantProvider::new(schemes[0].clone()),
+                    "stale-floor-anchor",
+                    PACE,
+                    NZUsize!(4),
+                    FinalizedSyncFailure::None,
+                )
+                .await;
+
+            let round = Round::new(Epoch::zero(), View::new(1));
+            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            assert!(mailbox.verified(round, block.clone()).await);
+            let _ = mailbox.report(Activity::Finalization(make_finalization(
+                Proposal {
+                    round,
+                    parent: View::zero(),
+                    payload: block.digest(),
+                },
+                &schemes,
+                QUORUM,
+            )));
+            wait_until(
+                &context,
+                Duration::from_secs(1),
+                "block 1 processed",
+                || application.blocks().contains_key(&1),
+            )
+            .await;
+            while mailbox.get_processed_height().await != Some(Height::new(1)) {
+                context.sleep(Duration::from_millis(1)).await;
+            }
+
+            let fork = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 999);
+            mailbox.set_floor(make_finalization(
+                Proposal {
+                    round: Round::new(Epoch::zero(), View::new(5)),
+                    parent: View::new(4),
+                    payload: fork.digest(),
+                },
+                &schemes,
+                QUORUM,
+            ));
+            wait_until(
+                &context,
+                Duration::from_secs(1),
+                "floor anchor fetch",
+                || {
+                    resolver.fetches().iter().any(|fetch| {
+                    matches!(fetch.key, Key::Block(commitment) if commitment == fork.digest())
+                })
+                },
+            )
+            .await;
+            let anchor_fetch = resolver
+                .fetches()
+                .into_iter()
+                .find(|fetch| {
+                    matches!(fetch.key, Key::Block(commitment) if commitment == fork.digest())
+                })
+                .expect("anchor fetch missing");
+
+            let next = B::new::<Sha256>(block.digest(), Height::new(2), 2);
+            let (next_response, next_response_rx) = oneshot::channel();
+            assert!(
+                resolver
+                    .enqueue(handler::Message::Deliver {
+                        delivery: Delivery {
+                            key: Key::Block(next.digest()),
+                            subscribers: NonEmptyVec::new((
+                                Annotation::Finalized(Finalized::ByHeight {
+                                    height: Height::new(2),
+                                }),
+                                tracing::Span::none(),
+                            )),
+                        },
+                        value: next.encode(),
+                        response: next_response,
+                    })
+                    .accepted()
+            );
+            let above = B::new::<Sha256>(next.digest(), Height::new(3), 3);
+            let (above_response, above_response_rx) = oneshot::channel();
+            assert!(
+                resolver
+                    .enqueue(handler::Message::Deliver {
+                        delivery: Delivery {
+                            key: Key::Block(above.digest()),
+                            subscribers: NonEmptyVec::new((
+                                Annotation::Finalized(Finalized::ByHeight {
+                                    height: Height::new(3),
+                                }),
+                                tracing::Span::none(),
+                            )),
+                        },
+                        value: above.encode(),
+                        response: above_response,
+                    })
+                    .accepted()
+            );
+            let (anchor_response, anchor_response_rx) = oneshot::channel();
+            assert!(
+                resolver
+                    .enqueue(handler::Message::Deliver {
+                        delivery: Delivery {
+                            key: anchor_fetch.key,
+                            subscribers: NonEmptyVec::new((
+                                anchor_fetch.subscriber,
+                                tracing::Span::none(),
+                            )),
+                        },
+                        value: fork.encode(),
+                        response: anchor_response,
+                    })
+                    .accepted()
+            );
+            let delivered_at = context.current();
+            assert!(next_response_rx.await.expect("repair response missing"));
+            assert!(above_response_rx.await.expect("repair response missing"));
+            assert!(anchor_response_rx.await.expect("anchor response missing"));
+
+            context.sleep(Duration::from_millis(1)).await;
+            assert!(
+                !application.blocks().contains_key(&2),
+                "repair block dispatched before finalized archives were durable"
+            );
+            context.sleep(Duration::from_millis(90)).await;
+            assert!(
+                !application.blocks().contains_key(&2),
+                "repair block dispatched before finalized archives were durable"
+            );
+            wait_until(
+                &context,
+                Duration::from_millis(50),
+                "repair blocks dispatched",
+                || application.blocks().contains_key(&3),
+            )
+            .await;
+            assert!(application.blocks().contains_key(&2));
+            let dispatched = context
+                .current()
+                .duration_since(delivered_at)
+                .expect("time went backwards");
+            assert!(
+                dispatched >= PACE,
+                "repair blocks dispatched before paced sync completed: {dispatched:?}"
             );
         });
     }

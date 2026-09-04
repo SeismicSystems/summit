@@ -16,7 +16,7 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use alloy_primitives::Address;
 use clap::Parser;
-use commonware_runtime::{Clock, Runner as _, Spawner as _, tokio as cw_tokio};
+use commonware_runtime::{Clock, Runner as _, Spawner as _, Supervisor as _, tokio as cw_tokio};
 use futures::{FutureExt, pin_mut};
 use jsonrpsee::http_client::HttpClientBuilder;
 use std::collections::VecDeque;
@@ -133,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let stdout = reth.stdout().expect("Failed to get stdout");
 
                 let log_dir = args.log_dir.clone();
-                context.clone().spawn(async move |_| {
+                context.child("reth").spawn(async move |_| {
                     let reader = BufReader::new(stdout);
                     let mut log_file = log_dir.as_ref().map(|dir| {
                         fs::File::create(format!("{}/node{}.log", dir, x))
@@ -177,7 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let executor = cw_tokio::Runner::new(cfg);
 
                     executor.start(|node_context| async move {
-                        let node_handle = node_context.clone().spawn(move |ctx| async move {
+                        let node_handle = node_context.child("node").spawn(move |ctx| async move {
                             // a coordinated shutdown (graceful stop or committee exit) returns
                             // ok; a genuine core task failure returns err and must fail the
                             // scenario instead of being masked as a clean node exit.
