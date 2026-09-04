@@ -21,7 +21,7 @@ use commonware_codec::{DecodeExt, Encode, EncodeSize, Error, Read, ReadExt, Writ
 use commonware_cryptography::ed25519::Signature;
 use commonware_cryptography::{Verifier as _, bls12381, sha256};
 #[cfg(feature = "prom")]
-use metrics::histogram;
+use metrics::{counter, histogram};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::num::NonZeroU64;
 use std::sync::Arc;
