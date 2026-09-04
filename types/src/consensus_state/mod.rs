@@ -861,9 +861,9 @@ impl ConsensusState {
                 );
                 #[cfg(feature = "prom")]
                 counter!(
-                    "critical_errors_total",
+                    "warning_errors_total",
                     "reason" => "withdrawal_credentials_parse",
-                    "severity" => "critical"
+                    "severity" => "warning"
                 )
                 .increment(1);
                 return;

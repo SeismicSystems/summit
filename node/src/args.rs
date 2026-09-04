@@ -260,7 +260,7 @@ impl Command {
         let executor = tokio::Runner::default();
 
         executor.start(|context| async move {
-            if let Err(e) = start_deposit_rpc_server(
+            start_deposit_rpc_server(
                 key_store_path,
                 genesis_hash,
                 namespace,
@@ -269,9 +269,7 @@ impl Command {
                 context.stopped(),
             )
             .await
-            {
-                error!("Deposit RPC server failed: {e}");
-            }
+            .unwrap_or_else(|e| panic!("Deposit RPC server failed: {e}"));
         });
     }
 
@@ -558,10 +556,6 @@ async fn run_node_inner(
     // Decide how to treat the supplied checkpoint artifacts. By default a
     // checkpoint MUST be verified against a finalized-headers chain; see
     // classify_checkpoint_startup.
-    let weak_subjectivity = flags
-        .weak_subjectivity_path
-        .as_deref()
-        .map(|path| read_weak_subjectivity(path).unwrap_or_else(|e| panic!("{e}")));
     // The signature-verified chain terminal, used below to complete the
     // checkpoint from the verified history rather than an unverified file.
     let mut verified_terminal_header: Option<FinalizedHeader<MultisigScheme>> = None;
@@ -570,7 +564,11 @@ async fn run_node_inner(
         loaded.finalized_headers_chain.is_some(),
         flags.unsafe_skip_checkpoint_verification,
     ) {
-        CheckpointStartupDecision::NoCheckpoint => {}
+        CheckpointStartupDecision::NoCheckpoint => {
+            if flags.weak_subjectivity_path.is_some() {
+                warn!("--weak-subjectivity-path ignored: no checkpoint loaded");
+            }
+        }
         CheckpointStartupDecision::Verify => {
             let raw_checkpoint = loaded
                 .raw_checkpoint
@@ -580,15 +578,17 @@ async fn run_node_inner(
                 .finalized_headers_chain
                 .as_ref()
                 .expect("finalized-headers chain present on the verify path");
-            let weak_subjectivity = weak_subjectivity.as_ref().expect(
+            let weak_subjectivity_path = flags.weak_subjectivity_path.as_deref().expect(
                 "checkpoint verification requires --weak-subjectivity-path when \
                  finalized_headers/ is present",
             );
+            let weak_subjectivity =
+                read_weak_subjectivity(weak_subjectivity_path).unwrap_or_else(|e| panic!("{e}"));
             checkpoint::verify_checkpoint_chain_with_weak_subjectivity(
                 &genesis,
                 headers_chain,
                 raw_checkpoint,
-                Some(weak_subjectivity),
+                Some(&weak_subjectivity),
             )
             .expect("checkpoint verification failed");
             info!(
@@ -629,7 +629,7 @@ async fn run_node_inner(
             std::process::exit(1);
         }
         CheckpointStartupDecision::SkipUnsafe => {
-            if weak_subjectivity.is_some() {
+            if flags.weak_subjectivity_path.is_some() {
                 warn!(
                     "--weak-subjectivity-path ignored: no finalized_headers chain present and \
                      --unsafe-skip-checkpoint-verification was set; skipping verification"
