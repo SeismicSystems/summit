@@ -80,9 +80,13 @@ mod stream;
 pub mod variant;
 pub use variant::{Buffer, Variant};
 
-use commonware_consensus::Block;
 use commonware_consensus::simplex::scheme::Scheme;
-use commonware_consensus::simplex::types::Finalization;
+use commonware_consensus::simplex::types::{
+    Attributable as _, ConflictingFinalize, ConflictingNotarize, Finalization, NullifyFinalize,
+};
+use commonware_consensus::types::{Epoch, Participant, View};
+use commonware_consensus::{Block, Epochable as _, Viewable as _};
+use commonware_cryptography::Digest;
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 
 /// An update reported to the application: finalized tips, finalized blocks, or notarized blocks.
@@ -111,6 +115,102 @@ pub enum Update<B: Block, S: Scheme<B::Digest>, A: Acknowledgement = Exact> {
     /// blocks without waiting for finalization. For a given block, this update is reported before
     /// its [`Self::FinalizedBlock`] update.
     NotarizedBlock(B),
+    /// Locally observed evidence of Byzantine behavior (equivocation) by a validator.
+    ///
+    /// Reported by the consensus batcher when a committee member signs conflicting votes.
+    /// Delivery is best-effort and NOT deterministic: only nodes that received both
+    /// conflicting votes observe the fault, and different nodes may observe it at
+    /// different times (or not at all). Consumers must not apply state transitions
+    /// based on this update alone.
+    Fault(FaultEvidence<B::Digest, S>),
+}
+
+/// The kind of Byzantine fault observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaultKind {
+    /// The validator signed notarize votes for two different proposals in the same view.
+    ConflictingNotarize,
+    /// The validator signed finalize votes for two different proposals in the same view.
+    ConflictingFinalize,
+    /// The validator signed both a nullify and a finalize for the same view.
+    NullifyFinalize,
+}
+
+impl FaultKind {
+    /// Stable label for metrics.
+    pub const fn as_reason(self) -> &'static str {
+        match self {
+            Self::ConflictingNotarize => "equivocation_notarize",
+            Self::ConflictingFinalize => "equivocation_finalize",
+            Self::NullifyFinalize => "nullify_finalize",
+        }
+    }
+}
+
+/// Cryptographic evidence of a Byzantine fault, self-contained and verifiable
+/// against the epoch's committee.
+#[derive(Clone, Debug)]
+pub enum FaultProof<D: Digest, S: Scheme<D>> {
+    /// Two conflicting signed notarize votes.
+    ConflictingNotarize(ConflictingNotarize<S, D>),
+    /// Two conflicting signed finalize votes.
+    ConflictingFinalize(ConflictingFinalize<S, D>),
+    /// A signed nullify and a signed finalize for the same view.
+    NullifyFinalize(NullifyFinalize<S, D>),
+}
+
+/// Locally observed Byzantine fault evidence with its consensus coordinates.
+#[derive(Clone, Debug)]
+pub struct FaultEvidence<D: Digest, S: Scheme<D>> {
+    /// The epoch in which the fault occurred.
+    pub epoch: Epoch,
+    /// The view in which the fault occurred.
+    pub view: View,
+    /// The committee index of the faulting validator (per the epoch's committee order).
+    pub signer: Participant,
+    /// The signed evidence.
+    pub proof: FaultProof<D, S>,
+}
+
+impl<D: Digest, S: Scheme<D>> FaultEvidence<D, S> {
+    /// Builds evidence from a [`ConflictingNotarize`] activity.
+    pub fn conflicting_notarize(evidence: ConflictingNotarize<S, D>) -> Self {
+        Self {
+            epoch: evidence.epoch(),
+            view: evidence.view(),
+            signer: evidence.signer(),
+            proof: FaultProof::ConflictingNotarize(evidence),
+        }
+    }
+
+    /// Builds evidence from a [`ConflictingFinalize`] activity.
+    pub fn conflicting_finalize(evidence: ConflictingFinalize<S, D>) -> Self {
+        Self {
+            epoch: evidence.epoch(),
+            view: evidence.view(),
+            signer: evidence.signer(),
+            proof: FaultProof::ConflictingFinalize(evidence),
+        }
+    }
+
+    /// Builds evidence from a [`NullifyFinalize`] activity.
+    pub fn nullify_finalize(evidence: NullifyFinalize<S, D>) -> Self {
+        Self {
+            epoch: evidence.epoch(),
+            view: evidence.view(),
+            signer: evidence.signer(),
+            proof: FaultProof::NullifyFinalize(evidence),
+        }
+    }
+
+    /// The kind of fault this evidence proves.
+    pub const fn kind(&self) -> FaultKind {
+        match self.proof {
+            FaultProof::ConflictingNotarize(_) => FaultKind::ConflictingNotarize,
+            FaultProof::ConflictingFinalize(_) => FaultKind::ConflictingFinalize,
+            FaultProof::NullifyFinalize(_) => FaultKind::NullifyFinalize,
+        }
+    }
 }
 
 #[cfg(test)]

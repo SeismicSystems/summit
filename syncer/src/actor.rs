@@ -737,6 +737,19 @@ where
                         .ignore();
                 }
             }
+            Message::Fault { evidence } => {
+                // A committee member signed conflicting votes (Byzantine fault).
+                // Forward to the application (finalizer), which owns critical
+                // logging, metrics, and identity resolution against consensus state.
+                debug!(
+                    epoch = evidence.epoch.get(),
+                    view = evidence.view.get(),
+                    signer_index = evidence.signer.get(),
+                    kind = ?evidence.kind(),
+                    "forwarding Byzantine fault evidence to application"
+                );
+                application.report(Update::Fault(evidence));
+            }
             Message::GetBlock {
                 identifier,
                 response,

@@ -45,6 +45,19 @@ impl MetricServer {
 
     /// Spawns the metrics server
     pub async fn serve(&self, stop_signal: Signal) -> eyre::Result<()> {
+        // Install the global recorder eagerly, before any actor can emit
+        // metrics. The recorder is a LazyLock; if installation were deferred
+        // to the first scrape connection (as before), every counter!/gauge!/
+        // histogram! call prior to that would hit the metrics crate's no-op
+        // default recorder and be silently lost — including critical errors
+        // fired during startup.
+        //
+        // Spawn the upkeep task alongside: render() drains histograms on each
+        // scrape, but if the endpoint is never scraped, raw histogram samples
+        // accumulate unboundedly in the registry. Upkeep bounds that growth.
+        let recorder = install_prometheus_recorder();
+        recorder.spawn_upkeep();
+
         let MetricServerConfig {
             listen_addr,
             hooks,
