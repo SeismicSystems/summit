@@ -79,6 +79,7 @@ fn test_serialization_deserialization_populated() {
         3,
         16,
         0,
+        DEFAULT_MAX_VALIDATOR_COUNT,
         DEFAULT_MINIMUM_VALIDATOR_COUNT,
         0,
         3,
@@ -395,6 +396,30 @@ fn test_decode_rejects_out_of_range_max_pending_withdrawals_per_validator() {
         assert!(
             ConsensusState::read(&mut encoded.as_ref()).is_err(),
             "max_pending_withdrawals_per_validator {invalid} should be rejected on decode"
+        );
+    }
+}
+
+#[test]
+fn test_decode_rejects_out_of_range_max_validator_count() {
+    use crate::protocol_params::{MAX_MAX_VALIDATOR_COUNT, MIN_MAX_VALIDATOR_COUNT};
+
+    for valid in [MIN_MAX_VALIDATOR_COUNT, MAX_MAX_VALIDATOR_COUNT] {
+        let mut state = ConsensusState::default();
+        state.max_validator_count = valid;
+        let encoded = state.encode();
+        let decoded = ConsensusState::read(&mut encoded.as_ref())
+            .unwrap_or_else(|_| panic!("valid max_validator_count {valid} should decode"));
+        assert_eq!(decoded.max_validator_count, valid);
+    }
+
+    for invalid in [0, MAX_MAX_VALIDATOR_COUNT + 1] {
+        let mut state = ConsensusState::default();
+        state.max_validator_count = invalid;
+        let encoded = state.encode();
+        assert!(
+            ConsensusState::read(&mut encoded.as_ref()).is_err(),
+            "max_validator_count {invalid} should be rejected on decode"
         );
     }
 }

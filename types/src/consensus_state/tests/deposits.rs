@@ -201,6 +201,54 @@ fn new_account_at_min_activates() {
     assert!(state.has_added_validators(WARM_UP));
 }
 
+// Active and joining validators both reserve slots. A valid deposit received
+// while the cap is full is credited, but the new validator remains inactive.
+#[test]
+fn validator_cap_credits_deposit_without_scheduling_activation() {
+    let mut state = deposit_state();
+    state.set_max_validator_count(2);
+
+    let active_node = ed25519::PrivateKey::from_seed(101);
+    let active_bls = bls12381::PrivateKey::from_seed(101);
+    seed_account(
+        &mut state,
+        &active_node,
+        &active_bls,
+        ValidatorStatus::Active,
+        MIN,
+    );
+
+    let joining_node = ed25519::PrivateKey::from_seed(102);
+    let joining_bls = bls12381::PrivateKey::from_seed(102);
+    seed_account(
+        &mut state,
+        &joining_node,
+        &joining_bls,
+        ValidatorStatus::Joining,
+        MIN,
+    );
+    assert_eq!(state.active_or_joining_validator_count(), 2);
+
+    let node = ed25519::PrivateKey::from_seed(103);
+    let bls = bls12381::PrivateKey::from_seed(103);
+    let key = node_bytes(&node);
+    state.push_deposit(make_signed_deposit(
+        &node,
+        &bls,
+        eth1_credentials(3),
+        MIN,
+        0,
+        test_domain(),
+    ));
+
+    state.process_deposits(test_domain(), WARM_UP, WITHDRAWAL_EPOCHS);
+
+    let account = state.get_account(&key).unwrap();
+    assert_eq!(account.status, ValidatorStatus::Inactive);
+    assert_eq!(account.balance, MIN);
+    assert!(!state.has_added_validators(WARM_UP));
+}
+
 // A top up that lifts an inactive validator to the minimum stake rejoins it.
 #[test]
 fn inactive_topup_to_min_rejoins() {

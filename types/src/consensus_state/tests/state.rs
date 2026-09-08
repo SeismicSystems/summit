@@ -102,6 +102,7 @@ fn test_clone_preserves_epoch_schedule_snapshot() {
         3,
         16,
         0,
+        DEFAULT_MAX_VALIDATOR_COUNT,
         0,
         0,
         3,

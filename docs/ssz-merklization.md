@@ -36,7 +36,7 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 
 ### Top-Level Tree
 
-32 leaf slots (depth 5), 28 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 28–31 are unused (zero-filled).
+32 leaf slots (depth 5), 29 used. Each leaf is a 32-byte `hash_tree_root` value. Leaves 29–31 are unused (zero-filled).
 
 | Leaf Index | Field | Type |
 |------------|-------|------|
@@ -67,6 +67,8 @@ The state tree is a two-level design: a fixed top-level tree containing scalar f
 | 24 | `minimum_validator_count` | Scalar |
 | 25 | `pending_active_validator_exits` | Scalar |
 | 26 | `invalid_deposit_tax` | Scalar |
+| 27 | `max_pending_withdrawals_per_validator` | Scalar |
+| 28 | `max_validator_count` | Scalar |
 
 ### Collection Subtrees
 
@@ -200,6 +202,7 @@ Single top-level leaf write + rehash of the 5-level path to root.
 | `set_max_deposits_per_epoch()` | `ssz_tree.set_max_deposits_per_epoch()` |
 | `set_max_withdrawals_per_epoch()` | `ssz_tree.set_max_withdrawals_per_epoch()` |
 | `set_observers_per_validator()` | `ssz_tree.set_observers_per_validator()` |
+| `set_max_validator_count()` | `ssz_tree.set_max_validator_count()` |
 | `set_minimum_validator_count()` | `ssz_tree.set_minimum_validator_count()` |
 | `increment_pending_active_validator_exits()` / `reset_pending_active_validator_exits()` | `ssz_tree.set_pending_active_validator_exits()` |
 | `set_next_withdrawal_index()` | `ssz_tree.set_next_withdrawal_index()` |

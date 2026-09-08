@@ -1,7 +1,8 @@
 use crate::PublicKey;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_INVALID_DEPOSIT_TAX, MAX_MESSAGE_SIZE_BYTES_MAX,
-    MAX_MESSAGE_SIZE_BYTES_MIN, MIN_MINIMUM_VALIDATOR_COUNT, ProtocolParam,
+    DEFAULT_MAX_VALIDATOR_COUNT, DEFAULT_MINIMUM_VALIDATOR_COUNT, DEFAULT_OBSERVERS_PER_VALIDATOR,
+    MAX_INVALID_DEPOSIT_TAX, MAX_MESSAGE_SIZE_BYTES_MAX, MAX_MESSAGE_SIZE_BYTES_MIN,
+    MIN_MINIMUM_VALIDATOR_COUNT, ProtocolParam,
 };
 use alloy_primitives::Address;
 use anyhow::Context;
@@ -71,6 +72,10 @@ pub struct Genesis {
     /// execution request.
     #[serde(default = "default_observers_per_validator")]
     pub observers_per_validator: u32,
+    /// Maximum number of validators that may be active or joining. Valid deposits
+    /// received while the cap is full are credited, but the validator remains inactive.
+    #[serde(default = "default_max_validator_count")]
+    pub max_validator_count: u64,
     /// Minimum number of active validators that full exits must preserve.
     #[serde(default = "default_minimum_validator_count")]
     pub minimum_validator_count: u64,
@@ -99,7 +104,11 @@ fn default_max_withdrawals_per_epoch() -> u64 {
 }
 
 fn default_observers_per_validator() -> u32 {
-    5
+    DEFAULT_OBSERVERS_PER_VALIDATOR
+}
+
+fn default_max_validator_count() -> u64 {
+    DEFAULT_MAX_VALIDATOR_COUNT
 }
 
 fn default_minimum_validator_count() -> u64 {
@@ -297,6 +306,15 @@ impl Genesis {
         ProtocolParam::MaxDepositsPerEpoch(self.max_deposits_per_epoch).validate()?;
         ProtocolParam::MaxWithdrawalsPerEpoch(self.max_withdrawals_per_epoch).validate()?;
         ProtocolParam::ObserversPerValidator(u64::from(self.observers_per_validator)).validate()?;
+        ProtocolParam::MaxValidatorCount(self.max_validator_count).validate()?;
+        if self.validators.len() as u64 > self.max_validator_count {
+            return Err(format!(
+                "genesis validator count {} exceeds max_validator_count {}",
+                self.validators.len(),
+                self.max_validator_count
+            )
+            .into());
+        }
         ProtocolParam::MaxPendingWithdrawalsPerValidator(
             self.max_pending_withdrawals_per_validator,
         )
@@ -307,6 +325,13 @@ impl Genesis {
             return Err(format!(
                 "minimum_validator_count {} is below minimum {}",
                 self.minimum_validator_count, MIN_MINIMUM_VALIDATOR_COUNT
+            )
+            .into());
+        }
+        if self.minimum_validator_count > self.max_validator_count {
+            return Err(format!(
+                "minimum_validator_count {} exceeds max_validator_count {}",
+                self.minimum_validator_count, self.max_validator_count
             )
             .into());
         }
@@ -371,9 +396,11 @@ impl Genesis {
 mod tests {
     use super::*;
     use crate::protocol_params::{
-        MAX_EPOCH_LENGTH, MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR,
+        DEFAULT_MAX_VALIDATOR_COUNT, MAX_EPOCH_LENGTH, MAX_MAX_DEPOSITS_PER_EPOCH,
+        MAX_MAX_VALIDATOR_COUNT, MAX_OBSERVERS_PER_VALIDATOR,
         MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX, MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN,
         MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_EPOCH_LENGTH,
+        MIN_MAX_VALIDATOR_COUNT,
     };
 
     #[test]
@@ -381,6 +408,8 @@ mod tests {
         let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         assert_eq!(genesis.validator_count(), 4);
         assert_eq!(genesis.blocks_per_epoch, 10000);
+        assert_eq!(genesis.observers_per_validator, 16);
+        assert_eq!(genesis.max_validator_count, DEFAULT_MAX_VALIDATOR_COUNT);
         assert_eq!(
             genesis.minimum_validator_count,
             DEFAULT_MINIMUM_VALIDATOR_COUNT
@@ -554,6 +583,28 @@ mod tests {
     }
 
     #[test]
+    fn accepts_max_validator_count_at_bounds() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_validator_count = MIN_MAX_VALIDATOR_COUNT.max(genesis.validators.len() as u64);
+        assert!(genesis.validate().is_ok());
+        genesis.max_validator_count = MAX_MAX_VALIDATOR_COUNT;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_max_validator_count_outside_bounds_or_below_genesis_set() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_validator_count = 0;
+        assert!(genesis.validate().is_err());
+
+        genesis.max_validator_count = MAX_MAX_VALIDATOR_COUNT + 1;
+        assert!(genesis.validate().is_err());
+
+        genesis.max_validator_count = genesis.validators.len() as u64 - 1;
+        assert!(genesis.validate().is_err());
+    }
+
+    #[test]
     fn accepts_observers_per_validator_at_upper_bound() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.observers_per_validator = MAX_OBSERVERS_PER_VALIDATOR as u32;
@@ -647,6 +698,10 @@ mod tests {
             (
                 "observers_per_validator",
                 Box::new(|g| g.observers_per_validator += 1),
+            ),
+            (
+                "max_validator_count",
+                Box::new(|g| g.max_validator_count += 1),
             ),
             (
                 "minimum_validator_count",

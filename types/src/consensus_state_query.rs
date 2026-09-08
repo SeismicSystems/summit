@@ -26,6 +26,7 @@ pub enum ConsensusStateRequest {
     GetMaxDepositsPerEpoch,
     GetMaxWithdrawalsPerEpoch,
     GetObserversPerValidator,
+    GetMaxValidatorCount,
     GetMinimumValidatorCount,
     GetInvalidDepositTax,
     GetEpochBounds(u64),
@@ -58,6 +59,7 @@ pub enum ConsensusStateResponse<S: Scheme> {
     MaxDepositsPerEpoch(u64),
     MaxWithdrawalsPerEpoch(u64),
     ObserversPerValidator(u32),
+    MaxValidatorCount(u64),
     MinimumValidatorCount(u64),
     InvalidDepositTax(u64),
     EpochBounds(Option<(u64, u64)>),
@@ -306,6 +308,20 @@ impl<S: Scheme> ConsensusStateQuery<S> {
             .await
             .expect("consensus state query response sender dropped");
         let ConsensusStateResponse::ObserversPerValidator(value) = res else {
+            unreachable!("request and response variants must match");
+        };
+        value
+    }
+
+    pub async fn get_max_validator_count(&self) -> u64 {
+        let (tx, rx) = oneshot::channel();
+        let req = ConsensusStateRequest::GetMaxValidatorCount;
+        let _ = self.sender.clone().send((req, tx)).await;
+
+        let res = rx
+            .await
+            .expect("consensus state query response sender dropped");
+        let ConsensusStateResponse::MaxValidatorCount(value) = res else {
             unreachable!("request and response variants must match");
         };
         value

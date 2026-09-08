@@ -37,8 +37,9 @@ const MAX_FETCH_COUNT: usize = 32;
 const MAX_FETCH_SIZE: usize = 512 * 1024;
 const DEQUE_SIZE: usize = 32;
 pub const MESSAGE_BACKLOG: usize = 16384;
-const BACKFILL_QUOTA: u32 = 512; // in seconds
-const FETCH_RATE_P2P: u32 = 512; // in seconds
+const BACKFILL_QUOTA: u32 = 512; // messages per second
+const FETCH_RATE_P2P: u32 = 512; // messages per second
+pub const CHANNEL_BURST: u32 = 16;
 
 pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> {
     pub engine_client: C,
@@ -106,7 +107,8 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             oracle,
             mailbox_size: MAILBOX_SIZE,
             finalizer_pending_notarized_max,
-            backfill_quota: Quota::per_second(NonZeroU32::new(BACKFILL_QUOTA).unwrap()),
+            backfill_quota: Quota::per_second(NonZeroU32::new(BACKFILL_QUOTA).unwrap())
+                .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap()),
             deque_size: DEQUE_SIZE,
             leader_timeout: Duration::from_millis(genesis.leader_timeout_ms),
             notarization_timeout: Duration::from_millis(genesis.notarization_timeout_ms),
@@ -117,7 +119,8 @@ impl<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> EngineConfig<C,
             max_fetch_count: MAX_FETCH_COUNT,
             _max_fetch_size: MAX_FETCH_SIZE,
             fetch_concurrent: FETCH_CONCURRENT,
-            fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(FETCH_RATE_P2P).unwrap()),
+            fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(FETCH_RATE_P2P).unwrap())
+                .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap()),
             namespace: genesis.namespace.clone(),
             genesis_hash: genesis.genesis_hash(),
             config_digest: genesis.config_digest(),

@@ -3,7 +3,10 @@ use commonware_math::algebra::Random;
 use std::num::NonZeroU64;
 
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
-use crate::{config::EngineConfig, engine::Engine};
+use crate::{
+    config::{CHANNEL_BURST, EngineConfig},
+    engine::Engine,
+};
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
@@ -393,6 +396,7 @@ pub fn get_initial_state(
             10,
             16,
             0,
+            256,
             3,
             0,
             3,
@@ -703,7 +707,8 @@ where
         mailbox_size: NZUsize!(1024),
         finalizer_pending_notarized_max: 1000,
         deque_size: 10,
-        backfill_quota: Quota::per_second(NonZeroU32::new(512).unwrap()),
+        backfill_quota: Quota::per_second(NonZeroU32::new(512).unwrap())
+            .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap()),
         leader_timeout: Duration::from_secs(1),
         notarization_timeout: Duration::from_secs(2),
         nullify_retry: Duration::from_secs(10),
@@ -713,7 +718,8 @@ where
         max_fetch_count: 10,
         _max_fetch_size: 1024 * 512,
         fetch_concurrent: 10,
-        fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(512).unwrap()),
+        fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(512).unwrap())
+            .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap()),
         initial_state,
         checkpoint_last_block: None,
         checkpoint_finalized_header: None,

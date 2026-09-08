@@ -2010,6 +2010,10 @@ impl<
                 let value = self.canonical_state.get_observers_per_validator();
                 let _ = sender.send(ConsensusStateResponse::ObserversPerValidator(value));
             }
+            ConsensusStateRequest::GetMaxValidatorCount => {
+                let value = self.canonical_state.get_max_validator_count();
+                let _ = sender.send(ConsensusStateResponse::MaxValidatorCount(value));
+            }
             ConsensusStateRequest::GetMinimumValidatorCount => {
                 let value = self.canonical_state.get_minimum_validator_count();
                 let _ = sender.send(ConsensusStateResponse::MinimumValidatorCount(value));

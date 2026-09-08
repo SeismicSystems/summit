@@ -1,7 +1,8 @@
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, EngineConfig, FINALIZER_PENDING_NOTARIZED_MAX,
-        MESSAGE_BACKLOG, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL, expect_key_store,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, CHANNEL_BURST, EngineConfig,
+        FINALIZER_PENDING_NOTARIZED_MAX, MESSAGE_BACKLOG, PENDING_CHANNEL, RECOVERED_CHANNEL,
+        RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
     genesis::GenesisSubCmd,
@@ -1086,16 +1087,20 @@ where
     config.force_verifier_only = flags.observer.is_some();
     config.observer_network_key = observer_network_key;
 
-    let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
+    let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
+        .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
     let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
 
-    let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
+    let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
+        .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
     let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
 
-    let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
+    let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
+        .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
     let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
 
-    let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap());
+    let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
+        .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
     let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
 
     let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
@@ -1180,6 +1185,7 @@ fn get_initial_state(
             genesis.max_deposits_per_epoch,
             genesis.max_withdrawals_per_epoch,
             genesis.observers_per_validator,
+            genesis.max_validator_count,
             genesis.minimum_validator_count,
             genesis.invalid_deposit_tax,
             genesis.max_pending_withdrawals_per_validator,

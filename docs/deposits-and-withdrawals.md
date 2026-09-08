@@ -5,7 +5,8 @@
 - Potential validators have to deposit at least **MINIMUM_STAKE** to join the network.
 - If a potential validator makes an initial deposit with *amount* < **MINIMUM_STAKE**, then the validator account is still created, but it won't be set to active.
 - Top-up deposits are allowed.
-- Once a processed deposit brings an inactive validator's balance to at least **MINIMUM_STAKE**, activation is scheduled **VALIDATOR_NUM_WARM_UP_EPOCHS** later. Deposit processing occurs near epoch end and is subject to **MAX_DEPOSITS_PER_EPOCH**, so activation may be delayed from submission.
+- Once a processed deposit brings an inactive validator's balance to at least **MINIMUM_STAKE**, activation is scheduled **VALIDATOR_NUM_WARM_UP_EPOCHS** later, provided fewer than **MAX_VALIDATOR_COUNT** validators are active or joining. Deposit processing occurs near epoch end and is subject to **MAX_DEPOSITS_PER_EPOCH**, so activation may be delayed from submission.
+- If **MAX_VALIDATOR_COUNT** is already occupied by active and joining validators, a valid deposit is still credited but the validator remains inactive and no activation is scheduled.
 - Deposit requests with invalid signatures will be refunded as a withdrawal. K% of the deposited amount (**INVALID_DEPOSIT_TAX**, default 5%) is sent to the treasury address (the zero address by default, which effectively burns it). This prevents invalid deposits from becoming a DDOS vector.
 - if the deposit's keys are malformed, it is refunded with the same K% tax applied to invalid signatures.
 - If the deposit's consensus (BLS) key does not match the key already on the account (or is already used by another validator), the deposit is refunded with the same K% tax applied to invalid signatures.
