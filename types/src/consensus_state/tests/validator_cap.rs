@@ -374,20 +374,22 @@ fn first_deposit_and_same_batch_withdrawal_do_not_cancel_each_other() {
 }
 
 #[test]
-fn lower_cap_grandfathers_reservations_across_codec_and_checkpoint_restore() {
+fn cap_below_reserved_membership_is_rejected_across_codec_and_checkpoint_restore() {
     let mut state = state(2);
     process(
         &mut state,
         &[deposit_entry(1, MIN, 0), deposit_entry(2, MIN, 1)],
     );
-    process(&mut state, &[param_entry(0x0a, 1)]);
-    state.apply_protocol_parameter_changes().unwrap();
+    // Restore a queued update that has not yet passed batch validation. The
+    // boundary fallback must also reject a cap below existing reservations.
+    state.push_protocol_param_change(ProtocolParam::MaxValidatorCount(1));
     state.capture_state_root(0);
     for mut restored in [
         ConsensusState::decode(state.encode()).unwrap(),
         ConsensusState::try_from(&Checkpoint::new(&state)).unwrap(),
     ] {
-        assert_eq!(restored.get_max_validator_count(), 1);
+        restored.apply_protocol_parameter_changes().unwrap();
+        assert_eq!(restored.get_max_validator_count(), 2);
         assert_eq!(restored.active_or_joining_validator_count(), 2);
         assert_eq!(restored.get_added_validators(WARM_UP).unwrap().len(), 2);
         assert_eq!(restored.get_state_root(), state.get_state_root());
@@ -432,7 +434,7 @@ fn prospective_raise_and_funded_inactive_accounts_survive_restore() {
 
 #[test]
 fn deposit_backlog_uses_processing_epoch_cap_and_preserves_fifo() {
-    for (old_cap, new_cap) in [(1, 2), (3, 1)] {
+    for (old_cap, new_cap) in [(1, 2), (3, 2)] {
         let mut state = state(old_cap);
         state.set_max_deposits_per_epoch(1);
         seed_active(&mut state, 1);
@@ -460,7 +462,7 @@ fn deposit_backlog_uses_processing_epoch_cap_and_preserves_fifo() {
         );
         assert_eq!(
             status(&state, 3),
-            if new_cap == 2 {
+            if old_cap == 1 {
                 ValidatorStatus::Joining
             } else {
                 ValidatorStatus::Inactive
@@ -610,41 +612,112 @@ fn stake_enforcement_after_admission_does_not_retry_cap_blocked_deposits() {
 }
 
 #[test]
-fn grandfathered_membership_must_fall_below_cap_before_admitting_replacements() {
-    let mut state = state(4);
-    for seed in 1..=4 {
-        seed_active(&mut state, seed);
+fn same_batch_exit_cannot_validate_reduction_but_later_update_can() {
+    // Both a voluntary active exit and a joining cancellation occur too late
+    // to make the same batch's reduction valid.
+    for joining in [false, true] {
+        let mut state = state(3);
+        seed_active(&mut state, 1);
+        seed_active(&mut state, 2);
+        if joining {
+            process(&mut state, &[deposit_entry(3, MIN, 0)]);
+        } else {
+            seed_active(&mut state, 3);
+        }
+        process(
+            &mut state,
+            &[withdrawal_entry(3, 0, true), param_entry(0x0a, 2)],
+        );
+        assert_eq!(state.prospective_max_validator_count(), 3);
+        assert_eq!(state.active_or_joining_validator_count(), 2);
+        advance_epoch(&mut state);
+        assert_eq!(state.get_max_validator_count(), 3);
+
+        // A later reduction to the now-current count is valid. Deposits see
+        // the accepted smaller cap and cannot take the old spare slot.
+        process(
+            &mut state,
+            &[param_entry(0x0a, 2), deposit_entry(4, MIN, 1)],
+        );
+        assert_eq!(state.prospective_max_validator_count(), 2);
+        assert_eq!(status(&state, 4), ValidatorStatus::Inactive);
+        advance_epoch(&mut state);
+        assert_eq!(state.get_max_validator_count(), 2);
+        process(
+            &mut state,
+            &[withdrawal_entry(2, 0, true), deposit_entry(4, 1, 2)],
+        );
+        assert_eq!(status(&state, 4), ValidatorStatus::Joining);
+        assert_eq!(state.active_or_joining_validator_count(), 2);
+        assert_tree_consistent(&state);
     }
-    process(&mut state, &[param_entry(0x0a, 2)]);
-    advance_epoch(&mut state);
-    assert_eq!(state.active_or_joining_validator_count(), 4);
-    // After each accepted exit the pre-deposit count is 3, 2, then 1.
-    for exiting in 1..=3 {
+}
+
+#[test]
+fn cap_reduction_counts_active_and_joining_but_not_inactive_accounts() {
+    for joining_count in 0..=2 {
+        let mut state = state(4);
+        state.set_minimum_validator_count(2);
+        for seed in 1..=2 - joining_count {
+            seed_active(&mut state, seed);
+        }
+        for seed in 3 - joining_count..=2 {
+            process(&mut state, &[deposit_entry(seed, MIN, seed)]);
+        }
+        process(
+            &mut state,
+            &[deposit_entry(3, MIN - 1, 3), param_entry(0x0a, 2)],
+        );
+        assert_eq!(state.prospective_max_validator_count(), 2);
+        assert_eq!(state.active_or_joining_validator_count(), 2);
+        assert_eq!(status(&state, 3), ValidatorStatus::Inactive);
+        state.apply_protocol_parameter_changes().unwrap();
+        assert_eq!(state.get_max_validator_count(), 2);
         process(
             &mut state,
             &[
-                withdrawal_entry(exiting, 0, true),
-                deposit_entry(4 + exiting, MIN, (exiting - 1) * 2),
-                deposit_entry(8 + exiting, MIN, (exiting - 1) * 2 + 1),
+                param_entry(0x07, 1),
+                param_entry(0x0a, 1),
+                param_entry(0x06, 8),
             ],
         );
+        assert_eq!(state.prospective_max_validator_count(), 2);
+        assert_tree_consistent(&state);
+        state.apply_protocol_parameter_changes().unwrap();
+        assert_eq!(state.get_max_validator_count(), 2);
+        assert_eq!(state.get_minimum_validator_count(), 1);
+        assert_eq!(state.get_observers_per_validator(), 8);
+        assert_eq!(state.active_or_joining_validator_count(), 2);
+        assert_tree_consistent(&state);
+    }
+}
+
+#[test]
+fn last_valid_cap_decides_reduction_without_falling_back_to_earlier_update() {
+    for last_cap in [1, 2] {
+        let mut state = state(3);
+        seed_active(&mut state, 1);
+        seed_active(&mut state, 2);
+        process(
+            &mut state,
+            &[
+                param_entry(0x0a, if last_cap == 1 { 2 } else { 1 }),
+                param_entry(0x0a, last_cap),
+                deposit_entry(3, MIN, 0),
+            ],
+        );
+        let accepted_cap = if last_cap == 1 { 3 } else { 2 };
+        assert_eq!(state.prospective_max_validator_count(), accepted_cap);
         assert_eq!(
-            status(&state, 4 + exiting),
-            if exiting == 3 {
+            status(&state, 3),
+            if last_cap == 1 {
                 ValidatorStatus::Joining
             } else {
                 ValidatorStatus::Inactive
             }
         );
-        assert_eq!(status(&state, 8 + exiting), ValidatorStatus::Inactive);
-        assert_eq!(
-            state.active_or_joining_validator_count(),
-            if exiting == 1 { 3 } else { 2 }
-        );
-        // Apply any due terminal payouts before boundary transition.
-        let payouts = state.emit_withdrawal_payouts(state.get_epoch());
-        state.apply_withdrawal_payouts(state.get_epoch(), &payouts);
         advance_epoch(&mut state);
+        assert_eq!(state.get_max_validator_count(), accepted_cap);
     }
 }
 

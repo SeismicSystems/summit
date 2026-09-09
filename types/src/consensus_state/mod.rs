@@ -414,24 +414,49 @@ impl ConsensusState {
     /// valid coordinated raise/lowering must not depend on request ordering.
     /// Run before prospective values influence exits or admissions, and again
     /// when applying changes (including changes restored from a checkpoint).
-    fn reject_conflicting_validator_count_changes(&mut self) {
+    fn reject_invalid_validator_count_changes(&mut self) {
         let minimum = self.prospective_minimum_validator_count();
         let maximum = self.prospective_max_validator_count();
-        if minimum <= maximum {
-            return;
+        let before = self.protocol_param_changes.len();
+
+        // Preserve whole-pair rejection for an initially conflicting pair.
+        // Otherwise, reject cap updates below existing reservations before any
+        // same-batch withdrawals can free slots. Equality is allowed.
+        if minimum <= maximum
+            && self
+                .protocol_param_changes
+                .iter()
+                .any(|param| matches!(param, ProtocolParam::MaxValidatorCount(_)))
+        {
+            let reserved = self.active_or_joining_validator_count();
+            if maximum < reserved {
+                warn!(
+                    maximum,
+                    reserved, "discarding validator cap updates below active and joining count"
+                );
+                self.protocol_param_changes
+                    .retain(|param| !matches!(param, ProtocolParam::MaxValidatorCount(_)));
+            }
         }
-        warn!(
-            minimum,
-            maximum, "discarding conflicting validator count updates"
-        );
-        self.protocol_param_changes.retain(|param| {
-            !matches!(
-                param,
-                ProtocolParam::MinimumValidatorCount(_) | ProtocolParam::MaxValidatorCount(_)
-            )
-        });
-        self.ssz_tree
-            .rebuild_protocol_params(&self.protocol_param_changes);
+
+        // Recheck against the retained cap if its proposed change was rejected.
+        let maximum = self.prospective_max_validator_count();
+        if minimum > maximum {
+            warn!(
+                minimum,
+                maximum, "discarding conflicting validator count updates"
+            );
+            self.protocol_param_changes.retain(|param| {
+                !matches!(
+                    param,
+                    ProtocolParam::MinimumValidatorCount(_) | ProtocolParam::MaxValidatorCount(_)
+                )
+            });
+        }
+        if self.protocol_param_changes.len() != before {
+            self.ssz_tree
+                .rebuild_protocol_params(&self.protocol_param_changes);
+        }
     }
 
     pub fn get_max_pending_withdrawals_per_validator(&self) -> u64 {
@@ -1163,7 +1188,7 @@ impl ConsensusState {
             self.push_protocol_param_changes(protocol_param_batch);
         }
 
-        self.reject_conflicting_validator_count_changes();
+        self.reject_invalid_validator_count_changes();
 
         // Second pass: route deposits, withdrawals, and malformed deposits in
         // order, now that protocol params are already staged.
@@ -1924,7 +1949,7 @@ impl ConsensusState {
     }
 
     pub fn apply_protocol_parameter_changes(&mut self) -> Result<bool, Error> {
-        self.reject_conflicting_validator_count_changes();
+        self.reject_invalid_validator_count_changes();
         let mut minimum_stake_changed = false;
         for param in self.protocol_param_changes.drain(0..) {
             match param {
