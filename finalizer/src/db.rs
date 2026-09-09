@@ -15,6 +15,27 @@ use tracing::error;
 
 pub use db::Config;
 
+/// Shared by startup recovery (before P2P allocation) and the finalizer actor.
+pub fn config(
+    prefix: &str,
+    page_cache: commonware_runtime::buffer::paged::CacheRef,
+) -> Config<EightCap, ((), ())> {
+    Config {
+        log: commonware_storage::journal::contiguous::variable::Config {
+            partition: format!("{prefix}-finalizer_state-log"),
+            write_buffer: commonware_utils::NZUsize!(1024 * 1024),
+            replay_buffer: commonware_utils::NZUsize!(1024 * 1024),
+            compression: None,
+            codec_config: ((), ()),
+            items_per_section: commonware_utils::NZU64!(262_144),
+            page_cache,
+        },
+        translator: EightCap,
+        init_cache_size: Some(commonware_utils::NZUsize!(1024)),
+        init_buffer: commonware_utils::NZUsize!(1024 * 1024),
+    }
+}
+
 // Key prefixes for different data types
 const STATE_PREFIX: u8 = 0x01;
 const CONSENSUS_STATE_PREFIX: u8 = 0x05;
@@ -25,9 +46,22 @@ const FINALIZED_HEADER_PREFIX: u8 = 0x07;
 const LATEST_CONSENSUS_STATE_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 0];
 const LATEST_FINALIZED_HEADER_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 1];
 const LATEST_CHECKPOINT_EPOCH_KEY: [u8; 2] = [STATE_PREFIX, 2];
+const CHECKPOINT_IMPORT_KEY: [u8; 2] = [STATE_PREFIX, 3];
+const PENDING_IMPORT_STATE_KEY: [u8; 2] = [STATE_PREFIX, 4];
+const PENDING_IMPORT_RECORD_KEY: [u8; 2] = [STATE_PREFIX, 5];
+
+/// Durable authorization for the syncer to skip history covered by an import.
+/// Retained across restarts, including when checkpoint files are no longer supplied.
+#[derive(Clone, Debug)]
+pub struct CheckpointImport<V: Variant> {
+    pub processed_height: u64,
+    pub config_digest: [u8; 32],
+    pub finalized_header: FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>,
+    pub last_block: Option<Block>,
+}
 
 pub struct FinalizerState<E: BufferPooler + Clock + Storage + Metrics, V: Variant> {
-    store: Db<E, FixedBytes<64>, Value<V>, EightCap>,
+    store: Option<Db<E, FixedBytes<64>, Value<V>, EightCap>>,
     cancellation_token: CancellationToken,
 }
 
@@ -42,7 +76,7 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
             .expect("failed to initialize unified store");
 
         Self {
-            store,
+            store: Some(store),
             cancellation_token,
         }
     }
@@ -56,6 +90,38 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
         metrics::counter!("critical_errors_total", "reason" => "fatal_db_error", "severity" => "critical").increment(1);
         self.cancellation_token.cancel();
         anyhow::anyhow!("fatal database error in {op}: {e}")
+    }
+
+    pub fn ensure_healthy(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.cancellation_token.is_cancelled(),
+            "finalizer database recovery failed"
+        );
+        Ok(())
+    }
+
+    fn store(&self) -> &Db<E, FixedBytes<64>, Value<V>, EightCap> {
+        self.store
+            .as_ref()
+            .expect("finalizer store unavailable after interrupted mutation")
+    }
+
+    async fn update(
+        &mut self,
+        key: FixedBytes<64>,
+        value: Option<Value<V>>,
+        op: &str,
+    ) -> anyhow::Result<()> {
+        let Some(store) = self.store.take() else {
+            return Err(self.handle_db_error("store unavailable", op));
+        };
+        match store.apply_batch([(key, value)].into()).await {
+            Ok((store, _)) => {
+                self.store = Some(store);
+                Ok(())
+            }
+            Err(e) => Err(self.handle_db_error(e, op)),
+        }
     }
 
     fn pad_key(key: &[u8]) -> FixedBytes<64> {
@@ -92,7 +158,7 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
     // State variable operations
     async fn get_latest_consensus_state_epoch(&self) -> u64 {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
-        match self.store.get(&key).await {
+        match self.store().get(&key).await {
             Ok(Some(Value::U64(epoch))) => epoch,
             Ok(_) => 0,
             Err(e) => {
@@ -104,20 +170,18 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
 
     async fn set_latest_consensus_state_epoch(&mut self, epoch: u64) -> anyhow::Result<()> {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
-        if let Err(e) = self
-            .store
-            .apply_batch([(key, Some(Value::U64(epoch)))].into())
-            .await
-        {
-            return Err(self.handle_db_error(e, "set_latest_consensus_state_epoch"));
-        }
-        Ok(())
+        self.update(
+            key,
+            Some(Value::U64(epoch)),
+            "set_latest_consensus_state_epoch",
+        )
+        .await
     }
 
     // FinalizedHeader epoch tracking operations
     async fn get_latest_finalized_header_epoch(&self) -> u64 {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
-        match self.store.get(&key).await {
+        match self.store().get(&key).await {
             Ok(Some(Value::U64(epoch))) => epoch,
             Ok(_) => 0,
             Err(e) => {
@@ -129,20 +193,18 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
 
     async fn set_latest_finalized_header_epoch(&mut self, epoch: u64) -> anyhow::Result<()> {
         let key = Self::pad_key(&LATEST_FINALIZED_HEADER_EPOCH_KEY);
-        if let Err(e) = self
-            .store
-            .apply_batch([(key, Some(Value::U64(epoch)))].into())
-            .await
-        {
-            return Err(self.handle_db_error(e, "set_latest_finalized_header_epoch"));
-        }
-        Ok(())
+        self.update(
+            key,
+            Some(Value::U64(epoch)),
+            "set_latest_finalized_header_epoch",
+        )
+        .await
     }
 
     // Checkpoint epoch tracking operations
     async fn get_latest_checkpoint_epoch(&self) -> u64 {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
-        match self.store.get(&key).await {
+        match self.store().get(&key).await {
             Ok(Some(Value::U64(epoch))) => epoch,
             Ok(_) => 0,
             Err(e) => {
@@ -154,14 +216,8 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
 
     async fn set_latest_checkpoint_epoch(&mut self, epoch: u64) -> anyhow::Result<()> {
         let key = Self::pad_key(&LATEST_CHECKPOINT_EPOCH_KEY);
-        if let Err(e) = self
-            .store
-            .apply_batch([(key, Some(Value::U64(epoch)))].into())
+        self.update(key, Some(Value::U64(epoch)), "set_latest_checkpoint_epoch")
             .await
-        {
-            return Err(self.handle_db_error(e, "set_latest_checkpoint_epoch"));
-        }
-        Ok(())
     }
 
     // ConsensusState blob operations
@@ -171,13 +227,12 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
         state: &ConsensusState,
     ) -> anyhow::Result<()> {
         let key = Self::make_consensus_state_key(epoch);
-        if let Err(e) = self
-            .store
-            .apply_batch([(key, Some(Value::ConsensusState(Box::new(state.clone()))))].into())
-            .await
-        {
-            return Err(self.handle_db_error(e, "store_consensus_state"));
-        }
+        self.update(
+            key,
+            Some(Value::ConsensusState(Box::new(state.clone()))),
+            "store_consensus_state",
+        )
+        .await?;
 
         // Update the latest epoch tracker
         let current_latest = self.get_latest_consensus_state_epoch().await;
@@ -189,7 +244,7 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
 
     pub async fn get_consensus_state(&self, epoch: u64) -> Option<ConsensusState> {
         let key = Self::make_consensus_state_key(epoch);
-        match self.store.get(&key).await {
+        match self.store().get(&key).await {
             Ok(Some(Value::ConsensusState(state))) => Some(*state),
             Ok(_) => None,
             Err(e) => {
@@ -201,7 +256,7 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
 
     pub async fn get_latest_consensus_state(&self) -> Option<ConsensusState> {
         let key = Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY);
-        match self.store.get(&key).await {
+        match self.store().get(&key).await {
             Ok(Some(Value::U64(latest_epoch))) => self.get_consensus_state(latest_epoch).await,
             Ok(_) => None,
             Err(e) => {
@@ -212,13 +267,13 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
     }
 
     pub async fn delete_consensus_state(&mut self, epoch: u64) {
-        if let Err(e) = self
-            .store
-            .apply_batch([(Self::make_consensus_state_key(epoch), None)].into())
-            .await
-        {
-            self.handle_db_error(e, "delete_consensus_state");
-        }
+        let _ = self
+            .update(
+                Self::make_consensus_state_key(epoch),
+                None,
+                "delete_consensus_state",
+            )
+            .await;
     }
 
     // Checkpoint operations
@@ -230,22 +285,15 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
         last_block: Block,
     ) -> anyhow::Result<()> {
         let key = Self::make_checkpoint_key(epoch);
-        if let Err(e) = self
-            .store
-            .apply_batch(
-                [(
-                    key,
-                    Some(Value::Checkpoint(Box::new((
-                        checkpoint.clone(),
-                        last_block,
-                    )))),
-                )]
-                .into(),
-            )
-            .await
-        {
-            return Err(self.handle_db_error(e, "store_finalized_checkpoint"));
-        }
+        self.update(
+            key,
+            Some(Value::Checkpoint(Box::new((
+                checkpoint.clone(),
+                last_block,
+            )))),
+            "store_finalized_checkpoint",
+        )
+        .await?;
 
         // Update the latest checkpoint epoch tracker
         let current_latest = self.get_latest_checkpoint_epoch().await;
@@ -258,7 +306,7 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
     #[allow(unused)]
     pub async fn get_finalized_checkpoint(&self, epoch: u64) -> Option<(Checkpoint, Block)> {
         let key = Self::make_checkpoint_key(epoch);
-        match self.store.get(&key).await {
+        match self.store().get(&key).await {
             Ok(Some(Value::Checkpoint(checkpoint))) => Some(*checkpoint),
             Ok(_) => None,
             Err(e) => {
@@ -281,13 +329,12 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
         header: &FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>,
     ) -> anyhow::Result<()> {
         let key = Self::make_finalized_header_key(epoch);
-        if let Err(e) = self
-            .store
-            .apply_batch([(key, Some(Value::FinalizedHeader(Box::new(header.clone()))))].into())
-            .await
-        {
-            return Err(self.handle_db_error(e, "store_finalized_header"));
-        }
+        self.update(
+            key,
+            Some(Value::FinalizedHeader(Box::new(header.clone()))),
+            "store_finalized_header",
+        )
+        .await?;
 
         // Update the latest finalized header epoch tracker
         let current_latest = self.get_latest_finalized_header_epoch().await;
@@ -303,7 +350,7 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
         epoch: u64,
     ) -> Option<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>> {
         let key = Self::make_finalized_header_key(epoch);
-        match self.store.get(&key).await {
+        match self.store().get(&key).await {
             Ok(Some(Value::FinalizedHeader(header))) => Some(*header),
             Ok(_) => None,
             Err(e) => {
@@ -320,18 +367,133 @@ impl<E: BufferPooler + Clock + Storage + Metrics, V: Variant> FinalizerState<E, 
         self.get_finalized_header(latest_epoch).await
     }
 
+    pub async fn get_checkpoint_import(&self) -> anyhow::Result<Option<CheckpointImport<V>>> {
+        match self
+            .store()
+            .get(&Self::pad_key(&CHECKPOINT_IMPORT_KEY))
+            .await
+        {
+            Ok(Some(Value::CheckpointImport(record))) => Ok(Some(*record)),
+            Ok(None) => Ok(None),
+            Ok(_) => Err(self.handle_db_error("wrong import record type", "get_checkpoint_import")),
+            Err(e) => Err(self.handle_db_error(e, "get_checkpoint_import")),
+        }
+    }
+
+    /// Inspect staged artifacts for startup conflict checks; not skip authorization.
+    pub async fn get_pending_import(
+        &self,
+    ) -> anyhow::Result<Option<(ConsensusState, CheckpointImport<V>)>> {
+        let state = self
+            .store()
+            .get(&Self::pad_key(&PENDING_IMPORT_STATE_KEY))
+            .await
+            .map_err(|e| self.handle_db_error(e, "get_pending_import"))?;
+        let record = self
+            .store()
+            .get(&Self::pad_key(&PENDING_IMPORT_RECORD_KEY))
+            .await
+            .map_err(|e| self.handle_db_error(e, "get_pending_import"))?;
+        match (state, record) {
+            (None, None) => Ok(None),
+            (Some(Value::ConsensusState(state)), Some(Value::CheckpointImport(record))) => {
+                Ok(Some((*state, *record)))
+            }
+            _ => Err(self.handle_db_error("incomplete pending import", "get_pending_import")),
+        }
+    }
+
+    pub(crate) async fn stage_checkpoint_import(
+        &mut self,
+        state: &ConsensusState,
+        record: &CheckpointImport<V>,
+    ) -> anyhow::Result<()> {
+        self.commit_updates(vec![
+            (
+                Self::pad_key(&PENDING_IMPORT_STATE_KEY),
+                Some(Value::ConsensusState(Box::new(state.clone()))),
+            ),
+            (
+                Self::pad_key(&PENDING_IMPORT_RECORD_KEY),
+                Some(Value::CheckpointImport(Box::new(record.clone()))),
+            ),
+        ])
+        .await
+    }
+
+    pub(crate) async fn discard_pending_import(&mut self) -> anyhow::Result<()> {
+        self.commit_updates(vec![
+            (Self::pad_key(&PENDING_IMPORT_STATE_KEY), None),
+            (Self::pad_key(&PENDING_IMPORT_RECORD_KEY), None),
+        ])
+        .await
+    }
+
+    async fn commit_updates(
+        &mut self,
+        updates: Vec<(FixedBytes<64>, Option<Value<V>>)>,
+    ) -> anyhow::Result<()> {
+        let store = self
+            .store
+            .take()
+            .ok_or_else(|| self.handle_db_error("store unavailable", "checkpoint import"))?;
+        let (store, _) = store
+            .apply_batch(updates.into_iter().collect())
+            .await
+            .map_err(|e| self.handle_db_error(e, "checkpoint import"))?;
+        self.store = Some(store);
+        self.commit().await
+    }
+
+    /// Publish state, latest-state pointer, and skip authorization in one journal
+    /// batch, then sync. QMDB recovery rewinds incomplete/uncommitted batches.
+    pub(crate) async fn import_checkpoint(
+        &mut self,
+        state: &ConsensusState,
+        record: CheckpointImport<V>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            state.get_latest_height() == record.processed_height,
+            "import height mismatch"
+        );
+        self.commit_updates(vec![
+            (
+                Self::make_consensus_state_key(state.get_epoch()),
+                Some(Value::ConsensusState(Box::new(state.clone()))),
+            ),
+            (
+                Self::pad_key(&LATEST_CONSENSUS_STATE_EPOCH_KEY),
+                Some(Value::U64(state.get_epoch())),
+            ),
+            (
+                Self::pad_key(&CHECKPOINT_IMPORT_KEY),
+                Some(Value::CheckpointImport(Box::new(record))),
+            ),
+            (Self::pad_key(&PENDING_IMPORT_STATE_KEY), None),
+            (Self::pad_key(&PENDING_IMPORT_RECORD_KEY), None),
+        ])
+        .await
+    }
+
     // Commit all pending changes to the database
     pub async fn commit(&mut self) -> anyhow::Result<()> {
-        if let Err(e) = self.store.commit().await {
-            return Err(self.handle_db_error(e, "commit"));
+        let Some(store) = self.store.take() else {
+            return Err(self.handle_db_error("store unavailable", "commit"));
+        };
+        match store.commit().await {
+            Ok(store) => {
+                self.store = Some(store);
+                Ok(())
+            }
+            Err(e) => Err(self.handle_db_error(e, "commit")),
         }
-        Ok(())
     }
 }
 
 #[derive(Clone)]
 enum Value<V: Variant> {
     U64(u64),
+    CheckpointImport(Box<CheckpointImport<V>>),
     ConsensusState(Box<ConsensusState>),
     Checkpoint(Box<(Checkpoint, Block)>),
     FinalizedHeader(Box<FinalizedHeader<bls12381_multisig::Scheme<PublicKey, V>>>),
@@ -341,6 +503,9 @@ impl<V: Variant> EncodeSize for Value<V> {
     fn encode_size(&self) -> usize {
         1 + match self {
             Self::U64(_) => 8,
+            Self::CheckpointImport(record) => {
+                8 + 32 + record.finalized_header.encode_size() + record.last_block.encode_size()
+            }
             Self::ConsensusState(state) => state.encode_size(),
             Self::Checkpoint(checkpoint) => checkpoint.encode_size(),
             Self::FinalizedHeader(header) => header.encode_size(),
@@ -357,6 +522,18 @@ impl<V: Variant> Read for Value<V> {
             0x01 => Ok(Self::U64(
                 buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?,
             )),
+            0x08 => {
+                let processed_height = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+                let mut config_digest = [0; 32];
+                buf.try_copy_to_slice(&mut config_digest)
+                    .map_err(|_| Error::EndOfBuffer)?;
+                Ok(Self::CheckpointImport(Box::new(CheckpointImport {
+                    processed_height,
+                    config_digest,
+                    finalized_header: FinalizedHeader::read_cfg(buf, &())?,
+                    last_block: Option::<Block>::read_cfg(buf, &())?,
+                })))
+            }
             0x05 => Ok(Self::ConsensusState(Box::new(ConsensusState::read_cfg(
                 buf,
                 &(),
@@ -381,6 +558,13 @@ impl<V: Variant> Write for Value<V> {
             Self::U64(val) => {
                 buf.put_u8(0x01);
                 buf.put_u64(*val);
+            }
+            Self::CheckpointImport(record) => {
+                buf.put_u8(0x08);
+                buf.put_u64(record.processed_height);
+                buf.put_slice(&record.config_digest);
+                record.finalized_header.write(buf);
+                record.last_block.write(buf);
             }
             Self::ConsensusState(state) => {
                 buf.put_u8(0x05);
@@ -450,6 +634,7 @@ mod tests {
             log: commonware_storage::journal::contiguous::variable::Config {
                 partition: format!("{}-log", partition),
                 write_buffer: NZUsize!(64 * 1024),
+                replay_buffer: NZUsize!(64 * 1024),
                 compression: None,
                 codec_config: ((), ()),
                 items_per_section: NZU64!(4),
@@ -461,6 +646,7 @@ mod tests {
             },
             translator: EightCap,
             init_cache_size: Some(NZUsize!(1024)),
+            init_buffer: NZUsize!(64 * 1024),
         };
         FinalizerState::<E, V>::new(context, config, CancellationToken::new()).await
     }
@@ -563,7 +749,7 @@ mod tests {
             let finalized = Finalization {
                 proposal,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
+                    signers: Signers::new(3, [0, 1, 2].map(Participant::new)).unwrap(),
                     signature: create_dummy_signature().into(), // Valid dummy signature for test
                 },
             };
@@ -613,7 +799,7 @@ mod tests {
             let finalized2 = Finalization {
                 proposal: proposal2,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
+                    signers: Signers::new(3, [0, 1, 2].map(Participant::new)).unwrap(),
                     signature: create_dummy_signature().into(),
                 },
             };
@@ -678,7 +864,7 @@ mod tests {
             let finalized1 = Finalization {
                 proposal: proposal1,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
+                    signers: Signers::new(3, [0, 1, 2].map(Participant::new)).unwrap(),
                     signature: create_dummy_signature().into(),
                 },
             };
@@ -708,7 +894,7 @@ mod tests {
             let finalized3 = Finalization {
                 proposal: proposal3,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
+                    signers: Signers::new(3, [0, 1, 2].map(Participant::new)).unwrap(),
                     signature: create_dummy_signature().into(),
                 },
             };
@@ -738,7 +924,7 @@ mod tests {
             let finalized2 = Finalization {
                 proposal: proposal2,
                 certificate: BlsCertificate::<MinPk> {
-                    signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
+                    signers: Signers::new(3, [0, 1, 2].map(Participant::new)).unwrap(),
                     signature: create_dummy_signature().into(),
                 },
             };

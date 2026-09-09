@@ -278,10 +278,11 @@ pub fn create_test_finalized_header(epoch: u64) -> summit_types::FinalizedHeader
     let finalized = Finalization {
         proposal,
         certificate: BlsCertificate::<MinPk> {
-            signers: commonware_cryptography::certificate::Signers::from(
+            signers: commonware_cryptography::certificate::Signers::new(
                 3,
                 [0, 1, 2].map(Participant::new),
-            ),
+            )
+            .unwrap(),
             signature: signature.into(),
         },
     };

@@ -293,12 +293,12 @@ mod tests {
     const LINK: Link = Link {
         latency: Duration::from_millis(10),
         jitter: Duration::from_millis(1),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     const UNRELIABLE_LINK: Link = Link {
         latency: Duration::from_millis(200),
         jitter: Duration::from_millis(50),
-        success_rate: 0.7,
+        success_rate: commonware_utils::probability!(0.7),
     };
 
     const TEST_QUOTA: Quota = Quota::per_second(NonZeroU32::MAX);
@@ -314,28 +314,34 @@ mod tests {
         type Block = T::Block;
         type Error = T::Error;
 
-        async fn put(&mut self, block: Self::Block) -> Result<(), Self::Error> {
-            self.inner.put(block).await
+        async fn put(mut self, block: Self::Block) -> Result<Self, Self::Error> {
+            self.inner = self.inner.put(block).await?;
+            Ok(self)
         }
 
-        async fn sync(&mut self) -> Result<(), Self::Error> {
+        async fn sync(mut self) -> Result<Self, Self::Error> {
             self.context.sleep(self.pace).await;
-            self.inner.sync().await
+            self.inner = self.inner.sync().await?;
+            Ok(self)
         }
 
-        async fn start_sync(&mut self) -> Result<commonware_runtime::Handle<()>, Self::Error> {
-            let inner = self.inner.start_sync().await?;
+        async fn start_sync(
+            mut self,
+        ) -> Result<(Self, commonware_runtime::Handle<()>), Self::Error> {
+            let (inner, handle) = self.inner.start_sync().await?;
+            self.inner = inner;
             let sleep = self.context.sleep(self.pace);
             let fail_sync = self.fail_sync;
-            Ok(commonware_runtime::Handle::from_future(async move {
+            let handle = commonware_runtime::Handle::from_future(async move {
                 sleep.await;
-                inner.await?;
+                handle.await?;
                 if fail_sync {
                     Err(commonware_runtime::Error::WriteFailed)
                 } else {
                     Ok(())
                 }
-            }))
+            });
+            Ok((self, handle))
         }
 
         async fn get(
@@ -345,8 +351,9 @@ mod tests {
             self.inner.get(id).await
         }
 
-        async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
-            self.inner.prune(min).await
+        async fn prune(mut self, min: Height) -> Result<Self, Self::Error> {
+            self.inner = self.inner.prune(min).await?;
+            Ok(self)
         }
 
         fn missing_items(&self, start: Height, max: usize) -> Vec<Height> {
@@ -369,32 +376,38 @@ mod tests {
         type Error = T::Error;
 
         async fn put(
-            &mut self,
+            mut self,
             height: Height,
             digest: Self::BlockDigest,
             finalization: Finalization<Self::Scheme, Self::Commitment>,
-        ) -> Result<(), Self::Error> {
-            self.inner.put(height, digest, finalization).await
+        ) -> Result<Self, Self::Error> {
+            self.inner = self.inner.put(height, digest, finalization).await?;
+            Ok(self)
         }
 
-        async fn sync(&mut self) -> Result<(), Self::Error> {
+        async fn sync(mut self) -> Result<Self, Self::Error> {
             self.context.sleep(self.pace).await;
-            self.inner.sync().await
+            self.inner = self.inner.sync().await?;
+            Ok(self)
         }
 
-        async fn start_sync(&mut self) -> Result<commonware_runtime::Handle<()>, Self::Error> {
-            let inner = self.inner.start_sync().await?;
+        async fn start_sync(
+            mut self,
+        ) -> Result<(Self, commonware_runtime::Handle<()>), Self::Error> {
+            let (inner, handle) = self.inner.start_sync().await?;
+            self.inner = inner;
             let sleep = self.context.sleep(self.pace);
             let fail_sync = self.fail_sync;
-            Ok(commonware_runtime::Handle::from_future(async move {
+            let handle = commonware_runtime::Handle::from_future(async move {
                 sleep.await;
-                inner.await?;
+                handle.await?;
                 if fail_sync {
                     Err(commonware_runtime::Error::WriteFailed)
                 } else {
                     Ok(())
                 }
-            }))
+            });
+            Ok((self, handle))
         }
 
         async fn get(
@@ -408,8 +421,9 @@ mod tests {
             self.inner.has(height).await
         }
 
-        async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
-            self.inner.prune(min).await
+        async fn prune(mut self, min: Height) -> Result<Self, Self::Error> {
+            self.inner = self.inner.prune(min).await?;
+            Ok(self)
         }
 
         fn last_index(&self) -> Option<Height> {
@@ -541,6 +555,7 @@ mod tests {
             context.child("paced_finalizations"),
             prunable::Config {
                 translator: EightCap,
+                metadata_partition: format!("{partition_prefix}-fbh-metadata"),
                 key_partition: format!("{partition_prefix}-fbh-key"),
                 key_page_cache: page_cache.clone(),
                 value_partition: format!("{partition_prefix}-fbh-value"),
@@ -558,6 +573,7 @@ mod tests {
             context.child("paced_blocks"),
             prunable::Config {
                 translator: EightCap,
+                metadata_partition: format!("{partition_prefix}-fb-metadata"),
                 key_partition: format!("{partition_prefix}-fb-key"),
                 key_page_cache: page_cache,
                 value_partition: format!("{partition_prefix}-fb-value"),
@@ -850,6 +866,33 @@ mod tests {
         crate::ingress::mailbox::Mailbox<S, B>,
         commonware_runtime::Handle<()>,
     ) {
+        setup_validator_with_start(
+            context,
+            oracle,
+            validator,
+            provider,
+            partition_prefix,
+            SyncStart {
+                height: 0,
+                epoch: 0,
+                view: 0,
+            },
+        )
+        .await
+    }
+
+    async fn setup_validator_with_start(
+        context: deterministic::Context,
+        oracle: &mut Oracle<K, deterministic::Context>,
+        validator: K,
+        provider: P,
+        partition_prefix: &str,
+        sync_start: SyncStart,
+    ) -> (
+        Application<B, S>,
+        crate::ingress::mailbox::Mailbox<S, B>,
+        commonware_runtime::Handle<()>,
+    ) {
         let config = Config {
             scheme_provider: provider,
             epocher: FixedEpocher::new(BLOCKS_PER_EPOCH),
@@ -949,17 +992,12 @@ mod tests {
         let (actor, mailbox) =
             actor::Actor::init(context, finalizations_by_height, finalized_blocks, config).await;
         let application = Application::<B, S>::default();
-        let handle = actor.start(
-            application.clone(),
-            buffer,
-            resolver,
-            SyncStart {
-                height: 0,
-                epoch: 0,
-                view: 0,
-            },
-            None,
-        );
+        let handle = actor.start(application.clone(), buffer, resolver, sync_start, None);
+        // Complete startup before callers enable operation-specific fault injection.
+        mailbox
+            .get_processed_height()
+            .await
+            .expect("actor startup failed");
         (application, mailbox, handle)
     }
 
@@ -972,7 +1010,12 @@ mod tests {
             .collect();
 
         // Generate certificate signatures
-        Finalization::from_finalizes(&schemes[0], &finalizes, &Sequential).unwrap()
+        Finalization::from_finalizes(
+            &schemes[0],
+            commonware_utils::non_empty![@&finalizes],
+            &Sequential,
+        )
+        .unwrap()
     }
 
     fn make_notarization(proposal: Proposal<D>, schemes: &[S], quorum: u32) -> Notarization<S, D> {
@@ -984,7 +1027,12 @@ mod tests {
             .collect();
 
         // Generate certificate signatures
-        Notarization::from_notarizes(&schemes[0], &notarizes, &Sequential).unwrap()
+        Notarization::from_notarizes(
+            &schemes[0],
+            commonware_utils::non_empty![@&notarizes],
+            &Sequential,
+        )
+        .unwrap()
     }
 
     fn setup_network(
@@ -995,6 +1043,7 @@ mod tests {
             context.child("network"),
             simulated::Config {
                 max_size: 1024 * 1024,
+                max_peers_per_set: NZUsize!(16),
                 disconnect_on_block: true,
                 tracked_peer_sets,
             },
@@ -1081,7 +1130,7 @@ mod tests {
 
             // Generate blocks, skipping the genesis block.
             let mut blocks = Vec::<B>::new();
-            let mut parent = Sha256::hash(b"");
+            let mut parent = Sha256::hash(&[b""]);
             for i in 1..=NUM_BLOCKS {
                 let block = B::new::<Sha256>(parent, Height::new(i), i);
                 parent = block.digest();
@@ -1170,6 +1219,56 @@ mod tests {
     }
 
     #[test_traced("WARN")]
+    fn test_subscribe_survives_denied_round_fetch() {
+        deterministic::Runner::timed(Duration::from_secs(60)).start(|mut context| async move {
+            let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+            let Fixture {
+                participants,
+                schemes,
+                ..
+            } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let (_application, mut mailbox, _handle) = setup_validator_with_prefix(
+                context.child("validator"),
+                &mut oracle,
+                participants[0].clone(),
+                ConstantProvider::new(schemes[0].clone()),
+                "denied-fetch-subscription",
+            )
+            .await;
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
+            // Round zero is at the processed floor: remote fetching is denied,
+            // but the caller still owns its local subscription.
+            let subscription = mailbox.subscribe(Some(Round::zero()), block.digest());
+            assert!(
+                mailbox
+                    .verified(Round::new(Epoch::zero(), View::new(1)), block.clone())
+                    .await
+            );
+            assert_eq!(subscription.await.unwrap(), block);
+        });
+    }
+
+    #[test_traced("WARN")]
+    fn test_processed_round_releases_only_superseded_floor_anchor() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let Fixture { schemes, .. } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+            let round = Round::new(Epoch::zero(), View::new(2));
+            let finalization = make_finalization(
+                Proposal::new(round, View::new(1), Sha256::hash(&[b"anchor"])),
+                &schemes,
+                QUORUM,
+            );
+            let mut floor = crate::floor::Floor::resolved(Some(Height::new(1)), Round::zero());
+            floor.await_anchor(finalization);
+            assert!(floor.take_superseded_anchor().is_none());
+            assert!(floor.blocks_progress());
+            floor.set_processed_round(round);
+            assert!(floor.take_superseded_anchor().is_some());
+            assert!(!floor.blocks_progress());
+        });
+    }
+
+    #[test_traced("WARN")]
     fn test_subscribe_basic_block_delivery() {
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         runner.start(|mut context| async move {
@@ -1195,7 +1294,7 @@ mod tests {
 
             setup_network_links(&mut oracle, &participants, LINK).await;
 
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
 
@@ -1251,7 +1350,7 @@ mod tests {
 
             setup_network_links(&mut oracle, &participants, LINK).await;
 
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block1 = B::new::<Sha256>(parent, Height::new(1), 1);
             let block2 = B::new::<Sha256>(block1.digest(), Height::new(2), 2);
             let commitment1 = block1.digest();
@@ -1327,7 +1426,7 @@ mod tests {
 
             setup_network_links(&mut oracle, &participants, LINK).await;
 
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block1 = B::new::<Sha256>(parent, Height::new(1), 1);
             let block2 = B::new::<Sha256>(block1.digest(), Height::new(2), 2);
             let commitment1 = block1.digest();
@@ -1399,7 +1498,7 @@ mod tests {
 
             setup_network_links(&mut oracle, &participants, LINK).await;
 
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block1 = B::new::<Sha256>(parent, Height::new(1), 1);
             let block2 = B::new::<Sha256>(block1.digest(), Height::new(2), 2);
             let block3 = B::new::<Sha256>(block2.digest(), Height::new(3), 3);
@@ -1522,7 +1621,7 @@ mod tests {
             assert!(actor.get_info(1).await.is_none());
 
             // Create and verify a block, then finalize it
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let digest = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
@@ -1555,7 +1654,7 @@ mod tests {
             assert!(actor.get_info(2).await.is_none());
 
             // Missing commitment
-            let missing = Sha256::hash(b"missing");
+            let missing = Sha256::hash(&[b"missing"]);
             assert!(actor.get_info(&missing).await.is_none());
         })
     }
@@ -1585,7 +1684,7 @@ mod tests {
             assert!(actor.get_info(Identifier::Latest).await.is_none());
 
             // Build and finalize heights 1..=3
-            let parent0 = Sha256::hash(b"");
+            let parent0 = Sha256::hash(&[b""]);
             let block1 = B::new::<Sha256>(parent0, Height::new(1), 1);
             let d1 = block1.digest();
             assert!(
@@ -1674,7 +1773,7 @@ mod tests {
             assert!(application.tip().is_none());
 
             // Finalize a block at height 1
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
@@ -1728,7 +1827,7 @@ mod tests {
             .await;
 
             // 1) From cache via verified
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let ver_block = B::new::<Sha256>(parent, Height::new(1), 1);
             let ver_commitment = ver_block.digest();
             let round1 = Round::new(Epoch::new(0), View::new(1));
@@ -1759,7 +1858,7 @@ mod tests {
             assert_eq!(got.height, Height::new(2));
 
             // 3) Missing commitment
-            let missing = Sha256::hash(b"definitely-missing");
+            let missing = Sha256::hash(&[b"definitely-missing"]);
             let missing_block = actor.get_block(&missing).await;
             assert!(missing_block.is_none());
         })
@@ -1790,7 +1889,7 @@ mod tests {
             assert!(finalization.is_none());
 
             // Finalize a block at height 1
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
             let round = Round::new(Epoch::new(0), View::new(1));
@@ -1849,7 +1948,7 @@ mod tests {
             // binding only permits a finalization view to differ from the header
             // view for the epoch-terminal block (a same-digest reproposal), which
             // is exactly the cross-view scenario this test exercises.
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block = B::new::<Sha256>(parent, Height::new(19), 19);
             let commitment = block.digest();
 
@@ -1961,7 +2060,7 @@ mod tests {
             .await;
 
             // Create block at height 1
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
 
@@ -2047,7 +2146,7 @@ mod tests {
 
             setup_network_links(&mut oracle, &participants, LINK).await;
 
-            let parent = Sha256::hash(b"");
+            let parent = Sha256::hash(&[b""]);
             let block = B::new::<Sha256>(parent, Height::new(1), 1);
             let commitment = block.digest();
             let round = Round::new(Epoch::zero(), View::new(1));
@@ -2109,7 +2208,7 @@ mod tests {
                 )
                 .await;
 
-                let parent = Sha256::hash(b"");
+                let parent = Sha256::hash(&[b""]);
                 let proposed = B::new::<Sha256>(parent, Height::new(1), 1);
                 let proposed_conflict = B::new::<Sha256>(parent, Height::new(1), 5);
                 let verified_a = B::new::<Sha256>(proposed.digest(), Height::new(2), 2);
@@ -2190,6 +2289,79 @@ mod tests {
         });
     }
 
+    /// Model a crash after finalizer execution but before the corresponding
+    /// application acknowledgement becomes durable. Replay only the unacked tail.
+    #[test_traced("WARN")]
+    fn test_restart_uses_durable_ack_not_finalizer_start_height() {
+        use commonware_consensus::{Heightable as _, Viewable as _};
+        let runner = deterministic::Runner::timed(Duration::from_secs(60));
+        let ((validator, scheme, second), recovered) =
+            runner.start_and_recover(|mut context| async move {
+                let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+                let Fixture {
+                    participants,
+                    schemes,
+                    ..
+                } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+                let validator = participants[0].clone();
+                let scheme = schemes[0].clone();
+                let (application, mut mailbox, handle) = setup_validator_with_prefix(
+                    context.child("validator"),
+                    &mut oracle,
+                    validator.clone(),
+                    ConstantProvider::new(scheme.clone()),
+                    "ack-recovery",
+                )
+                .await;
+                let first = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
+                let second = B::new::<Sha256>(first.digest(), Height::new(2), 2);
+                for block in [&first, &second] {
+                    let round = Round::new(Epoch::zero(), block.view());
+                    assert!(mailbox.verified(round, block.clone()).await);
+                    let _ = mailbox.report(Activity::Finalization(make_finalization(
+                        Proposal::new(round, View::new(block.height().get() - 1), block.digest()),
+                        &schemes,
+                        QUORUM,
+                    )));
+                }
+                while mailbox.get_processed_height().await != Some(Height::new(2)) {
+                    context.sleep(Duration::from_millis(10)).await;
+                }
+                assert_eq!(application.blocks().len(), 2);
+                handle.abort();
+                let _ = handle.await;
+                // Keep the durable archives, with only block 1 durably acknowledged.
+                let mut stream = crate::stream::Stream::new(
+                    context.child("seed_ack"),
+                    "ack-recovery-application-metadata",
+                )
+                .await;
+                stream.acknowledge(Height::new(1));
+                stream.sync().await.unwrap();
+                (validator, scheme, second)
+            });
+        deterministic::Runner::from(recovered).start(|context| async move {
+            let mut oracle = setup_network(context.child("restart_network"), NZUsize!(1));
+            let (application, mailbox, _handle) = setup_validator_with_start(
+                context.child("restart_validator"),
+                &mut oracle,
+                validator,
+                ConstantProvider::new(scheme),
+                "ack-recovery",
+                SyncStart {
+                    height: 2,
+                    epoch: 0,
+                    view: 2,
+                },
+            )
+            .await;
+            while mailbox.get_processed_height().await != Some(Height::new(2)) {
+                context.sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(application.blocks(), BTreeMap::from([(2, second)]));
+        });
+    }
+
     /// Port of marshal's fatal durability policy: a real sync failure must
     /// panic rather than become a recoverable `false` verification verdict.
     #[test_traced("WARN")]
@@ -2211,8 +2383,9 @@ mod tests {
             )
             .await;
 
-            context.storage_fault_config().write().sync_rate = Some(1.0);
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            context.storage_fault_config().write().sync_rate =
+                Some(commonware_utils::probability!(1.0));
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             let _ = mailbox
                 .verified(Round::new(Epoch::zero(), View::new(1)), block)
                 .await;
@@ -2240,8 +2413,9 @@ mod tests {
             )
             .await;
 
-            context.storage_fault_config().write().sync_rate = Some(1.0);
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            context.storage_fault_config().write().sync_rate =
+                Some(commonware_utils::probability!(1.0));
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             let _ = mailbox
                 .proposed(Round::new(Epoch::zero(), View::new(1)), block)
                 .await;
@@ -2269,8 +2443,9 @@ mod tests {
             )
             .await;
 
-            context.storage_fault_config().write().sync_rate = Some(1.0);
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            context.storage_fault_config().write().sync_rate =
+                Some(commonware_utils::probability!(1.0));
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             let _ = mailbox
                 .certified(Round::new(Epoch::zero(), View::new(1)), block)
                 .await;
@@ -2298,9 +2473,10 @@ mod tests {
             )
             .await;
 
-            context.storage_fault_config().write().sync_rate = Some(1.0);
+            context.storage_fault_config().write().sync_rate =
+                Some(commonware_utils::probability!(1.0));
             let round = Round::new(Epoch::zero(), View::new(1));
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             let _ = mailbox.report(Activity::Notarization(make_notarization(
                 Proposal {
                     round,
@@ -2339,7 +2515,7 @@ mod tests {
                 .await;
 
             let round = Round::new(Epoch::zero(), View::new(1));
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             assert!(mailbox.verified(round, block.clone()).await);
             let _ = mailbox.report(Activity::Finalization(make_finalization(
                 Proposal {
@@ -2379,7 +2555,7 @@ mod tests {
                 .await;
 
             let round = Round::new(Epoch::zero(), View::new(1));
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             assert!(mailbox.verified(round, block.clone()).await);
             let _ = mailbox.report(Activity::Finalization(make_finalization(
                 Proposal {
@@ -2402,7 +2578,7 @@ mod tests {
         let (round, checkpoint) = runner.start_and_recover(|mut context| async move {
             let Fixture { schemes, .. } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
             let round = Round::new(Epoch::zero(), View::new(1));
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             let notarization = make_notarization(
                 Proposal {
                     round,
@@ -2460,7 +2636,7 @@ mod tests {
         deterministic::Runner::timed(Duration::from_secs(30)).start(|mut context| async move {
             let Fixture { schemes, .. } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
             let round = Round::new(Epoch::zero(), View::new(1));
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             let notarization = make_notarization(
                 Proposal {
                     round,
@@ -2481,7 +2657,8 @@ mod tests {
             let mut manager =
                 cache::Manager::<_, B, S>::init(context.child("cache"), config, ()).await;
 
-            context.storage_fault_config().write().sync_rate = Some(1.0);
+            context.storage_fault_config().write().sync_rate =
+                Some(commonware_utils::probability!(1.0));
             drop(
                 manager
                     .put_notarization(round, block.digest(), notarization)
@@ -2515,7 +2692,7 @@ mod tests {
                 ConstantProvider::new(schemes[0].clone()),
             )
             .await;
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(19), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(19), 1);
             let original = Round::new(Epoch::zero(), View::new(19));
             let reproposal = Round::new(Epoch::zero(), View::new(21));
 
@@ -2551,7 +2728,7 @@ mod tests {
                 .await;
 
             const ANCHOR_HEIGHT: u64 = 5;
-            let mut parent = Sha256::hash(b"");
+            let mut parent = Sha256::hash(&[b""]);
             let mut anchor = None;
             for height in 1..=ANCHOR_HEIGHT {
                 let block = B::new::<Sha256>(parent, Height::new(height), height);
@@ -2612,7 +2789,7 @@ mod tests {
             )
             .await;
             let round = Round::new(Epoch::zero(), View::new(1));
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             let proposal = Proposal {
                 round,
                 parent: View::zero(),
@@ -2668,7 +2845,7 @@ mod tests {
                 .await;
 
             let round = Round::new(Epoch::zero(), View::new(1));
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             assert!(mailbox.verified(round, block.clone()).await);
             let _ = mailbox.report(Activity::Finalization(make_finalization(
                 Proposal {
@@ -2755,7 +2932,7 @@ mod tests {
                 .await;
 
             let first_round = Round::new(Epoch::zero(), View::new(1));
-            let first = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 100);
+            let first = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 100);
             assert!(mailbox.verified(first_round, first.clone()).await);
             let second_round = Round::new(Epoch::zero(), View::new(2));
             let second = B::new::<Sha256>(first.digest(), Height::new(2), 200);
@@ -2856,7 +3033,7 @@ mod tests {
                 .await;
 
             let round = Round::new(Epoch::zero(), View::new(1));
-            let block = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 1);
+            let block = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
             assert!(mailbox.verified(round, block.clone()).await);
             let _ = mailbox.report(Activity::Finalization(make_finalization(
                 Proposal {
@@ -2878,7 +3055,7 @@ mod tests {
                 context.sleep(Duration::from_millis(1)).await;
             }
 
-            let fork = B::new::<Sha256>(Sha256::hash(b""), Height::new(1), 999);
+            let fork = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 999);
             mailbox.set_floor(make_finalization(
                 Proposal {
                     round: Round::new(Epoch::zero(), View::new(5)),

@@ -14,7 +14,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(3);
@@ -23,6 +23,7 @@ fn test_grouped_withdrawal_requests_in_single_eip7685_entry() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -224,7 +225,7 @@ fn test_full_exit_withdrawal_removes_validator_and_pays_out() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -233,6 +234,7 @@ fn test_full_exit_withdrawal_removes_validator_and_pays_out() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -413,7 +415,7 @@ fn test_multiple_partial_withdrawals_paid_out_clamped_to_minimum() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -422,6 +424,7 @@ fn test_multiple_partial_withdrawals_paid_out_clamped_to_minimum() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -619,7 +622,7 @@ fn test_withdrawal_wrong_source_address_rejected() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -628,6 +631,7 @@ fn test_withdrawal_wrong_source_address_rejected() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -787,7 +791,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -796,6 +800,7 @@ fn test_withdrawal_nonexistent_validator_ignored() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -969,7 +974,7 @@ fn test_withdrawal_during_onboarding_aborts() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -978,6 +983,7 @@ fn test_withdrawal_during_onboarding_aborts() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1178,7 +1184,7 @@ fn test_minimum_validator_count_blocks_excess_active_validator_exits() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(44);
@@ -1187,6 +1193,7 @@ fn test_minimum_validator_count_blocks_excess_active_validator_exits() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1383,7 +1390,7 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(42);
@@ -1392,6 +1399,7 @@ fn test_withdrawal_on_last_block_of_epoch_deferred() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1612,7 +1620,7 @@ fn test_grouped_withdrawal_on_last_block_of_epoch_only_requeues_deferred_request
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(43);
@@ -1621,6 +1629,7 @@ fn test_grouped_withdrawal_on_last_block_of_epoch_only_requeues_deferred_request
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1821,7 +1830,7 @@ fn test_duplicate_last_block_exit_does_not_consume_active_exit_budget() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(43);
@@ -1830,6 +1839,7 @@ fn test_duplicate_last_block_exit_does_not_consume_active_exit_budget() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -2071,7 +2081,7 @@ fn test_withdrawal_overflow_rescheduled_to_next_epoch() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -2080,6 +2090,7 @@ fn test_withdrawal_overflow_rescheduled_to_next_epoch() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -2299,7 +2310,7 @@ fn test_joining_validator_withdrawal_on_last_block_keeps_header_consistent() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -2308,6 +2319,7 @@ fn test_joining_validator_withdrawal_on_last_block_keeps_header_consistent() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -2532,7 +2544,7 @@ fn test_joining_validator_withdrawal_inline_cancel_clears_status() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(1);
@@ -2541,6 +2553,7 @@ fn test_joining_validator_withdrawal_inline_cancel_clears_status() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),

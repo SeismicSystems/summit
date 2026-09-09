@@ -1,8 +1,8 @@
 use crate::{
     config::{
         BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, CHANNEL_BURST, EngineConfig,
-        FINALIZER_PENDING_NOTARIZED_MAX, MESSAGE_BACKLOG, PENDING_CHANNEL, RECOVERED_CHANNEL,
-        RESOLVER_CHANNEL, expect_key_store,
+        FINALIZER_PENDING_NOTARIZED_MAX, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL,
+        expect_key_store,
     },
     engine::Engine,
     genesis::GenesisSubCmd,
@@ -740,6 +740,7 @@ async fn run_node_inner(
             listen,
             our_ip,
             network_committee_ingress,
+            crate::config::startup_peer_limit(&initial_state),
             max_message_size,
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
@@ -754,6 +755,7 @@ async fn run_node_inner(
             initial_state,
             loaded.last_block,
             loaded.finalized_header,
+            loaded.finalized_headers_chain,
             observer_network_key,
         )
         .await
@@ -765,6 +767,7 @@ async fn run_node_inner(
             listen,
             our_ip,
             network_committee_ingress,
+            crate::config::startup_peer_limit(&initial_state),
             max_message_size,
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
@@ -779,6 +782,7 @@ async fn run_node_inner(
             initial_state,
             loaded.last_block,
             loaded.finalized_header,
+            loaded.finalized_headers_chain,
             None,
         )
         .await
@@ -904,6 +908,7 @@ async fn run_node_local_inner(
             listen,
             our_ip,
             network_committee_ingress,
+            crate::config::startup_peer_limit(&initial_state),
             max_message_size,
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
@@ -918,6 +923,7 @@ async fn run_node_local_inner(
             initial_state,
             checkpoint_parent_block,
             None,
+            None,
             observer_network_key,
         )
         .await
@@ -929,6 +935,7 @@ async fn run_node_local_inner(
             listen,
             our_ip,
             network_committee_ingress,
+            crate::config::startup_peer_limit(&initial_state),
             max_message_size,
         );
         p2p_cfg.mailbox_size = MAILBOX_SIZE;
@@ -942,6 +949,7 @@ async fn run_node_local_inner(
             &genesis,
             initial_state,
             checkpoint_parent_block,
+            None,
             None,
             None,
         )
@@ -1040,8 +1048,8 @@ async fn supervise_node_tasks<Sp: Spawner>(
 #[allow(clippy::too_many_arguments)]
 async fn start_network_and_engine<S, EC>(
     context: tokio::Context,
-    p2p_cfg: authenticated::discovery::Config<S>,
-    engine_client: EC,
+    mut p2p_cfg: authenticated::discovery::Config<S>,
+    mut engine_client: EC,
     key_store: KeyStore<PrivateKey>,
     peers: Vec<(PublicKey, bls12381::PublicKey)>,
     flags: RunFlags,
@@ -1049,16 +1057,100 @@ async fn start_network_and_engine<S, EC>(
     initial_state: ConsensusState,
     checkpoint_last_block: Option<Block>,
     checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
+    checkpoint_headers: Option<Vec<FinalizedHeader<MultisigScheme>>>,
     observer_network_key: Option<PublicKey>,
 ) -> (Handle<anyhow::Result<()>>, Handle<()>, Handle<()>)
 where
     S: Signer<PublicKey = PublicKey>,
     EC: EngineClient,
 {
+    // Recover authoritative protocol values before the network allocates fixed
+    // peer-derived mailboxes. The finalizer will reopen the same store; never
+    // size from stale genesis values on an ordinary restart.
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let mut startup_db = summit_finalizer::db::FinalizerState::<
+        _,
+        commonware_cryptography::bls12381::primitives::variant::MinPk,
+    >::new(
+        context.child("startup_state"),
+        summit_finalizer::db::config(
+            &flags.db_prefix,
+            commonware_runtime::buffer::paged::CacheRef::from_pooler(
+                &context,
+                std::num::NonZeroU16::new(4096).unwrap(),
+                std::num::NonZeroUsize::new(1024).unwrap(),
+            ),
+        ),
+        cancellation.clone(),
+    )
+    .await;
+    summit_finalizer::startup::check_history(
+        &startup_db,
+        checkpoint_headers.as_deref().unwrap_or_default(),
+    )
+    .await
+    .expect("checkpoint conflicts with local finalized history");
+    let mut headers = checkpoint_headers.unwrap_or_default();
+    headers.extend(checkpoint_finalized_header.iter().cloned());
+    if let Some(record) = startup_db
+        .get_checkpoint_import()
+        .await
+        .expect("failed to read import")
+    {
+        headers.push(record.finalized_header);
+    }
+    if let Some((_, record)) = startup_db
+        .get_pending_import()
+        .await
+        .expect("failed to read pending import")
+    {
+        headers.push(record.finalized_header);
+    }
+    if !headers.is_empty() {
+        let archives = crate::engine::open_syncer_archives(
+            &context,
+            &flags.db_prefix,
+            commonware_runtime::buffer::paged::CacheRef::from_pooler(
+                &context,
+                commonware_utils::NZU16!(4096),
+                commonware_utils::NZUsize!(1024),
+            ),
+        )
+        .await;
+        crate::engine::check_syncer_history(&archives, &headers)
+            .await
+            .expect("checkpoint conflicts with syncer history");
+    }
+    let (initial_state, _) = summit_finalizer::startup::prepare(
+        &mut startup_db,
+        &mut engine_client,
+        initial_state,
+        checkpoint_finalized_header,
+        checkpoint_last_block,
+        genesis.config_digest(),
+    )
+    .await
+    .expect("failed to prepare checkpoint startup");
+    drop(startup_db);
+    let peers = if initial_state.get_latest_height() > 0 {
+        initial_state.get_validator_keys()
+    } else {
+        peers
+    };
+    p2p_cfg.max_peers_per_set = crate::config::startup_peer_limit(&initial_state);
+    let peer_limit = p2p_cfg.max_peers_per_set;
+    let local_identity = observer_network_key
+        .clone()
+        .unwrap_or_else(|| key_store.node_key.public_key());
+    info!(
+        max_peers_per_set = peer_limit.get(),
+        burst = CHANNEL_BURST,
+        "allocating P2P capacity from startup protocol state; capacity-increasing updates require coordination"
+    );
     let (mut network, oracle) =
         authenticated::discovery::Network::new(context.child("network"), p2p_cfg);
 
-    let oracle = DiscoveryOracle::new(oracle);
+    let oracle = DiscoveryOracle::new(oracle, local_identity, peer_limit);
 
     // In observer mode the node's identity is this derived child key, not the
     // master node key: the engine identifies itself by it (resolver
@@ -1079,8 +1171,8 @@ where
         flags.db_prefix,
         genesis,
         initial_state,
-        checkpoint_last_block,
-        checkpoint_finalized_header,
+        None, // Engine recovers the durable import record, not the input files.
+        None,
         flags.finalizer_pending_notarized_max,
     )
     .unwrap();
@@ -1089,21 +1181,21 @@ where
 
     let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
         .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
-    let pending = network.register(PENDING_CHANNEL, pending_limit, MESSAGE_BACKLOG);
+    let pending = network.register(PENDING_CHANNEL, pending_limit);
 
     let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
         .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
-    let recovered = network.register(RECOVERED_CHANNEL, recovered_limit, MESSAGE_BACKLOG);
+    let recovered = network.register(RECOVERED_CHANNEL, recovered_limit);
 
     let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
         .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
-    let resolver = network.register(RESOLVER_CHANNEL, resolver_limit, MESSAGE_BACKLOG);
+    let resolver = network.register(RESOLVER_CHANNEL, resolver_limit);
 
     let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
         .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
-    let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit, MESSAGE_BACKLOG);
+    let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit);
 
-    let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota, MESSAGE_BACKLOG);
+    let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota);
 
     let genesis_hash = config.genesis_hash;
     let namespace = config.namespace.as_bytes().to_vec();

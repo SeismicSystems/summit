@@ -154,6 +154,7 @@ pub fn run_until_height(
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -731,12 +732,15 @@ where
 
 pub struct SimulatedOracle<E: Clock> {
     inner: simulated::Manager<PublicKey, E>,
+    blocked_subscribers:
+        Vec<commonware_utils::channel::ring::Sender<commonware_utils::ordered::Set<PublicKey>>>,
 }
 
 impl<E: Clock> Clone for SimulatedOracle<E> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            blocked_subscribers: self.blocked_subscribers.clone(),
         }
     }
 }
@@ -751,6 +755,7 @@ impl<E: Clock> SimulatedOracle<E> {
     pub fn new(oracle: Oracle<PublicKey, E>) -> Self {
         Self {
             inner: oracle.manager(),
+            blocked_subscribers: Vec::new(),
         }
     }
 }
@@ -773,6 +778,14 @@ impl<E: Clock> Blocker for SimulatedOracle<E> {
         // Simulated oracle doesn't support blocking individual peers
         // This is only used in production for misbehaving peers
         Feedback::Ok
+    }
+
+    fn blocked(&mut self) -> commonware_p2p::BlockedSubscription<PublicKey> {
+        let (sender, receiver) =
+            commonware_utils::channel::ring::channel(commonware_utils::NZUsize!(1));
+        sender.send_lossy(commonware_utils::ordered::Set::default());
+        self.blocked_subscribers.push(sender);
+        receiver
     }
 }
 

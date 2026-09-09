@@ -11,7 +11,7 @@ fn test_deposit_request_single() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -21,6 +21,7 @@ fn test_deposit_request_single() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -177,7 +178,7 @@ fn test_deposit_less_than_min_stake_creates_inactive_account() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -187,6 +188,7 @@ fn test_deposit_less_than_min_stake_creates_inactive_account() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -393,7 +395,7 @@ fn test_duplicate_bls_consensus_key_rejected() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -402,6 +404,7 @@ fn test_duplicate_bls_consensus_key_rejected() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -636,7 +639,7 @@ fn test_top_up_deposit_with_mismatched_bls_key_rejected() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -645,6 +648,7 @@ fn test_top_up_deposit_with_mismatched_bls_key_rejected() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),

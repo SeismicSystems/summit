@@ -72,6 +72,104 @@ pub const VALIDATOR_NUM_WARM_UP_EPOCHS: u64 = 2;
 pub const VALIDATOR_WITHDRAWAL_NUM_EPOCHS: u64 = 2;
 //
 
+type Finalizations<E> = immutable::Archive<
+    E,
+    summit_types::Digest,
+    commonware_consensus::simplex::types::Finalization<MultisigScheme, summit_types::Digest>,
+>;
+type FinalizedBlocks<E> = immutable::Archive<E, summit_types::Digest, Block>;
+
+/// Shared layout for pre-import conflict checks and the running syncer.
+#[commonware_macros::boxed]
+pub(crate) async fn open_syncer_archives<
+    E: BufferPooler + Clock + Rng + Spawner + Storage + Metrics,
+>(
+    context: &E,
+    prefix: &str,
+    page_cache: CacheRef,
+) -> (Finalizations<E>, FinalizedBlocks<E>) {
+    // create the syncer
+    // Initialize finalizations by height archive
+    let finalizations_by_height = immutable::Archive::init(
+        context.child("finalizations_by_height"),
+        immutable::Config {
+            metadata_partition: format!("{}-finalizations-by-height-metadata", prefix),
+            freezer_table_partition: format!("{}-finalizations-by-height-freezer-table", prefix),
+            freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
+            freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+            freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+            freezer_key_partition: format!("{}-finalizations-by-height-freezer-key", prefix),
+            freezer_key_page_cache: page_cache.clone(),
+            freezer_value_partition: format!("{}-finalizations-by-height-freezer-value", prefix),
+            freezer_value_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+            freezer_value_compression: FREEZER_JOURNAL_COMPRESSION,
+            ordinal_partition: format!("{}-finalizations-by-height-ordinal", prefix),
+            items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+            codec_config: usize::MAX,
+            freezer_key_write_buffer: WRITE_BUFFER,
+            freezer_value_write_buffer: WRITE_BUFFER,
+            ordinal_write_buffer: WRITE_BUFFER,
+            replay_buffer: REPLAY_BUFFER,
+        },
+    )
+    .await
+    .expect("failed to initialize finalizations by height archive");
+
+    // Initialize finalized blocks archive
+    let finalized_blocks = immutable::Archive::init(
+        context.child("finalized_blocks"),
+        immutable::Config {
+            metadata_partition: format!("{}-finalized_blocks-metadata", prefix),
+            freezer_table_partition: format!("{}-finalized_blocks-freezer-table", prefix),
+            freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
+            freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+            freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+            freezer_key_partition: format!("{}-finalized_blocks-freezer-key", prefix),
+            freezer_key_page_cache: page_cache.clone(),
+            freezer_value_partition: format!("{}-finalized_blocks-freezer-value", prefix),
+            freezer_value_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+            freezer_value_compression: FREEZER_JOURNAL_COMPRESSION,
+            ordinal_partition: format!("{}-finalized_blocks-ordinal", prefix),
+            items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+            freezer_key_write_buffer: WRITE_BUFFER,
+            freezer_value_write_buffer: WRITE_BUFFER,
+            ordinal_write_buffer: WRITE_BUFFER,
+            replay_buffer: REPLAY_BUFFER,
+            codec_config: (),
+        },
+    )
+    .await
+    .expect("failed to initialize finalized blocks archive");
+
+    (finalizations_by_height, finalized_blocks)
+}
+
+pub(crate) async fn check_syncer_history<
+    E: BufferPooler + Clock + Rng + Spawner + Storage + Metrics,
+>(
+    archives: &(Finalizations<E>, FinalizedBlocks<E>),
+    headers: &[summit_types::FinalizedHeader<MultisigScheme>],
+) -> anyhow::Result<()> {
+    use commonware_storage::archive::{Archive as _, Identifier};
+    for header in headers {
+        let height = header.header().height();
+        let digest = header.header().computed_digest();
+        if let Some(certificate) = archives.0.get(Identifier::Index(height)).await? {
+            anyhow::ensure!(
+                certificate.proposal.payload == digest,
+                "checkpoint conflicts with syncer certificate"
+            );
+        }
+        if let Some(block) = archives.1.get(Identifier::Index(height)).await? {
+            anyhow::ensure!(
+                block.digest() == digest,
+                "checkpoint conflicts with syncer block"
+            );
+        }
+    }
+    Ok(())
+}
+
 pub struct Engine<
     E: BufferPooler + Clock + GClock + Rng + CryptoRng + Spawner + Storage + Metrics + Network,
     C: EngineClient,
@@ -133,7 +231,7 @@ impl<
 where
     MultisigScheme: Scheme<summit_types::Digest, PublicKey = S::PublicKey>,
 {
-    pub async fn new(context: E, cfg: EngineConfig<C, S, O>) -> Self {
+    pub async fn new(context: E, mut cfg: EngineConfig<C, S, O>) -> Self {
         let blocks_per_epoch = cfg.blocks_per_epoch;
 
         // The key this node identifies itself by: the derived child key in
@@ -171,6 +269,54 @@ where
         let cancellation_token = CancellationToken::new();
         #[cfg(feature = "permissioned")]
         let paused = Arc::new(AtomicBool::new(false));
+
+        // Resolve explicit checkpoint imports before any actors run. Production
+        // also does this before P2P allocation; this path covers embedded engines
+        // and recovers imports without requiring the original checkpoint files.
+        let mut startup_db = summit_finalizer::db::FinalizerState::<_, MinPk>::new(
+            context.child("startup_state"),
+            summit_finalizer::db::config(&cfg.partition_prefix, page_cache.clone()),
+            cancellation_token.clone(),
+        )
+        .await;
+        let archives =
+            open_syncer_archives(&context, &cfg.partition_prefix, page_cache.clone()).await;
+        let mut headers: Vec<_> = cfg.checkpoint_finalized_header.iter().cloned().collect();
+        if let Some(record) = startup_db
+            .get_checkpoint_import()
+            .await
+            .expect("failed to read import")
+        {
+            headers.push(record.finalized_header);
+        }
+        if let Some((_, record)) = startup_db
+            .get_pending_import()
+            .await
+            .expect("failed to read pending import")
+        {
+            headers.push(record.finalized_header);
+        }
+        check_syncer_history(&archives, &headers)
+            .await
+            .expect("checkpoint conflicts with syncer history");
+        let (finalizations_by_height, finalized_blocks) = archives;
+        let (selected, imported) = summit_finalizer::startup::prepare(
+            &mut startup_db,
+            &mut cfg.engine_client,
+            cfg.initial_state,
+            cfg.checkpoint_finalized_header.take(),
+            cfg.checkpoint_last_block.take(),
+            cfg.config_digest,
+        )
+        .await
+        .expect("failed to prepare checkpoint startup");
+        drop(startup_db);
+        cfg.initial_state = selected;
+        let checkpoint = imported.map(|record| SyncCheckpoint {
+            processed_height: commonware_consensus::types::Height::new(record.processed_height),
+            last_block: record.last_block,
+            finalized_header: record.finalized_header,
+        });
 
         // create finalizer
         let (finalizer, initial_state, finalizer_mailbox, finalizer_state_query) = Finalizer::new(
@@ -235,83 +381,6 @@ where
                 peer_provider: cfg.oracle.clone(),
             },
         );
-
-        // create the syncer
-        // Initialize finalizations by height archive
-        let finalizations_by_height = immutable::Archive::init(
-            context.child("finalizations_by_height"),
-            immutable::Config {
-                metadata_partition: format!(
-                    "{}-finalizations-by-height-metadata",
-                    cfg.partition_prefix
-                ),
-                freezer_table_partition: format!(
-                    "{}-finalizations-by-height-freezer-table",
-                    cfg.partition_prefix
-                ),
-                freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
-                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                freezer_key_partition: format!(
-                    "{}-finalizations-by-height-freezer-key",
-                    cfg.partition_prefix
-                ),
-                freezer_key_page_cache: page_cache.clone(),
-                freezer_value_partition: format!(
-                    "{}-finalizations-by-height-freezer-value",
-                    cfg.partition_prefix
-                ),
-                freezer_value_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                freezer_value_compression: FREEZER_JOURNAL_COMPRESSION,
-                ordinal_partition: format!(
-                    "{}-finalizations-by-height-ordinal",
-                    cfg.partition_prefix
-                ),
-                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                codec_config: usize::MAX,
-                freezer_key_write_buffer: WRITE_BUFFER,
-                freezer_value_write_buffer: WRITE_BUFFER,
-                ordinal_write_buffer: WRITE_BUFFER,
-                replay_buffer: REPLAY_BUFFER,
-            },
-        )
-        .await
-        .expect("failed to initialize finalizations by height archive");
-
-        // Initialize finalized blocks archive
-        let finalized_blocks = immutable::Archive::init(
-            context.child("finalized_blocks"),
-            immutable::Config {
-                metadata_partition: format!("{}-finalized_blocks-metadata", cfg.partition_prefix),
-                freezer_table_partition: format!(
-                    "{}-finalized_blocks-freezer-table",
-                    cfg.partition_prefix
-                ),
-                freezer_table_initial_size: FREEZER_TABLE_INITIAL_SIZE,
-                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                freezer_key_partition: format!(
-                    "{}-finalized_blocks-freezer-key",
-                    cfg.partition_prefix
-                ),
-                freezer_key_page_cache: page_cache.clone(),
-                freezer_value_partition: format!(
-                    "{}-finalized_blocks-freezer-value",
-                    cfg.partition_prefix
-                ),
-                freezer_value_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                freezer_value_compression: FREEZER_JOURNAL_COMPRESSION,
-                ordinal_partition: format!("{}-finalized_blocks-ordinal", cfg.partition_prefix),
-                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                freezer_key_write_buffer: WRITE_BUFFER,
-                freezer_value_write_buffer: WRITE_BUFFER,
-                ordinal_write_buffer: WRITE_BUFFER,
-                replay_buffer: REPLAY_BUFFER,
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("failed to initialize finalized blocks archive");
 
         let syncer_config = summit_syncer::Config {
             scheme_provider: scheme_provider.clone(),
@@ -379,11 +448,6 @@ where
             blocks_per_epoch,
             "engine initialized"
         );
-
-        let checkpoint = cfg.checkpoint_last_block.map(|last_block| SyncCheckpoint {
-            last_block,
-            finalized_header: cfg.checkpoint_finalized_header,
-        });
 
         Self {
             context,

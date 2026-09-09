@@ -1,5 +1,5 @@
 use crate::config::ProtocolConsts;
-use crate::db::{Config as StateConfig, FinalizerState};
+use crate::db::FinalizerState;
 use crate::{FinalizerConfig, FinalizerMailbox, FinalizerMessage};
 use alloy_rpc_types_engine::ForkchoiceState;
 use anyhow::{Result, anyhow};
@@ -17,9 +17,7 @@ use commonware_runtime::telemetry::metrics::{Gauge, MetricsExt as _};
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Spawner, Storage, spawn_cell,
 };
-use commonware_storage::translator::EightCap;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
-use commonware_utils::{NZU64, NZUsize};
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt as _, select_biased};
 #[cfg(feature = "prom")]
@@ -27,7 +25,6 @@ use metrics::{counter, histogram};
 use rand::Rng;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
-use std::num::NonZero;
 use std::time::{Duration, Instant};
 use summit_orchestrator::Message;
 use summit_syncer::{FaultEvidence, Update};
@@ -50,8 +47,6 @@ use summit_types::{
 use summit_types::{EngineClient, consensus_state::ConsensusState};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
-
-const WRITE_BUFFER: NonZero<usize> = NZUsize!(1024 * 1024);
 
 type FinalizerScheme<V> = bls12381_multisig::Scheme<PublicKey, V>;
 type StateQueryResponse<V> = ConsensusStateResponse<FinalizerScheme<V>>;
@@ -313,18 +308,7 @@ impl<
         let (tx, rx) = mpsc::channel(cfg.mailbox_size);
         let (updates_tx, updates_rx) = mpsc::unbounded();
         let (state_query, state_query_rx) = ConsensusStateQuery::new(cfg.mailbox_size);
-        let state_cfg = StateConfig {
-            log: commonware_storage::journal::contiguous::variable::Config {
-                partition: format!("{}-finalizer_state-log", cfg.db_prefix),
-                write_buffer: WRITE_BUFFER,
-                compression: None,
-                codec_config: ((), ()),
-                items_per_section: NZU64!(262_144),
-                page_cache: cfg.page_cache,
-            },
-            translator: EightCap,
-            init_cache_size: Some(NZUsize!(1024)),
-        };
+        let state_cfg = crate::db::config(&cfg.db_prefix, cfg.page_cache);
 
         let db = FinalizerState::<R, V>::new(
             context.child("finalizer_state"),
@@ -333,9 +317,9 @@ impl<
         )
         .await;
 
-        // Check if the state exists in the database. Otherwise, use the initial state.
-        // The initial state could be from the genesis or a checkpoint.
-        // If we want to load a checkpoint, we have to make sure that the DB is cleared.
+        // Checkpoint startup durably promotes selected state before constructing
+        // this actor (startup::prepare). Never replace existing state here from
+        // an unqualified initial-state hint; the fallback is for empty storage.
         let state = if let Some(state) = db.get_latest_consensus_state().await {
             info!(
                 epoch = state.get_epoch(),

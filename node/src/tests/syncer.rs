@@ -28,7 +28,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -38,6 +38,7 @@ fn test_node_joins_later_no_checkpoint_in_genesis() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -255,7 +256,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -265,6 +266,7 @@ fn test_node_joins_later_no_checkpoint_not_in_genesis() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times

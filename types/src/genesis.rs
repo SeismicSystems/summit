@@ -226,10 +226,7 @@ impl Genesis {
     /// explicitly `#[ssz(skip_serializing)]`'d). Per-validator `ip_address` is
     /// skipped: it is network topology, not consensus identity.
     pub fn config_digest(&self) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(GENESIS_CONFIG_DOMAIN_TAG);
-        hasher.update(&self.as_ssz_bytes());
-        hasher.finalize().0
+        Sha256::hash(&[GENESIS_CONFIG_DOMAIN_TAG, &self.as_ssz_bytes()]).0
     }
 
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -288,9 +285,9 @@ impl Genesis {
         if self.skip_timeout_views == 0 {
             return Err("skip_timeout_views must be greater than 0".into());
         }
-        if self.leader_timeout_ms > self.notarization_timeout_ms {
+        if self.leader_timeout_ms >= self.notarization_timeout_ms {
             return Err(
-                "leader_timeout_ms must be less than or equal to notarization_timeout_ms".into(),
+                "leader_timeout_ms must be strictly less than notarization_timeout_ms".into(),
             );
         }
         if self.skip_timeout_views > self.activity_timeout_views {
@@ -571,7 +568,9 @@ mod tests {
     #[test]
     fn rejects_misordered_leader_and_notarization_timeouts() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        genesis.leader_timeout_ms = genesis.notarization_timeout_ms + 1;
+        genesis.leader_timeout_ms = genesis.notarization_timeout_ms;
+        assert!(genesis.validate().is_err());
+        genesis.leader_timeout_ms += 1;
         assert!(genesis.validate().is_err());
     }
 

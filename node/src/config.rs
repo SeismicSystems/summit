@@ -36,10 +36,32 @@ const FETCH_CONCURRENT: usize = 8;
 const MAX_FETCH_COUNT: usize = 32;
 const MAX_FETCH_SIZE: usize = 512 * 1024;
 const DEQUE_SIZE: usize = 32;
-pub const MESSAGE_BACKLOG: usize = 16384;
 const BACKFILL_QUOTA: u32 = 512; // messages per second
 const FETCH_RATE_P2P: u32 = 512; // messages per second
 pub const CHANNEL_BURST: u32 = 16;
+
+/// Capacity is fixed when the network starts. Include accepted pending raises
+/// because admission may already have used them before boundary application.
+/// One extra slot covers the local identity outside the authorized committee.
+pub(crate) fn startup_peer_limit(state: &ConsensusState) -> NonZeroUsize {
+    let validators = state
+        .get_max_validator_count()
+        .max(state.prospective_max_validator_count());
+    let observers = state
+        .get_observers_per_validator()
+        .max(state.prospective_observers_per_validator());
+    let identities = validators
+        .checked_mul(u64::from(observers) + 1)
+        .and_then(|n| n.checked_add(1))
+        .and_then(|n| usize::try_from(n).ok())
+        .and_then(NonZeroUsize::new)
+        .expect("startup peer capacity overflow");
+    assert!(
+        state.active_or_joining_validator_count() <= validators,
+        "startup validator membership exceeds configured capacity"
+    );
+    identities
+}
 
 pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKey>> {
     pub engine_client: C,
@@ -159,7 +181,35 @@ pub(crate) fn expect_key_store(key_store_path: &str) -> KeyStore<PrivateKey> {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::config::expect_key_store;
+    use super::{ConsensusState, expect_key_store, startup_peer_limit};
+
+    #[test]
+    fn startup_peer_capacity_includes_default_observers_and_local_slot() {
+        let mut state = ConsensusState::default();
+        state.set_observers_per_validator(
+            summit_types::protocol_params::DEFAULT_OBSERVERS_PER_VALIDATOR,
+        );
+        assert_eq!(startup_peer_limit(&state).get(), 2177);
+        state.set_observers_per_validator(0);
+        assert_eq!(startup_peer_limit(&state).get(), 129);
+    }
+
+    #[test]
+    fn startup_peer_capacity_covers_pending_raises_but_not_pending_reductions() {
+        use summit_types::protocol_params::ProtocolParam;
+        let mut state = ConsensusState::default();
+        state.set_observers_per_validator(16);
+        state.push_protocol_param_changes([
+            ProtocolParam::MaxValidatorCount(256),
+            ProtocolParam::ObserversPerValidator(32),
+        ]);
+        assert_eq!(startup_peer_limit(&state).get(), 256 * 33 + 1);
+        state.push_protocol_param_changes([
+            ProtocolParam::MaxValidatorCount(64),
+            ProtocolParam::ObserversPerValidator(8),
+        ]);
+        assert_eq!(startup_peer_limit(&state).get(), 2177);
+    }
 
     #[test]
     fn test_expect_keys_node0() {

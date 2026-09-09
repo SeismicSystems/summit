@@ -78,7 +78,12 @@ pub fn make_finalization(
         .map(|scheme| Finalize::sign(scheme, proposal.clone()).unwrap())
         .collect();
 
-    Finalization::from_finalizes(&schemes[0], &finalizes, &Sequential).unwrap()
+    Finalization::from_finalizes(
+        &schemes[0],
+        commonware_utils::non_empty![@&finalizes],
+        &Sequential,
+    )
+    .unwrap()
 }
 
 /// Minimal mock EngineClient that accepts all blocks.
@@ -286,6 +291,12 @@ impl commonware_p2p::Blocker for MockNetworkOracle {
     fn block(&mut self, _public_key: Self::PublicKey) -> Feedback {
         Feedback::Ok
     }
+    fn blocked(&mut self) -> commonware_p2p::BlockedSubscription<PublicKey> {
+        let (sender, receiver) =
+            commonware_utils::channel::ring::channel(commonware_utils::NZUsize!(1));
+        sender.send_lossy(commonware_utils::ordered::Set::default());
+        receiver
+    }
 }
 
 /// A single recorded `track` call: the epoch and the peer tiers handed to the
@@ -325,5 +336,11 @@ impl commonware_p2p::Blocker for RecordingNetworkOracle {
     type PublicKey = PublicKey;
     fn block(&mut self, _public_key: Self::PublicKey) -> Feedback {
         Feedback::Ok
+    }
+    fn blocked(&mut self) -> commonware_p2p::BlockedSubscription<PublicKey> {
+        let (sender, receiver) =
+            commonware_utils::channel::ring::channel(commonware_utils::NZUsize!(1));
+        sender.send_lossy(commonware_utils::ordered::Set::default());
+        receiver
     }
 }

@@ -12,7 +12,7 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -21,6 +21,7 @@ fn test_grouped_protocol_param_requests_in_single_eip7685_entry() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -158,7 +159,7 @@ fn test_protocol_param_allowed_timestamp_future() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -168,6 +169,7 @@ fn test_protocol_param_allowed_timestamp_future() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -320,7 +322,7 @@ fn test_protocol_param_treasury_address() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
@@ -328,6 +330,7 @@ fn test_protocol_param_treasury_address() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -505,7 +508,7 @@ fn test_protocol_param_max_deposits_per_epoch() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -514,6 +517,7 @@ fn test_protocol_param_max_deposits_per_epoch() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -660,7 +664,7 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -669,6 +673,7 @@ fn test_protocol_param_max_deposits_per_epoch_rejected_above_max() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -827,7 +832,7 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -836,6 +841,7 @@ fn test_removed_validators_at_epoch_boundary_stake_bound() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1051,7 +1057,7 @@ fn test_stake_increase_topup_keeps_active_validator() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -1060,6 +1066,7 @@ fn test_stake_increase_topup_keeps_active_validator() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1277,7 +1284,7 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -1286,6 +1293,7 @@ fn test_joining_validator_activation_cancelled_on_stake_bound_force_removal() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),

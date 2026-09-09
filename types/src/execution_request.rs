@@ -283,7 +283,7 @@ impl DepositRequest {
         left.extend_from_slice(&self.consensus_pubkey.encode());
         let mut hasher = Sha256::default();
         hasher.update(&left);
-        let pubkeys_hash = hasher.finalize();
+        let pubkeys_hash = hasher.finalize().1;
 
         // Hash pubkeys_hash with withdrawal_credentials
         let mut left = Vec::with_capacity(64);
@@ -291,7 +291,7 @@ impl DepositRequest {
         left.extend_from_slice(&self.withdrawal_credentials);
         let mut hasher = Sha256::default();
         hasher.update(&left);
-        let left_hash = hasher.finalize();
+        let left_hash = hasher.finalize().1;
 
         // Hash amount with padding
         let mut right = Vec::with_capacity(64);
@@ -299,19 +299,19 @@ impl DepositRequest {
         right.extend_from_slice(&[0; 56]);
         let mut hasher = Sha256::default();
         hasher.update(&right);
-        let right_hash = hasher.finalize();
+        let right_hash = hasher.finalize().1;
 
         // Combine left and right
         let mut hasher = Sha256::default();
         hasher.update(&left_hash);
         hasher.update(&right_hash);
-        let root_hash = hasher.finalize();
+        let root_hash = hasher.finalize().1;
 
         // Final hash with domain
         let mut hasher = Sha256::default();
         hasher.update(&root_hash);
         hasher.update(&domain);
-        hasher.finalize()
+        hasher.finalize().1
     }
 }
 
@@ -581,42 +581,21 @@ pub fn compute_deposit_data_root(
     */
 
     // 1. consensus_pubkey_hash = sha256(consensus_pubkey || bytes16(0))
-    let mut hasher = Sha256::new();
-    hasher.update(consensus_pubkey);
-    hasher.update(&[0u8; 16]); // bytes16(0)
-    let consensus_pubkey_hash = hasher.finalize();
+    let consensus_pubkey_hash = Sha256::hash(&[consensus_pubkey, &[0u8; 16]]);
 
     // 2. pubkey_root = sha256(node_pubkey || consensus_pubkey_hash)
-    let mut hasher = Sha256::new();
-    hasher.update(node_pubkey);
-    hasher.update(&consensus_pubkey_hash);
-    let pubkey_root = hasher.finalize();
+    let pubkey_root = Sha256::hash(&[node_pubkey, &consensus_pubkey_hash]);
 
     // 3. node_signature_hash = sha256(node_signature)
-    let mut hasher = Sha256::new();
-    hasher.update(node_signature);
-    let node_signature_hash = hasher.finalize();
+    let node_signature_hash = Sha256::hash(&[node_signature]);
 
     // 4. consensus_signature_hash = sha256(sha256(consensus_signature[0:64]) || sha256(consensus_signature[64:96] || bytes32(0)))
-    let mut hasher = Sha256::new();
-    hasher.update(&consensus_signature[0..64]);
-    let consensus_sig_part1 = hasher.finalize();
-
-    let mut hasher = Sha256::new();
-    hasher.update(&consensus_signature[64..96]);
-    hasher.update(&[0u8; 32]); // bytes32(0)
-    let consensus_sig_part2 = hasher.finalize();
-
-    let mut hasher = Sha256::new();
-    hasher.update(&consensus_sig_part1);
-    hasher.update(&consensus_sig_part2);
-    let consensus_signature_hash = hasher.finalize();
+    let consensus_sig_part1 = Sha256::hash(&[&consensus_signature[0..64]]);
+    let consensus_sig_part2 = Sha256::hash(&[&consensus_signature[64..96], &[0u8; 32]]);
+    let consensus_signature_hash = Sha256::hash(&[&consensus_sig_part1, &consensus_sig_part2]);
 
     // 5. signature_root = sha256(node_signature_hash || consensus_signature_hash)
-    let mut hasher = Sha256::new();
-    hasher.update(&node_signature_hash);
-    hasher.update(&consensus_signature_hash);
-    let signature_root = hasher.finalize();
+    let signature_root = Sha256::hash(&[&node_signature_hash, &consensus_signature_hash]);
 
     // 3. Convert amount to 8-byte little-endian (gwei)
     let amount_gwei = amount / U256::from(10).pow(U256::from(9)); // Convert wei to gwei
@@ -624,21 +603,9 @@ pub fn compute_deposit_data_root(
     let amount_bytes = amount_u64.to_le_bytes(); // 8 bytes little-endian
 
     // 4. node = sha256(sha256(pubkey_root || withdrawal_credentials) || sha256(amount || bytes24(0) || signature_root))
-    let mut hasher = Sha256::new();
-    hasher.update(&pubkey_root);
-    hasher.update(withdrawal_credentials);
-    let left_node = hasher.finalize();
-
-    let mut hasher = Sha256::new();
-    hasher.update(&amount_bytes);
-    hasher.update(&[0u8; 24]); // bytes24(0)
-    hasher.update(&signature_root);
-    let right_node = hasher.finalize();
-
-    let mut hasher = Sha256::new();
-    hasher.update(&left_node);
-    hasher.update(&right_node);
-    let deposit_data_root = hasher.finalize();
+    let left_node = Sha256::hash(&[&pubkey_root, withdrawal_credentials]);
+    let right_node = Sha256::hash(&[&amount_bytes, &[0u8; 24], &signature_root]);
+    let deposit_data_root = Sha256::hash(&[&left_node, &right_node]);
 
     let digest_bytes: &[u8] = deposit_data_root.as_ref();
     digest_bytes

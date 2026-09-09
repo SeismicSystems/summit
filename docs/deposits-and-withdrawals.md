@@ -24,13 +24,31 @@
 - Requests included in the last block of epoch E remain buffered until the penultimate block of E+1. An accepted exit then occurs at the end of E+1, with payout scheduled for epoch **E + 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**, subject to the withdrawal cap.
 
 ## Validator Count Limits
-- **MAX_VALIDATOR_COUNT** defaults to 128 and limits admission of **Active + Joining** validators, not the total number of stored accounts. Joining validators reserve a slot throughout warm-up.
+- **MAX_VALIDATOR_COUNT** (`MaxValidatorCount`, configured in genesis as `max_validator_count`) defaults to **128** and accepts values from **1 to 4,096**. It limits admission of **Active + Joining** validators, not the total number of stored accounts. Joining validators reserve a slot throughout warm-up.
 - At epoch processing, the final proposed **MINIMUM_VALIDATOR_COUNT** and **MAX_VALIDATOR_COUNT** are evaluated together, using the last valid request for each. If minimum exceeds maximum, all updates to those two parameters in the pending batch are discarded before withdrawal or deposit decisions; the existing pair remains in effect. Unrelated parameter updates are retained. Valid paired changes are independent of request ordering.
 - A proposed maximum below the current **Active + Joining** count is rejected before withdrawals or deposits are processed. Equality is allowed. All pending maximum-count updates are discarded on rejection, retaining the existing maximum rather than falling back to an earlier request; other updates remain subject to minimum/maximum consistency validation. Same-batch exits or joining cancellations cannot make the reduction valid; submit a later update after membership has decreased. No validators are evicted and no activation reservations are canceled by a cap change.
 - Raising the maximum does not automatically activate funded inactive accounts. Another valid deposit must trigger admission, and any pending withdrawal still prevents reactivation.
 - Withdrawals are processed before queued deposits are credited. An accepted active full exit or joining-validator cancellation frees an admission slot for that batch; a rejected withdrawal or active partial withdrawal does not. Deposits compete for available slots in deposit-queue order.
 - A withdrawal for an account first created by a deposit in that same batch is dropped because the account does not yet exist. The deposit is still credited; a later authorized withdrawal can reclaim it. Cap-blocked inactive accounts can withdraw without the active-validator minimum-balance floor.
 - Stored state must have minimum no greater than maximum. Membership can temporarily exceed the stored maximum while an accepted queued increase is already being used for admission, before boundary application. Checkpoint recovery and network sizing must account for that pending increase.
+
+### Network Capacity and Restarts
+
+Summit allocates its fixed P2P queue capacity at startup using the validator and observer limits from recovered consensus state. Accepted pending increases are included; pending reductions do not reduce the startup allocation. The capacity includes one extra slot for the local identity when it is outside the authorized peer sets:
+
+```text
+peer capacity = startup validator limit × (1 + startup observers per validator) + 1
+```
+
+With the defaults of **128 validators** and **16 observers per validator**, this is **2,177 identities per peer set**. Authorized observer identities count even when they are offline.
+
+**Increasing `MaxValidatorCount` does not resize a running node's queues or automatically restart Summit.** To use a higher maximum that requires more peer capacity:
+
+1. Ensure the raised value is durably recorded in each affected node's consensus state, either as an effective parameter or an accepted pending increase.
+2. Coordinate restarts of the affected Summit instances so they allocate capacity using that value.
+3. Restart before larger validator/observer sets exceed the previous allocation. Restarting against unchanged protocol state does not increase capacity.
+
+A decrease, or an increase already covered by the startup allocation, does not require a restart for capacity reasons. The same capacity constraint applies when increasing the observers-per-validator parameter. If a registered peer set exceeds a node's fixed capacity, the node fails an assertion; this is an operational limit, not a node-local consensus rule rejecting the protocol parameter update.
 
 ## Validator Balance
 - All active validators must have a balance of at least **MINIMUM_STAKE**.

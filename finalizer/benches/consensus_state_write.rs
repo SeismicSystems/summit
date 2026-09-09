@@ -85,6 +85,7 @@ fn main() {
             log: commonware_storage::journal::contiguous::variable::Config {
                 partition: "bench-log".to_string(),
                 write_buffer: NZUsize!(64 * 1024),
+                replay_buffer: NZUsize!(64 * 1024),
                 compression: None,
                 codec_config: ((), ()),
                 items_per_section: NZU64!(4),
@@ -96,6 +97,7 @@ fn main() {
             },
             translator: EightCap,
             init_cache_size: Some(NZUsize!(1024)),
+            init_buffer: NZUsize!(64 * 1024),
         };
 
         let mut db =

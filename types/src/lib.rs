@@ -63,7 +63,7 @@ pub fn chain_domain(config_digest: [u8; 32]) -> [u8; 32] {
     domain_data.extend_from_slice(CHAIN_DOMAIN_TAG);
     domain_data.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
     domain_data.extend_from_slice(&config_digest);
-    Sha256::hash(&domain_data).0
+    Sha256::hash(&[&domain_data]).0
 }
 
 /// Folds a purpose tag, protocol version, EL genesis hash, and (length-prefixed)
@@ -78,7 +78,7 @@ fn signature_domain(tag: &[u8], genesis_hash: [u8; 32], namespace: &[u8]) -> Dig
     // Length-prefix the variable-length namespace so the domain is unambiguous.
     domain_data.extend_from_slice(&(namespace.len() as u32).to_le_bytes());
     domain_data.extend_from_slice(namespace);
-    Sha256::hash(&domain_data)
+    Sha256::hash(&[&domain_data])
 }
 
 /// Domain for deposit-authorization signatures, bound to the full Summit

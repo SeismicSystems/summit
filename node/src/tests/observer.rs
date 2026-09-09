@@ -34,7 +34,7 @@ fn test_observer_reaches_end_height() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -44,6 +44,7 @@ fn test_observer_reaches_end_height() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(total_nodes as usize * 10),
@@ -237,7 +238,7 @@ fn test_observer_backfills_from_parent_validator() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -247,6 +248,7 @@ fn test_observer_backfills_from_parent_validator() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(total_nodes as usize * 10),

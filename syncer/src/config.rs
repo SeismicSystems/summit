@@ -14,10 +14,12 @@ pub struct SyncStart {
     pub view: u64,
 }
 
-/// Checkpoint data to restore from when loading from a checkpoint.
+/// Explicit skip authorization from a durably committed finalizer import.
+/// Never construct this from an ordinary finalizer startup-height hint.
 pub struct SyncCheckpoint<B: Block, S: Scheme<B::Digest>> {
-    pub last_block: B,
-    pub finalized_header: Option<FinalizedHeader<S>>,
+    pub processed_height: commonware_consensus::types::Height,
+    pub finalized_header: FinalizedHeader<S>,
+    pub last_block: Option<B>,
 }
 
 /// Marshal configuration.

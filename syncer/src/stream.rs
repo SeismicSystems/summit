@@ -44,7 +44,7 @@ impl State {
 
 /// Application delivery stream progress and durable metadata.
 pub(crate) struct Stream<E: Context> {
-    metadata: Metadata<E, U64, Height>,
+    metadata: Option<Metadata<E, U64, Height>>,
     state: State,
 }
 
@@ -60,7 +60,10 @@ impl<E: Context> Stream<E> {
         .await
         .expect("failed to initialize application metadata");
         let state = State::new(metadata.get(&LATEST_KEY).copied());
-        Self { metadata, state }
+        Self {
+            metadata: Some(metadata),
+            state,
+        }
     }
 
     pub(crate) const fn processed_height(&self) -> Option<Height> {
@@ -73,10 +76,18 @@ impl<E: Context> Stream<E> {
 
     pub(crate) fn acknowledge(&mut self, height: Height) {
         self.state.acknowledge(height);
-        self.metadata.put(LATEST_KEY, height);
+        self.metadata
+            .as_mut()
+            .expect("application metadata unavailable")
+            .put(LATEST_KEY, height);
     }
 
     pub(crate) async fn sync(&mut self) -> Result<(), metadata::Error> {
-        self.metadata.sync().await
+        let metadata = self
+            .metadata
+            .take()
+            .expect("application metadata unavailable");
+        self.metadata = Some(metadata.sync().await?);
+        Ok(())
     }
 }

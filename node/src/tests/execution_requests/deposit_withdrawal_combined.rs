@@ -14,7 +14,7 @@ fn test_deposit_and_withdrawal_request_single() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -24,6 +24,7 @@ fn test_deposit_and_withdrawal_request_single() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -221,7 +222,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -231,6 +232,7 @@ fn test_deposit_and_withdrawal_request_multiple() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -460,7 +462,7 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -469,6 +471,7 @@ fn test_invalid_deposit_refund_does_not_merge_with_later_withdrawal() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -659,7 +662,7 @@ fn test_invalid_deposit_refund_applies_invalid_deposit_tax() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -668,6 +671,7 @@ fn test_invalid_deposit_refund_applies_invalid_deposit_tax() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -836,7 +840,7 @@ fn test_invalid_deposit_refunds_do_not_delay_validator_exit_withdrawal() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -845,6 +849,7 @@ fn test_invalid_deposit_refunds_do_not_delay_validator_exit_withdrawal() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1035,7 +1040,7 @@ fn test_partial_withdrawal_at_floor_dropped_while_topup_is_credited() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -1044,6 +1049,7 @@ fn test_partial_withdrawal_at_floor_dropped_while_topup_is_credited() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1240,7 +1246,7 @@ fn test_deposit_and_withdrawal_same_block() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -1249,6 +1255,7 @@ fn test_deposit_and_withdrawal_same_block() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -1457,7 +1464,7 @@ fn test_inactive_withdrawals_then_rejoin_panics_epoch_boundary() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 0.98,
+        success_rate: commonware_utils::probability!(0.98),
     };
 
     let cfg = deterministic::Config::default().with_seed(0);
@@ -1466,6 +1473,7 @@ fn test_inactive_withdrawals_then_rejoin_panics_epoch_boundary() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),

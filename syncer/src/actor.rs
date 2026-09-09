@@ -21,7 +21,7 @@ use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::simplex::types::{
     Finalization, Notarization, Subject, verify_certificates,
 };
-use commonware_consensus::types::{Epoch, Epocher, Height, Round, View, ViewDelta};
+use commonware_consensus::types::{Epoch, Epocher, Height, Round, ViewDelta};
 use commonware_consensus::{Block, Epochable, Reporter, Viewable};
 use commonware_cryptography::PublicKey;
 use commonware_cryptography::certificate::{Provider, Verifier as CertificateVerifier};
@@ -75,6 +75,7 @@ enum PooledSync<B> {
 /// Pool of subscription waiter futures. Each resolves to the requested
 /// (digest, block) pair on delivery, or to the digest when the wait fails.
 type BlockWaiters<B> = AbortablePool<
+    'static,
     Result<
         (<B as commonware_cryptography::Digestible>::Digest, B),
         <B as commonware_cryptography::Digestible>::Digest,
@@ -178,9 +179,10 @@ where
     // Prunable cache
     cache: cache::Manager<E, B, P::Scheme>,
     // Finalizations stored by height
-    finalizations_by_height: FC,
-    // Finalized blocks stored by height
-    finalized_blocks: FB,
+    finalizations_by_height: Option<FC>,
+    // Finalized blocks stored by height. None while a consuming mutation owns
+    // the handle; a failed/cancelled mutation must not leave a usable store.
+    finalized_blocks: Option<FB>,
 
     // ---------- Metrics ----------
     // Latest height metric
@@ -201,6 +203,7 @@ where
     A: Acknowledgement,
 {
     /// Create a new application actor.
+    #[commonware_macros::boxed]
     pub async fn init(
         context: E,
         finalizations_by_height: FC,
@@ -257,8 +260,8 @@ where
                 dispatch_gate: DispatchGate::default(),
                 pending_notarized_reports: BTreeSet::new(),
                 cache,
-                finalizations_by_height,
-                finalized_blocks,
+                finalizations_by_height: Some(finalizations_by_height),
+                finalized_blocks: Some(finalized_blocks),
                 finalized_height,
                 processed_height,
             },
@@ -310,39 +313,112 @@ where
             epoch: sync_epoch,
             view: sync_view,
         } = sync_start;
-        self.stream.acknowledge(Height::new(sync_height));
-        self.floor.set_processed_height(Height::new(sync_height));
-        self.floor
-            .set_processed_round(Round::new(Epoch::new(sync_epoch), View::new(sync_view)));
-        self.tip = Height::new(sync_height);
-        info!(sync_height, sync_epoch, sync_view, "syncer initialized");
+        // Ordinary restart is driven by durable application acknowledgements,
+        // never by the finalizer's potentially newer execution position. Only
+        // an explicitly supplied checkpoint can authorize skipping deliveries.
+        let recovered_height = self.stream.processed_height().unwrap_or(Height::zero());
+        if self.stream.processed_height().is_none() {
+            self.stream.acknowledge(Height::zero());
+            self.stream
+                .sync()
+                .await
+                .expect("failed to initialize application progress");
+        }
+        self.floor.set_processed_height(recovered_height);
+        let recovered_round = self.recover_processed_round(recovered_height).await;
+        self.floor.set_processed_round(recovered_round);
+        self.tip = recovered_height;
+        info!(sync_height, sync_epoch, sync_view, processed_height = %recovered_height, "syncer initialized from durable acknowledgements");
 
-        // If we have a checkpoint, finalize the last block to complete the checkpoint
+        // Only a durable finalizer import authorizes skipping application history.
         if let Some(checkpoint) = checkpoint {
-            let height = checkpoint.last_block.height();
-            let last_block_digest = checkpoint.last_block.digest();
-            let finalization = checkpoint.finalized_header.map(|h| h.into_finalization());
-            // Defense in depth: last_block and finalized_header arrive as
-            // independent artifacts. The finalization certifies a specific block
-            // digest, so refuse to complete the checkpoint with a finalization
-            // that certifies a different block than the supplied last_block. The
-            // node startup path already binds these against the verified header
-            // chain; asserting it here keeps the boundary safe for any caller.
-            if let Some(finalization) = finalization.as_ref() {
-                assert!(
-                    finalization.proposal.payload == last_block_digest,
-                    "checkpoint finalization certifies a different block than last_block"
+            let checkpoint_floor = checkpoint.processed_height;
+            let height = Height::new(checkpoint.finalized_header.header().height());
+            let commitment = checkpoint.finalized_header.finalization().proposal.payload;
+            assert_eq!(
+                checkpoint_floor.get().checked_add(1),
+                Some(height.get()),
+                "checkpoint terminal must follow imported state"
+            );
+            assert!(
+                checkpoint_floor.get() <= sync_height,
+                "checkpoint skip has no backing finalizer state"
+            );
+            assert_eq!(
+                checkpoint.finalized_header.header().computed_digest(),
+                commitment,
+                "checkpoint header/certificate mismatch"
+            );
+            let finalization = checkpoint.finalized_header.into_finalization();
+            if let Some(block) = &checkpoint.last_block {
+                assert_eq!(block.digest(), commitment, "checkpoint last_block mismatch");
+            }
+            let stored = self.get_finalized_block(height).await;
+            if let Some(block) = &stored {
+                assert_eq!(
+                    block.digest(),
+                    commitment,
+                    "checkpoint anchor conflicts with stored data"
                 );
             }
-            self.store_finalization(
-                height,
-                last_block_digest,
-                checkpoint.last_block,
-                finalization,
-                &mut application,
-            )
-            .await;
-            self.sync_finalized().await;
+            if let Some(certificate) = self.get_finalization_by_height(height).await {
+                assert_eq!(
+                    certificate.proposal.payload, commitment,
+                    "checkpoint anchor conflicts with stored certificate"
+                );
+            }
+            if height > recovered_height {
+                assert!(
+                    is_last_block_of_epoch(&self.epocher, height.get()),
+                    "checkpoint anchor must be epoch-terminal"
+                );
+                if let Some(block) = checkpoint.last_block.or(stored) {
+                    assert!(
+                        self.store_finalization(
+                            height,
+                            commitment,
+                            block,
+                            Some(finalization),
+                            &mut application
+                        )
+                        .await,
+                        "checkpoint anchor conflicts with stored data"
+                    );
+                } else {
+                    // Pin the certificate before fetching by digest. A certificate
+                    // without a block must never cause the successor to be skipped.
+                    let round = finalization.round();
+                    self.cache
+                        .put_finalization(round, commitment, finalization.clone())
+                        .await;
+                    let certificates = self
+                        .finalizations_by_height
+                        .take()
+                        .expect("certificate archive unavailable");
+                    self.finalizations_by_height = Some(
+                        certificates
+                            .put(height, commitment, finalization)
+                            .await
+                            .expect("failed to store checkpoint certificate"),
+                    );
+                    self.floor
+                        .fetch_if_permitted(
+                            &mut resolver,
+                            Request::finalized_block_by_height(commitment, height),
+                        )
+                        .ignore();
+                }
+                self.sync_finalized().await;
+            }
+            if checkpoint_floor > recovered_height {
+                self.update_processed_height(checkpoint_floor, &mut resolver);
+                let round = self.recover_processed_round(checkpoint_floor).await;
+                self.floor.set_processed_round(round);
+                self.stream
+                    .sync()
+                    .await
+                    .expect("failed to persist checkpoint application floor");
+            }
         }
 
         let _ = self
@@ -387,6 +463,14 @@ where
                     bs.subscribers.retain(|tx| !tx.is_closed());
                     !bs.subscribers.is_empty()
                 });
+                // A processed round can supersede a pending anchor whose fetch
+                // was pruned. Release it so repair/dispatch cannot remain stuck.
+                if self.floor.take_superseded_anchor().is_some() {
+                    if self.try_repair_gaps(&mut buffer, &mut resolver, &mut application).await {
+                        self.sync_finalized().await;
+                    }
+                    self.try_dispatch_blocks(&mut application, &mut resolver).await;
+                }
             },
             on_stopped => {
                 debug!("context shutdown, stopping syncer");
@@ -519,7 +603,7 @@ where
         message: Message<P::Scheme, B>,
         resolver: &mut R,
         waiters: &mut BlockWaiters<B>,
-        syncs: &mut Pool<PooledSync<B>>,
+        syncs: &mut Pool<'static, PooledSync<B>>,
         buffer: &mut buffered::Mailbox<K, B>,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
     ) where
@@ -542,6 +626,8 @@ where
                 let info = match identifier {
                     BlockID::Digest(commitment) => self
                         .finalized_blocks
+                        .as_ref()
+                        .expect("block archive unavailable")
                         .get(ArchiveID::Key(&commitment))
                         .await
                         .ok()
@@ -811,25 +897,12 @@ where
                 // the request as we wouldn't know when to drop it, and the request may
                 // never complete if the block is not finalized.
                 if let Some(round) = round {
-                    if self
-                        .floor
+                    // Resolver retention controls remote acquisition, not local
+                    // availability. Keep the subscription even when this fetch
+                    // is denied: later broadcast/ingestion can still satisfy it.
+                    self.floor
                         .fetch_if_permitted(resolver, Request::notarized(round))
-                        .denied()
-                    {
-                        warn!(
-                            ?round,
-                            ?commitment,
-                            last_processed_round = ?self.floor.processed_round(),
-                            last_processed_height = %self.floor.processed_height(),
-                            tip = %self.tip,
-                            "subscription for block in past round that wasn't finalized - possible notarize-nullify race"
-                        );
-
-                        #[cfg(feature = "prom")]
-                        counter!("syncer_stuck_subscription_total").increment(1);
-
-                        return;
-                    }
+                        .ignore();
                     // The fetch (with notarization) was issued. If this is a valid
                     // view, this request should be fine to keep open until
                     // resolution or pruning (even if the oneshot is canceled).
@@ -886,7 +959,7 @@ where
         message: handler::Message<B::Digest>,
         resolver_rx: &mut handler::Receiver<B::Digest>,
         resolver: &mut R,
-        syncs: &mut Pool<PooledSync<B>>,
+        syncs: &mut Pool<'static, PooledSync<B>>,
         buffer: &mut buffered::Mailbox<K, B>,
         application: &mut impl Reporter<Activity = Update<B, P::Scheme, A>>,
     ) where
@@ -1109,23 +1182,31 @@ where
             .take_pending_anchor()
             .expect("pending floor anchor missing");
         let round = finalization.round();
-        try_join!(
+        let blocks = self
+            .finalized_blocks
+            .take()
+            .expect("block archive unavailable");
+        let certificates = self
+            .finalizations_by_height
+            .take()
+            .expect("certificate archive unavailable");
+        let (blocks, certificates) = try_join!(
             async {
-                self.finalized_blocks
+                blocks
                     .put(block.clone())
                     .await
-                    .map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
+                    .map_err(|e| Box::new(e) as BoxedError)
             },
             async {
-                self.finalizations_by_height
+                certificates
                     .put(height, commitment, finalization)
                     .await
-                    .map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
-            }
+                    .map_err(|e| Box::new(e) as BoxedError)
+            },
         )
         .expect("failed to store floor anchor");
+        self.finalized_blocks = Some(blocks);
+        self.finalizations_by_height = Some(certificates);
         self.sync_finalized().await;
         self.notify_subscribers(commitment, &block);
 
@@ -1244,7 +1325,7 @@ where
                 } else {
                     if annotations
                         .iter()
-                        .any(|annotation| matches!(annotation, Annotation::Certified { .. }))
+                        .any(|annotation| matches!(annotation, Annotation::Certified { height: bound } if height <= *bound))
                         && height > self.floor.processed_height()
                         && let Some(bounds) = self.epocher.containing(height)
                     {
@@ -1318,6 +1399,7 @@ where
                     return false;
                 }
                 delivers.push(PendingVerification::Finalized {
+                    scoped: scheme,
                     finalization,
                     block,
                     response,
@@ -1369,6 +1451,7 @@ where
                     return false;
                 }
                 delivers.push(PendingVerification::Notarized {
+                    scoped: scheme,
                     notarization,
                     block,
                     response,
@@ -1427,14 +1510,13 @@ where
                 by_epoch.entry(epoch).or_default().push(i);
             }
 
-            // Batch verify each epoch group.
-            for (epoch, indices) in &by_epoch {
-                let Some(scheme) = self.provider.scoped(*epoch) else {
-                    continue;
-                };
+            // Keep using the scope captured at admission, even if the provider
+            // retired this epoch while the parsed deliveries were queued.
+            for indices in by_epoch.values() {
+                let scheme = delivers[indices[0]].scoped();
                 let group: Vec<_> = indices.iter().map(|&i| certs[i]).collect();
                 let results =
-                    verify_certificates(self.context.as_mut(), &scheme, &group, &self.strategy);
+                    verify_certificates(self.context.as_mut(), scheme, &group, &self.strategy);
                 for (j, &idx) in indices.iter().enumerate() {
                     verified[idx] = results[j];
                 }
@@ -1458,6 +1540,7 @@ where
                     finalization,
                     block,
                     response,
+                    ..
                 } => {
                     // Valid finalization received.
                     response.send_lossy(true);
@@ -1491,6 +1574,7 @@ where
                     notarization,
                     block,
                     response,
+                    ..
                 } => {
                     // Valid notarization received.
                     response.send_lossy(true);
@@ -1686,21 +1770,26 @@ where
     /// [`Self::store_finalization`] / [`Self::try_repair_gaps`] writes, before yielding back
     /// to the loop.
     async fn sync_finalized(&mut self) {
-        if let Err(e) = try_join!(
+        let blocks = self
+            .finalized_blocks
+            .take()
+            .expect("block archive unavailable");
+        let certificates = self
+            .finalizations_by_height
+            .take()
+            .expect("certificate archive unavailable");
+        let (blocks, certificates) = try_join!(
+            async { blocks.sync().await.map_err(|e| Box::new(e) as BoxedError) },
             async {
-                self.finalized_blocks.sync().await.map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
-            },
-            async {
-                self.finalizations_by_height
+                certificates
                     .sync()
                     .await
-                    .map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
+                    .map_err(|e| Box::new(e) as BoxedError)
             },
-        ) {
-            panic!("failed to sync finalization archives: {e}");
-        }
+        )
+        .expect("failed to sync finalization archives");
+        self.finalized_blocks = Some(blocks);
+        self.finalizations_by_height = Some(certificates);
         self.dispatch_gate.clear();
     }
 
@@ -1709,25 +1798,39 @@ where
     /// Stores with a native non-blocking `start_sync` keep the actor responsive
     /// while durability is pending. Stores without one may complete the sync
     /// before returning the handle, as permitted by the storage trait.
-    async fn start_finalized_sync(&mut self, round: Round, syncs: &mut Pool<PooledSync<B>>) {
+    async fn start_finalized_sync(
+        &mut self,
+        round: Round,
+        syncs: &mut Pool<'static, PooledSync<B>>,
+    ) {
         let Some(seq) = self.dispatch_gate.adopt() else {
             return;
         };
-        let (blocks, finalizations) = try_join!(
+        let block_archive = self
+            .finalized_blocks
+            .take()
+            .expect("block archive unavailable");
+        let certificate_archive = self
+            .finalizations_by_height
+            .take()
+            .expect("certificate archive unavailable");
+        let ((block_archive, blocks), (certificate_archive, finalizations)) = try_join!(
             async {
-                let handle = self.finalized_blocks.start_sync().await.map_err(Box::new)?;
-                Ok::<_, BoxedError>(handle)
-            },
-            async {
-                let handle = self
-                    .finalizations_by_height
+                block_archive
                     .start_sync()
                     .await
-                    .map_err(Box::new)?;
-                Ok::<_, BoxedError>(handle)
+                    .map_err(|e| Box::new(e) as BoxedError)
+            },
+            async {
+                certificate_archive
+                    .start_sync()
+                    .await
+                    .map_err(|e| Box::new(e) as BoxedError)
             },
         )
-        .unwrap_or_else(|e| panic!("failed to start finalization archive sync: {e}"));
+        .expect("failed to start finalization archive sync");
+        self.finalized_blocks = Some(block_archive);
+        self.finalizations_by_height = Some(certificate_archive);
         syncs.push(async move {
             let (blocks, finalizations) = join(
                 blocks.durable(round, "finalized blocks"),
@@ -1746,6 +1849,8 @@ where
     async fn get_finalized_block(&self, height: Height) -> Option<B> {
         match self
             .finalized_blocks
+            .as_ref()
+            .expect("block archive unavailable")
             .get(ArchiveID::Index(height.get()))
             .await
         {
@@ -1761,6 +1866,8 @@ where
     ) -> Option<Finalization<P::Scheme, B::Digest>> {
         match self
             .finalizations_by_height
+            .as_ref()
+            .expect("certificate archive unavailable")
             .get(ArchiveID::Index(height.get()))
             .await
         {
@@ -1771,7 +1878,13 @@ where
 
     /// Check whether a finalization exists at `height` without fetching it.
     async fn has_finalization_by_height(&self, height: Height) -> bool {
-        match self.finalizations_by_height.has(height).await {
+        match self
+            .finalizations_by_height
+            .as_ref()
+            .expect("certificate archive unavailable")
+            .has(height)
+            .await
+        {
             Ok(has) => has,
             Err(e) => panic!("failed to check finalization: {e}"),
         }
@@ -1873,31 +1986,49 @@ where
             return false;
         }
 
+        // An imported checkpoint can pin a certificate before its block arrives.
+        // Do not pair that certificate with a different block at the same height.
+        if let Some(existing) = self.get_finalization_by_height(height).await
+            && existing.proposal.payload != commitment
+        {
+            error!(%height, ?commitment, "block conflicts with stored finalization certificate");
+            return false;
+        }
+
         self.notify_subscribers(commitment, &block);
 
         #[cfg(feature = "prom")]
         let store_start = Instant::now();
 
         // In parallel, update the finalized blocks and finalizations archives
-        if let Err(e) = try_join!(
-            // Update the finalized blocks archive
+        let blocks = self
+            .finalized_blocks
+            .take()
+            .expect("block archive unavailable");
+        let certificates = self
+            .finalizations_by_height
+            .take()
+            .expect("certificate archive unavailable");
+        let (blocks, certificates) = try_join!(
             async {
-                self.finalized_blocks.put(block).await.map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
+                blocks
+                    .put(block)
+                    .await
+                    .map_err(|e| Box::new(e) as BoxedError)
             },
-            // Update the finalizations archive (if provided)
             async {
-                if let Some(finalization) = finalization {
-                    self.finalizations_by_height
+                match finalization {
+                    Some(finalization) => certificates
                         .put(height, commitment, finalization)
                         .await
-                        .map_err(Box::new)?;
+                        .map_err(|e| Box::new(e) as BoxedError),
+                    None => Ok(certificates),
                 }
-                Ok::<_, BoxedError>(())
-            }
-        ) {
-            panic!("failed to finalize: {e}");
-        }
+            },
+        )
+        .expect("failed to finalize");
+        self.finalized_blocks = Some(blocks);
+        self.finalizations_by_height = Some(certificates);
 
         self.dispatch_gate.defer(height);
 
@@ -1927,9 +2058,52 @@ where
         true
     }
 
+    /// Recover the round floor independently of the finalizer's startup hint.
+    /// A certificate-only successor must not suppress fetching its missing block.
+    async fn recover_processed_round(&self, height: Height) -> Round {
+        let certificates = self
+            .finalizations_by_height
+            .as_ref()
+            .expect("certificate archive unavailable");
+        let latest = certificates
+            .ranges_from(Height::zero())
+            .filter_map(|(start, end)| (start <= height).then_some(end.min(height)))
+            .max();
+        let mut round = match latest {
+            Some(height) => self
+                .get_finalization_by_height(height)
+                .await
+                .expect("processed certificate missing")
+                .round(),
+            None => Round::zero(),
+        };
+        if height.get() == u64::MAX {
+            return round;
+        }
+        let successor = height.next();
+        if let (Some(block), Some(finalization)) = join(
+            self.get_finalized_block(successor),
+            self.get_finalization_by_height(successor),
+        )
+        .await
+        {
+            assert_eq!(
+                block.digest(),
+                finalization.proposal.payload,
+                "successor block/certificate mismatch"
+            );
+            round = round.max(finalization.round());
+        }
+        round
+    }
+
     /// Get the latest finalized block information (height and commitment tuple).
     async fn get_latest(&mut self) -> Option<(Height, B::Digest)> {
-        let height = self.finalizations_by_height.last_index()?;
+        let height = self
+            .finalizations_by_height
+            .as_ref()
+            .expect("certificate archive unavailable")
+            .last_index()?;
         let finalization = self
             .get_finalization_by_height(height)
             .await
@@ -1954,7 +2128,13 @@ where
             return Some(block);
         }
         // Check finalized blocks.
-        match self.finalized_blocks.get(ArchiveID::Key(&commitment)).await {
+        match self
+            .finalized_blocks
+            .as_ref()
+            .expect("block archive unavailable")
+            .get(ArchiveID::Key(&commitment))
+            .await
+        {
             Ok(block) => block, // may be None
             Err(e) => panic!("failed to get block: {e}"),
         }
@@ -1984,7 +2164,12 @@ where
         let mut wrote = false;
         let start = self.floor.processed_height().next();
         'cache_repair: loop {
-            let (gap_start, Some(gap_end)) = self.finalized_blocks.next_gap(start) else {
+            let (gap_start, Some(gap_end)) = self
+                .finalized_blocks
+                .as_ref()
+                .expect("block archive unavailable")
+                .next_gap(start)
+            else {
                 // No gaps detected
                 return wrote;
             };
@@ -2046,6 +2231,8 @@ where
         // the `max_repair` quota.
         let missing_items = self
             .finalized_blocks
+            .as_ref()
+            .expect("block archive unavailable")
             .missing_items(start, self.max_repair.get());
         let requests: Vec<_> = missing_items.into_iter().map(Request::finalized).collect();
         if !requests.is_empty() {
@@ -2116,47 +2303,64 @@ where
 
     /// Prunes finalized blocks and certificates below the given height.
     async fn prune_finalized_archives(&mut self, height: Height) -> Result<(), BoxedError> {
-        try_join!(
+        let blocks = self
+            .finalized_blocks
+            .take()
+            .expect("block archive unavailable");
+        let certificates = self
+            .finalizations_by_height
+            .take()
+            .expect("certificate archive unavailable");
+        let (blocks, certificates) = try_join!(
             async {
-                self.finalized_blocks
+                blocks
                     .prune(height)
                     .await
-                    .map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
+                    .map_err(|e| Box::new(e) as BoxedError)
             },
             async {
-                self.finalizations_by_height
+                certificates
                     .prune(height)
                     .await
-                    .map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
-            }
+                    .map_err(|e| Box::new(e) as BoxedError)
+            },
         )?;
+        self.finalized_blocks = Some(blocks);
+        self.finalizations_by_height = Some(certificates);
         Ok(())
     }
 
     /// Prunes finalized archives and height-indexed certified cache data below the durable floor.
     async fn prune_after_floor(&mut self, height: Height) -> Result<(), BoxedError> {
         let cache = &mut self.cache;
-        let finalized_blocks = &mut self.finalized_blocks;
-        let finalizations_by_height = &mut self.finalizations_by_height;
-        try_join!(
+        let finalized_blocks = self
+            .finalized_blocks
+            .take()
+            .expect("block archive unavailable");
+        let finalizations_by_height = self
+            .finalizations_by_height
+            .take()
+            .expect("certificate archive unavailable");
+        let (_, blocks, certificates) = try_join!(
             async {
                 cache.prune_by_height(height).await;
                 Ok::<_, BoxedError>(())
             },
             async {
-                finalized_blocks.prune(height).await.map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
+                finalized_blocks
+                    .prune(height)
+                    .await
+                    .map_err(|e| Box::new(e) as BoxedError)
             },
             async {
                 finalizations_by_height
                     .prune(height)
                     .await
-                    .map_err(Box::new)?;
-                Ok::<_, BoxedError>(())
+                    .map_err(|e| Box::new(e) as BoxedError)
             }
         )?;
+        self.finalized_blocks = Some(blocks);
+        self.finalizations_by_height = Some(certificates);
         Ok(())
     }
 }

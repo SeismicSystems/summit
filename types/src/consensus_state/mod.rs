@@ -459,6 +459,20 @@ impl ConsensusState {
         }
     }
 
+    /// Last queued observer setting, used when sizing a restarted network.
+    pub fn prospective_observers_per_validator(&self) -> u32 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|param| match param {
+                ProtocolParam::ObserversPerValidator(value) => {
+                    Some((*value).try_into().expect("observer count exceeds u32"))
+                }
+                _ => None,
+            })
+            .unwrap_or(self.observers_per_validator)
+    }
+
     pub fn get_max_pending_withdrawals_per_validator(&self) -> u64 {
         self.max_pending_withdrawals_per_validator
     }

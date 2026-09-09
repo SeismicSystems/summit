@@ -29,7 +29,7 @@ fn test_single_engine_with_checkpoint() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(42);
@@ -39,6 +39,7 @@ fn test_single_engine_with_checkpoint() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(10),
@@ -147,7 +148,7 @@ fn test_node_joins_later_with_checkpoint() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -157,6 +158,7 @@ fn test_node_joins_later_with_checkpoint() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -395,11 +397,50 @@ fn test_node_joins_later_with_checkpoint() {
 /// the startup replay.
 #[test_traced("INFO")]
 fn test_checkpoint_join_replays_and_seeds_finalized_header() {
+    checkpoint_replay(CheckpointStart::Fresh);
+}
+
+#[derive(Clone, Copy)]
+enum CheckpointStart {
+    Fresh,
+    Existing,
+    CommittedImport,
+    FetchTerminal,
+    AcknowledgedImport,
+    ArchiveConflict,
+}
+
+#[test_traced("WARN")]
+fn test_checkpoint_fast_forward_over_nonempty_finalizer() {
+    checkpoint_replay(CheckpointStart::Existing);
+}
+
+#[test_traced("WARN")]
+fn test_checkpoint_restart_after_import_without_input_files() {
+    checkpoint_replay(CheckpointStart::CommittedImport);
+}
+
+#[test_traced("WARN")]
+fn test_checkpoint_fetches_missing_terminal_block() {
+    checkpoint_replay(CheckpointStart::FetchTerminal);
+}
+
+#[test_traced("WARN")]
+fn test_checkpoint_restart_after_ack_before_terminal_delivery() {
+    checkpoint_replay(CheckpointStart::AcknowledgedImport);
+}
+
+#[test_traced("WARN")]
+fn test_checkpoint_conflicting_syncer_certificate_rejected_before_promotion() {
+    checkpoint_replay(CheckpointStart::ArchiveConflict);
+}
+
+fn checkpoint_replay(start: CheckpointStart) {
     let n = 5;
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
@@ -407,6 +448,7 @@ fn test_checkpoint_join_replays_and_seeds_finalized_header() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -543,11 +585,152 @@ fn test_checkpoint_join_replays_and_seeds_finalized_header() {
         config.checkpoint_last_block = Some(last_block.clone());
         config.checkpoint_finalized_header = Some(source_header.clone());
 
-        let engine = Engine::new(
+        if !matches!(
+            start,
+            CheckpointStart::Fresh | CheckpointStart::FetchTerminal
+        ) {
+            let cache = commonware_runtime::buffer::paged::CacheRef::from_pooler(
+                &context,
+                commonware_utils::NZU16!(4096),
+                NZUsize!(1024),
+            );
+            let mut db = summit_finalizer::db::FinalizerState::<
+                _,
+                commonware_cryptography::bls12381::primitives::variant::MinPk,
+            >::new(
+                context.child("seed_import"),
+                summit_finalizer::db::config(&uid, cache),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+            // A genuine nonempty database, not an empty-store checkpoint boot.
+            db.store_consensus_state(initial_state.get_epoch(), &initial_state)
+                .await
+                .unwrap();
+            db.commit().await.unwrap();
+            if matches!(
+                start,
+                CheckpointStart::CommittedImport | CheckpointStart::AcknowledgedImport
+            ) {
+                let block = if matches!(start, CheckpointStart::AcknowledgedImport) {
+                    None
+                } else {
+                    Some(last_block.clone())
+                };
+                summit_finalizer::startup::prepare(
+                    &mut db,
+                    &mut config.engine_client,
+                    checkpoint_state.clone(),
+                    Some(source_header.clone()),
+                    block,
+                    config.config_digest,
+                )
+                .await
+                .unwrap();
+                // Model restart before the syncer starts. Only durable storage
+                // remains; no checkpoint artifacts are supplied to the engine.
+                config.initial_state = initial_state.clone();
+                config.checkpoint_last_block = None;
+                config.checkpoint_finalized_header = None;
+            }
+        }
+        if matches!(start, CheckpointStart::AcknowledgedImport) {
+            // Model the next crash boundary: application floor persisted, but
+            // the terminal block has not arrived or been delivered yet.
+            let metadata = commonware_storage::metadata::Metadata::<
+                _,
+                commonware_utils::sequence::U64,
+                commonware_consensus::types::Height,
+            >::init(
+                context.child("seed_ack"),
+                commonware_storage::metadata::Config {
+                    partition: format!("{uid}-application-metadata"),
+                    codec_config: (),
+                },
+            )
+            .await
+            .unwrap();
+            metadata
+                .put_sync(
+                    commonware_utils::sequence::U64::new(0xFF),
+                    commonware_consensus::types::Height::new(checkpoint_state.get_latest_height()),
+                )
+                .await
+                .unwrap();
+        }
+        if matches!(
+            start,
+            CheckpointStart::FetchTerminal | CheckpointStart::AcknowledgedImport
+        ) {
+            config.checkpoint_last_block = None;
+            common::link_validators(
+                &mut oracle,
+                &node_public_keys,
+                link,
+                Some(|n, from, to| from == n - 1 || to == n - 1),
+            )
+            .await;
+        }
+
+        if matches!(start, CheckpointStart::ArchiveConflict) {
+            use commonware_consensus::marshal::store::Certificates as _;
+            let cache = commonware_runtime::buffer::paged::CacheRef::from_pooler(
+                &context,
+                commonware_utils::NZU16!(4096),
+                NZUsize!(1024),
+            );
+            let (certificates, _) =
+                crate::engine::open_syncer_archives(&context, &uid, cache).await;
+            let mut conflict = source_header.finalization().clone();
+            conflict.proposal.payload = [42; 32].into();
+            certificates
+                .put(
+                    commonware_consensus::types::Height::new(last_block.height()),
+                    conflict.proposal.payload,
+                    conflict,
+                )
+                .await
+                .unwrap()
+                .sync()
+                .await
+                .unwrap();
+        }
+        let init = Engine::new(
             context.child("engine").with_attribute("uid", uid.clone()),
             config,
-        )
-        .await;
+        );
+        if matches!(start, CheckpointStart::ArchiveConflict) {
+            assert!(
+                futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(init))
+                    .await
+                    .is_err()
+            );
+            let cache = commonware_runtime::buffer::paged::CacheRef::from_pooler(
+                &context,
+                commonware_utils::NZU16!(4096),
+                NZUsize!(1024),
+            );
+            let db = summit_finalizer::db::FinalizerState::<
+                _,
+                commonware_cryptography::bls12381::primitives::variant::MinPk,
+            >::new(
+                context.child("verify_rejected_import"),
+                summit_finalizer::db::config(&uid, cache),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+            assert_eq!(
+                db.get_latest_consensus_state()
+                    .await
+                    .unwrap()
+                    .get_latest_height(),
+                0
+            );
+            assert!(db.get_checkpoint_import().await.unwrap().is_none());
+            assert!(db.get_pending_import().await.unwrap().is_none());
+            return context.auditor().state();
+        }
+        let engine = init.await;
         let joiner_query = engine.finalizer_mailbox.clone();
         let (pending, recovered, resolver, orchestrator, broadcast) =
             late_registrations.remove(&public_key).unwrap();
@@ -601,7 +784,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -611,6 +794,7 @@ fn test_node_joins_later_with_checkpoint_not_in_genesis() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times

@@ -96,7 +96,6 @@ where
     timeout_retry: Duration,
     fetch_timeout: Duration,
     activity_timeout: ViewDelta,
-    skip_timeout: ViewDelta,
 
     _strategy: std::marker::PhantomData<St>,
 }
@@ -132,7 +131,6 @@ where
                 timeout_retry: config.timeout_retry,
                 fetch_timeout: config.fetch_timeout,
                 activity_timeout: config.activity_timeout,
-                skip_timeout: config.skip_timeout,
                 _strategy: std::marker::PhantomData,
             },
             Mailbox::new(sender),
@@ -376,11 +374,11 @@ where
                 certification_timeout: self.certification_timeout,
                 timeout_retry: self.timeout_retry,
                 fetch_timeout: self.fetch_timeout,
-                activity_timeout: self.activity_timeout,
-                skip_timeout: self.skip_timeout,
-                fetch_concurrent: NZUsize!(2),
+                view_retention: self.activity_timeout,
+                skip: simplex::SkipPolicy::Disabled,
+                track_historical_votes: true,
                 page_cache: self.page_cache.clone(),
-                forwarding: simplex::ForwardingPolicy::SilentVoters,
+                forward: simplex::ForwardPolicy::SilentVoters,
             },
         );
 
