@@ -87,6 +87,19 @@ fn process(state: &mut ConsensusState, entries: &[Bytes]) {
     state.process_buffered_requests(domain(), WARM_UP, PAYOUT_DELAY);
 }
 
+// Boundary ordering mirrors the finalizer: apply params, transition committee,
+// advance epoch, then retire consumed deltas. Payout tests apply terminal-block
+// payouts explicitly before calling this helper.
+fn advance_epoch(state: &mut ConsensusState) {
+    state.apply_protocol_parameter_changes().unwrap();
+    state.apply_committee_transition(&key(99_999));
+    let next = state.get_epoch() + 1;
+    state.set_epoch(next);
+    state.remove_added_validators_for_epoch(next);
+    state.clear_removed_validators();
+    assert_tree_consistent(state);
+}
+
 fn status(state: &ConsensusState, seed: u64) -> ValidatorStatus {
     state
         .get_account(&account_key(seed))
@@ -414,5 +427,371 @@ fn prospective_raise_and_funded_inactive_accounts_survive_restore() {
         assert_eq!(status(&restored, 4), ValidatorStatus::Inactive);
         assert_eq!(restored.active_or_joining_validator_count(), 2);
         assert_tree_consistent(&restored);
+    }
+}
+
+#[test]
+fn deposit_backlog_uses_processing_epoch_cap_and_preserves_fifo() {
+    for (old_cap, new_cap) in [(1, 2), (3, 1)] {
+        let mut state = state(old_cap);
+        state.set_max_deposits_per_epoch(1);
+        seed_active(&mut state, 1);
+        process(
+            &mut state,
+            &[deposit_entry(2, MIN, 0), deposit_entry(3, MIN, 1)],
+        );
+        assert_eq!(state.deposit_count(), 1);
+        assert!(state.get_account(&account_key(3)).is_none());
+        assert_eq!(
+            status(&state, 2),
+            if old_cap == 1 {
+                ValidatorStatus::Inactive
+            } else {
+                ValidatorStatus::Joining
+            }
+        );
+        advance_epoch(&mut state);
+
+        // The older, still-uncredited deposit competes under the new cap, ahead
+        // of the newly submitted deposit. The first deposit is never retried.
+        process(
+            &mut state,
+            &[deposit_entry(4, MIN, 2), param_entry(0x0a, new_cap)],
+        );
+        assert_eq!(
+            status(&state, 3),
+            if new_cap == 2 {
+                ValidatorStatus::Joining
+            } else {
+                ValidatorStatus::Inactive
+            }
+        );
+        assert!(state.get_account(&account_key(4)).is_none());
+        assert_eq!(state.deposit_count(), 1);
+        assert_eq!(state.get_deposit(0).unwrap().index, 2);
+        assert_eq!(state.get_account(&account_key(2)).unwrap().balance, MIN);
+        advance_epoch(&mut state);
+        process(&mut state, &[]);
+        assert_eq!(status(&state, 4), ValidatorStatus::Inactive);
+        assert_eq!(state.deposit_count(), 0);
+        advance_epoch(&mut state);
+        process(&mut state, &[]);
+        for seed in [2, 3, 4] {
+            assert_eq!(state.get_account(&account_key(seed)).unwrap().balance, MIN);
+        }
+        assert_eq!(state.active_or_joining_validator_count(), 2);
+        assert_tree_consistent(&state);
+    }
+}
+
+#[test]
+fn terminal_block_cap_update_is_deferred_and_precedes_next_epoch_updates() {
+    for final_cap in [2, 3] {
+        let mut state = state(2);
+        seed_active(&mut state, 1);
+        seed_active(&mut state, 2);
+        process(&mut state, &[deposit_entry(3, MIN, 0)]); // Epoch 0 penultimate.
+        assert_eq!(status(&state, 3), ValidatorStatus::Inactive);
+        // These arrive on epoch 0's terminal block: buffer, but do not process.
+        state.buffer_execution_requests(&[
+            param_entry(0x07, 3),
+            param_entry(0x0a, 3),
+            withdrawal_entry(1, 0, true),
+            deposit_entry(4, MIN, 1),
+        ]);
+        advance_epoch(&mut state);
+        assert_eq!(state.get_max_validator_count(), 2);
+        assert_eq!(state.get_minimum_validator_count(), 1);
+        assert_eq!(status(&state, 1), ValidatorStatus::Active);
+        assert_eq!(status(&state, 3), ValidatorStatus::Inactive);
+        assert!(state.get_account(&account_key(4)).is_none());
+
+        let entries = if final_cap == 2 {
+            vec![
+                param_entry(0x07, 1),
+                param_entry(0x0a, 2),
+                deposit_entry(5, MIN, 2),
+            ]
+        } else {
+            vec![deposit_entry(5, MIN, 2)]
+        };
+        process(&mut state, &entries); // Epoch 1 penultimate.
+        // Without an override, minimum=3 rejects the exit; with the later pair,
+        // minimum=1 permits it. Exactly one deposit gets a slot in either case.
+        assert_eq!(
+            status(&state, 1),
+            if final_cap == 2 {
+                ValidatorStatus::SubmittedExitRequest
+            } else {
+                ValidatorStatus::Active
+            }
+        );
+        assert_eq!(status(&state, 4), ValidatorStatus::Joining);
+        assert_eq!(
+            state.get_account(&account_key(4)).unwrap().joining_epoch,
+            1 + WARM_UP
+        );
+        assert_eq!(status(&state, 5), ValidatorStatus::Inactive);
+        assert_eq!(state.get_withdrawal_count_for_epoch(PAYOUT_DELAY), 0);
+        assert_eq!(
+            state.get_withdrawal_count_for_epoch(1 + PAYOUT_DELAY),
+            usize::from(final_cap == 2)
+        );
+        advance_epoch(&mut state);
+        assert_eq!(state.get_max_validator_count(), final_cap);
+        assert_eq!(
+            state.get_minimum_validator_count(),
+            if final_cap == 2 { 1 } else { 3 }
+        );
+    }
+}
+
+#[test]
+fn stake_enforcement_after_admission_does_not_retry_cap_blocked_deposits() {
+    for joining in [false, true] {
+        for accepted in [false, true] {
+            let mut state = state(3);
+            seed_active(&mut state, 1);
+            seed_active(&mut state, 2);
+            if joining {
+                process(&mut state, &[deposit_entry(3, MIN, 0)]);
+            } else {
+                seed_active(&mut state, 3);
+                let mut account = state.get_account(&account_key(3)).unwrap().clone();
+                account.balance = MIN;
+                state.set_account(account_key(3), account);
+            }
+            advance_epoch(&mut state);
+            process(
+                &mut state,
+                &[
+                    deposit_entry(4, MIN + 10, 1),
+                    param_entry(0x07, if accepted { 2 } else { 3 }),
+                    param_entry(0x00, MIN + 1),
+                ],
+            );
+            assert_eq!(status(&state, 4), ValidatorStatus::Inactive);
+            state.enforce_minimum_stake(); // Production ordering: after deposits.
+            if joining {
+                assert_eq!(state.has_added_validators(WARM_UP), !accepted);
+            } else {
+                assert_eq!(state.get_removed_validators().contains(&key(3)), accepted);
+            }
+            assert_eq!(status(&state, 4), ValidatorStatus::Inactive);
+            advance_epoch(&mut state);
+            assert_eq!(
+                state.get_minimum_stake(),
+                if accepted { MIN + 1 } else { MIN }
+            );
+            assert_eq!(
+                status(&state, 3),
+                if accepted {
+                    ValidatorStatus::Inactive
+                } else {
+                    ValidatorStatus::Active
+                }
+            );
+            assert_eq!(
+                state.active_or_joining_validator_count(),
+                if accepted { 2 } else { 3 }
+            );
+            process(&mut state, &[deposit_entry(4, 1, 2)]);
+            assert_eq!(
+                status(&state, 4),
+                if accepted {
+                    ValidatorStatus::Joining
+                } else {
+                    ValidatorStatus::Inactive
+                }
+            );
+            assert_tree_consistent(&state);
+        }
+    }
+}
+
+#[test]
+fn grandfathered_membership_must_fall_below_cap_before_admitting_replacements() {
+    let mut state = state(4);
+    for seed in 1..=4 {
+        seed_active(&mut state, seed);
+    }
+    process(&mut state, &[param_entry(0x0a, 2)]);
+    advance_epoch(&mut state);
+    assert_eq!(state.active_or_joining_validator_count(), 4);
+    // After each accepted exit the pre-deposit count is 3, 2, then 1.
+    for exiting in 1..=3 {
+        process(
+            &mut state,
+            &[
+                withdrawal_entry(exiting, 0, true),
+                deposit_entry(4 + exiting, MIN, (exiting - 1) * 2),
+                deposit_entry(8 + exiting, MIN, (exiting - 1) * 2 + 1),
+            ],
+        );
+        assert_eq!(
+            status(&state, 4 + exiting),
+            if exiting == 3 {
+                ValidatorStatus::Joining
+            } else {
+                ValidatorStatus::Inactive
+            }
+        );
+        assert_eq!(status(&state, 8 + exiting), ValidatorStatus::Inactive);
+        assert_eq!(
+            state.active_or_joining_validator_count(),
+            if exiting == 1 { 3 } else { 2 }
+        );
+        // Apply any due terminal payouts before boundary transition.
+        let payouts = state.emit_withdrawal_payouts(state.get_epoch());
+        state.apply_withdrawal_payouts(state.get_epoch(), &payouts);
+        advance_epoch(&mut state);
+    }
+}
+
+#[test]
+fn delayed_exit_payout_topup_and_redeposit_do_not_reclaim_replacement_slot() {
+    let mut state = state(2);
+    state.set_max_withdrawals_per_epoch(1);
+    seed_active(&mut state, 1); // A: exits.
+    seed_active(&mut state, 2); // Remains active and supplies the earlier payout.
+    process(
+        &mut state,
+        &[
+            withdrawal_entry(2, 1, true),
+            withdrawal_entry(1, 0, true),
+            deposit_entry(3, MIN, 0), // B: replacement reserves A's slot.
+        ],
+    );
+    assert_eq!(status(&state, 1), ValidatorStatus::SubmittedExitRequest);
+    assert_eq!(status(&state, 3), ValidatorStatus::Joining);
+    advance_epoch(&mut state);
+    assert_eq!(status(&state, 1), ValidatorStatus::FullPayoutPending);
+    advance_epoch(&mut state);
+    assert_eq!(status(&state, 3), ValidatorStatus::Active);
+
+    let first = state.emit_withdrawal_payouts(PAYOUT_DELAY);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].amount, 1);
+    state.apply_withdrawal_payouts(PAYOUT_DELAY, &first);
+    assert_eq!(state.get_account(&account_key(2)).unwrap().balance, MIN + 9);
+    assert_eq!(
+        state.get_account(&account_key(1)).unwrap().balance,
+        MIN + 10
+    );
+    assert_eq!(state.get_withdrawal_count_for_epoch(PAYOUT_DELAY), 1);
+    advance_epoch(&mut state);
+
+    // A's payout was deferred by the payout cap; next epoch's deposit is still
+    // only a top-up to that exit balance, not a new admission.
+    process(&mut state, &[deposit_entry(1, 5, 1)]);
+    assert_eq!(status(&state, 1), ValidatorStatus::FullPayoutPending);
+    assert_eq!(state.active_or_joining_validator_count(), 2);
+    assert!(!state.has_added_validators(state.get_epoch() + WARM_UP));
+    let second = state.emit_withdrawal_payouts(state.get_epoch());
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].amount, MIN + 15);
+    state.apply_withdrawal_payouts(state.get_epoch(), &second);
+    assert!(state.get_account(&account_key(1)).is_none());
+    assert_eq!(state.get_withdrawal_count_for_epoch(PAYOUT_DELAY), 0);
+    advance_epoch(&mut state);
+
+    process(&mut state, &[deposit_entry(1, MIN, 2)]);
+    assert_eq!(status(&state, 1), ValidatorStatus::Inactive);
+    assert_eq!(state.get_account(&account_key(1)).unwrap().balance, MIN);
+    assert_eq!(status(&state, 3), ValidatorStatus::Active);
+    assert_eq!(state.active_or_joining_validator_count(), 2);
+    assert!(state.emit_withdrawal_payouts(state.get_epoch()).is_empty());
+    assert_tree_consistent(&state);
+}
+
+#[test]
+fn rejected_deposits_do_not_consume_final_slot() {
+    for key_mismatch in [false, true] {
+        let mut state = state(2);
+        seed_active(&mut state, 1);
+        let mut rejected = if key_mismatch {
+            make_signed_deposit(
+                &ed25519::PrivateKey::from_seed(2),
+                &bls12381::PrivateKey::from_seed(1),
+                eth1_credentials(1),
+                MIN,
+                0,
+                domain(),
+            )
+        } else {
+            deposit(2, MIN, 0)
+        };
+        if !key_mismatch {
+            rejected.node_signature[0] ^= 1;
+        }
+        let mut bytes = vec![0x00];
+        rejected.write(&mut bytes);
+        process(&mut state, &[bytes.into(), deposit_entry(3, MIN, 1)]);
+        assert!(state.get_account(&account_key(2)).is_none());
+        assert_eq!(status(&state, 3), ValidatorStatus::Joining);
+        assert_eq!(state.active_or_joining_validator_count(), 2);
+        assert_eq!(state.get_added_validators(WARM_UP).unwrap().len(), 1);
+        let refunds = state.get_withdrawals_for_epoch(PAYOUT_DELAY);
+        assert!(!refunds.is_empty());
+        assert_eq!(refunds.iter().map(|w| w.inner.amount).sum::<u64>(), MIN);
+        assert_tree_consistent(&state);
+    }
+}
+
+#[test]
+fn repeated_joining_topups_at_capacity_preserve_single_original_reservation() {
+    let mut state = state(2);
+    seed_active(&mut state, 1);
+    process(&mut state, &[deposit_entry(2, MIN, 0)]);
+    advance_epoch(&mut state);
+    process(
+        &mut state,
+        &[
+            deposit_entry(2, 1, 1),
+            deposit_entry(2, 2, 2),
+            deposit_entry(3, MIN, 3),
+        ],
+    );
+    assert_eq!(state.get_account(&account_key(2)).unwrap().balance, MIN + 3);
+    assert_eq!(
+        state.get_account(&account_key(2)).unwrap().joining_epoch,
+        WARM_UP
+    );
+    assert_eq!(state.get_added_validators(WARM_UP).unwrap().len(), 1);
+    assert!(!state.has_added_validators(1 + WARM_UP));
+    assert_eq!(status(&state, 3), ValidatorStatus::Inactive);
+    advance_epoch(&mut state);
+    assert_eq!(status(&state, 2), ValidatorStatus::Active);
+    assert_eq!(state.active_or_joining_validator_count(), 2);
+}
+
+#[test]
+fn invalid_cap_update_does_not_override_last_valid_pair() {
+    let mut malformed = vec![0xff];
+    ProtocolParamRequest {
+        param_id: 0x0a,
+        param: vec![2; 7],
+    }
+    .write(&mut malformed);
+    for invalid in [
+        param_entry(0x0a, 0),
+        param_entry(0x0a, 4097),
+        malformed.into(),
+    ] {
+        let mut state = state(1);
+        seed_active(&mut state, 1);
+        process(
+            &mut state,
+            &[
+                deposit_entry(2, MIN, 0),
+                param_entry(0x07, 2),
+                param_entry(0x0a, 2),
+                invalid,
+            ],
+        );
+        assert_eq!(status(&state, 2), ValidatorStatus::Joining);
+        advance_epoch(&mut state);
+        assert_eq!(state.get_minimum_validator_count(), 2);
+        assert_eq!(state.get_max_validator_count(), 2);
     }
 }
