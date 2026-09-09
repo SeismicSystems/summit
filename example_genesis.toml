@@ -27,7 +27,7 @@ treasury_address = "0x0000000000000000000000000000000000000000"
 max_deposits_per_epoch = 3
 max_withdrawals_per_epoch = 16
 observers_per_validator = 16
-max_validator_count = 256
+max_validator_count = 128
 minimum_validator_count = 3
 invalid_deposit_tax = 0
 

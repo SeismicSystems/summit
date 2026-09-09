@@ -24,7 +24,7 @@
 - Requests included in the last block of epoch E remain buffered until the penultimate block of E+1. An accepted exit then occurs at the end of E+1, with payout scheduled for epoch **E + 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**, subject to the withdrawal cap.
 
 ## Validator Count Limits
-- **MAX_VALIDATOR_COUNT** defaults to 256 and limits admission of **Active + Joining** validators, not the total number of stored accounts. Joining validators reserve a slot throughout warm-up.
+- **MAX_VALIDATOR_COUNT** defaults to 128 and limits admission of **Active + Joining** validators, not the total number of stored accounts. Joining validators reserve a slot throughout warm-up.
 - At epoch processing, the final proposed **MINIMUM_VALIDATOR_COUNT** and **MAX_VALIDATOR_COUNT** are evaluated together, using the last valid request for each. If minimum exceeds maximum, all updates to those two parameters in the pending batch are discarded before withdrawal or deposit decisions; the existing pair remains in effect. Unrelated parameter updates are retained. Valid paired changes are independent of request ordering.
 - Lowering the maximum does not evict active validators or cancel previously reserved activations. Membership may exceed the new maximum until validators leave; further admissions are blocked in the meantime.
 - Raising the maximum does not automatically activate funded inactive accounts. Another valid deposit must trigger admission, and any pending withdrawal still prevents reactivation.
