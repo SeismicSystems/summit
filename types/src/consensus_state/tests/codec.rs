@@ -407,6 +407,7 @@ fn test_decode_rejects_out_of_range_max_validator_count() {
     for valid in [MIN_MAX_VALIDATOR_COUNT, MAX_MAX_VALIDATOR_COUNT] {
         let mut state = ConsensusState::default();
         state.max_validator_count = valid;
+        state.set_minimum_validator_count(1);
         let encoded = state.encode();
         let decoded = ConsensusState::read(&mut encoded.as_ref())
             .unwrap_or_else(|_| panic!("valid max_validator_count {valid} should decode"));
@@ -422,6 +423,15 @@ fn test_decode_rejects_out_of_range_max_validator_count() {
             "max_validator_count {invalid} should be rejected on decode"
         );
     }
+}
+
+#[test]
+fn test_decode_rejects_minimum_validator_count_above_maximum() {
+    let mut state = ConsensusState::default();
+    state.set_minimum_validator_count(state.get_max_validator_count() + 1);
+    assert!(ConsensusState::decode(state.encode()).is_err());
+    let checkpoint = crate::checkpoint::Checkpoint::new(&state);
+    assert!(ConsensusState::try_from(&checkpoint).is_err());
 }
 
 #[test]

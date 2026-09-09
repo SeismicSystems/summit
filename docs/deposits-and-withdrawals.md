@@ -23,6 +23,15 @@
 - An invalid deposit may create separate refund and treasury withdrawals. Each withdrawal consumes one slot under the payout cap.
 - Requests included in the last block of epoch E remain buffered until the penultimate block of E+1. An accepted exit then occurs at the end of E+1, with payout scheduled for epoch **E + 1 + VALIDATOR_WITHDRAWAL_NUM_EPOCHS**, subject to the withdrawal cap.
 
+## Validator Count Limits
+- **MAX_VALIDATOR_COUNT** defaults to 256 and limits admission of **Active + Joining** validators, not the total number of stored accounts. Joining validators reserve a slot throughout warm-up.
+- At epoch processing, the final proposed **MINIMUM_VALIDATOR_COUNT** and **MAX_VALIDATOR_COUNT** are evaluated together, using the last valid request for each. If minimum exceeds maximum, all updates to those two parameters in the pending batch are discarded before withdrawal or deposit decisions; the existing pair remains in effect. Unrelated parameter updates are retained. Valid paired changes are independent of request ordering.
+- Lowering the maximum does not evict active validators or cancel previously reserved activations. Membership may exceed the new maximum until validators leave; further admissions are blocked in the meantime.
+- Raising the maximum does not automatically activate funded inactive accounts. Another valid deposit must trigger admission, and any pending withdrawal still prevents reactivation.
+- Withdrawals are processed before queued deposits are credited. An accepted active full exit or joining-validator cancellation frees an admission slot for that batch; a rejected withdrawal or active partial withdrawal does not. Deposits compete for available slots in deposit-queue order.
+- A withdrawal for an account first created by a deposit in that same batch is dropped because the account does not yet exist. The deposit is still credited; a later authorized withdrawal can reclaim it. Cap-blocked inactive accounts can withdraw without the active-validator minimum-balance floor.
+- Stored state must have minimum no greater than maximum. However, membership can legitimately exceed the stored maximum after a reduction or while a queued increase is already being used for admission. Checkpoint recovery and network sizing must account for those cases.
+
 ## Validator Balance
 - All active validators must have a balance of at least **MINIMUM_STAKE**.
 - There is no upper limit on validator balance, however, there is no advantage (such as higher chance of becoming a leader) in having a balance that exceeds **MINIMUM_STAKE**.
