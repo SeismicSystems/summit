@@ -314,11 +314,31 @@ where
             view: sync_view,
         } = sync_start;
         // Ordinary restart is driven by durable application acknowledgements,
-        // never by the finalizer's potentially newer execution position. Only
-        // an explicitly supplied checkpoint can authorize skipping deliveries.
-        let recovered_height = self.stream.processed_height().unwrap_or(Height::zero());
-        if self.stream.processed_height().is_none() {
-            self.stream.acknowledge(Height::zero());
+        // clamped to the consensus state the finalizer actually recovered. The
+        // finalizer acknowledges blocks it has only applied in memory and
+        // persists its consensus state once per epoch, so after a mid-epoch
+        // restart the durable acknowledgements run ahead of the finalizer's
+        // reloaded height. Deliveries above that height must be replayed (the
+        // delivery contract is at-least-once), never skipped: the first
+        // skipped dispatch would not extend the finalizer's canonical head and
+        // it would fail stop. Skipping deliveries beyond the finalizer's
+        // recovered height still requires an explicitly supplied checkpoint.
+        let durable_height = self.stream.processed_height();
+        let finalizer_height = Height::new(sync_height);
+        let recovered_height = durable_height
+            .unwrap_or(Height::zero())
+            .min(finalizer_height);
+        if let Some(durable) = durable_height
+            && durable > finalizer_height
+        {
+            warn!(
+                %durable,
+                sync_height,
+                "durable acknowledgements ahead of recovered finalizer state; rewinding for replay"
+            );
+        }
+        if durable_height != Some(recovered_height) {
+            self.stream.acknowledge(recovered_height);
             self.stream
                 .sync()
                 .await

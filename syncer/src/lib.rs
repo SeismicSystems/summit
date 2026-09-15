@@ -2362,6 +2362,78 @@ mod tests {
         });
     }
 
+    /// Model the inverse crash: acknowledgements became durable past the
+    /// finalizer's persisted state (it persists once per epoch, but
+    /// acknowledges every applied block), so on restart the finalizer reloads
+    /// an older height. The delivery cursor must rewind to the finalizer's
+    /// height and replay the tail; skipping it would hand the finalizer a
+    /// block that does not extend its canonical head and fail stop the node.
+    #[test_traced("WARN")]
+    fn test_restart_rewinds_durable_ack_to_finalizer_start_height() {
+        use commonware_consensus::{Heightable as _, Viewable as _};
+        let runner = deterministic::Runner::timed(Duration::from_secs(60));
+        let ((validator, scheme, second), recovered) =
+            runner.start_and_recover(|mut context| async move {
+                let mut oracle = setup_network(context.child("network"), NZUsize!(1));
+                let Fixture {
+                    participants,
+                    schemes,
+                    ..
+                } = bls12381_threshold::<V, _>(&mut context, NUM_VALIDATORS);
+                let validator = participants[0].clone();
+                let scheme = schemes[0].clone();
+                let (application, mut mailbox, handle) = setup_validator_with_prefix(
+                    context.child("validator"),
+                    &mut oracle,
+                    validator.clone(),
+                    ConstantProvider::new(scheme.clone()),
+                    "ack-rewind",
+                )
+                .await;
+                let first = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
+                let second = B::new::<Sha256>(first.digest(), Height::new(2), 2);
+                for block in [&first, &second] {
+                    let round = Round::new(Epoch::zero(), block.view());
+                    assert!(mailbox.verified(round, block.clone()).await);
+                    let _ = mailbox.report(Activity::Finalization(make_finalization(
+                        Proposal::new(round, View::new(block.height().get() - 1), block.digest()),
+                        &schemes,
+                        QUORUM,
+                    )));
+                }
+                // Both acknowledgements are durable once the processed height reads 2.
+                while mailbox.get_processed_height().await != Some(Height::new(2)) {
+                    context.sleep(Duration::from_millis(10)).await;
+                }
+                assert_eq!(application.blocks().len(), 2);
+                handle.abort();
+                let _ = handle.await;
+                (validator, scheme, second)
+            });
+        deterministic::Runner::from(recovered).start(|context| async move {
+            let mut oracle = setup_network(context.child("restart_network"), NZUsize!(1));
+            // The finalizer recovered its once-per-epoch persisted state at
+            // height 1, one block behind the durable acknowledgements.
+            let (application, mailbox, _handle) = setup_validator_with_start(
+                context.child("restart_validator"),
+                &mut oracle,
+                validator,
+                ConstantProvider::new(scheme),
+                "ack-rewind",
+                SyncStart {
+                    height: 1,
+                    epoch: 0,
+                    view: 1,
+                },
+            )
+            .await;
+            while mailbox.get_processed_height().await != Some(Height::new(2)) {
+                context.sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(application.blocks(), BTreeMap::from([(2, second)]));
+        });
+    }
+
     /// Port of marshal's fatal durability policy: a real sync failure must
     /// panic rather than become a recoverable `false` verification verdict.
     #[test_traced("WARN")]
