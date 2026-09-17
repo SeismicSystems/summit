@@ -9,7 +9,6 @@ use super::{
         handler::{self, Annotation, Key, Request},
         mailbox::{Identifier as BlockID, Mailbox, Message},
     },
-    stream::Stream,
 };
 use crate::{Update, variant::Buffer as _};
 use bytes::Bytes;
@@ -162,8 +161,8 @@ where
     last_proposed_block: Option<(Round, B::Digest, B)>,
     // Current processed floor and any pending floor update
     floor: Floor<P::Scheme, B::Digest>,
-    // Application delivery cursor
-    stream: Stream<E>,
+    // Startup recovery baseline; live acknowledgements and floor skips never advance it.
+    recovery_height: Height,
     // Pending application acknowledgements
     pending_acks: PendingAcks<B, A>,
     // Highest known finalized height
@@ -226,15 +225,6 @@ where
         )
         .await;
 
-        // Initialize metadata tracking application progress
-        let application_metadata_partition =
-            format!("{}-application-metadata", config.partition_prefix);
-        let stream = Stream::new(
-            context.child("application_metadata"),
-            &application_metadata_partition,
-        )
-        .await;
-
         // Create metrics
         let finalized_height = context.gauge("finalized_height", "Finalized height of application");
         let processed_height = context.gauge("processed_height", "Processed height of application");
@@ -253,7 +243,7 @@ where
                 strategy: config.strategy,
                 last_proposed_block: None,
                 floor: Floor::resolved(None, Round::zero()),
-                stream,
+                recovery_height: Height::zero(),
                 pending_acks: PendingAcks::new(config.max_pending_acks.get()),
                 tip: Height::zero(),
                 block_subscriptions: BTreeMap::new(),
@@ -313,24 +303,19 @@ where
             epoch: sync_epoch,
             view: sync_view,
         } = sync_start;
-        // Ordinary restart is driven by durable application acknowledgements,
-        // never by the finalizer's potentially newer execution position. Only
-        // an explicitly supplied checkpoint can authorize skipping deliveries.
-        let recovered_height = self.stream.processed_height().unwrap_or(Height::zero());
-        if self.stream.processed_height().is_none() {
-            self.stream.acknowledge(Height::zero());
-            self.stream
-                .sync()
-                .await
-                .expect("failed to initialize application progress");
-        }
-        self.floor.set_processed_height(recovered_height);
+        // Replay starts after the state actually selected by the finalizer, not
+        // after independently persisted delivery acknowledgements. Legacy
+        // *-application-metadata partitions are intentionally never opened.
+        let recovered_height = Height::new(sync_height);
+        self.recovery_height = recovered_height;
+        self.update_processed_height(recovered_height, &mut resolver);
         let recovered_round = self.recover_processed_round(recovered_height).await;
         self.floor.set_processed_round(recovered_round);
         self.tip = recovered_height;
-        info!(sync_height, sync_epoch, sync_view, processed_height = %recovered_height, "syncer initialized from durable acknowledgements");
+        let _ = self.finalized_height.try_set(recovered_height.get());
+        info!(sync_height, sync_epoch, sync_view, processed_height = %recovered_height, "syncer initialized from finalizer state");
 
-        // Only a durable finalizer import authorizes skipping application history.
+        // Keep the durable import's terminal block/certificate available for replay.
         if let Some(checkpoint) = checkpoint {
             let checkpoint_floor = checkpoint.processed_height;
             let height = Height::new(checkpoint.finalized_header.header().height());
@@ -410,20 +395,7 @@ where
                 }
                 self.sync_finalized().await;
             }
-            if checkpoint_floor > recovered_height {
-                self.update_processed_height(checkpoint_floor, &mut resolver);
-                let round = self.recover_processed_round(checkpoint_floor).await;
-                self.floor.set_processed_round(round);
-                self.stream
-                    .sync()
-                    .await
-                    .expect("failed to persist checkpoint application floor");
-            }
         }
-
-        let _ = self
-            .processed_height
-            .try_set(self.floor.processed_height().get());
 
         // Create a local pool for waiter futures.
         let mut waiters = BlockWaiters::<B>::default();
@@ -435,8 +407,8 @@ where
         let tip = self.get_latest().await;
         if let Some((height, commitment)) = tip {
             application.report(Update::Tip(height.get(), commitment));
-            self.tip = height;
-            let _ = self.finalized_height.try_set(height.get());
+            self.tip = self.tip.max(height);
+            let _ = self.finalized_height.try_set(self.tip.get());
         }
 
         // Load persisted cache epochs so find_block can discover blocks
@@ -509,7 +481,7 @@ where
                     }
                 }
             },
-            // Handle application acknowledgements (drain all ready acks, sync once)
+            // Handle application acknowledgements (drain all ready acks)
             result = self.pending_acks.current() => {
                 if !self.handle_ack(result, &mut application, &mut resolver).await {
                     return;
@@ -578,18 +550,11 @@ where
                 }
             }
 
-            // Opportunistically drain any additional already-ready acks so we
-            // can persist one metadata sync for the whole batch.
+            // Opportunistically drain any additional already-ready acks.
             let Some(next) = self.pending_acks.pop_ready() else {
                 break;
             };
             pending = Some(next);
-        }
-
-        // Persist buffered processed-height updates once after draining all ready acks.
-        if let Err(e) = self.stream.sync().await {
-            error!(?e, "failed to sync application progress");
-            return false;
         }
 
         // Fill the pipeline
@@ -861,7 +826,7 @@ where
                 response.send_lossy(finalization);
             }
             Message::GetProcessedHeight { response } => {
-                response.send_lossy(self.stream.processed_height());
+                response.send_lossy(Some(self.floor.processed_height()));
             }
             Message::HintFinalized { height, targets } => {
                 // Skip if finalization is already available locally.
@@ -1224,16 +1189,13 @@ where
         self.update_processed_height(dispatch_floor, resolver);
         self.update_processed_round_floor(dispatch_floor, round, resolver)
             .await;
-        self.stream
-            .sync()
-            .await
-            .expect("failed to sync floor metadata");
 
         // Drop all pending acknowledgement waiters so any in-flight application
         // acks for blocks below the new floor cannot rewrite the processed floor.
         self.pending_acks.clear();
 
-        // The floor is durable, so cache/finalized data below it can be pruned.
+        // Prune temporary data below the live floor, but retain finalized
+        // replay history above the startup recovery baseline.
         self.prune_after_floor(height)
             .await
             .expect("failed to prune data below floor");
@@ -1652,8 +1614,8 @@ where
     /// Attempt to dispatch finalized blocks to the application until the pipeline is full
     /// or no more blocks are available.
     ///
-    /// This does NOT advance the processed floor height or sync metadata. It only
-    /// sends blocks to the application and enqueues pending acks. Metadata is
+    /// This does NOT advance the processed floor height. It only sends blocks
+    /// to the application and enqueues pending acks. The in-memory cursor is
     /// updated later when acks arrive and [`Self::handle_ack`] runs.
     ///
     /// Acks are processed in FIFO order so the processed floor height always
@@ -1674,7 +1636,7 @@ where
         while self.pending_acks.has_capacity() {
             let next_height = self
                 .pending_acks
-                .next_dispatch_height(self.stream.next_height());
+                .next_dispatch_height(self.floor.processed_height().next());
             if barrier.is_some_and(|lowest| next_height >= lowest) {
                 return;
             }
@@ -2058,7 +2020,7 @@ where
         true
     }
 
-    /// Recover the round floor independently of the finalizer's startup hint.
+    /// Recover the round floor from archives at the selected finalizer height.
     /// A certificate-only successor must not suppress fetching its missing block.
     async fn recover_processed_round(&self, height: Height) -> Round {
         let certificates = self
@@ -2243,13 +2205,11 @@ where
         wrote
     }
 
-    /// Buffers a processed height update in memory and metrics. Does NOT sync
-    /// to durable storage. Sync metadata after buffered updates to make them durable.
+    /// Updates process-local delivery progress and metrics, never pruning authority.
     fn update_processed_height<R>(&mut self, height: Height, resolver: &mut R)
     where
         R: Resolver<Key = Key<B::Digest>, Subscriber = Annotation>,
     {
-        self.stream.acknowledge(height);
         self.floor.set_processed_height(height);
         let _ = self
             .processed_height
@@ -2301,8 +2261,9 @@ where
         ));
     }
 
-    /// Prunes finalized blocks and certificates below the given height.
+    /// Prunes finalized history only as far as the startup recovery baseline permits.
     async fn prune_finalized_archives(&mut self, height: Height) -> Result<(), BoxedError> {
+        let height = finalized_prune_cutoff(height, self.recovery_height);
         let blocks = self
             .finalized_blocks
             .take()
@@ -2330,8 +2291,10 @@ where
         Ok(())
     }
 
-    /// Prunes finalized archives and height-indexed certified cache data below the durable floor.
+    /// Prunes temporary cache data below the live floor and finalized archives
+    /// below the recovery-safe cutoff. Archive section rounding may retain more.
     async fn prune_after_floor(&mut self, height: Height) -> Result<(), BoxedError> {
+        let archive_cutoff = finalized_prune_cutoff(height, self.recovery_height);
         let cache = &mut self.cache;
         let finalized_blocks = self
             .finalized_blocks
@@ -2348,13 +2311,13 @@ where
             },
             async {
                 finalized_blocks
-                    .prune(height)
+                    .prune(archive_cutoff)
                     .await
                     .map_err(|e| Box::new(e) as BoxedError)
             },
             async {
                 finalizations_by_height
-                    .prune(height)
+                    .prune(archive_cutoff)
                     .await
                     .map_err(|e| Box::new(e) as BoxedError)
             }
@@ -2365,11 +2328,36 @@ where
     }
 }
 
+/// Archives delete strictly below the cutoff. Preserve every successor of the
+/// selected startup state, regardless of live acknowledgements or floor skips.
+fn finalized_prune_cutoff(requested: Height, recovery_height: Height) -> Height {
+    requested.min(Height::new(recovery_height.get().saturating_add(1)))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::header_view_binds_to_round;
-    use commonware_consensus::types::FixedEpocher;
+    use super::{finalized_prune_cutoff, header_view_binds_to_round};
+    use commonware_consensus::types::{FixedEpocher, Height};
     use std::num::NonZeroU64;
+
+    #[test]
+    fn recovery_prune_cutoff_is_overflow_safe() {
+        for (requested, recovery, expected) in [
+            (0, 0, 0),
+            (10, 0, 1),
+            (5, 10, 5),
+            (20, 10, 11),
+            (u64::MAX, u64::MAX - 2, u64::MAX - 1),
+            (u64::MAX, u64::MAX - 1, u64::MAX),
+            (u64::MAX, u64::MAX, u64::MAX),
+            (1, u64::MAX, 1),
+        ] {
+            assert_eq!(
+                finalized_prune_cutoff(Height::new(requested), Height::new(recovery)),
+                Height::new(expected),
+            );
+        }
+    }
 
     // Epoch length 10: epoch E spans heights [E*10, E*10 + 9], so the last block
     // of an epoch is E*10 + 9 (e.g. height 9 for epoch 0, height 19 for epoch 1).

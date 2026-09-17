@@ -197,9 +197,17 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
     },
     /// Attempts to set the sync starting point from a finalized commitment.
     ///
-    /// If the verified finalization advances the current floor, the syncer
-    /// anchors on its block, prunes below it, then syncs and delivers blocks
-    /// starting at the floor height. Stale or superseded floors may be ignored.
+    /// If the verified finalization advances the current floor, the syncer obtains
+    /// its anchor block, stores and syncs the block and certificate, then sets the
+    /// process-local processed height to the anchor's predecessor and clears pending
+    /// acknowledgements. It prunes temporary data below the anchor and finalized
+    /// history only within the startup recovery bound, then repairs gaps and delivers
+    /// from the anchor itself. Stale or superseded floors may be ignored.
+    ///
+    /// The caller must arrange compatible live finalizer state. The delivery skip
+    /// is not persisted: restart follows the newly selected finalizer state and may
+    /// require replaying skipped blocks and fetching missing history. Finalized-archive
+    /// pruning remains bounded by the recovery-baseline contract in [`crate::SyncStart`].
     ///
     /// To prune data without changing the sync starting point, use
     /// [Message::Prune] instead.
@@ -211,7 +219,8 @@ pub(crate) enum Message<S: Scheme<B::Digest>, B: Block> {
     ///
     /// Unlike [Message::SetFloor], this does not affect the sync starting point.
     /// The height must be at or below the current floor (last processed height),
-    /// otherwise the prune request is ignored.
+    /// otherwise the prune request is ignored. Valid requests are capped at the
+    /// startup recovery height's saturating successor, preserving replay history.
     Prune {
         /// The minimum height to keep (blocks below this are pruned).
         height: Height,
@@ -553,7 +562,10 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
         receiver.await.ok().flatten()
     }
 
-    /// Retrieve the latest processed height.
+    /// Retrieve the process-local delivery cursor, initialized from the finalizer's
+    /// selected startup state and advanced by acknowledgements or floor changes.
+    /// This is not a durable finalizer state height or pruning authorization.
+    /// Returns `None` only when no actor response was obtained.
     pub async fn get_processed_height(&self) -> Option<Height> {
         let (response, receiver) = oneshot::channel();
         let _ = self
@@ -699,9 +711,17 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
 
     /// Attempts to set the sync starting point from a finalized commitment.
     ///
-    /// If the verified finalization advances the current floor, the syncer
-    /// anchors on its block, prunes below it, then syncs and delivers blocks
-    /// starting at the floor height. Stale or superseded floors may be ignored.
+    /// If the verified finalization advances the current floor, the syncer obtains
+    /// its anchor block, stores and syncs the block and certificate, then sets the
+    /// process-local processed height to the anchor's predecessor and clears pending
+    /// acknowledgements. It prunes temporary data below the anchor and finalized
+    /// history only within the startup recovery bound, then repairs gaps and delivers
+    /// from the anchor itself. Stale or superseded floors may be ignored.
+    ///
+    /// The caller must arrange compatible live finalizer state. The delivery skip
+    /// is not persisted: restart follows the newly selected finalizer state and may
+    /// require replaying skipped blocks and fetching missing history. Finalized-archive
+    /// pruning remains bounded by the recovery-baseline contract in [`crate::SyncStart`].
     ///
     /// To prune data without changing the sync starting point, use
     /// [`Self::prune`] instead.
@@ -713,7 +733,9 @@ impl<S: Scheme<B::Digest>, B: Block> Mailbox<S, B> {
     ///
     /// Unlike [`Self::set_floor`], this does not affect the sync starting point.
     /// The height must be at or below the current floor (last processed height),
-    /// otherwise the prune request is ignored.
+    /// otherwise the prune request is ignored. Valid requests are capped at the
+    /// saturating successor of the startup recovery height, fixed for the process
+    /// lifetime. Archive section rounding may retain additional entries.
     pub fn prune(&mut self, height: Height) {
         let _ = self.sender.enqueue(Message::Prune { height });
     }

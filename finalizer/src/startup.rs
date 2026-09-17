@@ -175,8 +175,13 @@ async fn finish_import<E: BufferPooler + Clock + Metrics + Storage, C: EngineCli
     db.import_checkpoint(state, record).await
 }
 
-/// Select and durably prepare startup. Only the returned import record authorizes
-/// an application skip. Never infer an import from an ordinary finalizer height.
+/// Select the finalizer's startup state and durably prepare any checkpoint import.
+///
+/// The returned state determines where syncer replay begins, whether loaded from
+/// storage, imported from a checkpoint, or taken from `initial` on an empty database.
+/// The `initial` fallback is not persisted here. The optional import record provides
+/// authenticated terminal artifacts for syncer seeding or fetching; an ordinary
+/// finalizer height does not imply a checkpoint import.
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare<E: BufferPooler + Clock + Metrics + Storage, C: EngineClient>(
     db: &mut FinalizerState<E, MinPk>,
