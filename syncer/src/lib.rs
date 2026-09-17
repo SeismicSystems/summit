@@ -21,7 +21,10 @@
 //! ## Delivery
 //!
 //! The actor will deliver a block to the reporter at-least-once. The reporter should be prepared to
-//! handle duplicate deliveries. However the blocks will be in order.
+//! handle duplicate deliveries. However the blocks will be in order. Acknowledgements
+//! advance delivery only within the current process. Restart begins after the state
+//! selected by the finalizer ([`SyncStart`]), even if later blocks were acknowledged.
+//! Legacy `*-application-metadata` partitions are ignored, not migrated or deleted.
 //!
 //! ## Finalization
 //!
@@ -49,7 +52,12 @@
 //! Marshal will store all blocks after a configurable starting height (or, floor) onward.
 //! This allows for state sync from a specific height rather than from genesis. When
 //! updating the starting height, marshal will attempt to prune blocks in external storage
-//! that are no longer needed.
+//! that are no longer needed. Finalized block and certificate pruning is capped at
+//! the successor of the startup recovery height, fixed for the process lifetime;
+//! archive section rounding can retain additional history. Live acknowledgements
+//! and floor changes do not authorize deleting replay history. Callers must satisfy
+//! [`SyncStart`]'s recovery-baseline contract. This conservative cap may retain extra
+//! history until restart and is not a bounded-disk retention policy.
 //!
 //! _Setting a configurable starting height will prevent others from backfilling blocks below said height. This
 //! feature is only recommended for applications that support state sync (i.e., those that don't require full
@@ -76,7 +84,6 @@ pub use ingress::mailbox::Mailbox;
 pub mod resolver;
 pub mod standard;
 pub use standard::Standard;
-mod stream;
 pub mod variant;
 pub use variant::{Buffer, Variant};
 
@@ -101,8 +108,9 @@ pub enum Update<B: Block, S: Scheme<B::Digest>, A: Acknowledgement = Exact> {
     Tip(u64, B::Digest),
     /// A new finalized block and an [Acknowledgement] for the application to signal once processed.
     ///
-    /// To ensure all blocks are delivered at least once, marshal waits to mark a block as delivered
-    /// until the application explicitly acknowledges the update. If the [Acknowledgement] is dropped before
+    /// Acknowledgements advance the process-local delivery cursor, not a durable
+    /// restart position. Restart follows the finalizer's selected state, so even
+    /// acknowledged blocks can be replayed. If the [Acknowledgement] is dropped before
     /// handling, marshal will exit (assuming the application is shutting down).
     ///
     /// Because the [Acknowledgement] is clonable, the application can pass [Update] to multiple consumers
@@ -218,6 +226,8 @@ pub mod mocks;
 
 #[cfg(all(test, feature = "test-mocks"))]
 mod tests {
+    mod recovery;
+
     use super::{
         actor, cache,
         config::{Config, SyncStart},
@@ -2289,10 +2299,22 @@ mod tests {
         });
     }
 
-    /// Model a crash after finalizer execution but before the corresponding
-    /// application acknowledgement becomes durable. Replay only the unacked tail.
     #[test_traced("WARN")]
-    fn test_restart_uses_durable_ack_not_finalizer_start_height() {
+    fn test_restart_replays_acknowledged_blocks_after_finalizer_state() {
+        restart_from_finalizer_state(1, None);
+    }
+
+    #[test_traced("WARN")]
+    fn test_restart_ignores_legacy_acknowledgements() {
+        restart_from_finalizer_state(1, Some(2));
+    }
+
+    #[test_traced("WARN")]
+    fn test_restart_does_not_replay_committed_finalizer_state() {
+        restart_from_finalizer_state(2, None);
+    }
+
+    fn restart_from_finalizer_state(height: u64, legacy_ack: Option<u64>) {
         use commonware_consensus::{Heightable as _, Viewable as _};
         let runner = deterministic::Runner::timed(Duration::from_secs(60));
         let ((validator, scheme, second), recovered) =
@@ -2313,6 +2335,10 @@ mod tests {
                     "ack-recovery",
                 )
                 .await;
+                assert_eq!(mailbox.get_processed_height().await, Some(Height::zero()));
+                if height == 2 {
+                    application.withhold_ack(2);
+                }
                 let first = B::new::<Sha256>(Sha256::hash(&[b""]), Height::new(1), 1);
                 let second = B::new::<Sha256>(first.digest(), Height::new(2), 2);
                 for block in [&first, &second] {
@@ -2324,20 +2350,44 @@ mod tests {
                         QUORUM,
                     )));
                 }
-                while mailbox.get_processed_height().await != Some(Height::new(2)) {
-                    context.sleep(Duration::from_millis(10)).await;
-                }
-                assert_eq!(application.blocks().len(), 2);
-                handle.abort();
-                let _ = handle.await;
-                // Keep the durable archives, with only block 1 durably acknowledged.
-                let mut stream = crate::stream::Stream::new(
-                    context.child("seed_ack"),
-                    "ack-recovery-application-metadata",
+                wait_until(
+                    &context,
+                    Duration::from_secs(5),
+                    "genesis deliveries",
+                    || application.blocks().len() == 2,
                 )
                 .await;
-                stream.acknowledge(Height::new(1));
-                stream.sync().await.unwrap();
+                let acknowledged = if height == 2 { 1 } else { 2 };
+                while mailbox.get_processed_height().await != Some(Height::new(acknowledged)) {
+                    context.sleep(Duration::from_millis(10)).await;
+                }
+                assert_eq!(
+                    application.blocks(),
+                    BTreeMap::from([(1, first), (2, second.clone())])
+                );
+                // With height=2 the application selected state 2, but its ack is
+                // still held and the syncer cursor is only 1 when the process stops.
+                handle.abort();
+                let _ = handle.await;
+                // Compatibility fixture only: production must never open this partition.
+                if let Some(ack) = legacy_ack {
+                    commonware_storage::metadata::Metadata::<
+                        _,
+                        commonware_utils::sequence::U64,
+                        Height,
+                    >::init(
+                        context.child("legacy_ack"),
+                        commonware_storage::metadata::Config {
+                            partition: "ack-recovery-application-metadata".into(),
+                            codec_config: (),
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .put_sync(commonware_utils::sequence::U64::new(0xFF), Height::new(ack))
+                    .await
+                    .unwrap();
+                }
                 (validator, scheme, second)
             });
         deterministic::Runner::from(recovered).start(|context| async move {
@@ -2349,16 +2399,21 @@ mod tests {
                 ConstantProvider::new(scheme),
                 "ack-recovery",
                 SyncStart {
-                    height: 2,
+                    height,
                     epoch: 0,
-                    view: 2,
+                    view: height,
                 },
             )
             .await;
             while mailbox.get_processed_height().await != Some(Height::new(2)) {
                 context.sleep(Duration::from_millis(10)).await;
             }
-            assert_eq!(application.blocks(), BTreeMap::from([(2, second)]));
+            let expected = if height == 1 {
+                BTreeMap::from([(2, second)])
+            } else {
+                BTreeMap::new()
+            };
+            assert_eq!(application.blocks(), expected);
         });
     }
 

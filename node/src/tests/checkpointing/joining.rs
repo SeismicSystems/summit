@@ -406,7 +406,7 @@ enum CheckpointStart {
     Existing,
     CommittedImport,
     FetchTerminal,
-    AcknowledgedImport,
+    CommittedImportMissingTerminal,
     ArchiveConflict,
 }
 
@@ -426,8 +426,8 @@ fn test_checkpoint_fetches_missing_terminal_block() {
 }
 
 #[test_traced("WARN")]
-fn test_checkpoint_restart_after_ack_before_terminal_delivery() {
-    checkpoint_replay(CheckpointStart::AcknowledgedImport);
+fn test_checkpoint_restart_before_missing_terminal_delivery() {
+    checkpoint_replay(CheckpointStart::CommittedImportMissingTerminal);
 }
 
 #[test_traced("WARN")]
@@ -610,9 +610,9 @@ fn checkpoint_replay(start: CheckpointStart) {
             db.commit().await.unwrap();
             if matches!(
                 start,
-                CheckpointStart::CommittedImport | CheckpointStart::AcknowledgedImport
+                CheckpointStart::CommittedImport | CheckpointStart::CommittedImportMissingTerminal
             ) {
-                let block = if matches!(start, CheckpointStart::AcknowledgedImport) {
+                let block = if matches!(start, CheckpointStart::CommittedImportMissingTerminal) {
                     None
                 } else {
                     Some(last_block.clone())
@@ -634,33 +634,9 @@ fn checkpoint_replay(start: CheckpointStart) {
                 config.checkpoint_finalized_header = None;
             }
         }
-        if matches!(start, CheckpointStart::AcknowledgedImport) {
-            // Model the next crash boundary: application floor persisted, but
-            // the terminal block has not arrived or been delivered yet.
-            let metadata = commonware_storage::metadata::Metadata::<
-                _,
-                commonware_utils::sequence::U64,
-                commonware_consensus::types::Height,
-            >::init(
-                context.child("seed_ack"),
-                commonware_storage::metadata::Config {
-                    partition: format!("{uid}-application-metadata"),
-                    codec_config: (),
-                },
-            )
-            .await
-            .unwrap();
-            metadata
-                .put_sync(
-                    commonware_utils::sequence::U64::new(0xFF),
-                    commonware_consensus::types::Height::new(checkpoint_state.get_latest_height()),
-                )
-                .await
-                .unwrap();
-        }
         if matches!(
             start,
-            CheckpointStart::FetchTerminal | CheckpointStart::AcknowledgedImport
+            CheckpointStart::FetchTerminal | CheckpointStart::CommittedImportMissingTerminal
         ) {
             config.checkpoint_last_block = None;
             common::link_validators(

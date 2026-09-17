@@ -7,15 +7,25 @@ use commonware_runtime::buffer::paged::CacheRef;
 use std::num::{NonZeroU64, NonZeroUsize};
 use summit_types::FinalizedHeader;
 
-/// The initial sync position for the syncer.
+/// The state actually selected by the finalizer at startup. Delivery begins at
+/// `height + 1`, regardless of acknowledgements from a previous process.
+///
+/// This height also bounds finalized-archive pruning for this process: entries
+/// above it must remain available for replay. Subsequent restarts must recover
+/// this state or a newer one. Genesis and durable checkpoint imports satisfy
+/// this requirement. Callers supplying a state-only bootstrap to an empty
+/// finalizer database must preserve and resupply it until a durable finalizer
+/// state supersedes it; restarting from an older baseline after pruning is not
+/// supported. The epoch/view are diagnostic; round recovery uses the archives.
 pub struct SyncStart {
     pub height: u64,
     pub epoch: u64,
     pub view: u64,
 }
 
-/// Explicit skip authorization from a durably committed finalizer import.
-/// Never construct this from an ordinary finalizer startup-height hint.
+/// Terminal-block replay artifacts from a durably committed finalizer import.
+/// Ordinary restarts select their delivery position through [`SyncStart`], but
+/// must not manufacture checkpoint artifacts or bypass import validation.
 pub struct SyncCheckpoint<B: Block, S: Scheme<B::Digest>> {
     pub processed_height: commonware_consensus::types::Height,
     pub finalized_header: FinalizedHeader<S>,

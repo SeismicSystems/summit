@@ -7,7 +7,7 @@ use commonware_cryptography::{Digest, certificate::Scheme as CertificateScheme};
 use commonware_resolver::{Resolver, TargetedResolver};
 use commonware_utils::vec::NonEmptyVec;
 
-/// Durable processed floor used to admit or reject resolver fetches.
+/// Process-local processed floor used to admit or reject resolver fetches.
 #[derive(Clone, Copy)]
 struct ProcessedFloor {
     height: Option<Height>,
