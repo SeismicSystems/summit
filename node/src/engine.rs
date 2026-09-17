@@ -179,10 +179,10 @@ pub struct Engine<
     context: E,
     application:
         summit_application::Actor<E, C, MultisigScheme, S::PublicKey, S, MinPk, DynamicEpocher>,
-    buffer: buffered::Engine<E, S::PublicKey, Block, O>,
-    buffer_mailbox: buffered::Mailbox<S::PublicKey, Block>,
+    pub(crate) buffer: buffered::Engine<E, S::PublicKey, Block, O>,
+    pub(crate) buffer_mailbox: buffered::Mailbox<S::PublicKey, Block>,
     #[allow(clippy::type_complexity)]
-    syncer: summit_syncer::Actor<
+    pub(crate) syncer: summit_syncer::Actor<
         E,
         Block,
         SummitSchemeProvider,
@@ -199,8 +199,8 @@ pub struct Engine<
         Sequential,
         Exact,
     >,
-    syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
-    finalizer: Finalizer<E, C, O, S, MinPk>,
+    pub(crate) syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
+    pub(crate) finalizer: Finalizer<E, C, O, S, MinPk>,
     pub finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     pub finalizer_state_query: ConsensusStateQuery<MultisigScheme>,
     orchestrator: summit_orchestrator::Actor<
@@ -210,13 +210,13 @@ pub struct Engine<
         Sequential,
         DynamicEpocher,
     >,
-    orchestrator_mailbox: summit_orchestrator::Mailbox,
+    pub(crate) orchestrator_mailbox: summit_orchestrator::Mailbox,
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: NonZeroUsize,
     fetch_timeout: Duration,
-    sync_start: SyncStart,
-    checkpoint: Option<SyncCheckpoint<Block, MultisigScheme>>,
+    pub(crate) sync_start: SyncStart,
+    pub(crate) checkpoint: Option<SyncCheckpoint<Block, MultisigScheme>>,
     cancellation_token: CancellationToken,
     #[cfg(feature = "permissioned")]
     pub paused: Arc<AtomicBool>,

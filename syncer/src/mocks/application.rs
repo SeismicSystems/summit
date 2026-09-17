@@ -2,7 +2,7 @@ use crate::Update;
 use commonware_actor::Feedback;
 use commonware_consensus::simplex::scheme::Scheme;
 use commonware_consensus::{Block, Reporter};
-use commonware_utils::Acknowledgement;
+use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -21,6 +21,7 @@ pub struct Application<B: Block, S: Scheme<B::Digest>> {
     updates: Arc<Mutex<Vec<RecordedUpdate<B::Digest>>>>,
     #[allow(clippy::type_complexity)]
     tip: Arc<Mutex<Option<(u64, B::Digest)>>>,
+    withheld_acks: Arc<Mutex<BTreeMap<u64, Option<Exact>>>>,
     _phantom: std::marker::PhantomData<S>,
 }
 
@@ -30,6 +31,7 @@ impl<B: Block, S: Scheme<B::Digest>> Default for Application<B, S> {
             blocks: Default::default(),
             updates: Default::default(),
             tip: Default::default(),
+            withheld_acks: Default::default(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -39,6 +41,12 @@ impl<B: Block, S: Scheme<B::Digest>> Application<B, S> {
     /// Returns the finalized blocks.
     pub fn blocks(&self) -> BTreeMap<u64, B> {
         self.blocks.lock().unwrap().clone()
+    }
+
+    /// Receive a block without acknowledging it, modelling a crash between
+    /// committing application state and returning its delivery acknowledgement.
+    pub fn withhold_ack(&self, height: u64) {
+        self.withheld_acks.lock().unwrap().insert(height, None);
     }
 
     /// Returns the tip.
@@ -65,11 +73,13 @@ impl<B: Block, S: Scheme<B::Digest>> Reporter for Application<B, S> {
                     .lock()
                     .unwrap()
                     .push(RecordedUpdate::Finalized(block.digest()));
-                self.blocks
-                    .lock()
-                    .unwrap()
-                    .insert(block.height().get(), block);
-                ack_tx.acknowledge();
+                let height = block.height().get();
+                self.blocks.lock().unwrap().insert(height, block);
+                if let Some(held) = self.withheld_acks.lock().unwrap().get_mut(&height) {
+                    *held = Some(ack_tx);
+                } else {
+                    ack_tx.acknowledge();
+                }
             }
             Update::NotarizedBlock(block) => {
                 self.updates

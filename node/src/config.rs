@@ -93,7 +93,11 @@ pub struct EngineConfig<C: EngineClient, S: Signer, O: NetworkOracle<S::PublicKe
     pub config_digest: [u8; 32],
     pub max_message_size_bytes: u32,
 
-    /// Initial state given to the finalizer. All other processes should get initial state from the finalizer not the config
+    /// Initial state given to the finalizer. Other processes use the state returned
+    /// by the finalizer, which may instead load durable state. A state-only bootstrap
+    /// is not automatically persisted: preserve and resupply it on restart until
+    /// durable finalizer state supersedes it. Restarting from an older baseline is
+    /// outside the syncer's pruning/replay guarantee (see `summit_syncer::SyncStart`).
     pub initial_state: ConsensusState,
     pub checkpoint_last_block: Option<Block>,
     pub checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
