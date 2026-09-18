@@ -36,6 +36,9 @@ You can reproduce these results by running the sequence in [this repository](htt
 - An EVM execution client (e.g., Reth, Geth) with Engine API support
 - (Optional) Reth binary in PATH for local testnet
 
+### Prebuilt binaries
+Every [release](https://github.com/SeismicSystems/summit/releases) ships `summit_<tag>_linux_amd64.tar.gz` with a build-provenance attestation (`gh attestation verify summit --repo SeismicSystems/summit`). Versioned releases (`vX.Y.Z`) are the ones to run; each merge to `main` also publishes a prerelease tagged `main-<sha>`.
+
 ### Building from Source
 ```bash
 git clone https://github.com/SeismicSystems/summit.git

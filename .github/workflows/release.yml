@@ -1,0 +1,283 @@
+# Publishes prebuilt `summit` binaries:
+#
+#   - every push to `main` publishes a *prerelease* tagged `main-<sha>` at the
+#     built commit, so each merge has a permanent download URL that follows
+#     from the commit alone. Prereleases never become the repository's
+#     "Latest" release, and nothing prunes them: every main build stays
+#     downloadable.
+#   - pushing a `vX.Y.Z` tag publishes a versioned release, "Latest" unless
+#     the version carries a pre-release suffix (`v0.1.0-rc.1`). The tag must
+#     equal the `[workspace.package] version` in Cargo.toml, and must be
+#     higher than every version already released: releases only go up, so a
+#     rerun of an old tag or a maintenance release behind the newest is
+#     refused before anything is built — cut the next version instead.
+#   - a manual dispatch on `main` behaves like a push to it; on any other ref,
+#     a version tag included, it only builds — a dry run of the workflow —
+#     and publishes nothing. Only a *pushed* tag publishes a version, so no
+#     button rebuilds a live release: its checksum and attestation are what
+#     people verified against.
+#
+# When a release run fails:
+#   - a transient failure (runner, network, attestation service): re-run the
+#     run (`gh run rerun <id> --failed`). A re-run keeps its push event and
+#     publishes; a release created before the failure is updated in place.
+#   - a broken workflow: fix it on main, dry-run the fix by dispatching on a
+#     branch, delete any partial release (`gh release delete <tag>`), then
+#     move the tag to the fixed commit and push it again — a fresh push
+#     event. Nothing was ever downloadable under the tag, so nothing the move
+#     could invalidate exists.
+#   - a bad release that was live long enough to be downloaded: cut the next
+#     version. A release someone may have verified is immutable.
+#
+# Each release ships summit_<tag>_linux_amd64.tar.gz — the `summit` binary
+# built with `--features prom`, as the node image builds it — beside a build
+# provenance attestation, verifiable with
+# `gh attestation verify summit --repo SeismicSystems/summit`.
+#
+# The runner is pinned, never `-latest`: the binary links glibc dynamically
+# and needs the build host's version or newer at run time, so the build host
+# IS the compatibility floor — glibc 2.35, i.e. Ubuntu 22.04 / Debian 12 and
+# later — and a floating image would move it with no change in the repo.
+# Nothing else is linked from the host: TLS is rustls, compiled in, and no
+# OpenSSL is in the dependency graph (see `reqwest` in Cargo.toml), which the
+# build step asserts.
+#
+# Only the publish job holds `contents: write`. The build, which runs the
+# workspace's build scripts, keeps the read-only default plus the two
+# permissions attestation needs. The tag is created by the release itself, at
+# publish time, so a failed build leaves no dangling tag.
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  build:
+    name: build summit (linux amd64)
+    # The oldest Ubuntu runner offered: its glibc is the floor (see header).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      publish: ${{ steps.info.outputs.publish }}
+      tag: ${{ steps.info.outputs.tag }}
+      prerelease: ${{ steps.info.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The version check below compares against every released tag.
+          fetch-tags: true
+
+      - name: Name the release
+        id: info
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          publish=true
+          if [[ "$REF" == refs/tags/v* ]]; then
+            tag=$REF_NAME
+            # A semver pre-release (v0.1.0-rc.1) is a GitHub prerelease too.
+            if [[ "$tag" == *-* ]]; then prerelease=true; else prerelease=false; fi
+            # Only the tag's push publishes it; a dispatch on the tag is a
+            # dry run, so no button can rebuild a live release.
+            [[ "$EVENT" == push ]] || publish=false
+          else
+            tag=main-$SHA
+            prerelease=true
+            [[ "$REF" == refs/heads/main ]] || publish=false
+          fi
+          {
+            echo "publish=$publish"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "tag $tag, prerelease $prerelease, publish $publish"
+
+      # rust-toolchain.toml decides which toolchain cargo runs; this is the
+      # same setup ci.yml uses.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Before the build, so a mistyped tag fails in seconds, not after it.
+      # The `summit` package inherits the workspace version, like every crate
+      # here, so its version is the workspace's.
+      - name: Check the tag against Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(cargo metadata --no-deps --locked --format-version 1 |
+            jq -r '.packages[] | select(.name == "summit") | .version')
+          [ "${TAG#v}" = "$version" ] || {
+            echo "tag $TAG does not match the workspace version $version in Cargo.toml" >&2
+            exit 1
+          }
+
+      # Versions only go up. GitHub's "Latest" marker takes the newest
+      # release by creation date, as does anything that lists releases to
+      # find the current one, so a version published out of order is what a
+      # consumer would get; and the release notes' baseline — the highest
+      # other version tag — is the previous release only while releases are
+      # in order. Refused here, before the build, and the answer is the next
+      # version, never a rerun of an old one. `versionsort.suffix=-` sorts
+      # v0.2.0-rc.1 below v0.2.0, as semver does.
+      - name: Check the version only goes up
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          highest=$(git -c versionsort.suffix=- tag -l 'v*.*.*' --sort=-v:refname | head -n1)
+          [ "$highest" = "$TAG" ] || {
+            echo "$TAG is not the highest version tag ($highest is). Releases only go up: a rerun of an older release, or a version behind the newest, is refused — cut the next version instead." >&2
+            exit 1
+          }
+
+      # The dynamic-library listing is the compatibility baseline made
+      # visible, and the grep holds it to libc: a dependency that brought
+      # native-tls, and with it the host's OpenSSL, back into the graph would
+      # fail here, not on an operator's box.
+      - name: Build summit
+        run: |
+          cargo build --release --locked --bin summit --features prom
+          bin=target/release/summit
+          file "$bin"
+          du -h "$bin"
+          ldd "$bin"
+          ! ldd "$bin" | grep -Eq 'libssl|libcrypto' || {
+            echo "summit links the host's OpenSSL: a dependency turned native-tls back on (see reqwest in Cargo.toml)" >&2
+            exit 1
+          }
+          # TODO: `--version` once summit reports one (SEI-560).
+          "$bin" --help > /dev/null
+
+      - name: Archive summit
+        env:
+          TAG: ${{ steps.info.outputs.tag }}
+        run: |
+          mkdir dist
+          tar -czvf "dist/summit_${TAG}_linux_amd64.tar.gz" -C target/release summit
+
+      - name: Attest build provenance
+        if: steps.info.outputs.publish == 'true'
+        id: attest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/release/summit
+
+      - name: Record the attestation URL
+        if: steps.info.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.info.outputs.tag }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+        run: echo "$ATTESTATION_URL" > "dist/summit_${TAG}_linux_amd64.attestation.txt"
+
+      # Hand-off to the publish job. A day is plenty: the release is the
+      # durable copy.
+      - name: Upload the assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: summit-linux-amd64
+          path: dist
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: publish ${{ needs.build.outputs.tag }}
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The notes list the commits since the previous release of the
+          # same kind, so the whole history and every tag are needed.
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: summit-linux-amd64
+          path: dist
+
+      - name: Write the release notes
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          if [[ "$TAG" == v* ]]; then
+            # The highest other version tag — the previous release, since
+            # versions only go up (checked before the build).
+            prev=$(git -c versionsort.suffix=- tag -l 'v*.*.*' --sort=-v:refname | grep -v "^$TAG$" | head -n1)
+          else
+            # The nearest earlier main build reachable from this commit's
+            # parent: normally the previous merge, or further back if its
+            # run never published.
+            prev=$(git describe --tags --match 'main-*' --abbrev=0 HEAD^ 2>/dev/null || true)
+          fi
+          if [ -n "$prev" ]; then
+            range="$prev..HEAD"
+          elif [[ "$TAG" == v* ]]; then
+            range=HEAD
+          else
+            range=HEAD^..HEAD
+          fi
+          echo "previous release: ${prev:-none}; listing $range"
+
+          {
+            echo "\`summit\` built from https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA."
+            echo
+            echo "## Changes"
+            echo
+            # One line per merge to main (--first-parent), whatever the merge style.
+            git log --first-parent --format='- %s' "$range"
+            if [ -n "$prev" ]; then
+              echo
+              echo "Full changelog: https://github.com/$GITHUB_REPOSITORY/compare/$prev...$TAG"
+            fi
+            echo
+            echo "## Verify"
+            echo
+            echo 'The tarball holds the `summit` binary. It needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, and later) and nothing else from the host: TLS is rustls, compiled in. Its build provenance is attested by GitHub:'
+            echo
+            echo '```sh'
+            echo "tar -xzf summit_${TAG}_linux_amd64.tar.gz"
+            echo "gh attestation verify summit --repo $GITHUB_REPOSITORY"
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      # Creates the tag at the built commit when it does not exist yet (the
+      # main-<sha> case). Re-running a run that died after this step updates
+      # the release and replaces same-named assets instead of failing. Pinned
+      # to the commit behind v2.2.2 rather than the tag: this step holds
+      # `contents: write`.
+      - name: Publish the release
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
+          body_path: ${{ runner.temp }}/notes.md
+          fail_on_unmatched_files: true
+          files: dist/*
+

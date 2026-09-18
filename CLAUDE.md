@@ -246,6 +246,14 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 3. **warnings** — `RUSTFLAGS="-D warnings" cargo check` (default + all-features)
 4. **test** — `cargo test` + `cargo test --all-features`
 
+## Release
+
+`.github/workflows/release.yml` publishes a prebuilt `summit` (Linux amd64, `--features prom`) with a build-provenance attestation:
+
+- **Every push to `main`** publishes a prerelease tagged `main-<sha>`; nothing prunes them.
+- **A `vX.Y.Z` tag** publishes a versioned release. The tag must equal `[workspace.package] version` in `Cargo.toml`, so bump the version in a PR first, then `git tag vX.Y.Z && git push origin vX.Y.Z`. A pre-release suffix (`v0.1.0-rc.1`) marks the release as a GitHub prerelease.
+- **A manual dispatch** on `main` republishes it; on any other branch it only builds, as a dry run.
+
 ## Troubleshooting
 
 | Problem                                             | Fix                                                                                                                           |
