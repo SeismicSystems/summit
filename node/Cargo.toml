@@ -79,7 +79,14 @@ tokio = { version = "1.45.1", features = ["sync"] }
 tokio-util.workspace = true
 
 # stake and checkpoint bin deps
-alloy = "1.0.23"
+alloy = { version = "1.0.23", default-features = false, features = [
+  "std",
+  "essentials",
+  "reqwest-rustls-tls",
+  "consensus",
+  "eips",
+  "network",
+] }
 ethereum_ssz.workspace = true
 jsonrpsee.workspace = true
 
@@ -87,7 +94,7 @@ jsonrpsee.workspace = true
 alloy-node-bindings.workspace = true
 alloy-network = { workspace = true }
 alloy-primitives.workspace = true
-alloy-provider = { version = "1.0.30", features = ["reqwest-rustls-tls"] }
+alloy-provider.workspace = true
 alloy-rpc-client.workspace = true
 alloy-rpc-types-engine = { version = "1.0.9", features = ["serde"] }
 op-alloy-consensus = { version = "0.19.1", default-features = false, features = ["alloy-compat"] }
