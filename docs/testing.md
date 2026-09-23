@@ -51,7 +51,23 @@ The `eth_genesis_hash` field in the Summit genesis config must match the genesis
 ### Prerequisites
 
 - `reth` binary in PATH (see main README for setup)
-- Ports 8545-8548, 3030-3060, 26600-26630 available
+- Reth ports: HTTP RPC `8540-8545`, WS `8546-8556` (even numbers), auth RPC `8551`, `8651`,
+  `8751`, `8851`, `8951`, `9051`, discovery `30303-30308`, metrics `9001-9006`, enclave mock
+  server `17440-17445`
+- Summit ports: RPC and admin RPC `3030-3081`, consensus P2P `26600-26650`
+
+Each Reth instance is spawned with `--instance N` (`node/src/bin/stake_and_checkpoint.rs:134`, and
+the same in the other e2e bins). Reth maps that to HTTP `8545 - (N - 1)`, WS `8546 + 2 * (N - 1)`,
+auth `8551 + 100 * (N - 1)` and discovery `30303 + (N - 1)`, so the HTTP endpoints count **down**
+from 8545, as in [running a local network](running-local-network.md#ports), while WS and auth count
+up. `types/src/reth.rs` always passes `--ws` and blocks until Reth reports both the WS and the auth
+server started, so those ports are bound on every run. Metrics and the enclave mock server port are
+passed explicitly by each bin (`9001 + node` and `1744{node}`).
+
+Each node's Summit RPC, admin RPC and P2P ports are `3030 + node * 10`, `3031 + node * 10` and
+`26600 + node * 10`, so the ranges run past the four genesis nodes: `stake-and-checkpoint`,
+`stake-and-join-with-outdated-checkpoint` and `sync-from-genesis` add a fifth node, and `observer`
+runs at slot 5.
 
 ### Building
 
