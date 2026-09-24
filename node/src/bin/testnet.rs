@@ -87,14 +87,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .keep_stdout()
                     //    .genesis(serde_json::from_str(&genesis_str).expect("invalid genesis"))
                     .data_dir(format!("testnet/node{x}/data/reth_db"))
-                    .arg("--enclave.mock-server")
-                    .arg("--enclave.endpoint-port")
-                    .arg(format!("1744{x}"))
+                    .arg("--seismic.purpose-keys-source")
+                    .arg("built-in")
                     .arg("--auth-ipc")
                     .arg("--auth-ipc.path")
                     .arg(format!("/tmp/reth_engine_api{x}.ipc"))
                     .arg("--metrics")
-                    .arg(format!("0.0.0.0:{}", 9001 + x));
+                    .arg(format!("0.0.0.0:{}", 9001 + x))
+                    .arg("--http.corsdomain")
+                    .arg("null");
 
                 let mut reth = reth_builder.spawn();
 
