@@ -261,6 +261,10 @@ impl Genesis {
             .into());
         }
         ProtocolParam::AllowedTimestampFuture(self.allowed_timestamp_future_ms).validate()?;
+        let eth_genesis_hash = from_hex(&self.eth_genesis_hash)
+            .ok_or("invalid eth_genesis_hash: expected a hex-encoded 32-byte value")?;
+        <[u8; 32]>::try_from(eth_genesis_hash)
+            .map_err(|_| "invalid eth_genesis_hash: expected a hex-encoded 32-byte value")?;
         self.treasury_address
             .parse::<Address>()
             .map_err(|e| format!("invalid treasury_address: {e}"))?;
@@ -399,6 +403,17 @@ mod tests {
         for validator in validators {
             let found_addr = genesis.ip_of(&validator.node_public_key);
             assert_eq!(found_addr, Some(validator.ip_address));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_eth_genesis_hash() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+
+        for invalid_hash in ["0xdead", "0xnot-hex"] {
+            genesis.eth_genesis_hash = invalid_hash.to_owned();
+            let error = genesis.validate().unwrap_err();
+            assert!(error.to_string().contains("invalid eth_genesis_hash"));
         }
     }
 
