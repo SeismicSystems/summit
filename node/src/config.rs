@@ -38,6 +38,9 @@ const MAX_FETCH_SIZE: usize = 512 * 1024;
 const DEQUE_SIZE: usize = 32;
 const BACKFILL_QUOTA: u32 = 512; // messages per second
 const FETCH_RATE_P2P: u32 = 512; // messages per second
+/// Burst allowance for votes, certificates, and block broadcasts.
+pub const CONSENSUS_BROADCAST_BURST: u32 = 4;
+/// Burst allowance for resolver and backfiller traffic.
 pub const CHANNEL_BURST: u32 = 16;
 
 /// Capacity is fixed when the network starts. Include accepted pending raises

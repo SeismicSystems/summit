@@ -1,8 +1,8 @@
 use crate::{
     config::{
-        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, CHANNEL_BURST, EngineConfig,
-        FINALIZER_PENDING_NOTARIZED_MAX, PENDING_CHANNEL, RECOVERED_CHANNEL, RESOLVER_CHANNEL,
-        expect_key_store,
+        BACKFILLER_CHANNEL, BROADCASTER_CHANNEL, CHANNEL_BURST, CONSENSUS_BROADCAST_BURST,
+        EngineConfig, FINALIZER_PENDING_NOTARIZED_MAX, PENDING_CHANNEL, RECOVERED_CHANNEL,
+        RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
     genesis::GenesisSubCmd,
@@ -1144,7 +1144,8 @@ where
         .unwrap_or_else(|| key_store.node_key.public_key());
     info!(
         max_peers_per_set = peer_limit.get(),
-        burst = CHANNEL_BURST,
+        consensus_broadcast_burst = CONSENSUS_BROADCAST_BURST,
+        resolver_backfill_burst = CHANNEL_BURST,
         "allocating P2P capacity from startup protocol state; capacity-increasing updates require coordination"
     );
     let (mut network, oracle) =
@@ -1180,11 +1181,11 @@ where
     config.observer_network_key = observer_network_key;
 
     let pending_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
-        .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
+        .allow_burst(NonZeroU32::new(CONSENSUS_BROADCAST_BURST).unwrap());
     let pending = network.register(PENDING_CHANNEL, pending_limit);
 
     let recovered_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
-        .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
+        .allow_burst(NonZeroU32::new(CONSENSUS_BROADCAST_BURST).unwrap());
     let recovered = network.register(RECOVERED_CHANNEL, recovered_limit);
 
     let resolver_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
@@ -1192,7 +1193,7 @@ where
     let resolver = network.register(RESOLVER_CHANNEL, resolver_limit);
 
     let broadcaster_limit = Quota::per_second(NonZeroU32::new(512).unwrap())
-        .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap());
+        .allow_burst(NonZeroU32::new(CONSENSUS_BROADCAST_BURST).unwrap());
     let broadcaster = network.register(BROADCASTER_CHANNEL, broadcaster_limit);
 
     let backfiller = network.register(BACKFILLER_CHANNEL, config.backfill_quota);
