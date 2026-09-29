@@ -4,7 +4,7 @@ Easiest way to run a network locally is to use the testnet bin. This will start 
 
 ## Prerequisites
 
-1. Make sure you have a `reth` binary installed and in your `PATH`. The testnet bin passes Seismic-specific flags (e.g. `--enclave.endpoint-port`) to the execution client, so a vanilla upstream `reth` will not work - build `seismic-reth`:
+1. Make sure you have a `reth` binary installed and in your `PATH`. The testnet bin passes `--seismic.purpose-keys-source built-in` to the execution client, so a vanilla upstream `reth` will not work - build a compatible `seismic-reth`. Built-in keys are publicly known and provide no confidentiality; use them only for local testing:
    ```bash
    git clone https://github.com/SeismicSystems/seismic-reth.git && cd seismic-reth && cargo build --release
    ```
@@ -65,7 +65,7 @@ This removes `node*/data/reth_db`, `node*/db`, and `./stores`. Keys in `testnet/
 
 ## Troubleshooting
 
-- **`reth` not found / immediately exits** - the binary in `PATH` must be `seismic-reth` renamed to `reth`; upstream reth does not understand the Seismic enclave flags.
+- **`reth` not found / immediately exits** - install a compatible `seismic-reth` binary as `reth` in `PATH` (a symlink also works). Check that `reth node --help` lists `--seismic.purpose-keys-source` with the `built-in` option; upstream reth and older Seismic Reth versions without this option are not compatible with the launcher.
 - **Nodes fail to come to consensus after a previous run** - stale state; run `testnet/reset.sh` and start again.
 - **Port already in use** - a previous run did not shut down cleanly; kill leftover `reth`/`testnet` processes before restarting.
 

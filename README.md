@@ -80,7 +80,7 @@ The validator will automatically discover other nodes listed in the genesis file
 
 ## Local Development
 
-To spin up a 4-node testnet locally (requires `reth` in PATH):
+To spin up a 4-node testnet locally, install a compatible `seismic-reth` binary as `reth` in `PATH` (see [setup instructions](docs/running-local-network.md#prerequisites)). The launcher uses `--seismic.purpose-keys-source built-in`; upstream Reth is not compatible with this launcher.
 ```bash
 cargo run --bin testnet
 ```
