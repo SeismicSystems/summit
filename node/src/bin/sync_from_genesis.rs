@@ -284,7 +284,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Check balance before withdrawal
             let withdrawal_credentials = Address::from_str("0x90F79bf6EB2c4f870365E785982E1f101E93b906").unwrap();
-            let balance_before = provider.get_balance(withdrawal_credentials).await.expect("Failed to get balance before withdrawal");
+            // Seismic Reth returns a compatibility placeholder unless native=true.
+            let balance_before: U256 = provider
+                .raw_request("eth_getBalance".into(), (withdrawal_credentials, "latest", true))
+                .await
+                .expect("Failed to get native balance before withdrawal");
             println!("Withdrawal credentials balance before: {} wei", balance_before);
 
             send_withdrawal_transaction(&provider, withdrawal_contract_address, &pub_key_bytes_ar, withdrawal_amount, withdrawal_fee, 0)
@@ -328,8 +332,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let node0_url = format!("http://localhost:{}", node0_http_port);
             let node0_provider = ProviderBuilder::new().connect_http(node0_url.parse().expect("Invalid URL"));
 
-            // Check
-            let balance_after = node0_provider.get_balance(withdrawal_credentials).await.expect("Failed to get balance after withdrawal");
+            // Read the native balance using the same mode as the pre-withdrawal query.
+            let balance_after: U256 = node0_provider
+                .raw_request("eth_getBalance".into(), (withdrawal_credentials, "latest", true))
+                .await
+                .expect("Failed to get native balance after withdrawal");
             println!("Withdrawal credentials balance after: {} wei", balance_after);
 
             // A full exit pays out the validator's whole balance, which is
