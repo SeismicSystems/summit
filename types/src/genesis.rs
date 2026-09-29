@@ -33,12 +33,6 @@ pub struct Genesis {
     /// Number of views behind finalized tip to track
     /// and persist activity derived from validator messages.
     pub activity_timeout_views: u64,
-    /// Move to nullify immediately if the selected leader has been inactive
-    /// for this many views.
-    ///
-    /// This number should be less than or equal to `activity_timeout` (how
-    /// many views we are tracking).
-    pub skip_timeout_views: u64,
     /// Maximum size allowed for messages over any connection.
     ///
     /// The actual size of the network message will be higher due to overhead from the protocol;
@@ -282,17 +276,9 @@ impl Genesis {
         if self.activity_timeout_views == 0 {
             return Err("activity_timeout_views must be greater than 0".into());
         }
-        if self.skip_timeout_views == 0 {
-            return Err("skip_timeout_views must be greater than 0".into());
-        }
         if self.leader_timeout_ms >= self.notarization_timeout_ms {
             return Err(
                 "leader_timeout_ms must be strictly less than notarization_timeout_ms".into(),
-            );
-        }
-        if self.skip_timeout_views > self.activity_timeout_views {
-            return Err(
-                "skip_timeout_views must be less than or equal to activity_timeout_views".into(),
             );
         }
         // Genesis must respect the same bounds the runtime protocol-parameter
@@ -559,10 +545,6 @@ mod tests {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.activity_timeout_views = 0;
         assert!(genesis.validate().is_err());
-
-        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        genesis.skip_timeout_views = 0;
-        assert!(genesis.validate().is_err());
     }
 
     #[test]
@@ -571,13 +553,6 @@ mod tests {
         genesis.leader_timeout_ms = genesis.notarization_timeout_ms;
         assert!(genesis.validate().is_err());
         genesis.leader_timeout_ms += 1;
-        assert!(genesis.validate().is_err());
-    }
-
-    #[test]
-    fn rejects_skip_timeout_above_activity_timeout() {
-        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        genesis.skip_timeout_views = genesis.activity_timeout_views + 1;
         assert!(genesis.validate().is_err());
     }
 
@@ -660,10 +635,6 @@ mod tests {
             (
                 "activity_timeout_views",
                 Box::new(|g| g.activity_timeout_views += 1),
-            ),
-            (
-                "skip_timeout_views",
-                Box::new(|g| g.skip_timeout_views += 1),
             ),
             (
                 "max_message_size_bytes",

@@ -426,7 +426,6 @@ where
                 timeout_retry: cfg.nullify_retry,
                 fetch_timeout: cfg.fetch_timeout,
                 activity_timeout: ViewDelta::new(cfg.activity_timeout),
-                skip_timeout: ViewDelta::new(cfg.skip_timeout),
                 _strategy: std::marker::PhantomData,
             },
         );

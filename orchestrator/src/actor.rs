@@ -62,7 +62,6 @@ where
     pub timeout_retry: Duration,
     pub fetch_timeout: Duration,
     pub activity_timeout: ViewDelta,
-    pub skip_timeout: ViewDelta,
 
     pub _strategy: std::marker::PhantomData<St>,
 }

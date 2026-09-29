@@ -1592,7 +1592,6 @@ mod tests {
             notarization_timeout_ms: 1_000,
             nullify_timeout_ms: 1_000,
             activity_timeout_views: 10,
-            skip_timeout_views: 5,
             max_message_size_bytes: 1_048_576,
             namespace: namespace.clone(),
             validator_minimum_stake: 32_000_000_000,
