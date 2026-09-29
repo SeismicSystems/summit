@@ -33,7 +33,7 @@ fn test_checkpoint_created() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -43,6 +43,7 @@ fn test_checkpoint_created() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -227,7 +228,7 @@ fn test_previous_header_hash_matches() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     // Create context
     let cfg = deterministic::Config::default().with_seed(0);
@@ -237,6 +238,7 @@ fn test_previous_header_hash_matches() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times

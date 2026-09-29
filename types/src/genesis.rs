@@ -1,7 +1,8 @@
 use crate::PublicKey;
 use crate::protocol_params::{
-    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_INVALID_DEPOSIT_TAX, MAX_MESSAGE_SIZE_BYTES_MAX,
-    MAX_MESSAGE_SIZE_BYTES_MIN, MIN_MINIMUM_VALIDATOR_COUNT, ProtocolParam,
+    DEFAULT_MAX_VALIDATOR_COUNT, DEFAULT_MINIMUM_VALIDATOR_COUNT, DEFAULT_OBSERVERS_PER_VALIDATOR,
+    MAX_INVALID_DEPOSIT_TAX, MAX_MESSAGE_SIZE_BYTES_MAX, MAX_MESSAGE_SIZE_BYTES_MIN,
+    MIN_MINIMUM_VALIDATOR_COUNT, ProtocolParam,
 };
 use alloy_primitives::Address;
 use anyhow::Context;
@@ -32,12 +33,6 @@ pub struct Genesis {
     /// Number of views behind finalized tip to track
     /// and persist activity derived from validator messages.
     pub activity_timeout_views: u64,
-    /// Move to nullify immediately if the selected leader has been inactive
-    /// for this many views.
-    ///
-    /// This number should be less than or equal to `activity_timeout` (how
-    /// many views we are tracking).
-    pub skip_timeout_views: u64,
     /// Maximum size allowed for messages over any connection.
     ///
     /// The actual size of the network message will be higher due to overhead from the protocol;
@@ -71,6 +66,10 @@ pub struct Genesis {
     /// execution request.
     #[serde(default = "default_observers_per_validator")]
     pub observers_per_validator: u32,
+    /// Maximum number of validators that may be active or joining. Valid deposits
+    /// received while the cap is full are credited, but the validator remains inactive.
+    #[serde(default = "default_max_validator_count")]
+    pub max_validator_count: u64,
     /// Minimum number of active validators that full exits must preserve.
     #[serde(default = "default_minimum_validator_count")]
     pub minimum_validator_count: u64,
@@ -99,7 +98,11 @@ fn default_max_withdrawals_per_epoch() -> u64 {
 }
 
 fn default_observers_per_validator() -> u32 {
-    5
+    DEFAULT_OBSERVERS_PER_VALIDATOR
+}
+
+fn default_max_validator_count() -> u64 {
+    DEFAULT_MAX_VALIDATOR_COUNT
 }
 
 fn default_minimum_validator_count() -> u64 {
@@ -217,10 +220,7 @@ impl Genesis {
     /// explicitly `#[ssz(skip_serializing)]`'d). Per-validator `ip_address` is
     /// skipped: it is network topology, not consensus identity.
     pub fn config_digest(&self) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(GENESIS_CONFIG_DOMAIN_TAG);
-        hasher.update(&self.as_ssz_bytes());
-        hasher.finalize().0
+        Sha256::hash(&[GENESIS_CONFIG_DOMAIN_TAG, &self.as_ssz_bytes()]).0
     }
 
     pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -276,17 +276,9 @@ impl Genesis {
         if self.activity_timeout_views == 0 {
             return Err("activity_timeout_views must be greater than 0".into());
         }
-        if self.skip_timeout_views == 0 {
-            return Err("skip_timeout_views must be greater than 0".into());
-        }
-        if self.leader_timeout_ms > self.notarization_timeout_ms {
+        if self.leader_timeout_ms >= self.notarization_timeout_ms {
             return Err(
-                "leader_timeout_ms must be less than or equal to notarization_timeout_ms".into(),
-            );
-        }
-        if self.skip_timeout_views > self.activity_timeout_views {
-            return Err(
-                "skip_timeout_views must be less than or equal to activity_timeout_views".into(),
+                "leader_timeout_ms must be strictly less than notarization_timeout_ms".into(),
             );
         }
         // Genesis must respect the same bounds the runtime protocol-parameter
@@ -297,6 +289,15 @@ impl Genesis {
         ProtocolParam::MaxDepositsPerEpoch(self.max_deposits_per_epoch).validate()?;
         ProtocolParam::MaxWithdrawalsPerEpoch(self.max_withdrawals_per_epoch).validate()?;
         ProtocolParam::ObserversPerValidator(u64::from(self.observers_per_validator)).validate()?;
+        ProtocolParam::MaxValidatorCount(self.max_validator_count).validate()?;
+        if self.validators.len() as u64 > self.max_validator_count {
+            return Err(format!(
+                "genesis validator count {} exceeds max_validator_count {}",
+                self.validators.len(),
+                self.max_validator_count
+            )
+            .into());
+        }
         ProtocolParam::MaxPendingWithdrawalsPerValidator(
             self.max_pending_withdrawals_per_validator,
         )
@@ -307,6 +308,13 @@ impl Genesis {
             return Err(format!(
                 "minimum_validator_count {} is below minimum {}",
                 self.minimum_validator_count, MIN_MINIMUM_VALIDATOR_COUNT
+            )
+            .into());
+        }
+        if self.minimum_validator_count > self.max_validator_count {
+            return Err(format!(
+                "minimum_validator_count {} exceeds max_validator_count {}",
+                self.minimum_validator_count, self.max_validator_count
             )
             .into());
         }
@@ -371,9 +379,11 @@ impl Genesis {
 mod tests {
     use super::*;
     use crate::protocol_params::{
-        MAX_EPOCH_LENGTH, MAX_MAX_DEPOSITS_PER_EPOCH, MAX_OBSERVERS_PER_VALIDATOR,
+        DEFAULT_MAX_VALIDATOR_COUNT, MAX_EPOCH_LENGTH, MAX_MAX_DEPOSITS_PER_EPOCH,
+        MAX_MAX_VALIDATOR_COUNT, MAX_OBSERVERS_PER_VALIDATOR,
         MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MAX, MAX_PENDING_WITHDRAWALS_PER_VALIDATOR_MIN,
         MAX_WITHDRAWALS_PER_EPOCH_MAX, MAX_WITHDRAWALS_PER_EPOCH_MIN, MIN_EPOCH_LENGTH,
+        MIN_MAX_VALIDATOR_COUNT,
     };
 
     #[test]
@@ -381,6 +391,8 @@ mod tests {
         let genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         assert_eq!(genesis.validator_count(), 4);
         assert_eq!(genesis.blocks_per_epoch, 10000);
+        assert_eq!(genesis.observers_per_validator, 16);
+        assert_eq!(genesis.max_validator_count, DEFAULT_MAX_VALIDATOR_COUNT);
         assert_eq!(
             genesis.minimum_validator_count,
             DEFAULT_MINIMUM_VALIDATOR_COUNT
@@ -533,23 +545,36 @@ mod tests {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.activity_timeout_views = 0;
         assert!(genesis.validate().is_err());
-
-        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        genesis.skip_timeout_views = 0;
-        assert!(genesis.validate().is_err());
     }
 
     #[test]
     fn rejects_misordered_leader_and_notarization_timeouts() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        genesis.leader_timeout_ms = genesis.notarization_timeout_ms + 1;
+        genesis.leader_timeout_ms = genesis.notarization_timeout_ms;
+        assert!(genesis.validate().is_err());
+        genesis.leader_timeout_ms += 1;
         assert!(genesis.validate().is_err());
     }
 
     #[test]
-    fn rejects_skip_timeout_above_activity_timeout() {
+    fn accepts_max_validator_count_at_bounds() {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
-        genesis.skip_timeout_views = genesis.activity_timeout_views + 1;
+        genesis.max_validator_count = MIN_MAX_VALIDATOR_COUNT.max(genesis.validators.len() as u64);
+        assert!(genesis.validate().is_ok());
+        genesis.max_validator_count = MAX_MAX_VALIDATOR_COUNT;
+        assert!(genesis.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_max_validator_count_outside_bounds_or_below_genesis_set() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.max_validator_count = 0;
+        assert!(genesis.validate().is_err());
+
+        genesis.max_validator_count = MAX_MAX_VALIDATOR_COUNT + 1;
+        assert!(genesis.validate().is_err());
+
+        genesis.max_validator_count = genesis.validators.len() as u64 - 1;
         assert!(genesis.validate().is_err());
     }
 
@@ -612,10 +637,6 @@ mod tests {
                 Box::new(|g| g.activity_timeout_views += 1),
             ),
             (
-                "skip_timeout_views",
-                Box::new(|g| g.skip_timeout_views += 1),
-            ),
-            (
                 "max_message_size_bytes",
                 Box::new(|g| g.max_message_size_bytes += 1),
             ),
@@ -647,6 +668,10 @@ mod tests {
             (
                 "observers_per_validator",
                 Box::new(|g| g.observers_per_validator += 1),
+            ),
+            (
+                "max_validator_count",
+                Box::new(|g| g.max_validator_count += 1),
             ),
             (
                 "minimum_validator_count",

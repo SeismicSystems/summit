@@ -50,7 +50,7 @@ The `eth_genesis_hash` field in the Summit genesis config must match the genesis
 
 ### Prerequisites
 
-- `reth` binary in PATH (see main README for setup)
+- A compatible `seismic-reth` binary installed as `reth` in `PATH`, supporting `--seismic.purpose-keys-source built-in` (see [local-network setup](running-local-network.md#prerequisites)). The E2E launchers use these publicly known keys instead of a key custodian; this mode provides no confidentiality and is for local testing only.
 - Ports 8545-8548, 3030-3060, 26600-26630 available
 
 ### Building

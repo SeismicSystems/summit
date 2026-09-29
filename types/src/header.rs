@@ -182,9 +182,7 @@ impl Header {
     /// constructed with a mismatched seed via [`Header::new_with_digest`].
     pub fn computed_digest(&self) -> Digest {
         let bytes = self.encode();
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        hasher.finalize()
+        Sha256::hash(&[&bytes])
     }
 }
 
@@ -855,7 +853,7 @@ mod test {
         let finalized = Finalization {
             proposal,
             certificate: Certificate::<MinPk> {
-                signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
+                signers: Signers::new(3, [0, 1, 2].map(Participant::new)).unwrap(),
                 signature: create_dummy_signature().into(),
             },
         };
@@ -911,7 +909,7 @@ mod test {
         let finalized = Finalization {
             proposal,
             certificate: Certificate::<MinPk> {
-                signers: Signers::from(3, [0, 1, 2].map(Participant::new)),
+                signers: Signers::new(3, [0, 1, 2].map(Participant::new)).unwrap(),
                 signature: create_dummy_signature().into(),
             },
         };
@@ -976,7 +974,7 @@ mod test {
         let wrong_finalized = Finalization {
             proposal: wrong_proposal,
             certificate: Certificate::<MinPk> {
-                signers: Signers::from(5, [0, 2, 4].map(Participant::new)),
+                signers: Signers::new(5, [0, 2, 4].map(Participant::new)).unwrap(),
                 signature: create_dummy_signature().into(),
             },
         };
@@ -1026,7 +1024,7 @@ mod test {
         let finalized = Finalization {
             proposal,
             certificate: Certificate::<MinPk> {
-                signers: Signers::from(4, [0, 1, 2, 3].map(Participant::new)),
+                signers: Signers::new(4, [0, 1, 2, 3].map(Participant::new)).unwrap(),
                 signature: create_dummy_signature().into(),
             },
         };

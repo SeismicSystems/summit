@@ -120,6 +120,7 @@ fn create_test_initial_state(genesis_hash: [u8; 32], epoch_length: NonZeroU64) -
         10,
         16,
         0,
+        256,
         3,
         0,
         3,

@@ -267,8 +267,8 @@ use commonware_macros::test_traced;
 Summit pins Commonware to a versioned release in the workspace `Cargo.toml`. All 14 `commonware-*` workspace dependencies are bumped in lockstep:
 
 ```toml
-commonware-consensus = "2026.7.0"
-commonware-cryptography = "2026.7.0"
+commonware-consensus = "2026.9.0"
+commonware-cryptography = "2026.9.0"
 # ...
 ```
 

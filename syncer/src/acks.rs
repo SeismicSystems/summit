@@ -113,9 +113,9 @@ mod tests {
     type TestBlock = MockBlock<Digest>;
 
     fn digest(byte: u8) -> Digest {
-        let mut hasher = Sha256::new();
+        let mut hasher = Sha256::default();
         hasher.update(&[byte]);
-        hasher.finalize()
+        hasher.finalize().1
     }
 
     fn pending_ack(height: u64, byte: u8) -> (PendingAck<TestBlock, Exact>, Exact) {

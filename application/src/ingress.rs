@@ -165,7 +165,7 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(4);
             let mut mailbox = Mailbox::<ed25519::PublicKey>::new(tx);
 
-            let digest = Sha256::hash(b"proposal");
+            let digest = Sha256::hash(&[b"proposal"]);
             let round = Round::new(Epoch::new(3), View::new(7));
             let peers = vec![test_public_key(1), test_public_key(2)];
 

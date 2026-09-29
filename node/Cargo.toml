@@ -62,6 +62,7 @@ commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
+commonware-macros.workspace = true
 commonware-p2p.workspace = true
 commonware-parallel.workspace = true
 commonware-runtime.workspace = true
@@ -131,7 +132,6 @@ procfs = { version = "0.17.0", optional = true }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
-commonware-macros.workspace = true
 tracing-subscriber = "0.3.19"
 # test harness (move to dev-deps later)
 alloy-rpc-types-engine.workspace = true

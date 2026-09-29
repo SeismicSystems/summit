@@ -4,6 +4,7 @@ pub mod config;
 pub use config::*;
 pub mod actor;
 pub mod db;
+pub mod startup;
 
 #[cfg(test)]
 mod tests;

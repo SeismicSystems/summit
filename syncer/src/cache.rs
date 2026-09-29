@@ -9,7 +9,7 @@ use commonware_runtime::{
     BufferPooler, Clock, Handle, Metrics, Spawner, Storage, buffer::paged::CacheRef,
 };
 use commonware_storage::{
-    archive::{self, Archive as _, Identifier, MultiArchive as _, prunable},
+    archive::{Archive as _, Identifier, MultiArchive as _, prunable},
     metadata::{self, Metadata},
     translator::TwoCap,
 };
@@ -23,10 +23,8 @@ use std::{
 };
 use tracing::{debug, info};
 
-// The key used to store the current epoch in the metadata store.
 const CACHED_EPOCHS_KEY: u8 = 0;
 
-/// Configuration parameters for prunable archives.
 pub(crate) struct Config {
     pub partition_prefix: String,
     pub prunable_items_per_section: NonZero<u64>,
@@ -36,22 +34,21 @@ pub(crate) struct Config {
     pub key_page_cache: CacheRef,
 }
 
-/// Prunable archives for a single epoch.
+type NotarizationArchive<R, S, D> = prunable::Archive<TwoCap, R, D, Notarization<S, D>>;
+type FinalizationArchive<R, S, D> = prunable::Archive<TwoCap, R, D, Finalization<S, D>>;
+
+/// Each handle is absent while a consuming mutation owns it. Failure or
+/// cancellation never substitutes an empty archive for a lost handle.
 struct Cache<
     R: BufferPooler + Rng + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
     S: Scheme<B::Digest>,
 > {
-    /// Verified blocks stored by view
-    verified_blocks: prunable::Archive<TwoCap, R, B::Digest, B>,
-    /// Notarized blocks stored by view
-    notarized_blocks: prunable::Archive<TwoCap, R, B::Digest, B>,
-    /// Certified blocks indexed by height and keyed by commitment.
-    certified_blocks: prunable::Archive<TwoCap, R, B::Digest, B>,
-    /// Notarizations stored by view
-    notarizations: prunable::Archive<TwoCap, R, B::Digest, Notarization<S, B::Digest>>,
-    /// Finalizations stored by view
-    finalizations: prunable::Archive<TwoCap, R, B::Digest, Finalization<S, B::Digest>>,
+    verified_blocks: Option<prunable::Archive<TwoCap, R, B::Digest, B>>,
+    notarized_blocks: Option<prunable::Archive<TwoCap, R, B::Digest, B>>,
+    certified_blocks: Option<prunable::Archive<TwoCap, R, B::Digest, B>>,
+    notarizations: Option<NotarizationArchive<R, S, B::Digest>>,
+    finalizations: Option<FinalizationArchive<R, S, B::Digest>>,
 }
 
 impl<
@@ -60,48 +57,60 @@ impl<
     S: Scheme<B::Digest>,
 > Cache<R, B, S>
 {
-    /// Prune view-indexed archives to the given view.
     async fn prune_by_view(&mut self, min_view: View) {
-        match futures::try_join!(
-            self.verified_blocks.prune(min_view.get()),
-            self.notarized_blocks.prune(min_view.get()),
-            self.notarizations.prune(min_view.get()),
-            self.finalizations.prune(min_view.get()),
-        ) {
-            Ok(_) => debug!(min_view = %min_view, "pruned archives"),
-            Err(e) => panic!("failed to prune archives: {e}"),
-        }
+        let verified = self
+            .verified_blocks
+            .take()
+            .expect("verified archive unavailable");
+        let notarized = self
+            .notarized_blocks
+            .take()
+            .expect("notarized archive unavailable");
+        let notarizations = self
+            .notarizations
+            .take()
+            .expect("notarizations archive unavailable");
+        let finalizations = self
+            .finalizations
+            .take()
+            .expect("finalizations archive unavailable");
+        let (verified, notarized, notarizations, finalizations) = futures::try_join!(
+            verified.prune(min_view.get()),
+            notarized.prune(min_view.get()),
+            notarizations.prune(min_view.get()),
+            finalizations.prune(min_view.get()),
+        )
+        .expect("failed to prune archives");
+        self.verified_blocks = Some(verified);
+        self.notarized_blocks = Some(notarized);
+        self.notarizations = Some(notarizations);
+        self.finalizations = Some(finalizations);
+        debug!(%min_view, "pruned archives");
     }
 
-    /// Prune height-indexed archives to the given height.
     async fn prune_by_height(&mut self, min_height: Height) {
-        self.certified_blocks
-            .prune(min_height.get())
-            .await
-            .expect("failed to prune certified blocks");
+        let archive = self
+            .certified_blocks
+            .take()
+            .expect("certified archive unavailable");
+        self.certified_blocks = Some(
+            archive
+                .prune(min_height.get())
+                .await
+                .expect("failed to prune certified blocks"),
+        );
     }
 }
 
-/// Manages prunable caches and their metadata.
 pub(crate) struct Manager<
     R: BufferPooler + Rng + Spawner + Metrics + Clock + GClock + Storage,
     B: Block,
     S: Scheme<B::Digest>,
 > {
-    /// Context
     context: R,
-
-    /// Configuration for underlying prunable archives
     cfg: Config,
-
-    /// Codec configuration for block type
     block_codec_config: B::Cfg,
-
-    /// Metadata store for recording which epochs may have data. The value is a tuple of the floor
-    /// and ceiling, the minimum and maximum epochs (inclusive) that may have data.
-    metadata: Metadata<R, u8, (Epoch, Epoch)>,
-
-    /// A map from epoch to its cache
+    metadata: Option<Metadata<R, u8, (Epoch, Epoch)>>,
     caches: BTreeMap<Epoch, Cache<R, B, S>>,
 }
 
@@ -111,9 +120,8 @@ impl<
     S: Scheme<B::Digest>,
 > Manager<R, B, S>
 {
-    /// Initialize the cache manager and its metadata store.
+    #[commonware_macros::boxed]
     pub(crate) async fn init(context: R, cfg: Config, block_codec_config: B::Cfg) -> Self {
-        // Initialize metadata
         let metadata = Metadata::init(
             context.child("metadata"),
             metadata::Config {
@@ -123,21 +131,16 @@ impl<
         )
         .await
         .expect("failed to initialize metadata");
-
-        // We don't eagerly initialize any epoch caches here, they will be
-        // initialized on demand, otherwise there could be coordination issues
-        // around the scheme provider.
         Self {
             context,
             cfg,
             block_codec_config,
-            metadata,
+            metadata: Some(metadata),
             caches: BTreeMap::new(),
         }
     }
 
-    /// Load all persisted epoch caches so that `find_block` can discover
-    /// blocks written before the last shutdown.
+    /// Open persisted caches lazily only after the scheme provider is ready.
     pub(crate) async fn load_persisted_epochs(&mut self) {
         let (floor, ceiling) = self.get_metadata();
         for e in floor.get()..=ceiling.get() {
@@ -148,49 +151,42 @@ impl<
         }
     }
 
-    /// Retrieve the epoch range that may have data.
     fn get_metadata(&self) -> (Epoch, Epoch) {
         self.metadata
+            .as_ref()
+            .expect("cache metadata unavailable")
             .get(&CACHED_EPOCHS_KEY)
             .cloned()
             .unwrap_or((Epoch::zero(), Epoch::zero()))
     }
 
-    /// Set the epoch range that may have data.
     async fn set_metadata(&mut self, floor: Epoch, ceiling: Epoch) {
-        self.metadata
-            .put_sync(CACHED_EPOCHS_KEY, (floor, ceiling))
-            .await
-            .expect("failed to write metadata");
+        let metadata = self.metadata.take().expect("cache metadata unavailable");
+        self.metadata = Some(
+            metadata
+                .put_sync(CACHED_EPOCHS_KEY, (floor, ceiling))
+                .await
+                .expect("failed to write metadata"),
+        );
     }
 
-    /// Get the cache for the given epoch, initializing it if it doesn't exist.
-    ///
-    /// If the epoch is less than the minimum cached epoch, then it has already been pruned,
-    /// and this will return `None`.
     async fn get_or_init_epoch(&mut self, epoch: Epoch) -> Option<&mut Cache<R, B, S>> {
-        // If the cache exists, return it
         if self.caches.contains_key(&epoch) {
             return self.caches.get_mut(&epoch);
         }
-
-        // If the epoch is less than the epoch floor, then it has already been pruned
         let (floor, ceiling) = self.get_metadata();
         if epoch < floor {
             return None;
         }
-
-        // Update the metadata (metadata-first is safe; init is idempotent)
+        // Metadata first: initialization is idempotent after a crash.
         if epoch > ceiling {
             self.set_metadata(floor, epoch).await;
         }
-
-        // Initialize and return the epoch
         self.init_epoch(epoch).await;
-        self.caches.get_mut(&epoch) // Should always be Some
+        self.caches.get_mut(&epoch)
     }
 
-    /// Helper to initialize the cache for a given epoch.
+    #[commonware_macros::boxed]
     async fn init_epoch(&mut self, epoch: Epoch) {
         let context = self.context.child("epoch").with_attribute("epoch", epoch);
         let (verified_blocks, notarized_blocks, certified_blocks, notarizations, finalizations) = futures::join!(
@@ -220,30 +216,29 @@ impl<
                 &self.cfg,
                 epoch,
                 "notarizations",
-                S::certificate_codec_config_unbounded(),
+                S::certificate_codec_config_unbounded()
             ),
             Self::init_archive(
                 &context,
                 &self.cfg,
                 epoch,
                 "finalizations",
-                S::certificate_codec_config_unbounded(),
+                S::certificate_codec_config_unbounded()
             ),
         );
         let existing = self.caches.insert(
             epoch,
             Cache {
-                verified_blocks,
-                notarized_blocks,
-                certified_blocks,
-                notarizations,
-                finalizations,
+                verified_blocks: Some(verified_blocks),
+                notarized_blocks: Some(notarized_blocks),
+                certified_blocks: Some(certified_blocks),
+                notarizations: Some(notarizations),
+                finalizations: Some(finalizations),
             },
         );
         assert!(existing.is_none(), "cache already exists for epoch {epoch}");
     }
 
-    /// Helper to initialize an archive.
     async fn init_archive<T: CodecShared>(
         ctx: &R,
         cfg: &Config,
@@ -252,26 +247,31 @@ impl<
         codec_config: T::Cfg,
     ) -> prunable::Archive<TwoCap, R, B::Digest, T> {
         let start = ctx.current();
-        let archive_cfg = prunable::Config {
-            translator: TwoCap,
-            key_partition: format!("{}-cache-{epoch}-{name}-key", cfg.partition_prefix),
-            key_page_cache: cfg.key_page_cache.clone(),
-            value_partition: format!("{}-cache-{epoch}-{name}-value", cfg.partition_prefix),
-            items_per_section: cfg.prunable_items_per_section,
-            compression: None,
-            codec_config,
-            replay_buffer: cfg.replay_buffer,
-            key_write_buffer: cfg.key_write_buffer,
-            value_write_buffer: cfg.value_write_buffer,
-        };
-        let archive = prunable::Archive::init(ctx.child(name), archive_cfg)
-            .await
-            .unwrap_or_else(|_| panic!("failed to initialize {name} archive"));
+        let archive = prunable::Archive::init(
+            ctx.child(name),
+            prunable::Config {
+                translator: TwoCap,
+                key_partition: format!("{}-cache-{epoch}-{name}-key", cfg.partition_prefix),
+                key_page_cache: cfg.key_page_cache.clone(),
+                value_partition: format!("{}-cache-{epoch}-{name}-value", cfg.partition_prefix),
+                metadata_partition: format!(
+                    "{}-cache-{epoch}-{name}-metadata",
+                    cfg.partition_prefix
+                ),
+                items_per_section: cfg.prunable_items_per_section,
+                compression: None,
+                codec_config,
+                replay_buffer: cfg.replay_buffer,
+                key_write_buffer: cfg.key_write_buffer,
+                value_write_buffer: cfg.value_write_buffer,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("failed to initialize {name} archive: {e}"));
         info!(elapsed = ?ctx.current().duration_since(start).unwrap_or(Duration::ZERO), "restored {name} archive");
         archive
     }
 
-    /// Add a verified block to the prunable archive and start syncing it.
     pub(crate) async fn put_verified(
         &mut self,
         round: Round,
@@ -281,26 +281,25 @@ impl<
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return Handle::ready(Ok(()));
         };
-        let view = round.view().get();
-        match cache.verified_blocks.has_at(view, &commitment).await {
-            Ok(true) => {
-                return Self::handle_start_result(
-                    cache.verified_blocks.start_sync().await,
-                    round,
-                    "verified",
-                );
-            }
-            Ok(false) => {}
-            Err(e) => panic!("failed to check verified blocks: {e}"),
-        }
-        let result = cache
+        let archive = cache
             .verified_blocks
-            .put_multi_start_sync(view, commitment, block)
-            .await;
-        Self::handle_start_result(result, round, "verified")
+            .take()
+            .expect("verified archive unavailable");
+        let view = round.view().get();
+        let result = if archive
+            .has_at(view, &commitment)
+            .await
+            .expect("failed to check verified blocks")
+        {
+            archive.start_sync().await
+        } else {
+            archive.put_multi_start_sync(view, commitment, block).await
+        };
+        let (archive, handle) = result.expect("failed to persist verified block");
+        cache.verified_blocks = Some(archive);
+        handle
     }
 
-    /// Add a certified block to the height-indexed archive.
     pub(crate) async fn put_certified(
         &mut self,
         epoch: Epoch,
@@ -311,33 +310,29 @@ impl<
         let Some(cache) = self.get_or_init_epoch(epoch).await else {
             return;
         };
-
-        // A digest determines its height, so scoping the dedup to this height
-        // is exact and avoids fetching values.
-        match cache
+        if cache
             .certified_blocks
+            .as_ref()
+            .expect("certified archive unavailable")
             .has_at(height.get(), &commitment)
             .await
+            .expect("failed to check certified block")
         {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(e) => panic!("failed to check certified block: {e}"),
+            return;
         }
-
-        match cache
+        let archive = cache
             .certified_blocks
-            .put_multi_sync(height.get(), commitment, block)
-            .await
-        {
-            Ok(()) => debug!(%height, "cached certified block"),
-            Err(archive::Error::AlreadyPrunedTo(_)) => {
-                debug!(%height, "certified block already pruned");
-            }
-            Err(e) => panic!("failed to insert certified block: {e}"),
-        }
+            .take()
+            .expect("certified archive unavailable");
+        // Below-floor puts are successful no-ops in Commonware 2026.9.0.
+        cache.certified_blocks = Some(
+            archive
+                .put_multi_sync(height.get(), commitment, block)
+                .await
+                .expect("failed to insert certified block"),
+        );
     }
 
-    /// Add a notarized block to the prunable archive and start syncing it.
     pub(crate) async fn put_block(
         &mut self,
         round: Round,
@@ -347,14 +342,18 @@ impl<
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return Handle::ready(Ok(()));
         };
-        let result = cache
+        let archive = cache
             .notarized_blocks
+            .take()
+            .expect("notarized archive unavailable");
+        let (archive, handle) = archive
             .put_start_sync(round.view().get(), commitment, block)
-            .await;
-        Self::handle_start_result(result, round, "notarized")
+            .await
+            .expect("failed to persist notarized block");
+        cache.notarized_blocks = Some(archive);
+        handle
     }
 
-    /// Add a notarization to the prunable archive and start syncing it.
     pub(crate) async fn put_notarization(
         &mut self,
         round: Round,
@@ -364,14 +363,18 @@ impl<
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return Handle::ready(Ok(()));
         };
-        let result = cache
+        let archive = cache
             .notarizations
+            .take()
+            .expect("notarizations archive unavailable");
+        let (archive, handle) = archive
             .put_start_sync(round.view().get(), commitment, notarization)
-            .await;
-        Self::handle_start_result(result, round, "notarization")
+            .await
+            .expect("failed to persist notarization");
+        cache.notarizations = Some(archive);
+        handle
     }
 
-    /// Add a finalization to the prunable archive.
     pub(crate) async fn put_finalization(
         &mut self,
         round: Round,
@@ -381,79 +384,63 @@ impl<
         let Some(cache) = self.get_or_init_epoch(round.epoch()).await else {
             return;
         };
-        let result = cache
+        let archive = cache
             .finalizations
-            .put_sync(round.view().get(), commitment, finalization)
-            .await;
-        Self::handle_result(result, round, "finalization");
+            .take()
+            .expect("finalizations archive unavailable");
+        cache.finalizations = Some(
+            archive
+                .put_sync(round.view().get(), commitment, finalization)
+                .await
+                .expect("failed to persist finalization"),
+        );
     }
 
-    /// Helper to debug cache results.
-    fn handle_result(result: Result<(), archive::Error>, round: Round, name: &str) {
-        match result {
-            Ok(_) => {
-                debug!(?round, name, "cached");
-            }
-            Err(archive::Error::AlreadyPrunedTo(_)) => {
-                debug!(?round, name, "already pruned");
-            }
-            Err(e) => {
-                panic!("failed to insert {name}: {e}");
-            }
-        }
-    }
-
-    fn handle_start_result(
-        result: Result<Handle<()>, archive::Error>,
-        round: Round,
-        name: &str,
-    ) -> Handle<()> {
-        match result {
-            Ok(handle) => {
-                debug!(?round, name, "cache sync started");
-                handle
-            }
-            Err(archive::Error::AlreadyPrunedTo(_)) => {
-                debug!(?round, name, "already pruned");
-                Handle::ready(Ok(()))
-            }
-            Err(e) => panic!("failed to persist {name}: {e}"),
-        }
-    }
-
-    /// Returns whether the verified archive holds `commitment` at `round`.
     pub(crate) async fn has_verified(&self, round: Round, commitment: &B::Digest) -> bool {
         let Some(cache) = self.caches.get(&round.epoch()) else {
             return false;
         };
         cache
             .verified_blocks
+            .as_ref()
+            .expect("verified archive unavailable")
             .has_at(round.view().get(), commitment)
             .await
             .expect("failed to check verified blocks")
     }
 
-    /// Observe all verified-block writes accepted before this call.
     pub(crate) async fn start_sync_verified(&mut self, round: Round) -> Handle<()> {
         let Some(cache) = self.caches.get_mut(&round.epoch()) else {
             return Handle::ready(Ok(()));
         };
-        Self::handle_start_result(cache.verified_blocks.start_sync().await, round, "verified")
+        let archive = cache
+            .verified_blocks
+            .take()
+            .expect("verified archive unavailable");
+        let (archive, handle) = archive
+            .start_sync()
+            .await
+            .expect("failed to sync verified blocks");
+        cache.verified_blocks = Some(archive);
+        handle
     }
 
-    /// Observe all notarization writes accepted before this call.
     pub(crate) async fn start_sync_notarizations(&mut self, round: Round) -> Handle<()> {
         let Some(cache) = self.caches.get_mut(&round.epoch()) else {
             return Handle::ready(Ok(()));
         };
-        Self::handle_start_result(
-            cache.notarizations.start_sync().await,
-            round,
-            "notarization",
-        )
+        let archive = cache
+            .notarizations
+            .take()
+            .expect("notarizations archive unavailable");
+        let (archive, handle) = archive
+            .start_sync()
+            .await
+            .expect("failed to sync notarizations");
+        cache.notarizations = Some(archive);
+        handle
     }
 
-    /// Get a notarization from the prunable archive by round.
     pub(crate) async fn get_notarization(
         &self,
         round: Round,
@@ -461,129 +448,125 @@ impl<
         let cache = self.caches.get(&round.epoch())?;
         cache
             .notarizations
+            .as_ref()
+            .expect("notarizations archive unavailable")
             .get(Identifier::Index(round.view().get()))
             .await
             .expect("failed to get notarization")
     }
 
-    /// Get a block previously persisted in the verified archive for `round`.
-    ///
-    /// The archive can hold multiple candidates at one view when a leader
-    /// equivocates across a crash. This returns the first stored candidate;
-    /// callers must validate its digest and context before reuse.
+    /// Returns the first candidate at a view; callers must check digest/context
+    /// because verified storage retains equivocations across crashes.
     pub(crate) async fn get_verified(&self, round: Round) -> Option<B> {
         let cache = self.caches.get(&round.epoch())?;
         cache
             .verified_blocks
+            .as_ref()
+            .expect("verified archive unavailable")
             .get(Identifier::Index(round.view().get()))
             .await
             .expect("failed to get verified block")
     }
 
-    /// Get a finalization from the prunable archive by commitment.
     pub(crate) async fn get_finalization_for(
         &self,
         commitment: B::Digest,
     ) -> Option<Finalization<S, B::Digest>> {
         for cache in self.caches.values().rev() {
-            match cache.finalizations.get(Identifier::Key(&commitment)).await {
-                Ok(Some(finalization)) => return Some(finalization),
-                Ok(None) => continue,
-                Err(e) => panic!("failed to get cached finalization: {e}"),
+            if let Some(finalization) = cache
+                .finalizations
+                .as_ref()
+                .expect("finalizations archive unavailable")
+                .get(Identifier::Key(&commitment))
+                .await
+                .expect("failed to get cached finalization")
+            {
+                return Some(finalization);
             }
         }
         None
     }
 
-    /// Looks for a block (verified, notarized, or certified by height).
     pub(crate) async fn find_block(&self, commitment: B::Digest) -> Option<B> {
         self.find_block_matching(commitment, |_| true).await
     }
 
-    /// Looks for a block (verified, notarized, or certified by height) that matches `predicate`.
     pub(crate) async fn find_block_matching(
         &self,
         commitment: B::Digest,
         mut predicate: impl FnMut(&B) -> bool,
     ) -> Option<B> {
-        // Check in reverse order
         for cache in self.caches.values().rev() {
-            // Check verified blocks
-            if let Some(block) = cache
-                .verified_blocks
-                .get(Identifier::Key(&commitment))
-                .await
-                .expect("failed to get verified block")
-                && predicate(&block)
-            {
-                return Some(block);
-            }
-
-            // Check notarized blocks
-            if let Some(block) = cache
-                .notarized_blocks
-                .get(Identifier::Key(&commitment))
-                .await
-                .expect("failed to get notarized block")
-                && predicate(&block)
-            {
-                return Some(block);
-            }
-
-            // Check certified blocks
-            if let Some(block) = cache
-                .certified_blocks
-                .get(Identifier::Key(&commitment))
-                .await
-                .expect("failed to get certified block")
-                && predicate(&block)
-            {
-                return Some(block);
+            for archive in [
+                &cache.verified_blocks,
+                &cache.notarized_blocks,
+                &cache.certified_blocks,
+            ] {
+                if let Some(block) = archive
+                    .as_ref()
+                    .expect("block cache unavailable")
+                    .get(Identifier::Key(&commitment))
+                    .await
+                    .expect("failed to get cached block")
+                    && predicate(&block)
+                {
+                    return Some(block);
+                }
             }
         }
         None
     }
 
-    /// Prune the view-indexed caches below the given round.
     pub(crate) async fn prune_by_view(&mut self, round: Round) {
-        // Remove and close prunable archives from older epochs
         let new_floor = round.epoch();
-        let old_epochs: Vec<Epoch> = self
+        let old_epochs: Vec<_> = self
             .caches
             .keys()
             .copied()
             .filter(|epoch| *epoch < new_floor)
             .collect();
-        for epoch in old_epochs.iter() {
-            let Cache::<R, B, S> {
-                verified_blocks: vb,
-                notarized_blocks: nb,
-                certified_blocks: cb,
-                notarizations: nv,
-                finalizations: fv,
-            } = self.caches.remove(epoch).unwrap();
-            vb.destroy().await.expect("failed to destroy vb");
-            nb.destroy().await.expect("failed to destroy nb");
-            cb.destroy().await.expect("failed to destroy cb");
-            nv.destroy().await.expect("failed to destroy nv");
-            fv.destroy().await.expect("failed to destroy fv");
+        for epoch in old_epochs {
+            let cache = self.caches.remove(&epoch).unwrap();
+            cache
+                .verified_blocks
+                .expect("verified archive unavailable")
+                .destroy()
+                .await
+                .expect("failed to destroy verified archive");
+            cache
+                .notarized_blocks
+                .expect("notarized archive unavailable")
+                .destroy()
+                .await
+                .expect("failed to destroy notarized archive");
+            cache
+                .certified_blocks
+                .expect("certified archive unavailable")
+                .destroy()
+                .await
+                .expect("failed to destroy certified archive");
+            cache
+                .notarizations
+                .expect("notarizations archive unavailable")
+                .destroy()
+                .await
+                .expect("failed to destroy notarizations archive");
+            cache
+                .finalizations
+                .expect("finalizations archive unavailable")
+                .destroy()
+                .await
+                .expect("failed to destroy finalizations archive");
         }
-
-        // Update metadata if necessary
         let (floor, ceiling) = self.get_metadata();
         if new_floor > floor {
-            let new_ceiling = max(ceiling, new_floor);
-            self.set_metadata(new_floor, new_ceiling).await;
+            self.set_metadata(new_floor, max(ceiling, new_floor)).await;
         }
-
-        // Prune archives for the given epoch
-        let min_view = round.view();
-        if let Some(prunable) = self.caches.get_mut(&round.epoch()) {
-            prunable.prune_by_view(min_view).await;
+        if let Some(cache) = self.caches.get_mut(&round.epoch()) {
+            cache.prune_by_view(round.view()).await;
         }
     }
 
-    /// Prune height-indexed certified blocks below the given height.
     pub(crate) async fn prune_by_height(&mut self, height: Height) {
         for cache in self.caches.values_mut() {
             cache.prune_by_height(height).await;

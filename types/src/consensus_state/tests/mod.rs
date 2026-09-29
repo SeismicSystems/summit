@@ -10,4 +10,5 @@ mod payouts;
 mod protocol_params;
 mod ssz;
 mod state;
+mod validator_cap;
 mod withdrawals;

@@ -1,6 +1,6 @@
 //! Two-level SSZ binary Merkle tree for ConsensusState.
 //!
-//! The top-level tree has 32 leaf slots (28 used, depth 5). Scalar fields and
+//! The top-level tree has 32 leaf slots (29 used, depth 5). Scalar fields and
 //! collection roots are assigned to fixed leaf indices — see the field-index
 //! and `*_ROOT` constants below for the authoritative layout. Each collection
 //! root (validator accounts, deposit/withdrawal queues, protocol-param changes,
@@ -61,9 +61,10 @@ pub const MINIMUM_VALIDATOR_COUNT: usize = 24;
 pub const PENDING_ACTIVE_VALIDATOR_EXITS: usize = 25;
 pub const INVALID_DEPOSIT_TAX: usize = 26;
 pub const MAX_PENDING_WITHDRAWALS_PER_VALIDATOR: usize = 27;
+pub const MAX_VALIDATOR_COUNT: usize = 28;
 
 /// Number of used leaf slots in the top-level tree.
-pub const NUM_TOP_LEAVES: usize = 28;
+pub const NUM_TOP_LEAVES: usize = 29;
 
 // --- Validator field indices (within each validator's 8-leaf subtree) ---
 
@@ -133,7 +134,7 @@ pub const ADDED_VALIDATOR_FIELDS_PER_ITEM: usize = 4;
 /// Two-level SSZ state tree mirroring ConsensusState.
 #[derive(Clone, Debug)]
 pub struct SszStateTree {
-    /// Top-level tree: 32 leaves (depth 5), 28 used.
+    /// Top-level tree: 32 leaves (depth 5), 29 used.
     top: SszTree,
 
     /// Validator accounts subtree. Rebuilt from BTreeMap on every mutation.
@@ -286,6 +287,11 @@ impl SszStateTree {
             MAX_PENDING_WITHDRAWALS_PER_VALIDATOR,
             value.hash_tree_root(),
         );
+    }
+
+    pub fn set_max_validator_count(&mut self, value: u64) {
+        self.top
+            .set_leaf(MAX_VALIDATOR_COUNT, value.hash_tree_root());
     }
 
     pub fn set_treasury_address(&mut self, address: &Address) {
@@ -718,6 +724,7 @@ impl SszStateTree {
             ProtocolParam::MinimumValidatorCount(v) => (7u64, v.hash_tree_root()),
             ProtocolParam::InvalidDepositTax(v) => (8u64, v.hash_tree_root()),
             ProtocolParam::MaxPendingWithdrawalsPerValidator(v) => (9u64, v.hash_tree_root()),
+            ProtocolParam::MaxValidatorCount(v) => (10u64, v.hash_tree_root()),
         };
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_TAG, tag.hash_tree_root());
         tree.set_leaf(base + PROTOCOL_PARAM_FIELD_VALUE, value_hash);
@@ -859,6 +866,7 @@ impl SszStateTree {
         max_deposits_per_epoch: u64,
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
+        max_validator_count: u64,
         pending_execution_requests: &[alloy_primitives::Bytes],
         pending_checkpoint_digest: Option<[u8; 32]>,
         dynamic_epoch_schedule: &[u8],
@@ -885,6 +893,7 @@ impl SszStateTree {
         self.set_max_deposits_per_epoch(max_deposits_per_epoch);
         self.set_max_withdrawals_per_epoch(max_withdrawals_per_epoch);
         self.set_observers_per_validator(observers_per_validator);
+        self.set_max_validator_count(max_validator_count);
         self.set_minimum_validator_count(minimum_validator_count);
         self.set_pending_active_validator_exits(pending_active_validator_exits);
         self.set_invalid_deposit_tax(invalid_deposit_tax);
@@ -1625,6 +1634,10 @@ mod tests {
 
         tree.set_forkchoice_finalized_block_hash(&[5u8; 32]);
         assert_ne!(tree.root(), r10);
+        let r11 = tree.root();
+
+        tree.set_max_validator_count(256);
+        assert_ne!(tree.root(), r11);
     }
 
     #[test]
@@ -1753,6 +1766,7 @@ mod tests {
         inc.set_max_deposits_per_epoch(3);
         inc.set_max_withdrawals_per_epoch(16);
         inc.set_observers_per_validator(5);
+        inc.set_max_validator_count(256);
         inc.set_minimum_validator_count(3);
         inc.set_pending_active_validator_exits(0);
         inc.set_invalid_deposit_tax(0);
@@ -1791,6 +1805,7 @@ mod tests {
             3,
             16,
             5,
+            256,
             &[],
             None,
             &[],
@@ -1905,6 +1920,7 @@ mod tests {
             3,
             16,
             0,
+            256,
             &[],
             None,
             &[],

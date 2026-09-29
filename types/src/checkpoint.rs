@@ -29,9 +29,7 @@ pub struct Checkpoint {
 impl Checkpoint {
     pub fn new(state: &ConsensusState) -> Self {
         let data = state.encode();
-        let mut hasher = Sha256::new();
-        hasher.update(&data);
-        let digest = hasher.finalize();
+        let digest = Sha256::hash(&[&data]);
         Self { data, digest }
     }
 }
@@ -89,9 +87,7 @@ impl Decode for Checkpoint {
         // Bind the redundant `digest` field to `data`: a decoded checkpoint must
         // satisfy `digest == sha256(data)`.
         let digest = Digest::from(digest_bytes);
-        let mut hasher = Sha256::new();
-        hasher.update(&data);
-        if hasher.finalize() != digest {
+        if Sha256::hash(&[&data]) != digest {
             return Err(ssz::DecodeError::BytesInvalid(
                 "checkpoint digest does not match sha256(data)".to_string(),
             ));
@@ -142,9 +138,7 @@ impl TryFrom<&Checkpoint> for ConsensusState {
 
     fn try_from(checkpoint: &Checkpoint) -> Result<Self, Self::Error> {
         // Verify the digest matches the data
-        let mut hasher = Sha256::new();
-        hasher.update(&checkpoint.data);
-        let computed_digest = hasher.finalize();
+        let computed_digest = Sha256::hash(&[&checkpoint.data]);
 
         if computed_digest != checkpoint.digest {
             return Err(Error::Invalid("Checkpoint", "Digest verification failed"));
@@ -497,9 +491,7 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
 
     // Step 2: Compute the checkpoint digest and verify it matches the last header
     let last_header = finalized_headers.last().unwrap();
-    let mut hasher = Sha256::new();
-    hasher.update(&checkpoint.data);
-    let computed_digest = hasher.finalize();
+    let computed_digest = Sha256::hash(&[&checkpoint.data]);
     if last_header.header().checkpoint_hash() != computed_digest {
         return Err(CheckpointVerificationError::CheckpointHashMismatch);
     }
@@ -803,6 +795,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -931,6 +924,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -988,6 +982,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -1124,6 +1119,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -1186,6 +1182,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -1253,6 +1250,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -1316,6 +1314,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -1474,6 +1473,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -1592,7 +1592,6 @@ mod tests {
             notarization_timeout_ms: 1_000,
             nullify_timeout_ms: 1_000,
             activity_timeout_views: 10,
-            skip_timeout_views: 5,
             max_message_size_bytes: 1_048_576,
             namespace: namespace.clone(),
             validator_minimum_stake: 32_000_000_000,
@@ -1602,6 +1601,7 @@ mod tests {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 1,
             invalid_deposit_tax: 0,
             max_pending_withdrawals_per_validator: 3,
@@ -1616,6 +1616,7 @@ mod tests {
             3,
             16,
             0,
+            256,
             1,
             0,
             3,
@@ -1677,8 +1678,12 @@ mod tests {
             .take(3)
             .map(|scheme| Finalize::sign(scheme, proposal.clone()).unwrap())
             .collect();
-        let finalization = Finalization::from_finalizes(&schemes[0], &finalizes, &Sequential)
-            .expect("finalization should aggregate");
+        let finalization = Finalization::from_finalizes(
+            &schemes[0],
+            commonware_utils::non_empty![@&finalizes],
+            &Sequential,
+        )
+        .expect("finalization should aggregate");
 
         let finalized_header = FinalizedHeader::new(header, finalization, schemes.len())
             .expect("honest header is bound to its certificate");
@@ -2207,6 +2212,7 @@ mod tests {
             3,
             16,
             0,
+            256,
             1,
             0,
             3,

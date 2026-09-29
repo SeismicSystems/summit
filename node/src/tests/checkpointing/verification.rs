@@ -65,7 +65,7 @@ fn test_checkpoint_verification_fixed_committee() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
@@ -73,6 +73,7 @@ fn test_checkpoint_verification_fixed_committee() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -120,7 +121,6 @@ fn test_checkpoint_verification_fixed_committee() {
             notarization_timeout_ms: 2000,
             nullify_timeout_ms: 10000,
             activity_timeout_views: 10,
-            skip_timeout_views: 5,
             max_message_size_bytes: 1024 * 1024,
             namespace: namespace.to_string(),
             validator_minimum_stake: 32_000_000_000,
@@ -130,6 +130,7 @@ fn test_checkpoint_verification_fixed_committee() {
             max_deposits_per_epoch: 10,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             invalid_deposit_tax: 0,
             max_pending_withdrawals_per_validator: 3,
@@ -438,7 +439,7 @@ fn test_checkpoint_verification_dynamic_committee() {
     let link = Link {
         latency: Duration::from_millis(80),
         jitter: Duration::from_millis(10),
-        success_rate: 1.0,
+        success_rate: commonware_utils::probability!(1.0),
     };
     let cfg = deterministic::Config::default().with_seed(0);
     let executor = Runner::from(cfg);
@@ -446,6 +447,7 @@ fn test_checkpoint_verification_dynamic_committee() {
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: false,
                 tracked_peer_sets: NZUsize!(n as usize * 10),
@@ -493,7 +495,6 @@ fn test_checkpoint_verification_dynamic_committee() {
             notarization_timeout_ms: 2000,
             nullify_timeout_ms: 10000,
             activity_timeout_views: 10,
-            skip_timeout_views: 5,
             max_message_size_bytes: 1024 * 1024,
             namespace: namespace.to_string(),
             validator_minimum_stake: min_stake,
@@ -503,6 +504,7 @@ fn test_checkpoint_verification_dynamic_committee() {
             max_deposits_per_epoch: 10,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: 256,
             minimum_validator_count: 3,
             invalid_deposit_tax: 0,
             max_pending_withdrawals_per_validator: 3,

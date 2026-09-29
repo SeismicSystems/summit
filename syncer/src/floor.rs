@@ -7,7 +7,7 @@ use commonware_cryptography::{Digest, certificate::Scheme as CertificateScheme};
 use commonware_resolver::{Resolver, TargetedResolver};
 use commonware_utils::vec::NonEmptyVec;
 
-/// Durable processed floor used to admit or reject resolver fetches.
+/// Process-local processed floor used to admit or reject resolver fetches.
 #[derive(Clone, Copy)]
 struct ProcessedFloor {
     height: Option<Height>,
@@ -34,6 +34,7 @@ pub(crate) enum FetchAdmission {
 }
 
 impl FetchAdmission {
+    #[cfg(test)]
     pub(crate) const fn denied(self) -> bool {
         matches!(self, Self::Denied)
     }
@@ -98,6 +99,20 @@ impl<S: CertificateScheme, C: Digest> Floor<S, C> {
     #[must_use]
     pub(crate) const fn take_pending_anchor(&mut self) -> Option<Finalization<S, C>> {
         self.pending.take()
+    }
+
+    /// Release an anchor already covered by the processed round. Its resolver
+    /// request has been pruned and must no longer block application progress.
+    pub(crate) fn take_superseded_anchor(&mut self) -> Option<Finalization<S, C>> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.round() <= self.processed.round)
+        {
+            self.pending.take()
+        } else {
+            None
+        }
     }
 
     pub(crate) fn fetch_if_permitted<R>(
@@ -248,9 +263,9 @@ mod tests {
 
     fn digest(byte: u8) -> TestDigest {
         use commonware_cryptography::Hasher as _;
-        let mut hasher = Sha256::new();
+        let mut hasher = Sha256::default();
         hasher.update(&[byte]);
-        hasher.finalize()
+        hasher.finalize().1
     }
 
     fn floor() -> Floor<TestScheme, TestDigest> {

@@ -83,6 +83,7 @@ pub fn parse_key(descriptor: &str) -> Result<SszStateKey, String> {
         "max_pending_withdrawals_per_validator" => Ok(SszStateKey::Scalar(
             ssz_state_tree::MAX_PENDING_WITHDRAWALS_PER_VALIDATOR,
         )),
+        "max_validator_count" => Ok(SszStateKey::Scalar(ssz_state_tree::MAX_VALIDATOR_COUNT)),
         _ => {
             if let Some(rest) = descriptor.strip_prefix("validator_field:") {
                 // Format: "validator_field:0xPUBKEY:field_name"
@@ -272,6 +273,10 @@ mod tests {
         assert_eq!(
             parse_key("invalid_deposit_tax").unwrap(),
             SszStateKey::Scalar(ssz_state_tree::INVALID_DEPOSIT_TAX)
+        );
+        assert_eq!(
+            parse_key("max_validator_count").unwrap(),
+            SszStateKey::Scalar(ssz_state_tree::MAX_VALIDATOR_COUNT)
         );
     }
 

@@ -467,13 +467,11 @@ impl<
                                     let requester = try_join(parent_request, block_request);
                                     select! {
                                         result = requester => {
-                                            // The syncer drops (cancels) a block subscription for a
-                                            // round older than its last_processed_round, so a stale
-                                            // verify path can see the request canceled. Treat that as
-                                            // a terminal "cannot verify" (vote false) rather than an
-                                            // invariant violation.
+                                            // Local subscriptions survive resolver-floor denial.
+                                            // Shutdown or a closed subscription can still cancel
+                                            // this work; it is not evidence of an invalid peer.
                                             let Ok((parent, block)) = result else {
-                                                warn!(?round, "verify aborted: block subscription canceled (likely stale round)");
+                                                warn!(?round, "verify aborted: block subscription canceled");
                                                 let _ = response.send(false);
                                                 return;
                                             };

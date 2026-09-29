@@ -6,8 +6,9 @@ use crate::execution_request::{
 };
 use crate::header::AddedValidator;
 use crate::protocol_params::{
-    DEFAULT_MAX_PENDING_WITHDRAWALS_PER_VALIDATOR, DEFAULT_MINIMUM_VALIDATOR_COUNT,
-    MAX_INVALID_DEPOSIT_TAX, MIN_ALLOWED_TIMESTAMP_FUTURE_MS, ProtocolParam,
+    DEFAULT_MAX_PENDING_WITHDRAWALS_PER_VALIDATOR, DEFAULT_MAX_VALIDATOR_COUNT,
+    DEFAULT_MINIMUM_VALIDATOR_COUNT, MAX_INVALID_DEPOSIT_TAX, MAX_MAX_VALIDATOR_COUNT,
+    MIN_ALLOWED_TIMESTAMP_FUTURE_MS, MIN_MAX_VALIDATOR_COUNT, ProtocolParam,
 };
 use crate::ssz_state_tree::SszStateTree;
 use crate::utils::{invalid_deposit_refund_split, parse_withdrawal_credentials};
@@ -71,6 +72,7 @@ pub struct ConsensusState {
     pub(crate) max_deposits_per_epoch: u64,
     pub(crate) max_withdrawals_per_epoch: u64,
     pub(crate) observers_per_validator: u32,
+    pub(crate) max_validator_count: u64,
     pub(crate) minimum_validator_count: u64,
     pub(crate) pending_active_validator_exits: u64,
     pub(crate) invalid_deposit_tax: u64,
@@ -142,6 +144,7 @@ impl Default for ConsensusState {
             max_deposits_per_epoch: 3,
             max_withdrawals_per_epoch: 16,
             observers_per_validator: 0,
+            max_validator_count: DEFAULT_MAX_VALIDATOR_COUNT,
             minimum_validator_count: DEFAULT_MINIMUM_VALIDATOR_COUNT,
             pending_active_validator_exits: 0,
             invalid_deposit_tax: 0,
@@ -188,6 +191,7 @@ impl ConsensusState {
             max_deposits_per_epoch: self.max_deposits_per_epoch,
             max_withdrawals_per_epoch: self.max_withdrawals_per_epoch,
             observers_per_validator: self.observers_per_validator,
+            max_validator_count: self.max_validator_count,
             minimum_validator_count: self.minimum_validator_count,
             pending_active_validator_exits: self.pending_active_validator_exits,
             invalid_deposit_tax: self.invalid_deposit_tax,
@@ -221,6 +225,7 @@ impl ConsensusState {
         max_deposits_per_epoch: u64,
         max_withdrawals_per_epoch: u64,
         observers_per_validator: u32,
+        max_validator_count: u64,
         minimum_validator_count: u64,
         invalid_deposit_tax: u64,
         max_pending_withdrawals_per_validator: u64,
@@ -246,6 +251,7 @@ impl ConsensusState {
             max_deposits_per_epoch,
             max_withdrawals_per_epoch,
             observers_per_validator,
+            max_validator_count,
             minimum_validator_count,
             pending_active_validator_exits: 0,
             invalid_deposit_tax,
@@ -380,6 +386,91 @@ impl ConsensusState {
     pub fn set_observers_per_validator(&mut self, value: u32) {
         self.observers_per_validator = value;
         self.ssz_tree.set_observers_per_validator(value);
+    }
+
+    pub fn get_max_validator_count(&self) -> u64 {
+        self.max_validator_count
+    }
+
+    pub fn set_max_validator_count(&mut self, value: u64) {
+        self.max_validator_count = value;
+        self.ssz_tree.set_max_validator_count(value);
+    }
+
+    /// Returns the validator cap that will apply after queued protocol-parameter
+    /// changes are applied at the next epoch boundary.
+    pub fn prospective_max_validator_count(&self) -> u64 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|param| match param {
+                ProtocolParam::MaxValidatorCount(value) => Some(*value),
+                _ => None,
+            })
+            .unwrap_or(self.max_validator_count)
+    }
+
+    /// Validate the final proposed pair as a batch, not request by request: a
+    /// valid coordinated raise/lowering must not depend on request ordering.
+    /// Run before prospective values influence exits or admissions, and again
+    /// when applying changes (including changes restored from a checkpoint).
+    fn reject_invalid_validator_count_changes(&mut self) {
+        let minimum = self.prospective_minimum_validator_count();
+        let maximum = self.prospective_max_validator_count();
+        let before = self.protocol_param_changes.len();
+
+        // Preserve whole-pair rejection for an initially conflicting pair.
+        // Otherwise, reject cap updates below existing reservations before any
+        // same-batch withdrawals can free slots. Equality is allowed.
+        if minimum <= maximum
+            && self
+                .protocol_param_changes
+                .iter()
+                .any(|param| matches!(param, ProtocolParam::MaxValidatorCount(_)))
+        {
+            let reserved = self.active_or_joining_validator_count();
+            if maximum < reserved {
+                warn!(
+                    maximum,
+                    reserved, "discarding validator cap updates below active and joining count"
+                );
+                self.protocol_param_changes
+                    .retain(|param| !matches!(param, ProtocolParam::MaxValidatorCount(_)));
+            }
+        }
+
+        // Recheck against the retained cap if its proposed change was rejected.
+        let maximum = self.prospective_max_validator_count();
+        if minimum > maximum {
+            warn!(
+                minimum,
+                maximum, "discarding conflicting validator count updates"
+            );
+            self.protocol_param_changes.retain(|param| {
+                !matches!(
+                    param,
+                    ProtocolParam::MinimumValidatorCount(_) | ProtocolParam::MaxValidatorCount(_)
+                )
+            });
+        }
+        if self.protocol_param_changes.len() != before {
+            self.ssz_tree
+                .rebuild_protocol_params(&self.protocol_param_changes);
+        }
+    }
+
+    /// Last queued observer setting, used when sizing a restarted network.
+    pub fn prospective_observers_per_validator(&self) -> u32 {
+        self.protocol_param_changes
+            .iter()
+            .rev()
+            .find_map(|param| match param {
+                ProtocolParam::ObserversPerValidator(value) => {
+                    Some((*value).try_into().expect("observer count exceeds u32"))
+                }
+                _ => None,
+            })
+            .unwrap_or(self.observers_per_validator)
     }
 
     pub fn get_max_pending_withdrawals_per_validator(&self) -> u64 {
@@ -1039,6 +1130,7 @@ impl ConsensusState {
             if account.status == ValidatorStatus::Inactive
                 && account.balance >= self.get_minimum_stake()
                 && self.withdrawal_queue.pending_count(&node_pubkey_bytes) == 0
+                && self.active_or_joining_validator_count() < self.prospective_max_validator_count()
             {
                 let activation_epoch = self.get_epoch() + warm_up_epochs;
                 account.status = ValidatorStatus::Joining;
@@ -1109,6 +1201,8 @@ impl ConsensusState {
         if !protocol_param_batch.is_empty() {
             self.push_protocol_param_changes(protocol_param_batch);
         }
+
+        self.reject_invalid_validator_count_changes();
 
         // Second pass: route deposits, withdrawals, and malformed deposits in
         // order, now that protocol params are already staged.
@@ -1837,6 +1931,18 @@ impl ConsensusState {
             >= self.prospective_minimum_validator_count()
     }
 
+    pub fn active_or_joining_validator_count(&self) -> u64 {
+        self.validator_accounts
+            .values()
+            .filter(|account| {
+                matches!(
+                    account.status,
+                    ValidatorStatus::Active | ValidatorStatus::Joining
+                )
+            })
+            .count() as u64
+    }
+
     pub fn get_active_or_joining_validators(&self) -> Vec<(PublicKey, bls12381::PublicKey)> {
         let mut peers: Vec<(PublicKey, bls12381::PublicKey)> = self
             .validator_accounts
@@ -1857,6 +1963,7 @@ impl ConsensusState {
     }
 
     pub fn apply_protocol_parameter_changes(&mut self) -> Result<bool, Error> {
+        self.reject_invalid_validator_count_changes();
         let mut minimum_stake_changed = false;
         for param in self.protocol_param_changes.drain(0..) {
             match param {
@@ -1894,6 +2001,10 @@ impl ConsensusState {
                         u32::try_from(value).expect("observers_per_validator must fit in u32");
                     self.observers_per_validator = value;
                     self.ssz_tree.set_observers_per_validator(value);
+                }
+                ProtocolParam::MaxValidatorCount(value) => {
+                    self.max_validator_count = value;
+                    self.ssz_tree.set_max_validator_count(value);
                 }
                 ProtocolParam::MinimumValidatorCount(value) => {
                     self.minimum_validator_count = value;
@@ -1948,6 +2059,7 @@ impl ConsensusState {
             self.max_deposits_per_epoch,
             self.max_withdrawals_per_epoch,
             self.observers_per_validator,
+            self.max_validator_count,
             &self.pending_execution_requests,
             self.pending_checkpoint.as_ref().map(|cp| cp.digest.0),
             &self.epocher.encode(),
@@ -2006,6 +2118,7 @@ impl EncodeSize for ConsensusState {
         + 8 // max_deposits_per_epoch
         + 8 // max_withdrawals_per_epoch
         + 4 // observers_per_validator
+        + 8 // max_validator_count
         + 8 // minimum_validator_count
         + 8 // pending_active_validator_exits
         + 8 // invalid_deposit_tax
@@ -2186,11 +2299,24 @@ impl Read for ConsensusState {
                 "observers per validator out of bounds",
             ));
         }
+        let max_validator_count = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
+        if !(MIN_MAX_VALIDATOR_COUNT..=MAX_MAX_VALIDATOR_COUNT).contains(&max_validator_count) {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "max validator count out of bounds",
+            ));
+        }
         let minimum_validator_count = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
         if minimum_validator_count == 0 {
             return Err(Error::Invalid(
                 "ConsensusState",
                 "minimum validator count out of bounds",
+            ));
+        }
+        if minimum_validator_count > max_validator_count {
+            return Err(Error::Invalid(
+                "ConsensusState",
+                "minimum validator count exceeds max validator count",
             ));
         }
         let pending_active_validator_exits = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
@@ -2275,6 +2401,7 @@ impl Read for ConsensusState {
             max_deposits_per_epoch,
             max_withdrawals_per_epoch,
             observers_per_validator,
+            max_validator_count,
             minimum_validator_count,
             pending_active_validator_exits,
             invalid_deposit_tax,
@@ -2392,6 +2519,9 @@ impl Write for ConsensusState {
 
         // Write observers_per_validator
         buf.put_u32(self.observers_per_validator);
+
+        // Write max_validator_count
+        buf.put_u64(self.max_validator_count);
 
         // Write minimum_validator_count
         buf.put_u64(self.minimum_validator_count);

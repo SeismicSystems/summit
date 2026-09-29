@@ -644,7 +644,6 @@ leader_timeout_ms = 2000
 notarization_timeout_ms = 4000
 nullify_timeout_ms = 4000
 activity_timeout_views = 256
-skip_timeout_views = 32
 max_message_size_bytes = 104857600
 namespace = "_SUMMIT"
 validator_minimum_stake = 32000000000

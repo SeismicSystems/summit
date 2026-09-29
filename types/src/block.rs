@@ -49,15 +49,11 @@ impl Block {
         parent_beacon_block_root: [u8; 32],
     ) -> Self {
         let payload_ssz = payload.as_ssz_bytes();
-        let mut hasher = Sha256::new();
-        hasher.update(&payload_ssz);
-        let payload_hash = hasher.finalize();
+        let payload_hash = Sha256::hash(&[&payload_ssz]);
 
         let execution_request_hash = if !execution_requests.is_empty() {
             let execution_requests_ssz = execution_requests.as_ssz_bytes();
-            let mut hasher = Sha256::new();
-            hasher.update(&execution_requests_ssz);
-            hasher.finalize()
+            Sha256::hash(&[&execution_requests_ssz])
         } else {
             [0; 32].into()
         };
@@ -96,15 +92,11 @@ impl Block {
         execution_requests: Vec<AlloyBytes>,
     ) -> Result<Self> {
         let payload_ssz = payload.as_ssz_bytes();
-        let mut hasher = Sha256::new();
-        hasher.update(&payload_ssz);
-        let payload_hash = hasher.finalize();
+        let payload_hash = Sha256::hash(&[&payload_ssz]);
 
         let execution_request_hash = if !execution_requests.is_empty() {
             let execution_requests_ssz = execution_requests.as_ssz_bytes();
-            let mut hasher = Sha256::new();
-            hasher.update(&execution_requests_ssz);
-            hasher.finalize()
+            Sha256::hash(&[&execution_requests_ssz])
         } else {
             [0; 32].into()
         };
@@ -125,9 +117,7 @@ impl Block {
     pub fn genesis(genesis_hash: [u8; 32]) -> Self {
         let payload = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
         let payload_ssz = payload.as_ssz_bytes();
-        let mut hasher = Sha256::new();
-        hasher.update(&payload_ssz);
-        let payload_hash = hasher.finalize();
+        let payload_hash = Sha256::hash(&[&payload_ssz]);
 
         let header = Header::new_with_digest(
             genesis_hash.into(),
@@ -639,7 +629,11 @@ mod test {
             Finalization {
                 proposal,
                 certificate: Certificate::<MinPk> {
-                    signers: Signers::from(n_validators, [0, 1, 2].map(Participant::new)),
+                    signers: Signers::new(
+                        n_validators.try_into().unwrap(),
+                        [0, 1, 2].map(Participant::new),
+                    )
+                    .unwrap(),
                     signature: signature.into(),
                 },
             };

@@ -1,6 +1,17 @@
 use super::super::*;
 
 #[test]
+fn protocol_param_batch_applies_max_validator_count_change() {
+    let mut state = ConsensusState::default();
+    state.push_protocol_param_change(ProtocolParam::MaxValidatorCount(128));
+
+    assert_eq!(state.prospective_max_validator_count(), 128);
+    state.apply_protocol_parameter_changes().unwrap();
+
+    assert_eq!(state.get_max_validator_count(), 128);
+}
+
+#[test]
 fn protocol_param_batch_applies_minimum_stake_change() {
     let mut state = ConsensusState::default();
     state.push_protocol_param_change(ProtocolParam::MinimumStake(10_000_000_000));

@@ -41,6 +41,7 @@ fn test_backfill_resolver_inherits_fetch_timeout() {
         let (network, oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
                 tracked_peer_sets: NZUsize!(10),
@@ -144,6 +145,7 @@ fn test_engine_detects_single_actor_clean_exit() {
         let (network, oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
                 tracked_peer_sets: NZUsize!(10),

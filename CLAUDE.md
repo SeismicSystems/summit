@@ -99,10 +99,11 @@ The `testnet` binary spins up a multi-node network locally — this is the main 
 
 ### Prerequisites
 
-- A binary named `reth` must be in PATH. If using [seismic-reth](https://github.com/SeismicSystems/seismic-reth), the build produces a `seismic-reth` binary — symlink or copy it as `reth`:
+- A compatible [seismic-reth](https://github.com/SeismicSystems/seismic-reth) binary must be installed as `reth` in PATH — symlink or copy the built `seismic-reth` binary as `reth`:
   ```bash
   ln -s /path/to/seismic-reth ~/.cargo/bin/reth
   ```
+- The testnet and E2E launchers pass `--seismic.purpose-keys-source built-in`. Verify this option is available with `reth node --help`; upstream Reth is not compatible with these launchers. Built-in keys are publicly known and provide no confidentiality; use this mode only for local testing. See [local-network setup](docs/running-local-network.md#prerequisites).
 
 ### Quick start
 
@@ -259,7 +260,7 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 | Problem                                             | Fix                                                                                                                           |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `rustup` installs toolchain on first build          | Expected — `rust-toolchain.toml` pins the required version, auto-installed by rustup                                           |
-| `testnet` binary exits immediately without `reth`   | Requires `reth` in PATH. Install [seismic-reth](https://github.com/SeismicSystems/seismic-reth) or upstream reth              |
+| `testnet` binary cannot start Reth | Install compatible [seismic-reth](https://github.com/SeismicSystems/seismic-reth) as `reth` in PATH; `reth node --help` must support `--seismic.purpose-keys-source built-in`. Upstream Reth is not compatible with the launcher. |
 | `prom` feature fails to build                       | Pulls `reth-metrics` from `SeismicSystems/seismic-reth` git — needs network access                                            |
 | `procfs` compile error on macOS with `prom` feature | `procfs` is Linux-only, gated behind `cfg(target_os = "linux")` — build `prom` on Linux or use `--features jemalloc` on macOS |
 | `e2e` binaries not found                            | Build with `cargo build --features e2e`                                                                                       |

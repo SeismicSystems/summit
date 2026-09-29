@@ -3,7 +3,10 @@ use commonware_math::algebra::Random;
 use std::num::NonZeroU64;
 
 use crate::test_harness::mock_engine_client::MockEngineNetwork;
-use crate::{config::EngineConfig, engine::Engine};
+use crate::{
+    config::{CHANNEL_BURST, EngineConfig},
+    engine::Engine,
+};
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
@@ -151,6 +154,7 @@ pub fn run_until_height(
         let (network, mut oracle) = Network::new(
             context.child("network"),
             simulated::Config {
+                max_peers_per_set: commonware_utils::NZUsize!(2177),
                 max_size: 1024 * 1024,
                 disconnect_on_block: true,
                 tracked_peer_sets: NZUsize!(n as usize * 10), // Each engine may subscribe multiple times
@@ -393,6 +397,7 @@ pub fn get_initial_state(
             10,
             16,
             0,
+            256,
             3,
             0,
             3,
@@ -703,17 +708,18 @@ where
         mailbox_size: NZUsize!(1024),
         finalizer_pending_notarized_max: 1000,
         deque_size: 10,
-        backfill_quota: Quota::per_second(NonZeroU32::new(512).unwrap()),
+        backfill_quota: Quota::per_second(NonZeroU32::new(512).unwrap())
+            .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap()),
         leader_timeout: Duration::from_secs(1),
         notarization_timeout: Duration::from_secs(2),
         nullify_retry: Duration::from_secs(10),
         fetch_timeout: Duration::from_secs(1),
         activity_timeout: 10,
-        skip_timeout: 5,
         max_fetch_count: 10,
         _max_fetch_size: 1024 * 512,
         fetch_concurrent: 10,
-        fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(512).unwrap()),
+        fetch_rate_per_peer: Quota::per_second(NonZeroU32::new(512).unwrap())
+            .allow_burst(NonZeroU32::new(CHANNEL_BURST).unwrap()),
         initial_state,
         checkpoint_last_block: None,
         checkpoint_finalized_header: None,
@@ -725,12 +731,15 @@ where
 
 pub struct SimulatedOracle<E: Clock> {
     inner: simulated::Manager<PublicKey, E>,
+    blocked_subscribers:
+        Vec<commonware_utils::channel::ring::Sender<commonware_utils::ordered::Set<PublicKey>>>,
 }
 
 impl<E: Clock> Clone for SimulatedOracle<E> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            blocked_subscribers: self.blocked_subscribers.clone(),
         }
     }
 }
@@ -745,6 +754,7 @@ impl<E: Clock> SimulatedOracle<E> {
     pub fn new(oracle: Oracle<PublicKey, E>) -> Self {
         Self {
             inner: oracle.manager(),
+            blocked_subscribers: Vec::new(),
         }
     }
 }
@@ -767,6 +777,14 @@ impl<E: Clock> Blocker for SimulatedOracle<E> {
         // Simulated oracle doesn't support blocking individual peers
         // This is only used in production for misbehaving peers
         Feedback::Ok
+    }
+
+    fn blocked(&mut self) -> commonware_p2p::BlockedSubscription<PublicKey> {
+        let (sender, receiver) =
+            commonware_utils::channel::ring::channel(commonware_utils::NZUsize!(1));
+        sender.send_lossy(commonware_utils::ordered::Set::default());
+        self.blocked_subscribers.push(sender);
+        receiver
     }
 }
 
