@@ -9,6 +9,7 @@ This documentation is designed to provide auditors and developers with a compreh
 - **[Engine API Integration](./engine-api-integration.md)** - Communication patterns with execution clients (Reth)
 - **[Security Model](./security-model.md)** - Cryptographic primitives and security considerations
 - **[Staking and Participating](./staking-and-participating.md)** - How to become a validator
+- **[Running a Local Network](./running-local-network.md)** - Spin up a 4-node Summit + Reth testnet locally
 - **[Deposits and Withdrawals](./deposits-and-withdrawals.md)** - Internal state management for deposits and withdrawals
 - **[Checkpointing](./checkpointing.md)** - Checkpoint creation, loading, and verification
 - **[SSZ Merklization](./ssz-merklization.md)** - SSZ binary Merkle tree structure, incremental update optimizations, and proof format
