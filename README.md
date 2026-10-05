@@ -58,6 +58,8 @@ cargo run --bin summit -- keys generate --key-store-path /path/to/keys
 cargo run --bin summit -- keys show --key-store-path /path/to/keys
 ```
 
+Add `--json` to print `{"node_public_key": "<hex>", "consensus_public_key": "<hex>"}` instead.
+
 ### 3. Configure Genesis
 Create a genesis file that references your EVM genesis configuration. See [example_genesis.toml](https://github.com/SeismicSystems/summit/blob/main/example_genesis.toml) for the required format.
 

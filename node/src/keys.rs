@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use serde::Serialize;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -16,9 +17,15 @@ pub enum KeySubCmd {
     Show {
         #[command(flatten)]
         flags: KeyFlags,
+        /// Print `{"node_public_key", "consensus_public_key"}` as JSON, each
+        /// key bare lowercase hex.
+        #[arg(long)]
+        json: bool,
     },
     /// Generate new private keys.
-    /// This command will fail if the keys already exist.
+    /// If either key file already exists, it asks before overwriting:
+    /// `--no-overwrite` leaves the keys untouched and exits successfully,
+    /// `--yes-overwrite` replaces both.
     Generate {
         #[command(flatten)]
         flags: KeyFlags,
@@ -48,10 +55,17 @@ impl KeyFlags {
     }
 }
 
+/// The keystore's public keys, as `keys show --json` prints them.
+#[derive(Debug, Serialize)]
+struct PublicKeys {
+    node_public_key: String,
+    consensus_public_key: String,
+}
+
 impl KeySubCmd {
     pub fn exec(&self) {
         match self {
-            KeySubCmd::Show { flags } => self.show_key(flags),
+            KeySubCmd::Show { flags, json } => self.show_key(flags, *json),
             KeySubCmd::Generate { flags } => self.generate_keys(flags),
         }
     }
@@ -119,7 +133,7 @@ impl KeySubCmd {
         println!("Consensus Public Key (BLS): {}", consensus_pub_key);
     }
 
-    fn show_key(&self, flags: &KeyFlags) {
+    fn show_key(&self, flags: &KeyFlags, json: bool) {
         let key_paths = KeyPaths::new(flags.key_store_path.clone());
 
         let node_pub_key = key_paths
@@ -129,8 +143,16 @@ impl KeySubCmd {
             .consensus_public_key()
             .expect("Unable to read consensus key from disk");
 
-        println!("Node Public Key (ed25519): {}", node_pub_key);
-        println!("Consensus Public Key (BLS): {}", consensus_pub_key);
+        if json {
+            let keys = PublicKeys {
+                node_public_key: node_pub_key,
+                consensus_public_key: consensus_pub_key,
+            };
+            println!("{}", serde_json::to_string(&keys).expect("serializable"));
+        } else {
+            println!("Node Public Key (ed25519): {}", node_pub_key);
+            println!("Consensus Public Key (BLS): {}", consensus_pub_key);
+        }
     }
 }
 
@@ -280,6 +302,19 @@ mod tests {
             read_keys_from_keystore(&flags.key_store_path).expect("generated keys must load");
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The JSON field names are an interface: TEE images read them.
+    #[test]
+    fn public_keys_json_field_names() {
+        let keys = PublicKeys {
+            node_public_key: "aa".to_string(),
+            consensus_public_key: "bb".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&keys).unwrap(),
+            r#"{"node_public_key":"aa","consensus_public_key":"bb"}"#
+        );
     }
 
     #[test]
