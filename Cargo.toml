@@ -57,7 +57,7 @@ alloy-transport-ipc = { version = "=1.1.0" }
 # Engine API wire types shared with seismic-reth (payload attributes / execution payloads that
 # carry the sub-second `timestampMillisPart`). Stock-alloy only; the `ssz` feature is what
 # `summit_types::Block` hashes. Pin to the seismic-reth commit the network runs.
-reth-seismic-engine-types = { git = "https://github.com/SeismicSystems/seismic-reth.git", rev = "28f502b41ec49ea09302cc81ae14d45f463d67bf", default-features = false, features = ["std", "ssz"] }
+reth-seismic-engine-types = { git = "https://github.com/SeismicSystems/seismic-reth.git", rev = "f277c2379338e3cc0ce4bfd05fc3111ec2bdb9af", default-features = false, features = ["std", "ssz"] }
 url = "2.5"
 
 futures = "0.3.31"
