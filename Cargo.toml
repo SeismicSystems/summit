@@ -30,27 +30,29 @@ commonware-macros = "2026.9.0"
 commonware-math = "2026.9.0"
 commonware-parallel = "2026.9.0"
 
-alloy-consensus = "1.0.12"
-alloy-eips = { version = "1.0.19", features = ["ssz"] }
-alloy-genesis = "1.0.9"
-alloy-network = "1.0.9"
-alloy-node-bindings = "1.0.9"
-alloy-rpc-client = "1.0.9"
-alloy-rpc-types = "1.0.9"
-alloy-rpc-types-engine = { version = "1.0.9", features = ["serde", "ssz"] }
-alloy-signer = "1.0.9"
-alloy-signer-local = "1.0.9"
-alloy-transport = "1.0.9"
+# Exact-pinned to the same alloy release seismic-reth uses so the two sides of
+# the Engine API never drift across a minor version.
+alloy-consensus = "=1.1.0"
+alloy-eips = { version = "=1.1.0", features = ["ssz"] }
+alloy-genesis = "=1.1.0"
+alloy-network = "=1.1.0"
+alloy-node-bindings = "=1.1.0"
+alloy-rpc-client = "=1.1.0"
+alloy-rpc-types = "=1.1.0"
+alloy-rpc-types-engine = { version = "=1.1.0", features = ["serde", "ssz"] }
+alloy-signer = "=1.1.0"
+alloy-signer-local = "=1.1.0"
+alloy-transport = "=1.1.0"
 # No `hyper` here: nothing uses alloy's hyper transport (the engine API is
 # over IPC), and the feature hard-wires hyper-tls, i.e. OpenSSL.
-alloy-provider = { version = "1.0.30", default-features = false, features = [
+alloy-provider = { version = "=1.1.0", default-features = false, features = [
     "engine-api",
     "ipc",
     "reqwest",
     "reqwest-rustls-tls",
 ] }
-alloy-primitives = "1.2.1"
-alloy-transport-ipc = { version = "1.0.9" }
+alloy-primitives = "1.3.1"
+alloy-transport-ipc = { version = "=1.1.0" }
 url = "2.5"
 
 futures = "0.3.31"
