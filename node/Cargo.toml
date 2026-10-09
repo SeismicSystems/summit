@@ -98,6 +98,7 @@ alloy-primitives.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-client.workspace = true
 alloy-rpc-types-engine.workspace = true
+reth-seismic-engine-types.workspace = true
 op-alloy-consensus = { version = "0.19.1", default-features = false, features = ["alloy-compat"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing-appender = "0.2"

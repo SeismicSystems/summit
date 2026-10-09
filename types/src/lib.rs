@@ -6,6 +6,11 @@ pub mod consensus_state;
 pub mod consensus_state_query;
 pub mod dynamic_epocher;
 pub mod engine_client;
+/// Engine API wire types shared with seismic-reth (sub-second block timestamps).
+pub use reth_seismic_engine_types::{
+    MILLIS_PER_SECOND, SeismicExecutionPayloadEnvelopeV4, SeismicExecutionPayloadV3,
+    SeismicPayloadAttributes, join_timestamp_millis, split_timestamp_millis,
+};
 pub mod execution_request;
 pub mod ext_private_key;
 pub mod genesis;

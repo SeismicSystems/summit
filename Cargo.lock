@@ -2141,6 +2141,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "convert_case"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb402b8d4c85569410425650ce3eddc7d698ed96d39a73f941b08fb63082f1e7"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2540,6 +2549,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bda628edc44c4bb645fbe0f758797143e4e07926f7ebf4e9bdfbd3d2ce621df3"
 dependencies = [
+ "convert_case",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -2618,7 +2628,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4400,7 +4410,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5198,7 +5208,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -5235,7 +5245,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -5579,17 +5589,31 @@ dependencies = [
 
 [[package]]
 name = "reth-metrics"
-version = "1.4.3"
-source = "git+https://github.com/SeismicSystems/seismic-reth.git?branch=seismic#6ca2308a728a6fd8d44f13b1397737d6f018597c"
+version = "1.7.0"
+source = "git+https://github.com/SeismicSystems/seismic-reth.git?branch=seismic#e078facf8c49785053ace2bbc58d9e11922602d6"
 dependencies = [
  "metrics",
  "metrics-derive",
 ]
 
 [[package]]
+name = "reth-seismic-engine-types"
+version = "1.7.0"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "alloy-serde",
+ "derive_more",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
+ "serde",
+]
+
+[[package]]
 name = "reth-tasks"
-version = "1.4.3"
-source = "git+https://github.com/SeismicSystems/seismic-reth.git?branch=seismic#6ca2308a728a6fd8d44f13b1397737d6f018597c"
+version = "1.7.0"
+source = "git+https://github.com/SeismicSystems/seismic-reth.git?branch=seismic#e078facf8c49785053ace2bbc58d9e11922602d6"
 dependencies = [
  "auto_impl",
  "dyn-clone",
@@ -6299,7 +6323,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6450,6 +6474,7 @@ dependencies = [
  "rand 0.10.2",
  "reqwest 0.12.22",
  "reth-metrics",
+ "reth-seismic-engine-types",
  "reth-tasks",
  "serde",
  "serde_json",
@@ -6492,6 +6517,7 @@ dependencies = [
  "metrics",
  "prometheus-client 0.22.3",
  "rand 0.10.2",
+ "reth-seismic-engine-types",
  "summit-finalizer",
  "summit-syncer",
  "summit-types",
@@ -6526,6 +6552,7 @@ dependencies = [
  "metrics",
  "prometheus-client 0.24.0",
  "rand 0.10.2",
+ "reth-seismic-engine-types",
  "summit-orchestrator",
  "summit-syncer",
  "summit-types",
@@ -6666,6 +6693,7 @@ dependencies = [
  "metrics",
  "rand 0.10.2",
  "rand_core 0.10.1",
+ "reth-seismic-engine-types",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -7310,6 +7338,12 @@ name = "unicode-ident"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a5f39404a5da50712a4c1eecf25e90dd62b613502b7e925fd4e4d19b5c96512"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-xid"

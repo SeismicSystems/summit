@@ -2,9 +2,8 @@
 
 use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_rpc_types_engine::{
-    ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV1, ExecutionPayloadV2,
-    ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
-    PayloadStatusEnum,
+    ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated,
+    PayloadId, PayloadStatus, PayloadStatusEnum,
 };
 use commonware_actor::Feedback;
 use commonware_consensus::simplex::scheme::bls12381_multisig;
@@ -15,6 +14,9 @@ use commonware_cryptography::{Signer as _, ed25519};
 use commonware_math::algebra::Random;
 use commonware_parallel::Sequential;
 use commonware_utils::ordered::{BiMap, Map};
+use reth_seismic_engine_types::{
+    SeismicExecutionPayloadEnvelopeV3, SeismicExecutionPayloadEnvelopeV4, SeismicExecutionPayloadV3,
+};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -209,32 +211,35 @@ impl EngineClient for MockEngineClient {
     async fn get_payload(
         &mut self,
         _payload_id: PayloadId,
-    ) -> Result<ExecutionPayloadEnvelopeV4, summit_types::EngineClientError> {
-        Ok(ExecutionPayloadEnvelopeV4 {
-            envelope_inner: ExecutionPayloadEnvelopeV3 {
-                execution_payload: ExecutionPayloadV3 {
-                    payload_inner: ExecutionPayloadV2 {
-                        payload_inner: ExecutionPayloadV1 {
-                            base_fee_per_gas: U256::from(1000000000u64),
-                            block_number: 0,
-                            block_hash: [0u8; 32].into(),
-                            logs_bloom: Default::default(),
-                            extra_data: Default::default(),
-                            gas_limit: 30000000,
-                            gas_used: 0,
-                            timestamp: 0,
-                            fee_recipient: Default::default(),
-                            parent_hash: [0u8; 32].into(),
-                            prev_randao: Default::default(),
-                            receipts_root: Default::default(),
-                            state_root: Default::default(),
-                            transactions: Vec::new(),
+    ) -> Result<SeismicExecutionPayloadEnvelopeV4, summit_types::EngineClientError> {
+        Ok(SeismicExecutionPayloadEnvelopeV4 {
+            envelope_inner: SeismicExecutionPayloadEnvelopeV3 {
+                execution_payload: SeismicExecutionPayloadV3::new(
+                    ExecutionPayloadV3 {
+                        payload_inner: ExecutionPayloadV2 {
+                            payload_inner: ExecutionPayloadV1 {
+                                base_fee_per_gas: U256::from(1000000000u64),
+                                block_number: 0,
+                                block_hash: [0u8; 32].into(),
+                                logs_bloom: Default::default(),
+                                extra_data: Default::default(),
+                                gas_limit: 30000000,
+                                gas_used: 0,
+                                timestamp: 0,
+                                fee_recipient: Default::default(),
+                                parent_hash: [0u8; 32].into(),
+                                prev_randao: Default::default(),
+                                receipts_root: Default::default(),
+                                state_root: Default::default(),
+                                transactions: Vec::new(),
+                            },
+                            withdrawals: Vec::new().into(),
                         },
-                        withdrawals: Vec::new().into(),
+                        blob_gas_used: 0,
+                        excess_blob_gas: 0,
                     },
-                    blob_gas_used: 0,
-                    excess_blob_gas: 0,
-                },
+                    0,
+                ),
                 block_value: U256::ZERO,
                 blobs_bundle: Default::default(),
                 should_override_builder: false,
