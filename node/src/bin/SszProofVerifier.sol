@@ -9,7 +9,9 @@ contract SszProofVerifier {
     address constant BEACON_ROOTS = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
 
     /// @notice Verify an SSZ Merkle proof using a generalized index.
-    /// @param timestamp  EL block timestamp whose beacon root to look up.
+    /// @param timestamp  EL block timestamp whose beacon root to look up, in Unix
+    ///                   milliseconds (`timestamp * 1000 + timestampMillisPart`): the
+    ///                   Seismic beacon roots contract is indexed by TIMESTAMPMS.
     /// @param gindex     Generalized index of the leaf in the state tree.
     /// @param leaf       The 32-byte leaf value.
     /// @param branch     Sibling hashes from leaf to root (bottom-up).

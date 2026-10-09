@@ -62,7 +62,8 @@ pub struct FinalizedHeaderDigestRes {
 pub struct StateRootResponse {
     pub root: [u8; 32],
     /// The EL block number at capture time. The root appears on-chain in EL block
-    /// `el_block_number + 1` — query that block's timestamp via the beacon roots contract.
+    /// `el_block_number + 1` — query the beacon roots contract with that block's full
+    /// millisecond timestamp (`timestamp * 1000 + timestampMillisPart`).
     pub el_block_number: u64,
 }
 
@@ -70,7 +71,8 @@ pub struct StateRootResponse {
 pub struct StateProofResponse {
     pub root: [u8; 32],
     /// The EL block number at capture time. The root appears on-chain in EL block
-    /// `el_block_number + 1` — query that block's timestamp via the beacon roots contract.
+    /// `el_block_number + 1` — query the beacon roots contract with that block's full
+    /// millisecond timestamp (`timestamp * 1000 + timestampMillisPart`).
     pub el_block_number: u64,
     pub results: Vec<StateProofResult>,
 }

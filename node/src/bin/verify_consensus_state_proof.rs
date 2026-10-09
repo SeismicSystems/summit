@@ -19,6 +19,7 @@ use std::{
 use summit::args::{RunFlags, run_node_local};
 use summit_rpc::{SummitApiClient, SummitProofApiClient};
 use summit_types::genesis::Genesis;
+use summit_types::join_timestamp_millis;
 use summit_types::reth::Reth;
 
 use tokio::sync::mpsc;
@@ -252,13 +253,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 context.sleep(Duration::from_secs(1)).await;
             }
 
-            let block = provider
-                .get_block_by_number(target_block.into())
-                .await
-                .expect("Failed to get block")
-                .expect("Block not found");
-            let timestamp = block.header.timestamp;
-            println!("  Block {target_block} timestamp: {timestamp}");
+            let timestamp = block_timestamp_millis(&provider, target_block).await;
+            println!("  Block {target_block} timestamp (ms): {timestamp}");
             let beacon_input = U256::from(timestamp).to_be_bytes::<32>();
             let beacon_tx = TransactionRequest::default()
                 .with_to(BEACON_ROOTS_ADDRESS)
@@ -369,12 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 context.sleep(Duration::from_secs(1)).await;
             }
-            let val_block = provider
-                .get_block_by_number(val_target_block.into())
-                .await
-                .expect("Failed to get block")
-                .expect("Block not found");
-            let val_timestamp = val_block.header.timestamp;
+            let val_timestamp = block_timestamp_millis(&provider, val_target_block).await;
 
             let vp = val_proof_resp.results[0]
                 .proof
@@ -471,12 +462,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 context.sleep(Duration::from_secs(1)).await;
             }
-            let bal_block = provider
-                .get_block_by_number(bal_target_block.into())
-                .await
-                .expect("Failed to get block")
-                .expect("Block not found");
-            let bal_timestamp = bal_block.header.timestamp;
+            let bal_timestamp = block_timestamp_millis(&provider, bal_target_block).await;
 
             // Verify on-chain using the standard verify() function
             // (verifyValidatorField has the same signature as verify)
@@ -628,7 +614,31 @@ async fn get_latest_height(rpc_port: u16) -> Result<u64, Box<dyn std::error::Err
     Ok(height)
 }
 
+/// Full Unix-millisecond timestamp of a Seismic block, as the beacon-roots contract indexes it.
+///
+/// The RPC header's `timestamp` is Unix seconds; the sub-second component is the Seismic-only
+/// `timestampMillisPart` field, which the stock alloy block type drops, so read it raw.
+async fn block_timestamp_millis<P: Provider>(provider: &P, number: u64) -> u64 {
+    let block: serde_json::Value = provider
+        .raw_request(
+            "eth_getBlockByNumber".into(),
+            (format!("{number:#x}"), false),
+        )
+        .await
+        .expect("Failed to get block");
+    let quantity = |field: &str| -> u64 {
+        let hex = block[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("block {number} has no `{field}` field: {block}"));
+        u64::from_str_radix(hex.trim_start_matches("0x"), 16)
+            .unwrap_or_else(|e| panic!("block {number} `{field}` {hex:?} is not a quantity: {e}"))
+    };
+    join_timestamp_millis(quantity("timestamp"), quantity("timestampMillisPart"))
+}
+
 /// ABI-encode a call to verify(uint256, uint256, bytes32, bytes32[]).
+///
+/// `timestamp` is the block's full Unix-millisecond timestamp (see [`block_timestamp_millis`]).
 fn encode_verify(
     timestamp: u64,
     gindex: u64,
