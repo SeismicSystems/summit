@@ -9,13 +9,16 @@ use commonware_consensus::Viewable;
 use commonware_consensus::types::{Epoch, Height, View};
 use commonware_consensus::{Block as ConsensusBlock, Epochable, Heightable};
 use commonware_cryptography::{Digestible, Hasher, Sha256, sha256::Digest};
+use reth_seismic_engine_types::SeismicExecutionPayloadV3;
 use ssz::Encode as _;
 use ssz_derive::Encode;
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode)]
 pub struct Block {
     pub header: Header,
-    pub payload: ExecutionPayloadV3,
+    /// The execution payload: the stock `ExecutionPayloadV3` (seconds `timestamp`) plus the
+    /// sub-second `timestampMillisPart`. Together they must equal `header.timestamp` (millis).
+    pub payload: SeismicExecutionPayloadV3,
     pub execution_requests: Vec<AlloyBytes>,
 }
 
@@ -38,7 +41,7 @@ impl Block {
         parent: Digest,
         height: u64,
         timestamp: u64,
-        payload: ExecutionPayloadV3,
+        payload: SeismicExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
         epoch: u64,
         view: u64,
@@ -88,7 +91,7 @@ impl Block {
 
     pub fn new_with_verify(
         header: Header,
-        payload: ExecutionPayloadV3,
+        payload: SeismicExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
     ) -> Result<Self> {
         let payload_ssz = payload.as_ssz_bytes();
@@ -115,7 +118,10 @@ impl Block {
     }
 
     pub fn genesis(genesis_hash: [u8; 32]) -> Self {
-        let payload = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
+        let payload = SeismicExecutionPayloadV3::new(
+            ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
+            0,
+        );
         let payload_ssz = payload.as_ssz_bytes();
         let payload_hash = Sha256::hash(&[&payload_ssz]);
 
@@ -136,7 +142,7 @@ impl Block {
         );
         Self {
             header,
-            payload: ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
+            payload,
             execution_requests: Default::default(),
         }
     }
@@ -221,7 +227,7 @@ impl ssz::Decode for Block {
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
         let mut builder = ssz::SszDecoderBuilder::new(bytes);
         builder.register_type::<Header>()?;
-        builder.register_type::<ExecutionPayloadV3>()?;
+        builder.register_type::<SeismicExecutionPayloadV3>()?;
         builder.register_type::<Vec<AlloyBytes>>()?;
 
         let mut decoder = builder.build()?;
@@ -340,7 +346,7 @@ mod test {
                 "b9013c03f901388501a1f0ff430c843b9aca00843b9aca0082520894e7249813d8ccf6fa95a2203f46a64166073d58878080c005f8c6a00195f6dff17753fc89b60eac6477026a805116962c9e412de8015c0484e661c1a001aae314061d4f5bbf158f15d9417a238f9589783f58762cd39d05966b3ba2fba0013f5be9b12e7da06f0dd11a7bdc4e0db8ef33832acc23b183bd0a2c1408a757a0019d9ac55ea1a615d92965e04d960cb3be7bff121a381424f1f22865bd582e09a001def04412e76df26fefe7b0ed5e10580918ae4f355b074c0cfe5d0259157869a0011c11a415db57e43db07aef0de9280b591d65ca0cce36c7002507f8191e5d4a80a0c89b59970b119187d97ad70539f1624bbede92648e2dc007890f9658a88756c5a06fb2e3d4ce2c438c0856c2de34948b7032b1aadc4642a9666228ea8cdc7786b7"
             )[..],
         );
-        let payload = ExecutionPayloadV3 {
+        let payload = SeismicExecutionPayloadV3::new(ExecutionPayloadV3 {
             payload_inner: ExecutionPayloadV2 {
                 payload_inner: ExecutionPayloadV1 {
                     base_fee_per_gas:  U256::from(7u64),
@@ -362,7 +368,7 @@ mod test {
             },
             blob_gas_used: 0xc0000,
             excess_blob_gas: 0x580000,
-        };
+        }, 0);
 
         let (added_validators, removed_validators) = create_test_validators();
         let block = Block::compute_digest(
@@ -389,7 +395,7 @@ mod test {
 
     #[test]
     fn test_empty_tx_encode_decode() {
-        let payload = ExecutionPayloadV3 {
+        let payload = SeismicExecutionPayloadV3::new(ExecutionPayloadV3 {
             payload_inner: ExecutionPayloadV2 {
                 payload_inner: ExecutionPayloadV1 {
                     base_fee_per_gas:  U256::ZERO,
@@ -411,7 +417,7 @@ mod test {
             },
             blob_gas_used: 0xc0000,
             excess_blob_gas: 0x580000,
-        };
+        }, 0);
 
         let (added_validators, removed_validators) = create_test_validators();
         let block = Block::compute_digest(
@@ -447,7 +453,10 @@ mod test {
 
     #[test]
     fn test_decode_rejects_body_header_commitment_mismatch() {
-        let payload = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
+        let payload = SeismicExecutionPayloadV3::new(
+            ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
+            0,
+        );
         let (added_validators, removed_validators) = create_test_validators();
 
         // Same header inputs, but different execution_requests -> different
@@ -527,29 +536,32 @@ mod test {
     /// Build a block whose encoded size is dominated by `extra_data`, so its
     /// total size can be tuned close to a target budget.
     fn block_with_extra_data(extra_len: usize) -> Block {
-        let payload = ExecutionPayloadV3 {
-            payload_inner: ExecutionPayloadV2 {
-                payload_inner: ExecutionPayloadV1 {
-                    base_fee_per_gas: U256::ZERO,
-                    block_number: 1,
-                    block_hash: [0u8; 32].into(),
-                    logs_bloom: Default::default(),
-                    extra_data: AlloyBytes::from(vec![0x11u8; extra_len]),
-                    gas_limit: 0,
-                    gas_used: 0,
-                    timestamp: 1,
-                    fee_recipient: Default::default(),
-                    parent_hash: [0u8; 32].into(),
-                    prev_randao: [0u8; 32].into(),
-                    receipts_root: [0u8; 32].into(),
-                    state_root: [0u8; 32].into(),
-                    transactions: Vec::new(),
+        let payload = SeismicExecutionPayloadV3::new(
+            ExecutionPayloadV3 {
+                payload_inner: ExecutionPayloadV2 {
+                    payload_inner: ExecutionPayloadV1 {
+                        base_fee_per_gas: U256::ZERO,
+                        block_number: 1,
+                        block_hash: [0u8; 32].into(),
+                        logs_bloom: Default::default(),
+                        extra_data: AlloyBytes::from(vec![0x11u8; extra_len]),
+                        gas_limit: 0,
+                        gas_used: 0,
+                        timestamp: 1,
+                        fee_recipient: Default::default(),
+                        parent_hash: [0u8; 32].into(),
+                        prev_randao: [0u8; 32].into(),
+                        receipts_root: [0u8; 32].into(),
+                        state_root: [0u8; 32].into(),
+                        transactions: Vec::new(),
+                    },
+                    withdrawals: vec![],
                 },
-                withdrawals: vec![],
+                blob_gas_used: 0,
+                excess_blob_gas: 0,
             },
-            blob_gas_used: 0,
-            excess_blob_gas: 0,
-        };
+            0,
+        );
         Block::compute_digest(
             [0u8; 32].into(),
             1,

@@ -80,7 +80,7 @@ tokio = { version = "1.45.1", features = ["sync"] }
 tokio-util.workspace = true
 
 # stake and checkpoint bin deps
-alloy = { version = "1.0.23", default-features = false, features = [
+alloy = { version = "=1.1.0", default-features = false, features = [
   "std",
   "essentials",
   "reqwest-rustls-tls",
@@ -97,7 +97,8 @@ alloy-network = { workspace = true }
 alloy-primitives.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-client.workspace = true
-alloy-rpc-types-engine = { version = "1.0.9", features = ["serde"] }
+alloy-rpc-types-engine.workspace = true
+reth-seismic-engine-types.workspace = true
 op-alloy-consensus = { version = "0.19.1", default-features = false, features = ["alloy-compat"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing-appender = "0.2"
@@ -138,7 +139,7 @@ alloy-rpc-types-engine.workspace = true
 alloy-consensus.workspace = true
 dashmap = "6.1.0"
 sha3 = "0.10.8"
-alloy-eips = "1.0.23"
+alloy-eips.workspace = true
 reqwest.workspace = true
 reth-tasks = { git = "https://github.com/SeismicSystems/seismic-reth.git", branch = "seismic" }
 socket2.workspace = true

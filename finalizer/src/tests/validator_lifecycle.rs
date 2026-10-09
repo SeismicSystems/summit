@@ -21,6 +21,7 @@ use commonware_runtime::{Clock, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::{StreamExt as _, channel::mpsc as futures_mpsc};
+use reth_seismic_engine_types::SeismicExecutionPayloadV3;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
@@ -60,33 +61,38 @@ fn create_test_block_with_requests(
 
     let parent_bytes: [u8; 32] = parent_digest.0;
 
-    let payload = ExecutionPayloadV3 {
-        payload_inner: ExecutionPayloadV2 {
-            payload_inner: ExecutionPayloadV1 {
-                base_fee_per_gas: U256::from(1000000000u64),
-                block_number: height,
-                block_hash: block_hash.into(),
-                logs_bloom: Default::default(),
-                extra_data: Default::default(),
-                gas_limit: 30000000,
-                gas_used: 0,
-                timestamp: height * 12,
-                fee_recipient: Default::default(),
-                parent_hash: if height == 0 {
-                    [0u8; 32].into()
-                } else {
-                    parent_bytes.into()
+    // The header's millisecond timestamp (`height * 12`) is carried by the payload as
+    // seconds + `timestampMillisPart`.
+    let payload = SeismicExecutionPayloadV3::from_timestamp_millis(
+        ExecutionPayloadV3 {
+            payload_inner: ExecutionPayloadV2 {
+                payload_inner: ExecutionPayloadV1 {
+                    base_fee_per_gas: U256::from(1000000000u64),
+                    block_number: height,
+                    block_hash: block_hash.into(),
+                    logs_bloom: Default::default(),
+                    extra_data: Default::default(),
+                    gas_limit: 30000000,
+                    gas_used: 0,
+                    timestamp: 0,
+                    fee_recipient: Default::default(),
+                    parent_hash: if height == 0 {
+                        [0u8; 32].into()
+                    } else {
+                        parent_bytes.into()
+                    },
+                    prev_randao: Default::default(),
+                    receipts_root: Default::default(),
+                    state_root: Default::default(),
+                    transactions: Vec::new(),
                 },
-                prev_randao: Default::default(),
-                receipts_root: Default::default(),
-                state_root: Default::default(),
-                transactions: Vec::new(),
+                withdrawals: Vec::new(),
             },
-            withdrawals: Vec::new(),
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
         },
-        blob_gas_used: 0,
-        excess_blob_gas: 0,
-    };
+        height * 12,
+    );
 
     Block::compute_digest(
         parent_digest,

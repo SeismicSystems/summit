@@ -1,7 +1,8 @@
-use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV4, ForkchoiceState};
+use alloy_rpc_types_engine::ForkchoiceState;
 use anyhow::Result;
 use clap::{Arg, Command};
 use commonware_formatting::from_hex;
+use reth_seismic_engine_types::SeismicExecutionPayloadEnvelopeV4;
 use std::path::PathBuf;
 use summit_types::engine_client::EngineClient;
 #[cfg(feature = "bench")]
@@ -169,7 +170,7 @@ async fn main() -> Result<()> {
 }
 
 fn execution_payload_envelope_to_block(
-    payload: ExecutionPayloadEnvelopeV4,
+    payload: SeismicExecutionPayloadEnvelopeV4,
     parent: Digest,
     view: u64,
 ) -> Block {

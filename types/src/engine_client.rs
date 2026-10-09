@@ -18,18 +18,89 @@ engine_newPayloadV3 : This is called to store(not commit) and validate blocks re
 
 */
 use alloy_eips::eip4895::Withdrawal;
-use alloy_primitives::{Address, FixedBytes};
-use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
+use alloy_primitives::{Address, Bytes, FixedBytes};
+use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_rpc_types_engine::{
-    ExecutionPayloadEnvelopeV4, ForkchoiceState, ForkchoiceUpdated, PayloadAttributes, PayloadId,
-    PayloadStatus,
+    ForkchoiceState, ForkchoiceUpdated, PayloadAttributes, PayloadId, PayloadStatus,
+};
+use reth_seismic_engine_types::{
+    SeismicExecutionPayloadEnvelopeV4, SeismicExecutionPayloadV3, SeismicPayloadAttributes,
 };
 use tracing::{error, warn};
 
 use crate::Block;
-use alloy_transport::{TransportError, TransportErrorKind};
+use alloy_transport::{TransportError, TransportErrorKind, TransportResult};
 use alloy_transport_ipc::IpcConnect;
 use std::future::Future;
+
+/// Seismic's Engine API carries the sub-second block timestamp in extended payload attribute
+/// and execution payload types (see `reth_seismic_engine_types`). `alloy_provider`'s `EngineApi`
+/// extension is fixed to the stock types, so the three Seismic-typed methods are issued as raw
+/// JSON-RPC requests. Everything else about the Engine API is unchanged.
+async fn fork_choice_updated_v3(
+    provider: &RootProvider,
+    fork_choice_state: ForkchoiceState,
+    payload_attributes: Option<SeismicPayloadAttributes>,
+) -> TransportResult<ForkchoiceUpdated> {
+    provider
+        .client()
+        .request(
+            "engine_forkchoiceUpdatedV3",
+            (fork_choice_state, payload_attributes),
+        )
+        .await
+}
+
+async fn get_payload_v4(
+    provider: &RootProvider,
+    payload_id: PayloadId,
+) -> TransportResult<SeismicExecutionPayloadEnvelopeV4> {
+    provider
+        .client()
+        .request("engine_getPayloadV4", (payload_id,))
+        .await
+}
+
+async fn new_payload_v4(
+    provider: &RootProvider,
+    payload: &SeismicExecutionPayloadV3,
+    versioned_hashes: Vec<FixedBytes<32>>,
+    parent_beacon_block_root: FixedBytes<32>,
+    execution_requests: &[Bytes],
+) -> TransportResult<PayloadStatus> {
+    provider
+        .client()
+        .request(
+            "engine_newPayloadV4",
+            (
+                payload,
+                versioned_hashes,
+                parent_beacon_block_root,
+                execution_requests,
+            ),
+        )
+        .await
+}
+
+/// Builds Seismic payload attributes from a Unix **millisecond** block time: the stock
+/// `timestamp` gets the seconds, `timestampMillisPart` the remainder.
+fn payload_attributes(
+    timestamp_millis: u64,
+    withdrawals: Vec<Withdrawal>,
+    suggested_fee_recipient: Address,
+    parent_beacon_block_root: Option<FixedBytes<32>>,
+) -> SeismicPayloadAttributes {
+    SeismicPayloadAttributes::from_timestamp_millis(
+        PayloadAttributes {
+            timestamp: 0,
+            prev_randao: [0; 32].into(),
+            suggested_fee_recipient,
+            withdrawals: Some(withdrawals),
+            parent_beacon_block_root,
+        },
+        timestamp_millis,
+    )
+}
 
 /// The number of times the engine client will try to reconnect
 /// after failing to connect to the IPC socket.
@@ -76,6 +147,7 @@ impl From<TransportError> for EngineClientError {
 }
 
 pub trait EngineClient: Clone + Send + Sync + 'static {
+    /// Starts building a block at the given Unix **millisecond** timestamp.
     fn start_building_block(
         &mut self,
         fork_choice_state: ForkchoiceState,
@@ -89,7 +161,7 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
     fn get_payload(
         &mut self,
         payload_id: PayloadId,
-    ) -> impl Future<Output = Result<ExecutionPayloadEnvelopeV4, EngineClientError>> + Send;
+    ) -> impl Future<Output = Result<SeismicExecutionPayloadEnvelopeV4, EngineClientError>> + Send;
 
     fn check_payload(
         &mut self,
@@ -159,24 +231,24 @@ impl EngineClient for RethEngineClient {
         parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] _height: u64,
     ) -> Result<Option<PayloadId>, EngineClientError> {
-        let payload_attributes = PayloadAttributes {
+        let payload_attributes = payload_attributes(
             timestamp,
-            prev_randao: [0; 32].into(),
+            withdrawals,
             suggested_fee_recipient,
-            withdrawals: Some(withdrawals),
             parent_beacon_block_root,
-        };
+        );
 
-        let res = match self
-            .provider
-            .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes.clone()))
-            .await
+        let res = match fork_choice_updated_v3(
+            &self.provider,
+            fork_choice_state,
+            Some(payload_attributes.clone()),
+        )
+        .await
         {
             Ok(res) => res,
             Err(e) if e.is_transport_error() => {
                 self.wait_until_reconnect_available().await?;
-                self.provider
-                    .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
+                fork_choice_updated_v3(&self.provider, fork_choice_state, Some(payload_attributes))
                     .await
                     .map_err(EngineClientError::from)?
             }
@@ -196,13 +268,12 @@ impl EngineClient for RethEngineClient {
     async fn get_payload(
         &mut self,
         payload_id: PayloadId,
-    ) -> Result<ExecutionPayloadEnvelopeV4, EngineClientError> {
-        match self.provider.get_payload_v4(payload_id).await {
+    ) -> Result<SeismicExecutionPayloadEnvelopeV4, EngineClientError> {
+        match get_payload_v4(&self.provider, payload_id).await {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
                 self.wait_until_reconnect_available().await?;
-                self.provider
-                    .get_payload_v4(payload_id)
+                get_payload_v4(&self.provider, payload_id)
                     .await
                     .map_err(EngineClientError::from)
             }
@@ -215,28 +286,27 @@ impl EngineClient for RethEngineClient {
         // support blob transactions: any payload with `blob_gas_used > 0` is
         // rejected at handle_verify time, so check_payload only ever sees
         // non-blob payloads.
-        match self
-            .provider
-            .new_payload_v4(
-                block.payload.clone(),
-                Vec::new(),
-                block.header.parent_beacon_block_root().into(),
-                block.execution_requests.clone(),
-            )
-            .await
+        match new_payload_v4(
+            &self.provider,
+            &block.payload,
+            Vec::new(),
+            block.header.parent_beacon_block_root().into(),
+            &block.execution_requests,
+        )
+        .await
         {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
                 self.wait_until_reconnect_available().await?;
-                self.provider
-                    .new_payload_v4(
-                        block.payload.clone(),
-                        Vec::new(),
-                        block.header.parent_beacon_block_root().into(),
-                        block.execution_requests.clone(),
-                    )
-                    .await
-                    .map_err(EngineClientError::from)
+                new_payload_v4(
+                    &self.provider,
+                    &block.payload,
+                    Vec::new(),
+                    block.header.parent_beacon_block_root().into(),
+                    &block.execution_requests,
+                )
+                .await
+                .map_err(EngineClientError::from)
             }
             Err(e) => Err(EngineClientError::from(e)),
         }
@@ -246,16 +316,11 @@ impl EngineClient for RethEngineClient {
         &mut self,
         fork_choice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdated, EngineClientError> {
-        match self
-            .provider
-            .fork_choice_updated_v3(fork_choice_state, None)
-            .await
-        {
+        match fork_choice_updated_v3(&self.provider, fork_choice_state, None).await {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
                 self.wait_until_reconnect_available().await?;
-                self.provider
-                    .fork_choice_updated_v3(fork_choice_state, None)
+                fork_choice_updated_v3(&self.provider, fork_choice_state, None)
                     .await
                     .map_err(EngineClientError::from)
             }
@@ -327,24 +392,24 @@ impl EngineClient for BadBlockEngineClient {
         parent_beacon_block_root: Option<FixedBytes<32>>,
         #[cfg(feature = "bench")] _height: u64,
     ) -> Result<Option<PayloadId>, EngineClientError> {
-        let payload_attributes = PayloadAttributes {
+        let payload_attributes = payload_attributes(
             timestamp,
-            prev_randao: [0; 32].into(),
+            withdrawals,
             suggested_fee_recipient,
-            withdrawals: Some(withdrawals),
             parent_beacon_block_root,
-        };
+        );
 
-        let res = match self
-            .provider
-            .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes.clone()))
-            .await
+        let res = match fork_choice_updated_v3(
+            &self.provider,
+            fork_choice_state,
+            Some(payload_attributes.clone()),
+        )
+        .await
         {
             Ok(res) => res,
             Err(e) if e.is_transport_error() => {
                 self.wait_until_reconnect_available().await?;
-                self.provider
-                    .fork_choice_updated_v3(fork_choice_state, Some(payload_attributes))
+                fork_choice_updated_v3(&self.provider, fork_choice_state, Some(payload_attributes))
                     .await
                     .map_err(EngineClientError::from)?
             }
@@ -364,13 +429,12 @@ impl EngineClient for BadBlockEngineClient {
     async fn get_payload(
         &mut self,
         payload_id: PayloadId,
-    ) -> Result<ExecutionPayloadEnvelopeV4, EngineClientError> {
-        match self.provider.get_payload_v4(payload_id).await {
+    ) -> Result<SeismicExecutionPayloadEnvelopeV4, EngineClientError> {
+        match get_payload_v4(&self.provider, payload_id).await {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
                 self.wait_until_reconnect_available().await?;
-                self.provider
-                    .get_payload_v4(payload_id)
+                get_payload_v4(&self.provider, payload_id)
                     .await
                     .map_err(EngineClientError::from)
             }
@@ -385,28 +449,27 @@ impl EngineClient for BadBlockEngineClient {
             block.header.parent_beacon_block_root().into()
         };
 
-        match self
-            .provider
-            .new_payload_v4(
-                block.payload.clone(),
-                Vec::new(),
-                parent_beacon_block_root,
-                block.execution_requests.clone(),
-            )
-            .await
+        match new_payload_v4(
+            &self.provider,
+            &block.payload,
+            Vec::new(),
+            parent_beacon_block_root,
+            &block.execution_requests,
+        )
+        .await
         {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
                 self.wait_until_reconnect_available().await?;
-                self.provider
-                    .new_payload_v4(
-                        block.payload.clone(),
-                        Vec::new(),
-                        block.header.parent_beacon_block_root().into(),
-                        block.execution_requests.clone(),
-                    )
-                    .await
-                    .map_err(EngineClientError::from)
+                new_payload_v4(
+                    &self.provider,
+                    &block.payload,
+                    Vec::new(),
+                    block.header.parent_beacon_block_root().into(),
+                    &block.execution_requests,
+                )
+                .await
+                .map_err(EngineClientError::from)
             }
             Err(e) => Err(EngineClientError::from(e)),
         }
@@ -416,16 +479,11 @@ impl EngineClient for BadBlockEngineClient {
         &mut self,
         fork_choice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdated, EngineClientError> {
-        match self
-            .provider
-            .fork_choice_updated_v3(fork_choice_state, None)
-            .await
-        {
+        match fork_choice_updated_v3(&self.provider, fork_choice_state, None).await {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
                 self.wait_until_reconnect_available().await?;
-                self.provider
-                    .fork_choice_updated_v3(fork_choice_state, None)
+                fork_choice_updated_v3(&self.provider, fork_choice_state, None)
                     .await
                     .map_err(EngineClientError::from)
             }
@@ -441,12 +499,13 @@ pub mod benchmarking {
     use alloy_eips::eip4895::Withdrawal;
     use alloy_eips::eip7685::Requests;
     use alloy_primitives::{Address, FixedBytes, U256};
-    use alloy_provider::{ProviderBuilder, RootProvider, ext::EngineApi};
-    use alloy_rpc_types_engine::{
-        ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3,
-        ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
-    };
+    use alloy_provider::{ProviderBuilder, RootProvider};
+    use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};
     use alloy_transport_ipc::IpcConnect;
+    use reth_seismic_engine_types::{
+        SeismicExecutionPayloadEnvelopeV3, SeismicExecutionPayloadEnvelopeV4,
+        SeismicExecutionPayloadV3,
+    };
     use std::fs;
     use std::path::PathBuf;
 
@@ -485,7 +544,7 @@ pub mod benchmarking {
         async fn get_payload(
             &mut self,
             payload_id: PayloadId,
-        ) -> Result<ExecutionPayloadEnvelopeV4, EngineClientError> {
+        ) -> Result<SeismicExecutionPayloadEnvelopeV4, EngineClientError> {
             let block_num = u64::from_le_bytes(payload_id.0.into());
             let filename = format!("block-{block_num}");
             let file_path = self.block_dir.join(filename);
@@ -496,12 +555,12 @@ pub mod benchmarking {
                 })
                 .expect("failed to read block file");
 
-            let block_data: ExecutionPayloadV3 =
+            let block_data: SeismicExecutionPayloadV3 =
                 ssz::Decode::from_ssz_bytes(&data).expect("failed to read block file");
 
-            // Convert to ExecutionPayloadEnvelopeV4 with correct structure
-            Ok(ExecutionPayloadEnvelopeV4 {
-                envelope_inner: ExecutionPayloadEnvelopeV3 {
+            // Convert to the V4 envelope with correct structure
+            Ok(SeismicExecutionPayloadEnvelopeV4 {
+                envelope_inner: SeismicExecutionPayloadEnvelopeV3 {
                     execution_payload: block_data,
                     block_value: U256::ZERO,
                     blobs_bundle: Default::default(),
@@ -515,24 +574,22 @@ pub mod benchmarking {
             &mut self,
             block: &Block,
         ) -> Result<PayloadStatus, EngineClientError> {
-            // For Ethereum, use standard engine_newPayloadV4 without Optimism-specific logic
-            self.provider
-                .new_payload_v4(
-                    block.payload.clone(),
-                    Vec::new(),     // versioned_hashes - empty for historical blocks
-                    [1; 32].into(), // parent_beacon_block_root
-                    block.execution_requests.clone(), // execution_requests
-                )
-                .await
-                .map_err(EngineClientError::from)
+            super::new_payload_v4(
+                &self.provider,
+                &block.payload,
+                Vec::new(),     // versioned_hashes - empty for historical blocks
+                [1; 32].into(), // parent_beacon_block_root
+                &block.execution_requests,
+            )
+            .await
+            .map_err(EngineClientError::from)
         }
 
         async fn commit_hash(
             &mut self,
             fork_choice_state: ForkchoiceState,
         ) -> Result<ForkchoiceUpdated, EngineClientError> {
-            self.provider
-                .fork_choice_updated_v3(fork_choice_state, None)
+            super::fork_choice_updated_v3(&self.provider, fork_choice_state, None)
                 .await
                 .map_err(EngineClientError::from)
         }

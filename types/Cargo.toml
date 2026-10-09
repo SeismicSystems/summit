@@ -23,6 +23,7 @@ alloy-consensus.workspace = true
 alloy-provider.workspace = true
 alloy-transport.workspace = true
 alloy-transport-ipc.workspace = true
+reth-seismic-engine-types.workspace = true
 
 futures.workspace = true
 # for reth.rs module (e2e feature only)
