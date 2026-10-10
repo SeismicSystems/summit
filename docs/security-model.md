@@ -184,7 +184,7 @@ See [Engine API Integration](engine-api-integration.md) for the full call-site b
 
 ### Operational Security
 
-1. **Regular Updates**: Keep Summit and dependencies updated
+1. **Regular Updates**: Keep Summit and dependencies updated; changes to consensus rules must follow the [protocol upgrade policy](./protocol-upgrades.md)
 2. **Security Monitoring**: Monitor for security advisories
 3. **Incident Response**: Prepare incident response procedures
 4. **Backup Strategy**: Regular backups with secure storage
