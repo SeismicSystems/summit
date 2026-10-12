@@ -165,8 +165,13 @@ jobs:
             echo "summit links the host's OpenSSL: a dependency turned native-tls back on (see reqwest in Cargo.toml)" >&2
             exit 1
           }
-          # TODO: `--version` once summit reports one (SEI-560).
-          "$bin" --help > /dev/null
+          # Consumers compare this line with the commit they pin, so a
+          # release must report exactly the commit it was built from.
+          "$bin" --version --verbose
+          "$bin" --version --verbose | grep -qx "commit-hash: $GITHUB_SHA" || {
+            echo "summit --version --verbose does not report the built commit $GITHUB_SHA" >&2
+            exit 1
+          }
 
       - name: Archive summit
         env:
