@@ -1,18 +1,20 @@
 use alloy_eips::eip4895::Withdrawal;
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::hex;
-use alloy_primitives::{Address, B256, Bloom, Bytes, FixedBytes, U256};
+use alloy_primitives::{Address, B256, Bloom, FixedBytes, U256};
 use alloy_rpc_types_engine::{
-    BlobsBundleV1, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
-    ForkchoiceUpdated, PayloadId, PayloadStatus, PayloadStatusEnum,
+    BlobsBundleV1, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV1,
+    ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId,
+    PayloadStatus, PayloadStatusEnum,
 };
 use rand::Rng as _;
-use reth_seismic_engine_types::{
-    SeismicExecutionPayloadEnvelopeV3, SeismicExecutionPayloadEnvelopeV4, SeismicExecutionPayloadV3,
-};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use summit_types::{Block, EngineClient};
+use summit_types::{
+    Block, EngineClient,
+    extra_data::{MAX_BUILDER_EXTRA_DATA_LEN, encode_extra_data},
+    payload_with_timestamp_millis,
+};
 
 #[derive(Clone)]
 pub struct MockEngineClient {
@@ -27,10 +29,10 @@ pub struct MockEngineClient {
 #[derive(Debug)]
 struct MockEngineState {
     // Payload building - tracks blocks being built
-    building_payloads: HashMap<PayloadId, SeismicExecutionPayloadEnvelopeV4>,
+    building_payloads: HashMap<PayloadId, ExecutionPayloadEnvelopeV4>,
 
     // Simple blockchain state
-    canonical_blocks: HashMap<FixedBytes<32>, SeismicExecutionPayloadV3>,
+    canonical_blocks: HashMap<FixedBytes<32>, ExecutionPayloadV3>,
     canonical_by_number: HashMap<u64, FixedBytes<32>>,
     current_head: FixedBytes<32>,
     next_block_number: u64,
@@ -38,7 +40,7 @@ struct MockEngineState {
     // Block validation
     known_blocks: HashMap<FixedBytes<32>, PayloadStatus>,
     // Store full block data for blocks we already validated (from check_payload)
-    validated_blocks: HashMap<FixedBytes<32>, SeismicExecutionPayloadV3>,
+    validated_blocks: HashMap<FixedBytes<32>, ExecutionPayloadV3>,
 
     // For testing
     force_invalid: bool,
@@ -131,7 +133,7 @@ impl MockEngineClient {
 
             if let Some(block) = block {
                 if !block.payload_inner.withdrawals.is_empty() {
-                    withdrawals.insert(height, block.inner.payload_inner.withdrawals);
+                    withdrawals.insert(height, block.payload_inner.withdrawals);
                 }
             }
         }
@@ -143,7 +145,7 @@ impl MockEngineClient {
         let mut state = self.state.lock().unwrap();
 
         // Create a dummy block for the checkpoint
-        let dummy_block = SeismicExecutionPayloadV3::new(
+        let dummy_block = payload_with_timestamp_millis(
             ExecutionPayloadV3 {
                 payload_inner: alloy_rpc_types_engine::ExecutionPayloadV2 {
                     payload_inner: alloy_rpc_types_engine::ExecutionPayloadV1 {
@@ -189,7 +191,7 @@ impl MockEngineClient {
 
     #[allow(unused)]
     /// Add a block to canonical chain (for testing consensus)
-    pub fn add_canonical_block(&self, block: SeismicExecutionPayloadV3) -> bool {
+    pub fn add_canonical_block(&self, block: ExecutionPayloadV3) -> bool {
         let mut state = self.state.lock().unwrap();
 
         let block_number = block.payload_inner.payload_inner.block_number;
@@ -282,7 +284,7 @@ impl MockEngineState {
         }
     }
 
-    fn create_genesis_block() -> SeismicExecutionPayloadV3 {
+    fn create_genesis_block() -> ExecutionPayloadV3 {
         let genesis_payload_v1 = ExecutionPayloadV1 {
             parent_hash: FixedBytes::from([0u8; 32]),
             fee_recipient: Address::ZERO,
@@ -294,7 +296,7 @@ impl MockEngineState {
             gas_limit: 21_000,
             gas_used: 0,
             timestamp: 0,
-            extra_data: Bytes::from("genesis"),
+            extra_data: encode_extra_data(0, b"genesis").expect("short tag"),
             base_fee_per_gas: U256::ZERO,
             block_hash: FixedBytes::from([0u8; 32]),
             transactions: vec![],
@@ -305,14 +307,11 @@ impl MockEngineState {
             withdrawals: vec![],
         };
 
-        SeismicExecutionPayloadV3::new(
-            ExecutionPayloadV3 {
-                payload_inner: genesis_payload_v2,
-                blob_gas_used: 0,
-                excess_blob_gas: 0,
-            },
-            0,
-        )
+        ExecutionPayloadV3 {
+            payload_inner: genesis_payload_v2,
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+        }
     }
 
     fn create_block_payload(
@@ -322,7 +321,7 @@ impl MockEngineState {
         client_id: &str,
         withdrawals: Vec<Withdrawal>,
         suggested_fee_recipient: Address,
-    ) -> SeismicExecutionPayloadV3 {
+    ) -> ExecutionPayloadV3 {
         // Create deterministic but unique block hash
         use sha3::{Digest, Keccak256};
         let mut hasher = Keccak256::new();
@@ -343,9 +342,14 @@ impl MockEngineState {
             gas_limit: 21_000,
             gas_used: 21_000,
             timestamp,
-            extra_data: Bytes::from(
-                format!("block-{}-{}", self.next_block_number, client_id).into_bytes(),
-            ),
+            extra_data: {
+                // Builder tag behind the (re-stamped below) timestamp prefix; bounded like a
+                // real `--builder.extradata`.
+                let mut tag =
+                    format!("block-{}-{}", self.next_block_number, client_id).into_bytes();
+                tag.truncate(MAX_BUILDER_EXTRA_DATA_LEN);
+                encode_extra_data(0, &tag).expect("tag is bounded")
+            },
             base_fee_per_gas: U256::from(1_000_000_000u64),
             block_hash,
             transactions: vec![],
@@ -357,9 +361,9 @@ impl MockEngineState {
         };
 
         // `timestamp` is the Summit header's millisecond block time; the EL payload carries
-        // it split into a seconds `timestamp` plus `timestampMillisPart`, which `handle_verify`
-        // recombines and binds to the header.
-        SeismicExecutionPayloadV3::from_timestamp_millis(
+        // it split into a seconds `timestamp` plus the `extraData` millis prefix, which
+        // `handle_verify` recombines and binds to the header.
+        payload_with_timestamp_millis(
             ExecutionPayloadV3 {
                 payload_inner: payload_v2,
                 // The synthetic payload has no transactions, so no blob gas is
@@ -430,8 +434,8 @@ impl EngineClient for MockEngineClient {
             .unwrap()
             .get(&block_num)
             .cloned();
-        let envelope = SeismicExecutionPayloadEnvelopeV4 {
-            envelope_inner: SeismicExecutionPayloadEnvelopeV3 {
+        let envelope = ExecutionPayloadEnvelopeV4 {
+            envelope_inner: ExecutionPayloadEnvelopeV3 {
                 execution_payload: new_block,
                 block_value: U256::from(1_000_000_000_000_000_000u64), // 1 ETH
                 blobs_bundle: BlobsBundleV1::default(),
@@ -449,7 +453,7 @@ impl EngineClient for MockEngineClient {
     async fn get_payload(
         &mut self,
         payload_id: PayloadId,
-    ) -> Result<SeismicExecutionPayloadEnvelopeV4, summit_types::EngineClientError> {
+    ) -> Result<ExecutionPayloadEnvelopeV4, summit_types::EngineClientError> {
         let state = self.state.lock().unwrap();
 
         Ok(state

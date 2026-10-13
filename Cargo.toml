@@ -54,10 +54,15 @@ alloy-provider = { version = "=1.1.0", default-features = false, features = [
 alloy-primitives = "1.3.1"
 alloy-transport-ipc = { version = "=1.1.0" }
 
-# Engine API wire types shared with seismic-reth (payload attributes / execution payloads that
-# carry the sub-second `timestampMillisPart`). Stock-alloy only; the `ssz` feature is what
-# `summit_types::Block` hashes. Pin to the seismic-reth commit the network runs.
-reth-seismic-engine-types = { git = "https://github.com/SeismicSystems/seismic-reth.git", rev = "f277c2379338e3cc0ce4bfd05fc3111ec2bdb9af", default-features = false, features = ["std", "ssz"] }
+# Engine API wire types and header conventions shared with seismic-reth: the
+# `timestampMillisPart` payload attributes and the `extraData` layout that carries the
+# sub-second block time in otherwise stock Ethereum headers. Stock-alloy only. Pin to the
+# seismic-reth commit the network runs.
+#
+# TODO(timestamp-ethereum-compat): bump `rev` to seismic-reth 2824f65dfbc686ac5f4b912b3767d79fd59cf9e2
+# once it is pushed and drop the `[patch]` below. Cargo must be able to fetch the pinned rev
+# even when it is patched, so the pin cannot move ahead of the remote.
+reth-seismic-engine-types = { git = "https://github.com/SeismicSystems/seismic-reth.git", rev = "f277c2379338e3cc0ce4bfd05fc3111ec2bdb9af", default-features = false, features = ["std"] }
 url = "2.5"
 
 futures = "0.3.31"
@@ -98,3 +103,8 @@ rand = { version = "0.10", features = ["std", "std_rng", "sys_rng", "thread_rng"
 rand_core = "0.10"
 sha2 = "0.10.9"
 tracing = "0.1.41"
+
+# TODO(timestamp-ethereum-compat): remove once seismic-reth 2824f65df is pushed (see the
+# dependency above); local development pin so this worktree builds against the unpublished commit.
+[patch."https://github.com/SeismicSystems/seismic-reth.git"]
+reth-seismic-engine-types = { path = "../../seismic-reth-worktrees/seismic-reth/crates/seismic/engine-types" }

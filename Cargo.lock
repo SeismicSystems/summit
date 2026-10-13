@@ -5599,15 +5599,11 @@ dependencies = [
 [[package]]
 name = "reth-seismic-engine-types"
 version = "1.7.0"
-source = "git+https://github.com/SeismicSystems/seismic-reth.git?rev=f277c2379338e3cc0ce4bfd05fc3111ec2bdb9af#f277c2379338e3cc0ce4bfd05fc3111ec2bdb9af"
 dependencies = [
- "alloy-eips",
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-serde",
  "derive_more",
- "ethereum_ssz",
- "ethereum_ssz_derive",
  "serde",
 ]
 
@@ -6475,7 +6471,6 @@ dependencies = [
  "rand 0.10.2",
  "reqwest 0.12.22",
  "reth-metrics",
- "reth-seismic-engine-types",
  "reth-tasks",
  "serde",
  "serde_json",
@@ -6518,7 +6513,6 @@ dependencies = [
  "metrics",
  "prometheus-client 0.22.3",
  "rand 0.10.2",
- "reth-seismic-engine-types",
  "summit-finalizer",
  "summit-syncer",
  "summit-types",
@@ -6553,7 +6547,6 @@ dependencies = [
  "metrics",
  "prometheus-client 0.24.0",
  "rand 0.10.2",
- "reth-seismic-engine-types",
  "summit-orchestrator",
  "summit-syncer",
  "summit-types",

@@ -18,8 +18,8 @@ use std::{
 };
 use summit::args::{RunFlags, run_node_local};
 use summit_rpc::{SummitApiClient, SummitProofApiClient};
+use summit_types::extra_data::header_timestamp_millis;
 use summit_types::genesis::Genesis;
-use summit_types::join_timestamp_millis;
 use summit_types::reth::Reth;
 
 use tokio::sync::mpsc;
@@ -616,24 +616,21 @@ async fn get_latest_height(rpc_port: u16) -> Result<u64, Box<dyn std::error::Err
 
 /// Full Unix-millisecond timestamp of a Seismic block, as the beacon-roots contract indexes it.
 ///
-/// The RPC header's `timestamp` is Unix seconds; the sub-second component is the Seismic-only
-/// `timestampMillisPart` field, which the stock alloy block type drops, so read it raw.
+/// Seismic headers are stock Ethereum headers: `timestamp` is Unix seconds and the sub-second
+/// component is the two-byte big-endian prefix of `extraData`.
 async fn block_timestamp_millis<P: Provider>(provider: &P, number: u64) -> u64 {
-    let block: serde_json::Value = provider
-        .raw_request(
-            "eth_getBlockByNumber".into(),
-            (format!("{number:#x}"), false),
-        )
+    let block = provider
+        .get_block_by_number(number.into())
         .await
-        .expect("Failed to get block");
-    let quantity = |field: &str| -> u64 {
-        let hex = block[field]
-            .as_str()
-            .unwrap_or_else(|| panic!("block {number} has no `{field}` field: {block}"));
-        u64::from_str_radix(hex.trim_start_matches("0x"), 16)
-            .unwrap_or_else(|e| panic!("block {number} `{field}` {hex:?} is not a quantity: {e}"))
-    };
-    join_timestamp_millis(quantity("timestamp"), quantity("timestampMillisPart"))
+        .expect("Failed to get block")
+        .unwrap_or_else(|| panic!("block {number} not found"));
+    let header = &block.header.inner;
+    header_timestamp_millis(header.timestamp, &header.extra_data).unwrap_or_else(|e| {
+        panic!(
+            "block {number} extraData {} does not carry a timestampMillisPart prefix: {e}",
+            header.extra_data
+        )
+    })
 }
 
 /// ABI-encode a call to verify(uint256, uint256, bytes32, bytes32[]).

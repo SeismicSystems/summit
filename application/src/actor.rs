@@ -1097,21 +1097,21 @@ fn handle_verify<ES: Epocher>(
         );
         return false;
     }
-    // The EL payload carries the block time as seconds `timestamp` plus a sub-second
-    // `timestampMillisPart`; together they must equal the Summit header's millisecond timestamp.
-    if block.payload.timestamp_millis_part >= summit_types::MILLIS_PER_SECOND {
-        warn!(
-            timestamp_millis_part = block.payload.timestamp_millis_part,
-            "payload.timestampMillisPart out of range"
-        );
-        return false;
-    }
-    let payload_timestamp_millis = block.payload.timestamp_millis();
+    // The EL payload carries the block time as the seconds `timestamp` plus the sub-second
+    // component in its `extraData` prefix; together they must equal the Summit header's
+    // millisecond timestamp. A malformed prefix is rejected here as well as by the EL.
+    let payload_timestamp_millis = match block.payload_timestamp_millis() {
+        Ok(timestamp) => timestamp,
+        Err(err) => {
+            warn!(%err, "payload extraData does not carry a valid timestampMillisPart prefix");
+            return false;
+        }
+    };
     if payload_timestamp_millis != block.timestamp() {
         warn!(
             header_timestamp = block.timestamp(),
             payload_timestamp_millis,
-            "payload timestamp (seconds + millis part) does not match header.timestamp"
+            "payload timestamp (seconds + extraData millis prefix) does not match header.timestamp"
         );
         return false;
     }
@@ -1286,8 +1286,8 @@ mod tests {
         ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState,
     };
     use commonware_consensus::types::FixedEpocher;
-    use reth_seismic_engine_types::SeismicExecutionPayloadV3;
     use std::num::NonZeroU64;
+    use summit_types::payload_with_timestamp_millis;
 
     const EPOCH_LENGTH: u64 = 10;
 
@@ -1331,16 +1331,12 @@ mod tests {
         assert!(!execution_requests_ascending(&[vec![0xFF]]));
     }
 
-    /// Builds an empty EL payload whose (seconds + millis part) block time equals the
-    /// Summit header's millisecond `timestamp`.
-    fn empty_payload(
-        height: u64,
-        parent_hash: [u8; 32],
-        timestamp: u64,
-    ) -> SeismicExecutionPayloadV3 {
+    /// Builds an empty EL payload whose (seconds + `extraData` millis prefix) block time equals
+    /// the Summit header's millisecond `timestamp`.
+    fn empty_payload(height: u64, parent_hash: [u8; 32], timestamp: u64) -> ExecutionPayloadV3 {
         let mut block_hash = [0u8; 32];
         block_hash[0..8].copy_from_slice(&height.to_le_bytes());
-        SeismicExecutionPayloadV3::from_timestamp_millis(
+        payload_with_timestamp_millis(
             ExecutionPayloadV3 {
                 payload_inner: ExecutionPayloadV2 {
                     payload_inner: ExecutionPayloadV1 {
@@ -2008,8 +2004,8 @@ mod tests {
     /// payload that consensus accepted. Built as a control (the same block with
     /// no blob gas verifies) so only `blob_gas_used` gates the result.
     /// The EL payload splits the header's millisecond timestamp into a seconds `timestamp`
-    /// and `timestampMillisPart`; verification binds the recombined value to the header and
-    /// rejects an out-of-range part even when the recombined value would still match.
+    /// and a two-byte `extraData` prefix; verification binds the recombined value to the header
+    /// and rejects a malformed prefix even when the recombined value would still match.
     #[test]
     fn binds_payload_seconds_and_millis_part_to_header_timestamp() {
         let parent_height = 3;
@@ -2030,8 +2026,20 @@ mod tests {
             parent_height + 1,
             header_timestamp,
         );
-        assert_eq!(block.payload.timestamp(), 1_700_000_000);
-        assert_eq!(block.payload.timestamp_millis_part, 123);
+        assert_eq!(
+            block.payload.payload_inner.payload_inner.timestamp,
+            1_700_000_000
+        );
+        assert_eq!(
+            block
+                .payload
+                .payload_inner
+                .payload_inner
+                .extra_data
+                .as_ref(),
+            &[0x00, 0x7b]
+        );
+        assert_eq!(block.payload_timestamp_millis(), Ok(header_timestamp));
         let aux_data = make_aux_data(0);
         let round = Round::new(Epoch::new(aux_data.epoch), View::new(block.view()));
         let parent_view = parent.view();
@@ -2052,22 +2060,31 @@ mod tests {
             "payload whose split timestamp recombines to the header must verify"
         );
 
-        // Same recombined value, but the seconds/part split is not canonical.
-        block.payload.inner.payload_inner.payload_inner.timestamp = 1_699_999_999;
-        block.payload.timestamp_millis_part = 1_123;
-        assert_eq!(block.payload.timestamp_millis(), header_timestamp);
-        assert!(
-            !verify(&block),
-            "timestampMillisPart >= 1000 must be rejected"
-        );
+        // Same recombined value, but the seconds/part split is not canonical (part = 1123).
+        let inner = &mut block.payload.payload_inner.payload_inner;
+        inner.timestamp = 1_699_999_999;
+        inner.extra_data = alloy_primitives::Bytes::from_static(&[0x04, 0x63]);
+        assert_eq!(1_699_999_999 * 1000 + 0x0463, header_timestamp);
+        assert!(!verify(&block), "extraData prefix >= 1000 must be rejected");
+
+        // A stock Ethereum payload (no prefix) is not a Seismic payload.
+        let inner = &mut block.payload.payload_inner.payload_inner;
+        inner.timestamp = 1_700_000_000;
+        inner.extra_data = alloy_primitives::Bytes::new();
+        assert!(!verify(&block), "missing extraData prefix must be rejected");
 
         // A different part changes the recombined value and must be rejected.
-        block.payload.inner.payload_inner.payload_inner.timestamp = 1_700_000_000;
-        block.payload.timestamp_millis_part = 124;
+        block.payload.payload_inner.payload_inner.extra_data =
+            alloy_primitives::Bytes::from_static(&[0x00, 0x7c]);
         assert!(
             !verify(&block),
             "payload millis part must match header.timestamp"
         );
+
+        // Builder data behind a correct prefix is fine.
+        block.payload.payload_inner.payload_inner.extra_data =
+            alloy_primitives::Bytes::from_static(b"\x00\x7breth/v1.7.0/linux");
+        assert!(verify(&block), "builder tag behind the prefix must verify");
     }
 
     #[test]

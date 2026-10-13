@@ -2,8 +2,9 @@
 
 use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_rpc_types_engine::{
-    ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated,
-    PayloadId, PayloadStatus, PayloadStatusEnum,
+    ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV1, ExecutionPayloadV2,
+    ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
+    PayloadStatusEnum,
 };
 use commonware_actor::Feedback;
 use commonware_consensus::simplex::scheme::bls12381_multisig;
@@ -14,14 +15,13 @@ use commonware_cryptography::{Signer as _, ed25519};
 use commonware_math::algebra::Random;
 use commonware_parallel::Sequential;
 use commonware_utils::ordered::{BiMap, Map};
-use reth_seismic_engine_types::{
-    SeismicExecutionPayloadEnvelopeV3, SeismicExecutionPayloadEnvelopeV4, SeismicExecutionPayloadV3,
-};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use summit_types::network_oracle::NetworkOracle;
-use summit_types::{Block, Digest, EngineClient, EngineClientError, PublicKey};
+use summit_types::{
+    Block, Digest, EngineClient, EngineClientError, PublicKey, payload_with_timestamp_millis,
+};
 
 pub type MultisigScheme = bls12381_multisig::Scheme<ed25519::PublicKey, MinPk>;
 
@@ -211,10 +211,10 @@ impl EngineClient for MockEngineClient {
     async fn get_payload(
         &mut self,
         _payload_id: PayloadId,
-    ) -> Result<SeismicExecutionPayloadEnvelopeV4, summit_types::EngineClientError> {
-        Ok(SeismicExecutionPayloadEnvelopeV4 {
-            envelope_inner: SeismicExecutionPayloadEnvelopeV3 {
-                execution_payload: SeismicExecutionPayloadV3::new(
+    ) -> Result<ExecutionPayloadEnvelopeV4, summit_types::EngineClientError> {
+        Ok(ExecutionPayloadEnvelopeV4 {
+            envelope_inner: ExecutionPayloadEnvelopeV3 {
+                execution_payload: payload_with_timestamp_millis(
                     ExecutionPayloadV3 {
                         payload_inner: ExecutionPayloadV2 {
                             payload_inner: ExecutionPayloadV1 {
