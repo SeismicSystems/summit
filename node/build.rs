@@ -42,16 +42,17 @@ fn git_commit(workspace_root: &Path) -> Option<(String, String)> {
 
     let hash = git(workspace_root, &["rev-parse", "--verify", "HEAD"])?;
     let date = git(workspace_root, &["log", "-1", "--format=%cs", "HEAD"])?;
-    // Untracked files are left out: none enters the build without a tracked
-    // change that references it, which already marks the tree dirty.
-    // `--no-optional-locks` keeps `status` from rewriting the index, which is
-    // watched below and would rerun this script on every build.
     let dirty = !git(
         workspace_root,
         &[
+            // `--no-optional-locks` keeps `status` from rewriting the index, which is
+            // watched below and would rerun this script on every build.
             "--no-optional-locks",
             "status",
             "--porcelain",
+            // Untracked files are left out, as in `git describe --dirty`, although
+            // Cargo builds some it finds by path, such as a new build.rs or
+            // src/bin/ target. Releases build from a clean checkout, which has none.
             "--untracked-files=no",
         ],
     )?
