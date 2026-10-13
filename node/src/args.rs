@@ -63,16 +63,67 @@ pub const DEFAULT_DB_FOLDER: &str = "~/.seismic/consensus/store";
 
 pub const DEFAULT_ENGINE_IPC_PATH: &str = "/tmp/reth_engine_api.ipc";
 
+// clap's own version flag cannot print a verbose form, so `-V` and `-v` are
+// declared here and `exec` prints the version when no subcommand is given.
 #[derive(Parser, Debug)]
+#[command(
+    disable_version_flag = true,
+    args_conflicts_with_subcommands = true,
+    arg_required_else_help = true
+)]
 pub struct CliArgs {
+    /// Print version
+    #[arg(short = 'V', long)]
+    version: bool,
+    /// With --version, also print the full commit hash, its date, and the build target
+    #[arg(short = 'v', long, requires = "version")]
+    verbose: bool,
     #[command(subcommand)]
-    pub cmd: Command,
+    pub cmd: Option<Command>,
 }
 
 impl CliArgs {
     pub fn exec(&self) {
-        self.cmd.exec()
+        match &self.cmd {
+            Some(cmd) => cmd.exec(),
+            None => print!("{}", version(self.verbose)),
+        }
     }
+}
+
+/// The version in rustc's and cargo's format:
+///
+/// ```text
+/// summit 0.0.3-alpha (7aac73b40 2026-10-12)
+/// release: 0.0.3-alpha
+/// commit-hash: 7aac73b40db1a3693da3c1970d32485381d04cf6
+/// commit-date: 2026-10-12
+/// host: x86_64-unknown-linux-gnu
+/// ```
+///
+/// The `key: value` lines are printed only when `verbose`, and are the ones a
+/// script reads. `node/build.rs` documents the `-dirty` and `unknown` forms.
+fn version(verbose: bool) -> String {
+    let release = env!("CARGO_PKG_VERSION");
+    let commit_hash = env!("SUMMIT_COMMIT_HASH");
+    let commit_date = env!("SUMMIT_COMMIT_DATE");
+    let host = env!("SUMMIT_BUILD_TARGET");
+
+    let mut out = format!("summit {release}");
+    if commit_hash != "unknown" {
+        let (hash, dirty) = match commit_hash.strip_suffix("-dirty") {
+            Some(hash) => (hash, "-dirty"),
+            None => (commit_hash, ""),
+        };
+        out.push_str(&format!(" ({}{dirty} {commit_date})", &hash[..9]));
+    }
+    out.push('\n');
+    if verbose {
+        out.push_str(&format!(
+            "release: {release}\ncommit-hash: {commit_hash}\ncommit-date: {commit_date}\nhost: {host}\n"
+        ));
+    }
+    out
 }
 
 #[derive(Subcommand, Debug, Clone)]
