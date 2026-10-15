@@ -58,7 +58,7 @@ alloy-transport-ipc = { version = "=1.1.0" }
 # `timestampMillisPart` payload attributes and the `extraData` layout that carries the
 # sub-second block time in otherwise stock Ethereum headers. Stock-alloy only. Pin to the
 # seismic-reth commit the network runs.
-reth-seismic-engine-types = { git = "https://github.com/SeismicSystems/seismic-reth.git", rev = "a72da5d42537a71f25d5b004dc2deed29185efd1", default-features = false, features = ["std"] }
+reth-seismic-engine-types = { git = "https://github.com/SeismicSystems/seismic-reth.git", rev = "8ea439383d0fde23a9ad991f501b965f8f4304d0", default-features = false, features = ["std"] }
 url = "2.5"
 
 futures = "0.3.31"

@@ -4484,7 +4484,7 @@ dependencies = [
 [[package]]
 name = "reth-seismic-engine-types"
 version = "1.7.0"
-source = "git+https://github.com/SeismicSystems/seismic-reth.git?rev=a72da5d42537a71f25d5b004dc2deed29185efd1#a72da5d42537a71f25d5b004dc2deed29185efd1"
+source = "git+https://github.com/SeismicSystems/seismic-reth.git?rev=8ea439383d0fde23a9ad991f501b965f8f4304d0#8ea439383d0fde23a9ad991f501b965f8f4304d0"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
