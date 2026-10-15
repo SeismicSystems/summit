@@ -10,7 +10,7 @@ contract SszProofVerifier {
 
     /// @notice Verify an SSZ Merkle proof using a generalized index.
     /// @param timestamp  EL block timestamp whose beacon root to look up, in Unix
-    ///                   milliseconds (`timestamp * 1000 + timestampMillisPart`): the
+    ///                   milliseconds (`timestamp * 1000` plus the two-byte big-endian `extraData` prefix): the
     ///                   Seismic beacon roots contract is indexed by TIMESTAMPMS.
     /// @param gindex     Generalized index of the leaf in the state tree.
     /// @param leaf       The 32-byte leaf value.

@@ -18,7 +18,6 @@ use commonware_runtime::{Clock, Runner as _};
 use commonware_utils::NZUsize;
 use commonware_utils::acknowledgement::{Acknowledgement, Exact};
 use futures::channel::mpsc as futures_mpsc;
-use reth_seismic_engine_types::SeismicExecutionPayloadV3;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
@@ -26,6 +25,7 @@ use std::time::Duration;
 use summit_syncer::Update;
 use summit_types::account::{ValidatorAccount, ValidatorStatus};
 use summit_types::consensus_state::ConsensusState;
+use summit_types::payload_with_timestamp_millis;
 use summit_types::{Block, Digest};
 use tokio_util::sync::CancellationToken;
 
@@ -38,8 +38,8 @@ fn create_test_block(parent_digest: Digest, height: u64, view: u64, unique_seed:
     let parent_bytes: [u8; 32] = parent_digest.0;
 
     // The header's millisecond timestamp (`height * 12`) is carried by the payload as
-    // seconds + `timestampMillisPart`.
-    let payload = SeismicExecutionPayloadV3::from_timestamp_millis(
+    // seconds + the `extraData` millis prefix.
+    let payload = payload_with_timestamp_millis(
         ExecutionPayloadV3 {
             payload_inner: ExecutionPayloadV2 {
                 payload_inner: ExecutionPayloadV1 {

@@ -98,7 +98,6 @@ alloy-primitives.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-client.workspace = true
 alloy-rpc-types-engine.workspace = true
-reth-seismic-engine-types.workspace = true
 op-alloy-consensus = { version = "0.19.1", default-features = false, features = ["alloy-compat"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing-appender = "0.2"
@@ -115,7 +114,7 @@ http = { workspace = true, optional = true }
 
 # for prom
 prometheus = { version = "0.14", optional = true }
-reth-metrics = { git = "https://github.com/SeismicSystems/seismic-reth.git", branch = "seismic", optional = true }
+reth-metrics = { git = "https://github.com/SeismicSystems/seismic-reth.git", rev = "8ea439383d0fde23a9ad991f501b965f8f4304d0", optional = true }
 metrics = { version = "0.24.0", optional = true }
 metrics-exporter-prometheus = { version = "0.16.0", default-features = false, optional = true }
 metrics-process = { version = "2.1.0", optional = true }
@@ -141,7 +140,7 @@ dashmap = "6.1.0"
 sha3 = "0.10.8"
 alloy-eips.workspace = true
 reqwest.workspace = true
-reth-tasks = { git = "https://github.com/SeismicSystems/seismic-reth.git", branch = "seismic" }
+reth-tasks = { git = "https://github.com/SeismicSystems/seismic-reth.git", rev = "8ea439383d0fde23a9ad991f501b965f8f4304d0" }
 socket2.workspace = true
 tokio = { workspace = true, features = ["full", "rt-multi-thread", "time"] }
 alloy-signer.workspace = true

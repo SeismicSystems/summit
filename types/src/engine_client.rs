@@ -21,11 +21,10 @@ use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::{Address, Bytes, FixedBytes};
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_rpc_types_engine::{
-    ForkchoiceState, ForkchoiceUpdated, PayloadAttributes, PayloadId, PayloadStatus,
+    ExecutionPayloadEnvelopeV4, ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated,
+    PayloadAttributes, PayloadId, PayloadStatus,
 };
-use reth_seismic_engine_types::{
-    SeismicExecutionPayloadEnvelopeV4, SeismicExecutionPayloadV3, SeismicPayloadAttributes,
-};
+use reth_seismic_engine_types::SeismicPayloadAttributes;
 use tracing::{error, warn};
 
 use crate::Block;
@@ -33,10 +32,12 @@ use alloy_transport::{TransportError, TransportErrorKind, TransportResult};
 use alloy_transport_ipc::IpcConnect;
 use std::future::Future;
 
-/// Seismic's Engine API carries the sub-second block timestamp in extended payload attribute
-/// and execution payload types (see `reth_seismic_engine_types`). `alloy_provider`'s `EngineApi`
-/// extension is fixed to the stock types, so the three Seismic-typed methods are issued as raw
-/// JSON-RPC requests. Everything else about the Engine API is unchanged.
+/// Seismic's Engine API is the stock Ethereum Engine API except that `engine_forkchoiceUpdatedV3`
+/// payload attributes carry an explicit sub-second `timestampMillisPart` (see
+/// `reth_seismic_engine_types`); the execution client encodes it into the built block's
+/// `extraData`, so payloads and envelopes are the stock types. `alloy_provider`'s `EngineApi`
+/// extension is fixed to the stock attribute type, so the calls are issued as raw JSON-RPC
+/// requests.
 async fn fork_choice_updated_v3(
     provider: &RootProvider,
     fork_choice_state: ForkchoiceState,
@@ -54,7 +55,7 @@ async fn fork_choice_updated_v3(
 async fn get_payload_v4(
     provider: &RootProvider,
     payload_id: PayloadId,
-) -> TransportResult<SeismicExecutionPayloadEnvelopeV4> {
+) -> TransportResult<ExecutionPayloadEnvelopeV4> {
     provider
         .client()
         .request("engine_getPayloadV4", (payload_id,))
@@ -63,7 +64,7 @@ async fn get_payload_v4(
 
 async fn new_payload_v4(
     provider: &RootProvider,
-    payload: &SeismicExecutionPayloadV3,
+    payload: &ExecutionPayloadV3,
     versioned_hashes: Vec<FixedBytes<32>>,
     parent_beacon_block_root: FixedBytes<32>,
     execution_requests: &[Bytes],
@@ -161,7 +162,7 @@ pub trait EngineClient: Clone + Send + Sync + 'static {
     fn get_payload(
         &mut self,
         payload_id: PayloadId,
-    ) -> impl Future<Output = Result<SeismicExecutionPayloadEnvelopeV4, EngineClientError>> + Send;
+    ) -> impl Future<Output = Result<ExecutionPayloadEnvelopeV4, EngineClientError>> + Send;
 
     fn check_payload(
         &mut self,
@@ -268,7 +269,7 @@ impl EngineClient for RethEngineClient {
     async fn get_payload(
         &mut self,
         payload_id: PayloadId,
-    ) -> Result<SeismicExecutionPayloadEnvelopeV4, EngineClientError> {
+    ) -> Result<ExecutionPayloadEnvelopeV4, EngineClientError> {
         match get_payload_v4(&self.provider, payload_id).await {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
@@ -429,7 +430,7 @@ impl EngineClient for BadBlockEngineClient {
     async fn get_payload(
         &mut self,
         payload_id: PayloadId,
-    ) -> Result<SeismicExecutionPayloadEnvelopeV4, EngineClientError> {
+    ) -> Result<ExecutionPayloadEnvelopeV4, EngineClientError> {
         match get_payload_v4(&self.provider, payload_id).await {
             Ok(res) => Ok(res),
             Err(e) if e.is_transport_error() => {
@@ -500,12 +501,11 @@ pub mod benchmarking {
     use alloy_eips::eip7685::Requests;
     use alloy_primitives::{Address, FixedBytes, U256};
     use alloy_provider::{ProviderBuilder, RootProvider};
+    use alloy_rpc_types_engine::{
+        ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4, ExecutionPayloadV3,
+    };
     use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};
     use alloy_transport_ipc::IpcConnect;
-    use reth_seismic_engine_types::{
-        SeismicExecutionPayloadEnvelopeV3, SeismicExecutionPayloadEnvelopeV4,
-        SeismicExecutionPayloadV3,
-    };
     use std::fs;
     use std::path::PathBuf;
 
@@ -544,7 +544,7 @@ pub mod benchmarking {
         async fn get_payload(
             &mut self,
             payload_id: PayloadId,
-        ) -> Result<SeismicExecutionPayloadEnvelopeV4, EngineClientError> {
+        ) -> Result<ExecutionPayloadEnvelopeV4, EngineClientError> {
             let block_num = u64::from_le_bytes(payload_id.0.into());
             let filename = format!("block-{block_num}");
             let file_path = self.block_dir.join(filename);
@@ -555,12 +555,12 @@ pub mod benchmarking {
                 })
                 .expect("failed to read block file");
 
-            let block_data: SeismicExecutionPayloadV3 =
+            let block_data: ExecutionPayloadV3 =
                 ssz::Decode::from_ssz_bytes(&data).expect("failed to read block file");
 
             // Convert to the V4 envelope with correct structure
-            Ok(SeismicExecutionPayloadEnvelopeV4 {
-                envelope_inner: SeismicExecutionPayloadEnvelopeV3 {
+            Ok(ExecutionPayloadEnvelopeV4 {
+                envelope_inner: ExecutionPayloadEnvelopeV3 {
                     execution_payload: block_data,
                     block_value: U256::ZERO,
                     blobs_bundle: Default::default(),

@@ -9,20 +9,56 @@ use commonware_consensus::Viewable;
 use commonware_consensus::types::{Epoch, Height, View};
 use commonware_consensus::{Block as ConsensusBlock, Epochable, Heightable};
 use commonware_cryptography::{Digestible, Hasher, Sha256, sha256::Digest};
-use reth_seismic_engine_types::SeismicExecutionPayloadV3;
+use reth_seismic_engine_types::extra_data::{
+    ExtraDataError, builder_extra_data, encode_extra_data, header_timestamp_millis,
+};
 use ssz::Encode as _;
 use ssz_derive::Encode;
+
+/// Returns the EL payload's block time in Unix milliseconds: the stock seconds `timestamp`
+/// plus the sub-second component carried in the first two bytes of `extraData`.
+///
+/// Fails if `extraData` does not follow the Seismic layout (too short, too long, or a prefix
+/// `>= 1000`); such a payload is also rejected by the execution client's consensus rules.
+pub fn payload_timestamp_millis(payload: &ExecutionPayloadV3) -> Result<u64, ExtraDataError> {
+    let inner = &payload.payload_inner.payload_inner;
+    header_timestamp_millis(inner.timestamp, &inner.extra_data)
+}
+
+/// Sets the payload's block time from Unix milliseconds: the seconds go into `timestamp`, the
+/// sub-second component into the `extraData` prefix (any builder data after an existing prefix
+/// is kept).
+///
+/// Test/mock helper: real payloads are built by the execution client from
+/// [`SeismicPayloadAttributes`](crate::SeismicPayloadAttributes).
+pub fn payload_with_timestamp_millis(
+    mut payload: ExecutionPayloadV3,
+    timestamp_millis: u64,
+) -> ExecutionPayloadV3 {
+    let (timestamp, part) = reth_seismic_engine_types::split_timestamp_millis(timestamp_millis);
+    let inner = &mut payload.payload_inner.payload_inner;
+    inner.timestamp = timestamp;
+    inner.extra_data = encode_extra_data(part, builder_extra_data(&inner.extra_data))
+        .expect("part < 1000 and the existing builder data already fit");
+    payload
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode)]
 pub struct Block {
     pub header: Header,
-    /// The execution payload: the stock `ExecutionPayloadV3` (seconds `timestamp`) plus the
-    /// sub-second `timestampMillisPart`. Together they must equal `header.timestamp` (millis).
-    pub payload: SeismicExecutionPayloadV3,
+    /// The execution payload: the stock `ExecutionPayloadV3`. Its seconds `timestamp` plus the
+    /// sub-second `extraData` prefix must equal `header.timestamp` (millis); see
+    /// [`payload_timestamp_millis`].
+    pub payload: ExecutionPayloadV3,
     pub execution_requests: Vec<AlloyBytes>,
 }
 
 impl Block {
+    /// The EL payload's block time in Unix milliseconds. See [`payload_timestamp_millis`].
+    pub fn payload_timestamp_millis(&self) -> Result<u64, ExtraDataError> {
+        payload_timestamp_millis(&self.payload)
+    }
+
     pub fn eth_block_hash(&self) -> [u8; 32] {
         // if genesis return your own digest
         if self.header.height() == 0 {
@@ -41,7 +77,7 @@ impl Block {
         parent: Digest,
         height: u64,
         timestamp: u64,
-        payload: SeismicExecutionPayloadV3,
+        payload: ExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
         epoch: u64,
         view: u64,
@@ -91,7 +127,7 @@ impl Block {
 
     pub fn new_with_verify(
         header: Header,
-        payload: SeismicExecutionPayloadV3,
+        payload: ExecutionPayloadV3,
         execution_requests: Vec<AlloyBytes>,
     ) -> Result<Self> {
         let payload_ssz = payload.as_ssz_bytes();
@@ -118,10 +154,7 @@ impl Block {
     }
 
     pub fn genesis(genesis_hash: [u8; 32]) -> Self {
-        let payload = SeismicExecutionPayloadV3::new(
-            ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
-            0,
-        );
+        let payload = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
         let payload_ssz = payload.as_ssz_bytes();
         let payload_hash = Sha256::hash(&[&payload_ssz]);
 
@@ -227,7 +260,7 @@ impl ssz::Decode for Block {
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
         let mut builder = ssz::SszDecoderBuilder::new(bytes);
         builder.register_type::<Header>()?;
-        builder.register_type::<SeismicExecutionPayloadV3>()?;
+        builder.register_type::<ExecutionPayloadV3>()?;
         builder.register_type::<Vec<AlloyBytes>>()?;
 
         let mut decoder = builder.build()?;
@@ -346,7 +379,7 @@ mod test {
                 "b9013c03f901388501a1f0ff430c843b9aca00843b9aca0082520894e7249813d8ccf6fa95a2203f46a64166073d58878080c005f8c6a00195f6dff17753fc89b60eac6477026a805116962c9e412de8015c0484e661c1a001aae314061d4f5bbf158f15d9417a238f9589783f58762cd39d05966b3ba2fba0013f5be9b12e7da06f0dd11a7bdc4e0db8ef33832acc23b183bd0a2c1408a757a0019d9ac55ea1a615d92965e04d960cb3be7bff121a381424f1f22865bd582e09a001def04412e76df26fefe7b0ed5e10580918ae4f355b074c0cfe5d0259157869a0011c11a415db57e43db07aef0de9280b591d65ca0cce36c7002507f8191e5d4a80a0c89b59970b119187d97ad70539f1624bbede92648e2dc007890f9658a88756c5a06fb2e3d4ce2c438c0856c2de34948b7032b1aadc4642a9666228ea8cdc7786b7"
             )[..],
         );
-        let payload = SeismicExecutionPayloadV3::new(ExecutionPayloadV3 {
+        let payload = ExecutionPayloadV3 {
             payload_inner: ExecutionPayloadV2 {
                 payload_inner: ExecutionPayloadV1 {
                     base_fee_per_gas:  U256::from(7u64),
@@ -368,7 +401,7 @@ mod test {
             },
             blob_gas_used: 0xc0000,
             excess_blob_gas: 0x580000,
-        }, 0);
+        };
 
         let (added_validators, removed_validators) = create_test_validators();
         let block = Block::compute_digest(
@@ -395,7 +428,7 @@ mod test {
 
     #[test]
     fn test_empty_tx_encode_decode() {
-        let payload = SeismicExecutionPayloadV3::new(ExecutionPayloadV3 {
+        let payload = ExecutionPayloadV3 {
             payload_inner: ExecutionPayloadV2 {
                 payload_inner: ExecutionPayloadV1 {
                     base_fee_per_gas:  U256::ZERO,
@@ -417,7 +450,7 @@ mod test {
             },
             blob_gas_used: 0xc0000,
             excess_blob_gas: 0x580000,
-        }, 0);
+        };
 
         let (added_validators, removed_validators) = create_test_validators();
         let block = Block::compute_digest(
@@ -443,6 +476,30 @@ mod test {
     }
 
     #[test]
+    fn payload_timestamp_round_trips_through_extra_data() {
+        let base = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
+        let payload = payload_with_timestamp_millis(base.clone(), 1_700_000_000_123);
+        let inner = &payload.payload_inner.payload_inner;
+        assert_eq!(inner.timestamp, 1_700_000_000);
+        assert_eq!(inner.extra_data.as_ref(), &[0x00, 0x7b]);
+        assert_eq!(payload_timestamp_millis(&payload), Ok(1_700_000_000_123));
+
+        // Re-stamping keeps the builder data behind the prefix.
+        let mut tagged = payload.clone();
+        tagged.payload_inner.payload_inner.extra_data =
+            AlloyBytes::from(b"\x00\x7bsummit".to_vec());
+        let restamped = payload_with_timestamp_millis(tagged, 1_700_000_001_999);
+        assert_eq!(
+            restamped.payload_inner.payload_inner.extra_data.as_ref(),
+            b"\x03\xe7summit"
+        );
+        assert_eq!(payload_timestamp_millis(&restamped), Ok(1_700_000_001_999));
+
+        // A stock payload without the prefix is not a Seismic payload.
+        assert!(payload_timestamp_millis(&base).is_err());
+    }
+
+    #[test]
     fn test_serialization() {
         let block = Block::genesis([0; 32]);
 
@@ -453,10 +510,7 @@ mod test {
 
     #[test]
     fn test_decode_rejects_body_header_commitment_mismatch() {
-        let payload = SeismicExecutionPayloadV3::new(
-            ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default()),
-            0,
-        );
+        let payload = ExecutionPayloadV3::from_block_slow(&AlloyBlock::<TxEnvelope>::default());
         let (added_validators, removed_validators) = create_test_validators();
 
         // Same header inputs, but different execution_requests -> different
@@ -536,32 +590,29 @@ mod test {
     /// Build a block whose encoded size is dominated by `extra_data`, so its
     /// total size can be tuned close to a target budget.
     fn block_with_extra_data(extra_len: usize) -> Block {
-        let payload = SeismicExecutionPayloadV3::new(
-            ExecutionPayloadV3 {
-                payload_inner: ExecutionPayloadV2 {
-                    payload_inner: ExecutionPayloadV1 {
-                        base_fee_per_gas: U256::ZERO,
-                        block_number: 1,
-                        block_hash: [0u8; 32].into(),
-                        logs_bloom: Default::default(),
-                        extra_data: AlloyBytes::from(vec![0x11u8; extra_len]),
-                        gas_limit: 0,
-                        gas_used: 0,
-                        timestamp: 1,
-                        fee_recipient: Default::default(),
-                        parent_hash: [0u8; 32].into(),
-                        prev_randao: [0u8; 32].into(),
-                        receipts_root: [0u8; 32].into(),
-                        state_root: [0u8; 32].into(),
-                        transactions: Vec::new(),
-                    },
-                    withdrawals: vec![],
+        let payload = ExecutionPayloadV3 {
+            payload_inner: ExecutionPayloadV2 {
+                payload_inner: ExecutionPayloadV1 {
+                    base_fee_per_gas: U256::ZERO,
+                    block_number: 1,
+                    block_hash: [0u8; 32].into(),
+                    logs_bloom: Default::default(),
+                    extra_data: AlloyBytes::from(vec![0x11u8; extra_len]),
+                    gas_limit: 0,
+                    gas_used: 0,
+                    timestamp: 1,
+                    fee_recipient: Default::default(),
+                    parent_hash: [0u8; 32].into(),
+                    prev_randao: [0u8; 32].into(),
+                    receipts_root: [0u8; 32].into(),
+                    state_root: [0u8; 32].into(),
+                    transactions: Vec::new(),
                 },
-                blob_gas_used: 0,
-                excess_blob_gas: 0,
+                withdrawals: vec![],
             },
-            0,
-        );
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+        };
         Block::compute_digest(
             [0u8; 32].into(),
             1,

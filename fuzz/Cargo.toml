@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 summit-types = { path = "../types" }
+# Keep the derive macro compatible with summit-types' pinned alloy-consensus.
+alloy-tx-macros = "=1.1.0"
 commonware-codec = "2026.9.0"
 commonware-cryptography = "2026.9.0"
 arbitrary = { version = "1", features = ["derive"] }

@@ -1,13 +1,13 @@
+use alloy_rpc_types_engine::ExecutionPayloadEnvelopeV4;
 use alloy_rpc_types_engine::ForkchoiceState;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::{Arg, Command};
 use commonware_formatting::from_hex;
-use reth_seismic_engine_types::SeismicExecutionPayloadEnvelopeV4;
 use std::path::PathBuf;
 use summit_types::engine_client::EngineClient;
 #[cfg(feature = "bench")]
 use summit_types::engine_client::benchmarking::EthereumHistoricalEngineClient;
-use summit_types::{Block, Digest};
+use summit_types::{Block, Digest, payload_timestamp_millis};
 
 #[cfg(feature = "bench")]
 const GENESIS_HASH: &str = "0x655cc1ecc77fe1eab4b1e62a1f461b7fddc9b06109b5ab3e9dc68c144b30c773";
@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
 
                 // use block number as view
                 let summit_block =
-                    execution_payload_envelope_to_block(envelope, parent_digest, block_number);
+                    execution_payload_envelope_to_block(envelope, parent_digest, block_number)?;
 
                 // Check payload with Reth
                 match client.check_payload(&summit_block).await {
@@ -170,18 +170,21 @@ async fn main() -> Result<()> {
 }
 
 fn execution_payload_envelope_to_block(
-    payload: SeismicExecutionPayloadEnvelopeV4,
+    payload: ExecutionPayloadEnvelopeV4,
     parent: Digest,
     view: u64,
-) -> Block {
+) -> Result<Block> {
     let execution_payload = payload.envelope_inner.execution_payload;
     let height = execution_payload.payload_inner.payload_inner.block_number;
-    let timestamp = execution_payload.payload_inner.payload_inner.timestamp;
+    // Summit headers carry the block time in milliseconds: the payload's seconds `timestamp`
+    // plus the sub-second `extraData` prefix.
+    let timestamp = payload_timestamp_millis(&execution_payload)
+        .with_context(|| format!("block {height}: payload extraData is not a Seismic payload"))?;
 
     // Convert execution requests from the envelope
     let execution_requests = payload.execution_requests.into_iter().collect::<Vec<_>>();
 
-    Block::compute_digest(
+    Ok(Block::compute_digest(
         parent,
         height,
         timestamp,
@@ -194,7 +197,7 @@ fn execution_payload_envelope_to_block(
         Vec::new(),              // added_validators
         Vec::new(),              // removed_validators
         [0u8; 32],               // parent_beacon_block_root
-    )
+    ))
 }
 
 /* Use this bash script to start Reth with the correct configuration

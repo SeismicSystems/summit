@@ -6,10 +6,13 @@ pub mod consensus_state;
 pub mod consensus_state_query;
 pub mod dynamic_epocher;
 pub mod engine_client;
-/// Engine API wire types shared with seismic-reth (sub-second block timestamps).
+pub use block::{payload_timestamp_millis, payload_with_timestamp_millis};
+/// Engine API wire types and header conventions shared with seismic-reth (sub-second block
+/// timestamps). Execution payloads are the stock Engine API types; the sub-second component of
+/// a block's time is the two-byte big-endian prefix of its `extraData` (see [`extra_data`]).
 pub use reth_seismic_engine_types::{
-    MILLIS_PER_SECOND, SeismicExecutionPayloadEnvelopeV4, SeismicExecutionPayloadV3,
-    SeismicPayloadAttributes, join_timestamp_millis, split_timestamp_millis,
+    MILLIS_PER_SECOND, SeismicPayloadAttributes, extra_data, join_timestamp_millis,
+    split_timestamp_millis,
 };
 pub mod execution_request;
 pub mod ext_private_key;
