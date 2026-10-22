@@ -29,10 +29,21 @@
 #   - a bad release that was live long enough to be downloaded: cut the next
 #     version. A release someone may have verified is immutable.
 #
-# Each release ships summit_<tag>_linux_amd64.tar.gz — the `summit` binary
-# built with `--features prom`, as the node image builds it — beside a build
-# provenance attestation, verifiable with
-# `gh attestation verify summit --repo SeismicSystems/summit`.
+# Each release ships three assets:
+#
+#   summit_<tag>_linux_amd64.tar.gz        the `summit` binary, built with
+#                                          `--features prom` as the node image
+#                                          builds it
+#   summit_<tag>_linux_amd64.sigstore.json its build provenance attestation
+#                                          (Sigstore bundle)
+#   SHA256SUMS                             digests of both
+#
+# The bundle is the attestation GitHub also stores behind its API; shipping it
+# as an asset lets anyone verify with the GitHub CLI but without a GitHub
+# login, which the bare `gh attestation verify` (API lookup) requires:
+#
+#   gh attestation verify summit --owner SeismicSystems \
+#       --bundle summit_<tag>_linux_amd64.sigstore.json
 #
 # The runner is pinned, never `-latest`: the binary links glibc dynamically
 # and needs the build host's version or newer at run time, so the build host
@@ -187,12 +198,20 @@ jobs:
         with:
           subject-path: target/release/summit
 
-      - name: Record the attestation URL
+      # The bundle is what `gh attestation verify --bundle` consumes; the URL
+      # sidecar remains for humans. SHA256SUMS covers the tarball and bundle
+      # for operators verifying without gh.
+      - name: Publish the attestation bundle and checksums
         if: steps.info.outputs.publish == 'true'
         env:
           TAG: ${{ steps.info.outputs.tag }}
           ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
-        run: echo "$ATTESTATION_URL" > "dist/summit_${TAG}_linux_amd64.attestation.txt"
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE_PATH" "dist/summit_${TAG}_linux_amd64.sigstore.json"
+          echo "$ATTESTATION_URL" > "dist/summit_${TAG}_linux_amd64.attestation.txt"
+          (cd dist && sha256sum "summit_${TAG}_linux_amd64.tar.gz" "summit_${TAG}_linux_amd64.sigstore.json" > SHA256SUMS)
+          cat dist/SHA256SUMS
 
       # Hand-off to the publish job. A day is plenty: the release is the
       # durable copy.
@@ -261,11 +280,12 @@ jobs:
             echo
             echo "## Verify"
             echo
-            echo 'The tarball holds the `summit` binary. It needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, and later) and nothing else from the host: TLS is rustls, compiled in. Its build provenance is attested by GitHub:'
+            echo 'The tarball holds the `summit` binary. It needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, and later) and nothing else from the host: TLS is rustls, compiled in. Its build provenance is attested by GitHub; the `.sigstore.json` asset is the attestation bundle, so verification needs the GitHub CLI but no GitHub login:'
             echo
             echo '```sh'
+            echo "sha256sum --ignore-missing -c SHA256SUMS"
             echo "tar -xzf summit_${TAG}_linux_amd64.tar.gz"
-            echo "gh attestation verify summit --repo $GITHUB_REPOSITORY"
+            echo "gh attestation verify summit --owner ${GITHUB_REPOSITORY%%/*} --bundle summit_${TAG}_linux_amd64.sigstore.json"
             echo '```'
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
