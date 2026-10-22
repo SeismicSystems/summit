@@ -94,8 +94,8 @@ impl CliArgs {
 /// The version in rustc's and cargo's format:
 ///
 /// ```text
-/// summit 0.0.3-alpha (7aac73b40 2026-10-12)
-/// release: 0.0.3-alpha
+/// summit 0.1.0 (7aac73b40 2026-10-12)
+/// release: 0.1.0
 /// commit-hash: 7aac73b40db1a3693da3c1970d32485381d04cf6
 /// commit-date: 2026-10-12
 /// host: x86_64-unknown-linux-gnu
