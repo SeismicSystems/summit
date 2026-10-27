@@ -252,8 +252,9 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 `.github/workflows/release.yml` publishes a prebuilt `summit` (Linux amd64, `--features prom`) with a build-provenance attestation:
 
 - **Every push to `main`** publishes a prerelease tagged `main-<sha>`; nothing prunes them.
-- **A `vX.Y.Z` tag** publishes a versioned release. The tag must equal `[workspace.package] version` in `Cargo.toml`, so bump the version in a PR first, then `git tag vX.Y.Z && git push origin vX.Y.Z`. A pre-release suffix (`v0.1.0-rc.1`) marks the release as a GitHub prerelease.
-- **A manual dispatch** on `main` republishes it; on any other branch it only builds, as a dry run.
+- **A `vX.Y.Z` tag** publishes a versioned release. The tag must equal `[workspace.package] version` in `Cargo.toml`, so bump the version and lockfile in a PR first. After merge and checks, create a GPG-signed annotated tag on the tested commit: `git tag -s -u "$SIGNING_KEY" -m "Release vX.Y.Z" vX.Y.Z <tested-merged-sha>`. Verify with `git verify-tag vX.Y.Z`, then push only that tag with `git push origin refs/tags/vX.Y.Z:refs/tags/vX.Y.Z` when publication is authorized. Never use an unsigned or lightweight versioned release tag. A pre-release suffix (`v0.1.0-rc.1`) marks the release as a GitHub prerelease.
+- **Signed release assets:** retain CI's `.sigstore.json` build-provenance bundle. After verifying the published assets against the intended tag and commit, download that release's `SHA256SUMS` into a fresh directory, run `gpg --armor --detach-sign --local-user "$SIGNING_KEY" SHA256SUMS`, and upload `SHA256SUMS.asc` to the same release. Do not replace the checksum file or binaries. The maintainer signature over the checksums complements CI provenance; neither a bare checksum file nor an annotated-but-unsigned tag is a signature. Do not store the maintainer's private key in the repository.
+- **A manual dispatch** on `main` republishes it; on any other branch, including a version tag, it only builds, as a dry run. Only pushing the version tag publishes a versioned release.
 
 ## Troubleshooting
 
