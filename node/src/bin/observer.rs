@@ -536,6 +536,7 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         rpc_ip: "0.0.0.0".into(),
         rpc_port: (3030 + (node * 10)) as u16,
         admin_rpc_port: (3031 + (node * 10)) as u16,
+        withdrawal_address_path: None,
         rpc_max_request_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
         rpc_max_response_body_size: summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
         rpc_request_timeout_secs: summit_rpc::DEFAULT_RPC_REQUEST_TIMEOUT_SECS,

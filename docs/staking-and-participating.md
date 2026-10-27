@@ -34,6 +34,29 @@ The changes were made to accommodate every consensus node having 2 keys to parti
 5. Download the latest checkpoint and start the full node with `summit run`.
 6. Keep your node running and it will start participating after the validator warm-up period.
 
+## Topping Up
+
+To add to a validator's stake, request deposit data for the top-up amount from the running node's admin RPC (`getDepositSignature` on `127.0.0.1:--admin-rpc-port`), then send it to the deposit contract as in step 4. Every deposit needs its own signature, since the signed message covers the amount.
+
+The account's withdrawal address is fixed by its first deposit, or by genesis for a founder. A top-up doesn't change it, and the address a top-up carries is otherwise ignored, with one exception: a rejected top-up (for example, one whose BLS key doesn't match the account's) is refunded, less the invalid-deposit tax, to the top-up's own address. So top up with the account's withdrawal address. A node running with `--withdrawal-address-path` signs only for its bound address (see below).
+
+## Binding the Withdrawal Address
+
+`summit run` also serves `getDepositSignature` on its admin RPC (`127.0.0.1:--admin-rpc-port`, default 3031). By default, it signs deposit data for whatever address a request carries. With `--withdrawal-address-path <file>`, the node binds one withdrawal address for good and signs for no other:
+
+```bash
+summit run ... --withdrawal-address-path /path/to/withdrawal/address
+```
+
+- **First use binds.** The first `getDepositSignature` writes its address to the file, and every later request must carry the same address. A request for any other address is refused with error `4004`, which names the bound address, and nothing is signed.
+- **Founders are bound at startup.** If this node's key is a genesis validator, summit writes that validator's genesis address to the file at startup, before the RPC serves any request. If the file already exists, it must hold that address, or startup fails.
+- **Enabling on an existing validator.** The node binds whatever address its first request carries, without checking the validator's account. Make that request carry the account's withdrawal address, or the node is bound to an address that only ever receives refunds of rejected top-ups.
+- **Write-once.** The file holds the EIP-55-checksummed address and a newline, and it is never rewritten. To change the address, reset the node with new keys. Keep the file outside the consensus DB directory, so a resync that wipes the DB keeps the binding.
+- **Strict addresses.** With the flag set, a request's address must be in its EIP-55 checksummed form (`cast to-check-sum-address` converts one), and the zero address is refused. Anything else is refused with error `3008`, and nothing is bound.
+- **Fails closed.** The file's directory must exist. A missing directory, or an unreadable or malformed file, stops startup instead of leaving the node unbound.
+
+`getWithdrawalAddress` on the same listener returns the bound address, or `null` if nothing is bound or the flag is unset. The flag cannot be combined with `--observer`, since observers do not sign deposits, and `summit deposit-rpc` does not support it.
+
 ## How Summit Handles Deposits
 
 When the deposit contract is used to stake, the execution layer burns the native token and the balance is accounted for in the consensus layer (Summit). When the deposit contract is used, the event that is emitted is added to the block's `execution_requests` field. While processing blocks, the finalizer watches for these execution requests and updates its own state accordingly. After a warm-up period of 2 epochs, the node will be added to the participating validator set. This is deterministic and all honest nodes will add validators at the same time and reject blocks that do not include the proper additions based on the execution requests from previous blocks.

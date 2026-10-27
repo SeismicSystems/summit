@@ -1211,3 +1211,280 @@ async fn test_get_public_keys_reports_observer_key_in_observer_mode() {
     handles.public_handle.stop().unwrap();
     handles.admin_handle.stop().unwrap();
 }
+
+const BOUND_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+const OTHER_ADDRESS: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+
+/// A validator-mode server whose `getDepositSignature` is restricted by
+/// `file` (`None` is the flag unset).
+fn server_with_file(
+    key_store_path: &str,
+    file: Option<summit_rpc::WithdrawalAddressFile>,
+) -> summit_rpc::SummitRpcServer {
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    summit_rpc::SummitRpcServer::new(
+        key_store_path.to_string(),
+        mailbox,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT",
+        None,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_withdrawal_address_file(file)
+}
+
+fn assert_signed_for(response: &summit_rpc::DepositTransactionResponse, address: &str) {
+    let address: alloy_primitives::Address = address.parse().unwrap();
+    assert_eq!(response.withdrawal_credentials[0], 0x01);
+    assert_eq!(&response.withdrawal_credentials[12..], address.as_slice());
+}
+
+/// Asserts `getDepositSignature` was refused because the node is bound to
+/// `bound`, and that the error names it.
+fn assert_refused_for_bound(
+    result: jsonrpsee::core::RpcResult<summit_rpc::DepositTransactionResponse>,
+    bound: &str,
+) {
+    match result {
+        Err(err) => {
+            assert_eq!(err.code(), 4004, "expected a binding refusal, got {err:?}");
+            let data = err.data().map(|d| d.get().to_string()).unwrap_or_default();
+            assert!(data.contains(bound), "error should name {bound}: {data}");
+        }
+        Ok(_) => panic!("a request for another address must not be signed"),
+    }
+}
+
+/// With `--withdrawal-address-path`, the first `getDepositSignature` binds
+/// its address; the same address keeps signing, and any other is refused with
+/// the bound address named.
+#[tokio::test]
+async fn test_withdrawal_binding_binds_first_address_and_refuses_others() {
+    use summit_rpc::{SummitAdminApiServer, WithdrawalAddressFile};
+
+    let keys = create_test_keystore().unwrap();
+    let key_store_path = keys.path().to_str().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("withdrawal-address");
+    let file = WithdrawalAddressFile::open(path.clone()).unwrap();
+    let server = server_with_file(key_store_path, Some(file));
+
+    assert_eq!(server.get_withdrawal_address().await.unwrap(), None);
+
+    let response = server
+        .get_deposit_signature(32_000_000_000, BOUND_ADDRESS.to_string())
+        .await
+        .expect("first request binds and signs");
+    assert_signed_for(&response, BOUND_ADDRESS);
+    assert_eq!(
+        server.get_withdrawal_address().await.unwrap().as_deref(),
+        Some(BOUND_ADDRESS)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!("{BOUND_ADDRESS}\n")
+    );
+
+    let response = server
+        .get_deposit_signature(32_000_000_000, BOUND_ADDRESS.to_string())
+        .await
+        .expect("the bound address keeps signing");
+    assert_signed_for(&response, BOUND_ADDRESS);
+
+    assert_refused_for_bound(
+        server
+            .get_deposit_signature(32_000_000_000, OTHER_ADDRESS.to_string())
+            .await,
+        BOUND_ADDRESS,
+    );
+    assert_eq!(
+        server.get_withdrawal_address().await.unwrap().as_deref(),
+        Some(BOUND_ADDRESS)
+    );
+}
+
+/// The binding lives in the file, so a restarted node (a new server over the
+/// same file) keeps refusing other addresses.
+#[tokio::test]
+async fn test_withdrawal_binding_survives_restart() {
+    use summit_rpc::{SummitAdminApiServer, WithdrawalAddressFile};
+
+    let keys = create_test_keystore().unwrap();
+    let key_store_path = keys.path().to_str().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("withdrawal-address");
+
+    let server = server_with_file(
+        key_store_path,
+        Some(WithdrawalAddressFile::open(path.clone()).unwrap()),
+    );
+    server
+        .get_deposit_signature(32_000_000_000, BOUND_ADDRESS.to_string())
+        .await
+        .unwrap();
+    drop(server);
+
+    let restarted = server_with_file(
+        key_store_path,
+        Some(WithdrawalAddressFile::open(path).unwrap()),
+    );
+    assert_eq!(
+        restarted.get_withdrawal_address().await.unwrap().as_deref(),
+        Some(BOUND_ADDRESS)
+    );
+    assert_refused_for_bound(
+        restarted
+            .get_deposit_signature(32_000_000_000, OTHER_ADDRESS.to_string())
+            .await,
+        BOUND_ADDRESS,
+    );
+}
+
+/// An address bound before the server starts (as a founder's genesis address
+/// is) restricts signing with no request.
+#[tokio::test]
+async fn test_withdrawal_binding_honours_address_bound_at_startup() {
+    use summit_rpc::{SummitAdminApiServer, WithdrawalAddressFile};
+
+    let keys = create_test_keystore().unwrap();
+    let key_store_path = keys.path().to_str().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("withdrawal-address");
+
+    let file = WithdrawalAddressFile::open(path.clone()).unwrap();
+    file.get_or_bind(BOUND_ADDRESS.parse().unwrap()).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!("{BOUND_ADDRESS}\n")
+    );
+    let server = server_with_file(key_store_path, Some(file));
+
+    assert_eq!(
+        server.get_withdrawal_address().await.unwrap().as_deref(),
+        Some(BOUND_ADDRESS)
+    );
+    assert_refused_for_bound(
+        server
+            .get_deposit_signature(32_000_000_000, OTHER_ADDRESS.to_string())
+            .await,
+        BOUND_ADDRESS,
+    );
+    let response = server
+        .get_deposit_signature(32_000_000_000, BOUND_ADDRESS.to_string())
+        .await
+        .unwrap();
+    assert_signed_for(&response, BOUND_ADDRESS);
+}
+
+/// Concurrent first requests for different addresses bind exactly one; every
+/// other request is refused with the winner named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_withdrawal_binding_concurrent_first_calls_bind_one() {
+    use summit_rpc::{SummitAdminApiServer, WithdrawalAddressFile};
+
+    let keys = create_test_keystore().unwrap();
+    let key_store_path = keys.path().to_str().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("withdrawal-address");
+    let server = server_with_file(
+        key_store_path,
+        Some(WithdrawalAddressFile::open(path.clone()).unwrap()),
+    );
+
+    let requests = 16;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(requests));
+    let tasks: Vec<_> = (1..=requests as u8)
+        .map(|i| {
+            let server = server.clone();
+            let barrier = barrier.clone();
+            let address = alloy_primitives::Address::repeat_byte(i).to_string();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                (
+                    address.clone(),
+                    server.get_deposit_signature(32_000_000_000, address).await,
+                )
+            })
+        })
+        .collect();
+
+    let mut signed = Vec::new();
+    let mut refused = Vec::new();
+    for task in tasks {
+        let (address, result) = task.await.unwrap();
+        match result {
+            Ok(_) => signed.push(address),
+            Err(err) => refused.push(err),
+        }
+    }
+    assert_eq!(signed.len(), 1, "exactly one first request may bind");
+
+    let winner = &signed[0];
+    for err in refused {
+        assert_refused_for_bound(Err(err), winner);
+    }
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!("{winner}\n")
+    );
+}
+
+/// With the flag, addresses are parsed strictly before anything is bound;
+/// without it, parsing is unchanged.
+#[tokio::test]
+async fn test_withdrawal_binding_parses_strictly() {
+    use summit_rpc::{SummitAdminApiServer, WithdrawalAddressFile};
+
+    let keys = create_test_keystore().unwrap();
+    let key_store_path = keys.path().to_str().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("withdrawal-address");
+    let server = server_with_file(
+        key_store_path,
+        Some(WithdrawalAddressFile::open(path.clone()).unwrap()),
+    );
+
+    let bad_checksum = BOUND_ADDRESS.replacen("f39Fd", "f39fd", 1);
+    let lowercase = BOUND_ADDRESS.to_lowercase();
+    let zero = format!("0x{}", "0".repeat(40));
+    let unprefixed = BOUND_ADDRESS[2..].to_string();
+    for bad in [&bad_checksum, &lowercase, &zero, &unprefixed] {
+        match server
+            .get_deposit_signature(32_000_000_000, bad.clone())
+            .await
+        {
+            Err(err) => assert_eq!(err.code(), 3008, "{bad}: {err:?}"),
+            Ok(_) => panic!("{bad} must be refused"),
+        }
+    }
+    assert_eq!(server.get_withdrawal_address().await.unwrap(), None);
+    assert!(!path.exists(), "a refused request must not bind");
+
+    // Without the flag, the same strings sign as before.
+    let unbound = server_with_file(key_store_path, None);
+    for address in [&bad_checksum, &lowercase, &zero, &unprefixed] {
+        unbound
+            .get_deposit_signature(32_000_000_000, address.clone())
+            .await
+            .unwrap_or_else(|e| panic!("{address} should sign without the flag: {e:?}"));
+    }
+}
+
+/// Without the flag, any address signs and nothing is bound.
+#[tokio::test]
+async fn test_withdrawal_binding_unset_signs_any_address() {
+    use summit_rpc::SummitAdminApiServer;
+
+    let keys = create_test_keystore().unwrap();
+    let server = server_with_file(keys.path().to_str().unwrap(), None);
+
+    for address in [BOUND_ADDRESS, OTHER_ADDRESS] {
+        let response = server
+            .get_deposit_signature(32_000_000_000, address.to_string())
+            .await
+            .unwrap();
+        assert_signed_for(&response, address);
+    }
+    assert_eq!(server.get_withdrawal_address().await.unwrap(), None);
+}

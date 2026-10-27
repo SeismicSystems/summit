@@ -1,5 +1,21 @@
 use jsonrpsee::types::ErrorObjectOwned;
 
+/// Errors summit's RPC methods return, each with its own error code.
+///
+/// JSON-RPC 2.0 reserves -32768 to -32000 for protocol errors, which jsonrpsee
+/// emits itself (e.g. -32601 method not found, -32602 invalid params). Our
+/// codes are positive, in the space the spec leaves to applications, and are
+/// grouped by what they concern:
+///
+/// - 1xxx: the node's keystore.
+/// - 2xxx: chain data and files: checkpoints, finalized headers, epochs,
+///   genesis, I/O.
+/// - 3xxx: validators, deposits, withdrawals and state proofs.
+/// - 4xxx: access control: this caller may not do this on this node (pause
+///   authorization, observer mode, a bound withdrawal address).
+/// - 5xxx: internal errors.
+///
+/// Callers should match on the code, not the message; `data` carries details.
 pub enum RpcError {
     KeyStoreError(String),
     CheckpointNotFound,
@@ -9,6 +25,7 @@ pub enum RpcError {
     WithdrawalNotFound,
     EpochNotFound,
     InvalidPublicKey(String),
+    InvalidWithdrawalAddress(String),
     GenesisPathError(String),
     InvalidGenesis(String),
     IoError(String),
@@ -26,6 +43,7 @@ pub enum RpcError {
     },
     Internal(String),
     DisabledInObserverMode,
+    WithdrawalAddressBound(crate::WithdrawalAddress),
     #[cfg(feature = "permissioned")]
     InvalidAdminAddress(String),
     #[cfg(feature = "permissioned")]
@@ -58,6 +76,9 @@ impl From<RpcError> for ErrorObjectOwned {
             }
             RpcError::InvalidPublicKey(msg) => {
                 ErrorObjectOwned::owned(3001, "Invalid public key", Some(msg))
+            }
+            RpcError::InvalidWithdrawalAddress(msg) => {
+                ErrorObjectOwned::owned(3008, "Invalid withdrawal address", Some(msg))
             }
             RpcError::GenesisPathError(msg) => {
                 ErrorObjectOwned::owned(2001, "Invalid genesis path", Some(msg))
@@ -93,6 +114,13 @@ impl From<RpcError> for ErrorObjectOwned {
                 Some(
                     "this node runs with --observer and does not sign with the validator keystore",
                 ),
+            ),
+            RpcError::WithdrawalAddressBound(bound) => ErrorObjectOwned::owned(
+                4004,
+                "Withdrawal address already bound",
+                Some(format!(
+                    "this node's withdrawal address is bound to {bound}; it signs deposits only for that address"
+                )),
             ),
             #[cfg(feature = "permissioned")]
             RpcError::InvalidAdminAddress(msg) => {

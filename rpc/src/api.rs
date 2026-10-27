@@ -86,19 +86,26 @@ pub trait SummitPermissionedApi {
 }
 
 /// Admin-only RPC surface. Must be served on a localhost-bound listener.
-///
-/// `getDepositSignature` uses the node's local validator private keys to sign
-/// caller-supplied deposit data. It is disabled on observer nodes
-/// (`--observer`), whose live P2P identity is a derived child key rather than
-/// the master node key this method signs for.
 #[rpc(server, client)]
 pub trait SummitAdminApi {
+    /// Uses the node's local validator private keys to sign caller-supplied
+    /// deposit data. It is disabled on observer nodes (`--observer`), whose
+    /// live P2P identity is a derived child key rather than the master node key
+    /// this method signs for.
+    ///
+    /// With `summit run --withdrawal-address-path`, the first call binds its
+    /// address for good, and later calls for any other address are refused.
     #[method(name = "getDepositSignature")]
     async fn get_deposit_signature(
         &self,
         amount: u64,
         address: String,
     ) -> RpcResult<DepositTransactionResponse>;
+
+    /// Returns the address bound by `--withdrawal-address-path`, or null if
+    /// nothing is bound or the flag is unset.
+    #[method(name = "getWithdrawalAddress")]
+    async fn get_withdrawal_address(&self) -> RpcResult<Option<String>>;
 }
 
 #[rpc(server, client)]
