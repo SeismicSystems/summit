@@ -42,20 +42,13 @@ The account's withdrawal address is fixed by its first deposit, or by genesis fo
 
 ## Binding the Withdrawal Address
 
-`summit run` also serves `getDepositSignature` on its admin RPC (`127.0.0.1:--admin-rpc-port`, default 3031). By default, it signs deposit data for whatever address a request carries. With `--withdrawal-address-path <file>`, the node binds one withdrawal address for good and signs for no other:
+By default, `getDepositSignature` signs deposit data for whatever address the request carries. With `summit run --withdrawal-address-path <file>`, the node signs for one address only, fixed by its first request (or by genesis for a founder) and never changed. Requests for any other address are refused with error `4004`. `getWithdrawalAddress` returns the bound address.
 
-```bash
-summit run ... --withdrawal-address-path /path/to/withdrawal/address
-```
+Note that the node binds the address only; the key is kept in custody of the operator. The node signs deposit data with its validator keys, and anyone can submit that data from any wallet.
 
-- **First use binds.** The first `getDepositSignature` writes its address to the file, and every later request must carry the same address. A request for any other address is refused with error `4004`, which names the bound address, and nothing is signed.
-- **Founders are bound at startup.** If this node's key is a genesis validator, summit writes that validator's genesis address to the file at startup, before the RPC serves any request. If the file already exists, it must hold that address, or startup fails.
-- **Enabling on an existing validator.** The node binds whatever address its first request carries, without checking the validator's account. Make that request carry the account's withdrawal address, or the node is bound to an address that only ever receives refunds of rejected top-ups.
-- **Write-once.** The file holds the EIP-55-checksummed address and a newline, and it is never rewritten. To change the address, reset the node with new keys. Keep the file outside the consensus DB directory, so a resync that wipes the DB keeps the binding.
-- **Strict addresses.** With the flag set, a request's address must be in its EIP-55 checksummed form (`cast to-check-sum-address` converts one), and the zero address is refused. Anything else is refused with error `3008`, and nothing is bound.
-- **Fails closed.** The file's directory must exist. A missing directory, or an unreadable or malformed file, stops startup instead of leaving the node unbound.
+**Why.** The first deposit for a validator fixes its withdrawal address for good. Without the binding, anyone who can reach the admin RPC can get deposit data for their own address and deposit first. The operator's own deposit then lands as a top-up on the attacker's account. That's fine when the operator controls every caller of the admin RPC, as on a host they run themselves. On a TEE node, the host is untrusted and controls the guest's network, and other guest processes share its loopback, so firewalls can't keep everyone else out. The binding makes the node itself refuse. If someone else binds first, the operator's request is refused before they fund anything, and they reset the node with new keys. Losing the race costs a reset, never stake.
 
-`getWithdrawalAddress` on the same listener returns the bound address, or `null` if nothing is bound or the flag is unset. The flag cannot be combined with `--observer`, since observers do not sign deposits, and `summit deposit-rpc` does not support it.
+To change the bound address, reset the node with new keys. Keep the file outside the consensus DB directory, so a resync keeps it. When enabling the flag on an existing validator, make the first request carry the account's withdrawal address.
 
 ## How Summit Handles Deposits
 
