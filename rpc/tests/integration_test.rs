@@ -824,9 +824,12 @@ async fn test_pause_rejects_stale_timestamp() {
     handle.stop().unwrap();
 }
 
+/// `isPaused` is authenticated like the mutations: an unsigned/garbage
+/// signature is rejected rather than answered.
 #[cfg(feature = "permissioned")]
 #[tokio::test]
-async fn test_is_paused_open_access() {
+async fn test_is_paused_rejects_invalid_signature() {
+    use jsonrpsee::core::client::Error as ClientError;
     use summit_rpc::SummitPermissionedApiClient;
 
     let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
@@ -847,7 +850,17 @@ async fn test_is_paused_open_access() {
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
 
-    assert!(!client.is_paused().await.unwrap());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let bogus_sig = format!("0x{}", "ab".repeat(64));
+    let err = client.is_paused(now, bogus_sig).await.unwrap_err();
+
+    match err {
+        ClientError::Call(obj) => assert_eq!(obj.code(), 4002),
+        other => panic!("expected 4002 InvalidSignature, got {other:?}"),
+    }
 
     handle.stop().unwrap();
 }
