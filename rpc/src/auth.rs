@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 //   compromised admin key can at worst halt this node (fail-closed).
 // - `master` can pause, unpause, and read the pause state. Resuming
 //   consensus is the privileged direction and stays with the colder key.
-pub const PAUSE_ADMIN_ADDRESS_HEX: &str = "0xd412c5Ecd343e264381fF15aFC0aD78a67B79F35";
+pub const PAUSE_ADMIN_ADDRESS_HEX: &str = "0x63A68da40b5B5Df905960EE72d9f670aC37fDbe9";
 pub const PAUSE_MASTER_ADDRESS_HEX: &str = "0xd412c5Ecd343e264381fF15aFC0aD78a67B79F35";
 
 pub const TIMESTAMP_WINDOW_SECS: u64 = 30;
