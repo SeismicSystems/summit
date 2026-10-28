@@ -493,33 +493,47 @@ impl SummitAdminApiServer for SummitRpcServer {
 }
 
 #[cfg(feature = "permissioned")]
+impl SummitRpcServer {
+    /// Verifies the signed request for `action`, logging the outcome so there
+    /// is an audit trail of both accepted and rejected pause-control calls.
+    fn authorize_pause_action(
+        &self,
+        action: auth::Action,
+        timestamp_secs: u64,
+        signature: &str,
+    ) -> Result<auth::Role, RpcError> {
+        let result = auth::verify_action(&self.pause_scope, action, timestamp_secs, signature);
+        if result.is_err() {
+            tracing::warn!(
+                action = action.as_str(),
+                timestamp_secs,
+                "rejected pause-control RPC request"
+            );
+        }
+        result
+    }
+}
+
+#[cfg(feature = "permissioned")]
 #[async_trait]
 impl SummitPermissionedApiServer for SummitRpcServer {
     async fn pause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
-        auth::verify_action(
-            &self.pause_scope,
-            auth::ACTION_PAUSE,
-            timestamp_secs,
-            &signature,
-        )?;
+        let role = self.authorize_pause_action(auth::Action::Pause, timestamp_secs, &signature)?;
         self.paused.store(true, Ordering::Relaxed);
-        tracing::info!("consensus paused via RPC");
+        tracing::info!(?role, timestamp_secs, "consensus paused via RPC");
         Ok(true)
     }
 
     async fn unpause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
-        auth::verify_action(
-            &self.pause_scope,
-            auth::ACTION_UNPAUSE,
-            timestamp_secs,
-            &signature,
-        )?;
+        let role =
+            self.authorize_pause_action(auth::Action::Unpause, timestamp_secs, &signature)?;
         self.paused.store(false, Ordering::Relaxed);
-        tracing::info!("consensus unpaused via RPC");
+        tracing::info!(?role, timestamp_secs, "consensus unpaused via RPC");
         Ok(true)
     }
 
-    async fn is_paused(&self) -> RpcResult<bool> {
+    async fn is_paused(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool> {
+        self.authorize_pause_action(auth::Action::IsPaused, timestamp_secs, &signature)?;
         Ok(self.paused.load(Ordering::Relaxed))
     }
 }

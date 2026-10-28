@@ -32,6 +32,10 @@ pub enum RpcError {
     TimestampOutOfWindow,
     #[cfg(feature = "permissioned")]
     InvalidSignature,
+    /// Signature is valid and the signer is known, but its role does not
+    /// permit the requested action.
+    #[cfg(feature = "permissioned")]
+    Forbidden,
 }
 
 impl From<RpcError> for ErrorObjectOwned {
@@ -105,6 +109,10 @@ impl From<RpcError> for ErrorObjectOwned {
             #[cfg(feature = "permissioned")]
             RpcError::InvalidSignature => {
                 ErrorObjectOwned::owned(4002, "Invalid signature", None::<()>)
+            }
+            #[cfg(feature = "permissioned")]
+            RpcError::Forbidden => {
+                ErrorObjectOwned::owned(4004, "Signer not authorized for this action", None::<()>)
             }
         }
     }
