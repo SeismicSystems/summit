@@ -555,6 +555,9 @@ fn get_node_flags(node: usize, genesis_path: &str) -> RunFlags {
         bootstrappers: None,
         critical_log_dir: None,
         observer: None,
+        follow: Vec::new(),
+        follower_rpc_ip: "127.0.0.1".into(),
+        follower_rpc_port: None,
         finalizer_pending_notarized_max: 1000,
     }
 }

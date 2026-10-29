@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use summit_rpc::{
     PathSender, RpcBodyLimits, start_deposit_rpc_server_with_handle,
-    start_rpc_server_for_genesis_with_handle, start_rpc_server_pair_with_handle,
-    start_rpc_server_with_handle, start_rpc_server_with_handle_and_batch_limit,
+    start_follower_rpc_server_with_handle, start_rpc_server_for_genesis_with_handle,
+    start_rpc_server_pair_with_handle, start_rpc_server_with_handle,
+    start_rpc_server_with_handle_and_batch_limit,
 };
 use utils::{
     MockFinalizerState, create_gated_proof_mailbox, create_test_finalized_header,
@@ -1223,4 +1224,120 @@ async fn test_get_public_keys_reports_observer_key_in_observer_mode() {
 
     handles.public_handle.stop().unwrap();
     handles.admin_handle.stop().unwrap();
+}
+
+#[test]
+fn test_follower_listener_rejects_malformed_keys_and_reports_a_closed_syncer() {
+    use commonware_runtime::Runner as _;
+    use jsonrpsee::core::client::{ClientT as _, Error as ClientError};
+    use jsonrpsee::rpc_params;
+    use summit_rpc::{ResolverKey, SummitFollowerApiClient};
+
+    // The handler wants a commonware runtime for its mailbox metrics.
+    commonware_runtime::tokio::Runner::default().start(|context| async move {
+        let (receiver, handler) =
+            summit_syncer::ingress::handler::init(context, std::num::NonZeroUsize::new(4).unwrap());
+        let (mailbox, _finalizer_handle) =
+            create_test_finalizer_mailbox(MockFinalizerState::default());
+        let (handle, addr) = start_follower_rpc_server_with_handle(
+            handler,
+            mailbox,
+            "127.0.0.1:0".parse().unwrap(),
+            summit_rpc::DEFAULT_RPC_BODY_LIMIT_BYTES,
+        )
+        .await
+        .unwrap();
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .unwrap();
+
+        assert_eq!(client.get_latest_height().await.unwrap(), 0);
+
+        // Malformed keys are rejected as invalid params before reaching the
+        // syncer.
+        for key in [
+            serde_json::json!("010000000000000001"),
+            serde_json::json!({"kind": "bogus"}),
+            serde_json::json!({"kind": "finalized"}),
+        ] {
+            match client
+                .request::<Option<String>, _>("getResolverValue", rpc_params![key.clone()])
+                .await
+                .unwrap_err()
+            {
+                ClientError::Call(obj) => assert_eq!(obj.code(), -32602, "key {key}"),
+                other => panic!("expected invalid params for {key}, got {other:?}"),
+            }
+        }
+
+        // A well-formed key, with no syncer left to serve it.
+        drop(receiver);
+        let key = ResolverKey::Finalized { height: 1 };
+        match client.get_resolver_value(key).await.unwrap_err() {
+            ClientError::Call(obj) => assert_eq!(obj.code(), 3008),
+            other => panic!("expected 3008 ResolverUnavailable, got {other:?}"),
+        }
+
+        handle.stop().unwrap();
+    });
+}
+
+#[tokio::test]
+async fn test_public_listener_does_not_serve_the_follower_api() {
+    use jsonrpsee::core::client::Error as ClientError;
+    use summit_rpc::{ResolverKey, SummitFollowerApiClient};
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let (handle, addr) = start_rpc_server_with_handle(
+        mailbox,
+        key_store_path,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT".to_vec(),
+        0,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await
+    .unwrap();
+    let client = HttpClientBuilder::default()
+        .build(format!("http://{addr}"))
+        .unwrap();
+
+    // Opt-in only: the resolver lives on its own listener.
+    match client
+        .get_resolver_value(ResolverKey::Finalized { height: 1 })
+        .await
+        .unwrap_err()
+    {
+        ClientError::Call(obj) => assert_eq!(obj.code(), -32601),
+        other => panic!("expected method not found, got {other:?}"),
+    }
+
+    handle.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_follower_reports_no_public_keys() {
+    use summit_rpc::{SummitApiServer, SummitRpcServer};
+
+    let (mailbox, _finalizer_handle) = create_test_finalizer_mailbox(MockFinalizerState::default());
+    let temp_dir = create_test_keystore().unwrap();
+    let key_store_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let server = SummitRpcServer::new(
+        key_store_path,
+        mailbox,
+        TEST_GENESIS_HASH,
+        b"_SUMMIT",
+        None,
+        #[cfg(feature = "permissioned")]
+        Arc::new(AtomicBool::new(false)),
+    );
+    // The keystore exists, but a follower must not report it.
+    assert!(server.get_public_keys().await.is_ok());
+    let err = server.as_follower().get_public_keys().await.unwrap_err();
+    assert_eq!(err.code(), 4005);
 }

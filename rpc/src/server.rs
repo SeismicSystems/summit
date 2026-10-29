@@ -69,6 +69,9 @@ pub struct SummitRpcServer {
     /// Count of in-flight state-proof generations, shared across all cloned
     /// handler instances so the cap is global to the server.
     in_flight_state_proofs: Arc<AtomicUsize>,
+    /// Whether the node runs with `--follow`: it has no keystore, so methods
+    /// that read one are disabled.
+    follower: bool,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
     /// Hex of the pause-authorization domain (genesis hash + namespace). Bound
@@ -104,6 +107,7 @@ impl SummitRpcServer {
             deposit_signature_domain: deposit_signature_domain(genesis_hash, namespace),
             observer_node_key,
             in_flight_state_proofs: Arc::new(AtomicUsize::new(0)),
+            follower: false,
             #[cfg(feature = "permissioned")]
             paused,
             #[cfg(feature = "permissioned")]
@@ -112,6 +116,14 @@ impl SummitRpcServer {
                 namespace,
             )),
         }
+    }
+}
+
+impl SummitRpcServer {
+    /// Disables methods that read the keystore, which a follower doesn't have.
+    pub fn as_follower(mut self) -> Self {
+        self.follower = true;
+        self
     }
 }
 
@@ -139,6 +151,10 @@ impl SummitApiServer for SummitRpcServer {
     }
 
     async fn get_public_keys(&self) -> RpcResult<PublicKeysResponse> {
+        if self.follower {
+            return Err(RpcError::DisabledInFollowMode.into());
+        }
+
         // An observer's live P2P identity is the derived child key and it
         // never acts as a consensus participant; report that key with no
         // consensus key rather than the validator master identity.

@@ -5,6 +5,7 @@ use crate::{
         RESOLVER_CHANNEL, expect_key_store,
     },
     engine::Engine,
+    follow::{NullOracle, RpcSource},
     genesis::GenesisSubCmd,
     keys::KeySubCmd,
 };
@@ -16,14 +17,16 @@ use commonware_runtime::Supervisor as _;
 use commonware_runtime::{Handle, Runner, Spawner, tokio};
 use summit_rpc::{
     DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_MAX_BATCH_SIZE, DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
-    PathSender, RpcBodyLimits, start_deposit_rpc_server, start_rpc_server,
-    start_rpc_server_for_genesis,
+    PathSender, RpcBodyLimits, follower_rpc_max_response_bytes, start_deposit_rpc_server,
+    start_follower_rpc_server, start_rpc_server, start_rpc_server_for_genesis,
 };
 use tokio_util::sync::CancellationToken;
 
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_formatting::from_hex;
+use commonware_math::algebra::Random as _;
+use commonware_utils::vec::NonEmptyVec;
 use futures::{FutureExt, channel::oneshot};
 use governor::Quota;
 use serde::Deserialize;
@@ -200,6 +203,17 @@ pub struct RunFlags {
     #[arg(long, default_value_t = 3031)]
     pub admin_rpc_port: u16,
 
+    /// Follower listener bind address, used when `--follower-rpc-port` is set.
+    /// 127.0.0.1 by default: replies carry whole blocks, so serving followers
+    /// beyond this host is an explicit choice.
+    #[arg(long, default_value_t = String::from("127.0.0.1"))]
+    pub follower_rpc_ip: String,
+    /// Serve the syncer's backfill resolver (`getResolverValue`,
+    /// `getLatestHeight`) on this port, for followers (`--follow`). Off unless
+    /// set.
+    #[arg(long)]
+    pub follower_rpc_port: Option<u16>,
+
     /// Maximum JSON-RPC request body size, in bytes.
     #[arg(long, default_value_t = DEFAULT_RPC_BODY_LIMIT_BYTES)]
     pub rpc_max_request_body_size: u32,
@@ -281,6 +295,12 @@ pub struct RunFlags {
     #[arg(long)]
     pub observer: Option<u32>,
 
+    /// Follow mode: follow the chain from these summit RPC URLs, without P2P,
+    /// Simplex, or a keystore. Sources are untrusted: every block and
+    /// certificate is checked against the epoch's validator set.
+    #[arg(long, num_args = 1.., value_delimiter = ',', conflicts_with = "observer")]
+    pub follow: Vec<String>,
+
     /// Hard cap on unique deferred notarized blocks while the execution layer is SYNCING.
     #[arg(long, default_value_t = FINALIZER_PENDING_NOTARIZED_MAX)]
     pub finalizer_pending_notarized_max: usize,
@@ -359,7 +379,11 @@ impl Command {
         let flags = flags.clone();
 
         executor.start(|context| async move {
-            let key_store = expect_key_store(&flags.key_store_path);
+            // A follower has no keystore.
+            let key_store = flags
+                .follow
+                .is_empty()
+                .then(|| expect_key_store(&flags.key_store_path));
             run_node_inner(context, flags, key_store, loaded).await;
         })
     }
@@ -577,7 +601,7 @@ pub(crate) fn check_last_block_binding(
 async fn run_node_inner(
     context: tokio::Context,
     flags: RunFlags,
-    key_store: KeyStore<PrivateKey>,
+    key_store: Option<KeyStore<PrivateKey>>,
     mut loaded: LoadedCheckpoint<MultisigScheme>,
 ) {
     let context = context.child("summit_cw");
@@ -724,22 +748,6 @@ async fn run_node_inner(
     #[cfg(not(feature = "bench"))]
     let engine_client = RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-    let our_ip = get_node_ip(&flags, &key_store, &committee).await;
-
-    let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
-        .into_iter()
-        .map(|v| (v.node_public_key, v.ip_address))
-        .collect();
-
-    let our_public_key = key_store.node_key.public_key();
-    if !network_committee
-        .iter()
-        .any(|(key, _)| key == &our_public_key)
-    {
-        network_committee.push((our_public_key, our_ip));
-        network_committee.sort();
-    }
-
     // Start prometheus endpoint (merges Summit + commonware runtime metrics)
     #[cfg(feature = "prom")]
     {
@@ -757,86 +765,125 @@ async fn run_node_inner(
         MetricServer::new(config).serve(stop_signal).await.unwrap();
     }
 
-    // configure network
-    let network_committee_ingress: Vec<_> =
-        if let Some(ref bootstrappers_path) = flags.bootstrappers {
-            Bootstrappers::load_from_file(bootstrappers_path)
-                .expect("Failed to load bootstrappers file")
-                .to_ingress_list()
-                .expect("Failed to parse bootstrappers")
-        } else {
-            network_committee
+    let (engine, p2p, rpc_handle) = match key_store {
+        // A follower has no keystore, so no P2P identity: it runs no P2P or Simplex.
+        None => {
+            let (engine, rpc_handle) = start_follower(
+                context.child("node"),
+                engine_client,
+                flags,
+                &genesis,
+                initial_state,
+                loaded.last_block,
+                loaded.finalized_header,
+                loaded.finalized_headers_chain,
+            )
+            .await;
+            (engine, None, rpc_handle)
+        }
+        // A validator or observer joins P2P, under the keystore's node key or a
+        // child key derived from it.
+        Some(key_store) => {
+            let our_ip = get_node_ip(&flags, &key_store, &committee).await;
+
+            let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
+                .into_iter()
+                .map(|v| (v.node_public_key, v.ip_address))
+                .collect();
+
+            let our_public_key = key_store.node_key.public_key();
+            if !network_committee
                 .iter()
-                .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
-                .collect()
-        };
+                .any(|(key, _)| key == &our_public_key)
+            {
+                network_committee.push((our_public_key, our_ip));
+                network_committee.sort();
+            }
 
-    let listen = wildcard_listen_for(our_ip, flags.port);
-    // Bind the live p2p authentication domain to immutable chain identity so a
-    // peer from a different deployment that reuses this namespace and the same
-    // node keys cannot authenticate against us.
-    let p2p_domain = summit_types::chain_domain(genesis.config_digest());
-    let namespace = p2p_domain.as_slice();
-    let max_message_size = genesis.max_message_size_bytes as u32;
+            // configure network
+            let network_committee_ingress: Vec<_> =
+                if let Some(ref bootstrappers_path) = flags.bootstrappers {
+                    Bootstrappers::load_from_file(bootstrappers_path)
+                        .expect("Failed to load bootstrappers file")
+                        .to_ingress_list()
+                        .expect("Failed to parse bootstrappers")
+                } else {
+                    network_committee
+                        .iter()
+                        .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
+                        .collect()
+                };
 
-    let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
-        let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, namespace, index);
-        // The observer's network identity is exactly this P2P signer's public
-        // key; capture it here so the engine and resolver reuse the same derived
-        // key rather than deriving it a second time (which could drift).
-        let observer_network_key = Some(signer.public_key());
-        let mut p2p_cfg = authenticated::discovery::Config::recommended(
-            signer,
-            namespace,
-            listen,
-            our_ip,
-            network_committee_ingress,
-            crate::config::startup_peer_limit(&initial_state),
-            max_message_size,
-        );
-        p2p_cfg.mailbox_size = MAILBOX_SIZE;
-        start_network_and_engine(
-            context.child("node"),
-            p2p_cfg,
-            engine_client,
-            key_store,
-            peers,
-            flags,
-            &genesis,
-            initial_state,
-            loaded.last_block,
-            loaded.finalized_header,
-            loaded.finalized_headers_chain,
-            observer_network_key,
-        )
-        .await
-    } else {
-        let signer = key_store.node_key.clone();
-        let mut p2p_cfg = authenticated::discovery::Config::recommended(
-            signer,
-            namespace,
-            listen,
-            our_ip,
-            network_committee_ingress,
-            crate::config::startup_peer_limit(&initial_state),
-            max_message_size,
-        );
-        p2p_cfg.mailbox_size = MAILBOX_SIZE;
-        start_network_and_engine(
-            context.child("node"),
-            p2p_cfg,
-            engine_client,
-            key_store,
-            peers,
-            flags,
-            &genesis,
-            initial_state,
-            loaded.last_block,
-            loaded.finalized_header,
-            loaded.finalized_headers_chain,
-            None,
-        )
-        .await
+            let listen = wildcard_listen_for(our_ip, flags.port);
+            // Bind the live p2p authentication domain to immutable chain identity so a
+            // peer from a different deployment that reuses this namespace and the same
+            // node keys cannot authenticate against us.
+            let p2p_domain = summit_types::chain_domain(genesis.config_digest());
+            let namespace = p2p_domain.as_slice();
+            let max_message_size = genesis.max_message_size_bytes as u32;
+
+            let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
+                let signer =
+                    ExtPrivateKey::derive_child_signer(&key_store.node_key, namespace, index);
+                // The observer's network identity is exactly this P2P signer's public
+                // key; capture it here so the engine and resolver reuse the same derived
+                // key rather than deriving it a second time (which could drift).
+                let observer_network_key = Some(signer.public_key());
+                let mut p2p_cfg = authenticated::discovery::Config::recommended(
+                    signer,
+                    namespace,
+                    listen,
+                    our_ip,
+                    network_committee_ingress,
+                    crate::config::startup_peer_limit(&initial_state),
+                    max_message_size,
+                );
+                p2p_cfg.mailbox_size = MAILBOX_SIZE;
+                start_network_and_engine(
+                    context.child("node"),
+                    p2p_cfg,
+                    engine_client,
+                    key_store,
+                    peers,
+                    flags,
+                    &genesis,
+                    initial_state,
+                    loaded.last_block,
+                    loaded.finalized_header,
+                    loaded.finalized_headers_chain,
+                    observer_network_key,
+                )
+                .await
+            } else {
+                let signer = key_store.node_key.clone();
+                let mut p2p_cfg = authenticated::discovery::Config::recommended(
+                    signer,
+                    namespace,
+                    listen,
+                    our_ip,
+                    network_committee_ingress,
+                    crate::config::startup_peer_limit(&initial_state),
+                    max_message_size,
+                );
+                p2p_cfg.mailbox_size = MAILBOX_SIZE;
+                start_network_and_engine(
+                    context.child("node"),
+                    p2p_cfg,
+                    engine_client,
+                    key_store,
+                    peers,
+                    flags,
+                    &genesis,
+                    initial_state,
+                    loaded.last_block,
+                    loaded.finalized_header,
+                    loaded.finalized_headers_chain,
+                    None,
+                )
+                .await
+            };
+            (engine, Some(p2p), rpc_handle)
+        }
     };
 
     // Bring the whole node down as soon as any core task exits; a failed core task exits
@@ -856,7 +903,11 @@ pub fn run_node_local(
     checkpoint_parent_block: Option<Block>,
 ) -> Handle<anyhow::Result<()>> {
     context.spawn(async move |context| {
-        let key_store = expect_key_store(&flags.key_store_path);
+        // A follower has no keystore.
+        let key_store = flags
+            .follow
+            .is_empty()
+            .then(|| expect_key_store(&flags.key_store_path));
         run_node_local_inner(
             context,
             flags,
@@ -871,7 +922,7 @@ pub fn run_node_local(
 async fn run_node_local_inner(
     context: tokio::Context,
     flags: RunFlags,
-    key_store: KeyStore<PrivateKey>,
+    key_store: Option<KeyStore<PrivateKey>>,
     checkpoint: Option<ConsensusState>,
     checkpoint_parent_block: Option<Block>,
 ) -> anyhow::Result<()> {
@@ -910,101 +961,124 @@ async fn run_node_local_inner(
     #[cfg(all(not(feature = "bench"), not(feature = "bad-blocks")))]
     let engine_client = RethEngineClient::new(engine_ipc_path.to_string_lossy().to_string()).await;
 
-    let our_ip = get_node_ip(&flags, &key_store, &committee).await;
+    let (engine, p2p, rpc_handle) = match key_store {
+        // A follower has no keystore, so no P2P identity: it runs no P2P or Simplex.
+        None => {
+            let (engine, rpc_handle) = start_follower(
+                context.child("node"),
+                engine_client,
+                flags.clone(),
+                &genesis,
+                initial_state,
+                checkpoint_parent_block,
+                None,
+                None,
+            )
+            .await;
+            (engine, None, rpc_handle)
+        }
+        // A validator or observer joins P2P, under the keystore's node key or a
+        // child key derived from it.
+        Some(key_store) => {
+            let our_ip = get_node_ip(&flags, &key_store, &committee).await;
 
-    let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
-        .into_iter()
-        .map(|v| (v.node_public_key, v.ip_address))
-        .collect();
-    let our_public_key = key_store.node_key.public_key();
-    if !network_committee
-        .iter()
-        .any(|(key, _)| key == &our_public_key)
-    {
-        network_committee.push((our_public_key, our_ip));
-        network_committee.sort();
-    }
-
-    // configure network
-    let network_committee_ingress: Vec<_> =
-        if let Some(ref bootstrappers_path) = flags.bootstrappers {
-            Bootstrappers::load_from_file(bootstrappers_path)
-                .expect("Failed to load bootstrappers file")
-                .to_ingress_list()
-                .expect("Failed to parse bootstrappers")
-        } else {
-            network_committee
+            let mut network_committee: Vec<(PublicKey, SocketAddr)> = committee
+                .into_iter()
+                .map(|v| (v.node_public_key, v.ip_address))
+                .collect();
+            let our_public_key = key_store.node_key.public_key();
+            if !network_committee
                 .iter()
-                .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
-                .collect()
-        };
+                .any(|(key, _)| key == &our_public_key)
+            {
+                network_committee.push((our_public_key, our_ip));
+                network_committee.sort();
+            }
 
-    let listen = wildcard_listen_for(our_ip, flags.port);
-    // Bind the live p2p authentication domain to immutable chain identity so a
-    // peer from a different deployment that reuses this namespace and the same
-    // node keys cannot authenticate against us.
-    let p2p_domain = summit_types::chain_domain(genesis.config_digest());
-    let namespace = p2p_domain.as_slice();
-    let max_message_size = genesis.max_message_size_bytes as u32;
+            // configure network
+            let network_committee_ingress: Vec<_> =
+                if let Some(ref bootstrappers_path) = flags.bootstrappers {
+                    Bootstrappers::load_from_file(bootstrappers_path)
+                        .expect("Failed to load bootstrappers file")
+                        .to_ingress_list()
+                        .expect("Failed to parse bootstrappers")
+                } else {
+                    network_committee
+                        .iter()
+                        .map(|(pk, addr)| (pk.clone(), Ingress::from(*addr)))
+                        .collect()
+                };
 
-    let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
-        let signer = ExtPrivateKey::derive_child_signer(&key_store.node_key, namespace, index);
-        // The observer's network identity is exactly this P2P signer's public
-        // key; capture it here so the engine and resolver reuse the same derived
-        // key rather than deriving it a second time (which could drift).
-        let observer_network_key = Some(signer.public_key());
-        let mut p2p_cfg = authenticated::discovery::Config::local(
-            signer,
-            namespace,
-            listen,
-            our_ip,
-            network_committee_ingress,
-            crate::config::startup_peer_limit(&initial_state),
-            max_message_size,
-        );
-        p2p_cfg.mailbox_size = MAILBOX_SIZE;
-        start_network_and_engine(
-            context.child("node"),
-            p2p_cfg,
-            engine_client,
-            key_store,
-            peers,
-            flags.clone(),
-            &genesis,
-            initial_state,
-            checkpoint_parent_block,
-            None,
-            None,
-            observer_network_key,
-        )
-        .await
-    } else {
-        let signer = key_store.node_key.clone();
-        let mut p2p_cfg = authenticated::discovery::Config::local(
-            signer,
-            namespace,
-            listen,
-            our_ip,
-            network_committee_ingress,
-            crate::config::startup_peer_limit(&initial_state),
-            max_message_size,
-        );
-        p2p_cfg.mailbox_size = MAILBOX_SIZE;
-        start_network_and_engine(
-            context.child("node"),
-            p2p_cfg,
-            engine_client,
-            key_store,
-            peers,
-            flags.clone(),
-            &genesis,
-            initial_state,
-            checkpoint_parent_block,
-            None,
-            None,
-            None,
-        )
-        .await
+            let listen = wildcard_listen_for(our_ip, flags.port);
+            // Bind the live p2p authentication domain to immutable chain identity so a
+            // peer from a different deployment that reuses this namespace and the same
+            // node keys cannot authenticate against us.
+            let p2p_domain = summit_types::chain_domain(genesis.config_digest());
+            let namespace = p2p_domain.as_slice();
+            let max_message_size = genesis.max_message_size_bytes as u32;
+
+            let (engine, p2p, rpc_handle) = if let Some(index) = flags.observer {
+                let signer =
+                    ExtPrivateKey::derive_child_signer(&key_store.node_key, namespace, index);
+                // The observer's network identity is exactly this P2P signer's public
+                // key; capture it here so the engine and resolver reuse the same derived
+                // key rather than deriving it a second time (which could drift).
+                let observer_network_key = Some(signer.public_key());
+                let mut p2p_cfg = authenticated::discovery::Config::local(
+                    signer,
+                    namespace,
+                    listen,
+                    our_ip,
+                    network_committee_ingress,
+                    crate::config::startup_peer_limit(&initial_state),
+                    max_message_size,
+                );
+                p2p_cfg.mailbox_size = MAILBOX_SIZE;
+                start_network_and_engine(
+                    context.child("node"),
+                    p2p_cfg,
+                    engine_client,
+                    key_store,
+                    peers,
+                    flags.clone(),
+                    &genesis,
+                    initial_state,
+                    checkpoint_parent_block,
+                    None,
+                    None,
+                    observer_network_key,
+                )
+                .await
+            } else {
+                let signer = key_store.node_key.clone();
+                let mut p2p_cfg = authenticated::discovery::Config::local(
+                    signer,
+                    namespace,
+                    listen,
+                    our_ip,
+                    network_committee_ingress,
+                    crate::config::startup_peer_limit(&initial_state),
+                    max_message_size,
+                );
+                p2p_cfg.mailbox_size = MAILBOX_SIZE;
+                start_network_and_engine(
+                    context.child("node"),
+                    p2p_cfg,
+                    engine_client,
+                    key_store,
+                    peers,
+                    flags.clone(),
+                    &genesis,
+                    initial_state,
+                    checkpoint_parent_block,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+            };
+            (engine, Some(p2p), rpc_handle)
+        }
     };
 
     // Start prometheus endpoint
@@ -1057,12 +1131,19 @@ async fn run_node_local_inner(
 /// wins the race against those tasks completing.
 async fn supervise_node_tasks<Sp: Spawner>(
     context: &Sp,
-    p2p: Handle<()>,
+    p2p: Option<Handle<()>>,
     engine: Handle<anyhow::Result<()>>,
     rpc: Handle<()>,
 ) -> anyhow::Result<()> {
     let stopped = context.stopped().fuse();
-    let p2p = p2p.fuse();
+    // A follower runs no P2P.
+    let p2p = async move {
+        match p2p {
+            Some(p2p) => p2p.await,
+            None => futures::future::pending().await,
+        }
+    }
+    .fuse();
     let engine = engine.fuse();
     let rpc = rpc.fuse();
     futures::pin_mut!(stopped, p2p, engine, rpc);
@@ -1096,25 +1177,19 @@ async fn supervise_node_tasks<Sp: Spawner>(
     }
 }
 
+/// Checks and prepares checkpoint startup against the local stores, and
+/// returns the consensus state the node starts from.
 #[allow(clippy::too_many_arguments)]
-async fn start_network_and_engine<S, EC>(
-    context: tokio::Context,
-    mut p2p_cfg: authenticated::discovery::Config<S>,
-    mut engine_client: EC,
-    key_store: KeyStore<PrivateKey>,
-    peers: Vec<(PublicKey, bls12381::PublicKey)>,
-    flags: RunFlags,
+async fn prepare_startup<EC: EngineClient>(
+    context: &tokio::Context,
+    engine_client: &mut EC,
+    db_prefix: &str,
     genesis: &Genesis,
     initial_state: ConsensusState,
     checkpoint_last_block: Option<Block>,
     checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
     checkpoint_headers: Option<Vec<FinalizedHeader<MultisigScheme>>>,
-    observer_network_key: Option<PublicKey>,
-) -> (Handle<anyhow::Result<()>>, Handle<()>, Handle<()>)
-where
-    S: Signer<PublicKey = PublicKey>,
-    EC: EngineClient,
-{
+) -> ConsensusState {
     // Recover authoritative protocol values before the network allocates fixed
     // peer-derived mailboxes. The finalizer will reopen the same store; never
     // size from stale genesis values on an ordinary restart.
@@ -1125,9 +1200,9 @@ where
     >::new(
         context.child("startup_state"),
         summit_finalizer::db::config(
-            &flags.db_prefix,
+            db_prefix,
             commonware_runtime::buffer::paged::CacheRef::from_pooler(
-                &context,
+                context,
                 std::num::NonZeroU16::new(4096).unwrap(),
                 std::num::NonZeroUsize::new(1024).unwrap(),
             ),
@@ -1159,10 +1234,10 @@ where
     }
     if !headers.is_empty() {
         let archives = crate::engine::open_syncer_archives(
-            &context,
-            &flags.db_prefix,
+            context,
+            db_prefix,
             commonware_runtime::buffer::paged::CacheRef::from_pooler(
-                &context,
+                context,
                 commonware_utils::NZU16!(4096),
                 commonware_utils::NZUsize!(1024),
             ),
@@ -1174,7 +1249,7 @@ where
     }
     let (initial_state, _) = summit_finalizer::startup::prepare(
         &mut startup_db,
-        &mut engine_client,
+        engine_client,
         initial_state,
         checkpoint_finalized_header,
         checkpoint_last_block,
@@ -1183,6 +1258,39 @@ where
     .await
     .expect("failed to prepare checkpoint startup");
     drop(startup_db);
+    initial_state
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_network_and_engine<S, EC>(
+    context: tokio::Context,
+    mut p2p_cfg: authenticated::discovery::Config<S>,
+    mut engine_client: EC,
+    key_store: KeyStore<PrivateKey>,
+    peers: Vec<(PublicKey, bls12381::PublicKey)>,
+    flags: RunFlags,
+    genesis: &Genesis,
+    initial_state: ConsensusState,
+    checkpoint_last_block: Option<Block>,
+    checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
+    checkpoint_headers: Option<Vec<FinalizedHeader<MultisigScheme>>>,
+    observer_network_key: Option<PublicKey>,
+) -> (Handle<anyhow::Result<()>>, Handle<()>, Handle<()>)
+where
+    S: Signer<PublicKey = PublicKey>,
+    EC: EngineClient,
+{
+    let initial_state = prepare_startup(
+        &context,
+        &mut engine_client,
+        &flags.db_prefix,
+        genesis,
+        initial_state,
+        checkpoint_last_block,
+        checkpoint_finalized_header,
+        checkpoint_headers,
+    )
+    .await;
     let peers = if initial_state.get_latest_height() > 0 {
         initial_state.get_validator_keys()
     } else {
@@ -1220,7 +1328,7 @@ where
         oracle,
         key_store,
         peers,
-        flags.db_prefix,
+        flags.db_prefix.clone(),
         genesis,
         initial_state,
         None, // Engine recovers the durable import record, not the input files.
@@ -1256,11 +1364,41 @@ where
     let paused = engine.paused.clone();
 
     let finalizer_state_query = engine.finalizer_state_query.clone();
+    let resolver_handler = engine.resolver_handler();
     let engine = engine.start(pending, recovered, resolver, broadcaster, backfiller);
 
     let p2p = network.start();
 
-    // Start RPC server
+    let rpc_handle = spawn_rpc_server(
+        &context,
+        flags,
+        finalizer_state_query,
+        resolver_handler,
+        follower_rpc_max_response_bytes(genesis.max_message_size_bytes),
+        genesis_hash,
+        namespace,
+        observer_node_key,
+        false,
+        #[cfg(feature = "permissioned")]
+        paused,
+    );
+    (engine, p2p, rpc_handle)
+}
+
+/// Starts the RPC server for a running engine.
+#[allow(clippy::too_many_arguments)]
+fn spawn_rpc_server(
+    context: &tokio::Context,
+    flags: RunFlags,
+    finalizer_state_query: summit_types::consensus_state_query::ConsensusStateQuery<MultisigScheme>,
+    resolver_handler: summit_syncer::ingress::handler::Handler<Digest>,
+    follower_max_response_bytes: u32,
+    genesis_hash: [u8; 32],
+    namespace: Vec<u8>,
+    observer_node_key: Option<String>,
+    follower: bool,
+    #[cfg(feature = "permissioned")] paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Handle<()> {
     let key_store_path = flags.key_store_path;
     let rpc_listen_addr = flags
         .rpc_ip
@@ -1274,9 +1412,33 @@ where
         request_timeout: std::time::Duration::from_secs(flags.rpc_request_timeout_secs),
         max_batch_size: flags.rpc_max_batch_size,
     };
+    let follower_rpc_addr = flags.follower_rpc_port.map(|port| {
+        let ip = flags
+            .follower_rpc_ip
+            .parse::<IpAddr>()
+            .expect("invalid --follower-rpc-ip address");
+        SocketAddr::new(ip, port)
+    });
+    let follower_state_query = finalizer_state_query.clone();
+    let follower_stop_signal = context.stopped();
     let stop_signal = context.stopped();
-    let rpc_handle = context.child("rpc").spawn(move |_context| async move {
-        if let Err(e) = start_rpc_server(
+    context.child("rpc").spawn(move |_context| async move {
+        let follower_rpc = async move {
+            match follower_rpc_addr {
+                Some(addr) => {
+                    start_follower_rpc_server(
+                        resolver_handler,
+                        follower_state_query,
+                        addr,
+                        follower_max_response_bytes,
+                        follower_stop_signal,
+                    )
+                    .await
+                }
+                None => Ok(()),
+            }
+        };
+        let rpc = start_rpc_server(
             finalizer_state_query,
             key_store_path,
             genesis_hash,
@@ -1287,15 +1449,101 @@ where
             rpc_body_limits,
             stop_signal,
             observer_node_key,
+            follower,
             #[cfg(feature = "permissioned")]
             paused,
-        )
-        .await
-        {
+        );
+        if let Err(e) = futures::try_join!(rpc, follower_rpc) {
             error!("RPC server failed: {}", e);
         }
-    });
-    (engine, p2p, rpc_handle)
+    })
+}
+
+/// Starts a follower: the engine in follow mode, fetching from the `--follow`
+/// sources, and the RPC server. A follower runs no P2P or Simplex and reads no
+/// keystore.
+#[allow(clippy::too_many_arguments)]
+async fn start_follower<EC: EngineClient>(
+    mut context: tokio::Context,
+    mut engine_client: EC,
+    flags: RunFlags,
+    genesis: &Genesis,
+    initial_state: ConsensusState,
+    checkpoint_last_block: Option<Block>,
+    checkpoint_finalized_header: Option<FinalizedHeader<MultisigScheme>>,
+    checkpoint_headers: Option<Vec<FinalizedHeader<MultisigScheme>>>,
+) -> (Handle<anyhow::Result<()>>, Handle<()>) {
+    let initial_state = prepare_startup(
+        &context,
+        &mut engine_client,
+        &flags.db_prefix,
+        genesis,
+        initial_state,
+        checkpoint_last_block,
+        checkpoint_finalized_header,
+        checkpoint_headers,
+    )
+    .await;
+
+    let max_response_bytes = follower_rpc_max_response_bytes(genesis.max_message_size_bytes);
+    let sources: Vec<_> = flags
+        .follow
+        .iter()
+        .map(|url| {
+            RpcSource::new(url, max_response_bytes)
+                .unwrap_or_else(|e| panic!("invalid --follow source {url}: {e}"))
+        })
+        .collect();
+    let sources = NonEmptyVec::try_from(sources).expect("follow mode requires a source");
+
+    // The engine still takes a keystore, so a follower gets throwaway keys.
+    // They never sign or reach a network, and match no validator: the engine
+    // runs verifier-only, and the finalizer's self-lookups find nothing.
+    let key_store = KeyStore {
+        node_key: PrivateKey::random(&mut context),
+        consensus_key: bls12381::PrivateKey::random(&mut context),
+    };
+    let peers = initial_state.get_validator_keys();
+    let mut config = EngineConfig::get_engine_config(
+        engine_client,
+        NullOracle::default(),
+        key_store,
+        peers,
+        flags.db_prefix.clone(),
+        genesis,
+        initial_state,
+        None, // prepare_startup already imported the checkpoint.
+        None,
+        flags.finalizer_pending_notarized_max,
+    )
+    .unwrap();
+    config.force_verifier_only = true;
+
+    let genesis_hash = config.genesis_hash;
+    let namespace = config.namespace.as_bytes().to_vec();
+    let engine: Engine<_, _, _, _> = Engine::new(context.child("engine"), config).await;
+    #[cfg(feature = "permissioned")]
+    let paused = engine.paused.clone();
+    let finalizer_state_query = engine.finalizer_state_query.clone();
+    let resolver_handler = engine.resolver_handler();
+
+    info!(sources = ?flags.follow, "starting in follow mode");
+    let engine = engine.start_follow(sources);
+
+    let rpc_handle = spawn_rpc_server(
+        &context,
+        flags,
+        finalizer_state_query,
+        resolver_handler,
+        follower_rpc_max_response_bytes(genesis.max_message_size_bytes),
+        genesis_hash,
+        namespace,
+        None,
+        true,
+        #[cfg(feature = "permissioned")]
+        paused,
+    );
+    (engine, rpc_handle)
 }
 
 fn get_initial_state(
@@ -1609,7 +1857,7 @@ mod supervision_tests {
                 .child("engine")
                 .spawn(|_| async move { Ok::<(), anyhow::Error>(()) });
 
-            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            let outcome = supervise_node_tasks(&context, Some(p2p), engine, rpc).await;
             assert!(
                 outcome.is_ok(),
                 "a clean engine stop must not trigger a non-zero exit, got {outcome:?}"
@@ -1632,7 +1880,7 @@ mod supervision_tests {
                 Err::<(), anyhow::Error>(anyhow::anyhow!("tracked actor failed"))
             });
 
-            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            let outcome = supervise_node_tasks(&context, Some(p2p), engine, rpc).await;
             assert!(
                 outcome.is_err(),
                 "an engine failure must trigger a non-zero exit, got {outcome:?}"
@@ -1661,7 +1909,7 @@ mod supervision_tests {
             let stopper = context.child("stopper");
             stopper.spawn(move |stopper| async move { stopper.stop(0, None).await });
 
-            let outcome = supervise_node_tasks(&context, p2p, engine, rpc).await;
+            let outcome = supervise_node_tasks(&context, Some(p2p), engine, rpc).await;
             assert!(
                 outcome.is_ok(),
                 "an intentional runtime stop must be a clean shutdown, got {outcome:?}"
