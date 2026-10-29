@@ -1,8 +1,10 @@
 use crate::types::{
     CheckpointInfoRes, CheckpointRes, DepositResponse, DepositTransactionResponse,
     EpochBoundsResponse, FinalizedHeaderDigestRes, FinalizedHeaderRes, PendingWithdrawalResponse,
-    PublicKeysResponse, StateProofResponse, StateRootResponse, ValidatorAccountResponse,
+    PublicKeysResponse, ResolverKey, StateProofResponse, StateRootResponse,
+    ValidatorAccountResponse,
 };
+use alloy_primitives::Bytes;
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 
@@ -70,6 +72,22 @@ pub trait SummitApi {
         &self,
         public_key: String,
     ) -> RpcResult<PendingWithdrawalResponse>;
+}
+
+/// The syncer's backfill resolver, served to followers that aren't p2p
+/// peers. Only on the opt-in follower listener (`--follower-rpc-port`).
+#[rpc(server, client)]
+pub trait SummitFollowerApi {
+    /// The encoded value a p2p peer would receive for `key` (for a finalized
+    /// key, the encoded `(Finalization, Block)`), or `null` if this node
+    /// doesn't have it. Replies are unverified: the caller's syncer checks
+    /// them as it checks a p2p peer's.
+    #[method(name = "getResolverValue")]
+    async fn get_resolver_value(&self, key: ResolverKey) -> RpcResult<Option<Bytes>>;
+
+    /// The latest finalized height, so a follower knows what to request.
+    #[method(name = "getLatestHeight")]
+    async fn get_latest_height(&self) -> RpcResult<u64>;
 }
 
 /// Signed pause-control surface. Every method takes a unix timestamp and a

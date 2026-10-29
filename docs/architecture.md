@@ -161,6 +161,8 @@ The central coordinator that orchestrates all components
 - Configuration management
 - Graceful shutdown coordination
 
+`Engine::new` builds every actor. `Engine::start` runs them over P2P, as a validator or observer. `Engine::start_follow` runs a follower: the syncer and finalizer as usual, an opaque resolver in place of the P2P resolver, and a follow driver in place of the orchestrator. See [Follow Mode](./follow-mode.md).
+
 ### 2. Finalizer (`finalizer/`)
 
 Handles block production, validation, and finalization with Reth
@@ -178,7 +180,8 @@ Manages block synchronization and network state
 
 **Key Responsibilities:**
 - Receive and cache blocks from network
-- Resolve missing blocks through backfill
+- Resolve missing blocks through backfill: the P2P resolver, or the opaque resolver in follow mode
+- Serve backfill to P2P peers and to the follower listener (`--follower-rpc-port`)
 - Broadcast verified blocks to peers
 - Maintain local block cache
 - Coordinate synchronization with peers
@@ -233,6 +236,8 @@ Coordinates consensus activities
 2. **Block Resolution**: Resolver fetches missing blocks from peers
 3. **Validation**: Each block validated via execution client
 4. **State Application**: Validated blocks applied to consensus state
+
+A follower (`summit run --follow <url>...`) runs this flow without P2P. It fetches through an opaque resolver from other nodes' opt-in follower listener (`--follower-rpc-port`), and a follow driver replaces the orchestrator. See [Follow Mode](./follow-mode.md).
 
 
 ## Actor Communication

@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1220" height="760" viewBox="0 0 1220 760" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Validator engine vs follower engine</title>
+  <style>
+    .bg { fill: #ffffff; }
+    .header { font-size: 17px; font-weight: 600; fill: #111827; }
+    .header code { font-family: monospace; }
+    .node rect { rx: 6; stroke-width: 1.5; }
+    .node.same rect { fill: #f3f4f6; stroke: #6b7280; }
+    .node.differs rect { fill: #fef3c7; stroke: #d97706; }
+    .node.absent rect { fill: none; stroke: #9ca3af; stroke-dasharray: 6 4; }
+    .title { font-size: 15px; font-weight: 600; fill: #111827; }
+    .sub { font-size: 12px; fill: #374151; }
+    .node.absent .title, .node.absent .sub { fill: #9ca3af; }
+    .flow { fill: none; stroke: #374151; stroke-width: 1.5; marker-end: url(#arrow); }
+    .flow.both { marker-start: url(#arrow-start); }
+    .rpc { fill: none; stroke: #2563eb; stroke-width: 1.5; stroke-dasharray: 7 4; marker-end: url(#arrow-rpc); }
+    .label { font-size: 12px; fill: #374151; }
+    .label.rpc-label { fill: #2563eb; }
+    .legend { font-size: 12px; fill: #374151; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#374151"/>
+    </marker>
+    <marker id="arrow-start" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M10,0 L0,5 L10,10 z" fill="#374151"/>
+    </marker>
+    <marker id="arrow-rpc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1220" height="760"/>
+
+  <!-- ===== Column headers ===== -->
+  <text class="header" x="100" y="55">Validator or observer: Engine::start</text>
+  <text class="header" x="680" y="55">Follower: Engine::start_follow</text>
+
+  <!-- ===== Left column: validator ===== -->
+  <g class="node differs" transform="translate(100,90)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Orchestrator</text>
+    <text class="sub" x="14" y="45">Starts a Simplex engine per epoch</text>
+    <text class="sub" x="14" y="61">Registers epoch verifiers</text>
+  </g>
+  <g class="node differs" transform="translate(100,200)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Simplex consensus</text>
+    <text class="sub" x="14" y="45">Votes, notarizes, finalizes</text>
+  </g>
+  <g class="node differs" transform="translate(100,310)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Application</text>
+    <text class="sub" x="14" y="45">Proposes and verifies blocks</text>
+  </g>
+  <g class="node same" transform="translate(100,420)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Syncer</text>
+    <text class="sub" x="14" y="45">Orders finalized blocks, backfills gaps</text>
+    <text class="sub" x="14" y="61">Fork of commonware marshal</text>
+  </g>
+  <g class="node differs" transform="translate(420,420)">
+    <rect width="160" height="70"/>
+    <text class="title" x="12" y="26">P2P network</text>
+    <text class="sub" x="12" y="45">P2P resolver</text>
+    <text class="sub" x="12" y="61">Buffered broadcast</text>
+  </g>
+  <g class="node same" transform="translate(100,530)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Finalizer</text>
+    <text class="sub" x="14" y="45">Executes blocks via Engine API</text>
+    <text class="sub" x="14" y="61">Tracks the validator set</text>
+  </g>
+  <g class="node same" transform="translate(420,530)">
+    <rect width="160" height="70"/>
+    <text class="title" x="12" y="26">Follower listener</text>
+    <text class="sub" x="12" y="45">Opt-in RPC, serves</text>
+    <text class="sub" x="12" y="61">via the syncer</text>
+  </g>
+
+  <!-- Left column flows -->
+  <path class="flow" d="M240,160 L240,198"/>
+  <text class="label" x="250" y="184">starts per epoch</text>
+  <path class="flow" d="M240,270 L240,308"/>
+  <text class="label" x="250" y="294">Automaton, Relay</text>
+  <path class="flow" d="M240,380 L240,418"/>
+  <text class="label" x="250" y="404">proposed, verified</text>
+  <path class="flow" d="M380,235 L400,235 L400,435 L382,435"/>
+  <text class="label" x="408" y="294">finalizations</text>
+  <path class="flow both" d="M382,470 L418,470"/>
+  <path class="flow" d="M240,490 L240,528"/>
+  <text class="label" x="250" y="514">notarized, finalized</text>
+  <path class="flow" d="M100,565 L80,565 L80,125 L98,125"/>
+  <text class="label" transform="translate(72,345) rotate(-90)" text-anchor="middle">Enter / Exit epoch</text>
+  <path class="flow" d="M440,530 L384,492"/>
+
+  <!-- ===== Right column: follower ===== -->
+  <g class="node differs" transform="translate(680,90)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Follow driver</text>
+    <text class="sub" x="14" y="45">Registers epoch verifiers</text>
+    <text class="sub" x="14" y="61">Polls tips, hints heights to fetch</text>
+  </g>
+  <g class="node absent" transform="translate(680,200)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Simplex consensus</text>
+    <text class="sub" x="14" y="45">Not run</text>
+  </g>
+  <g class="node absent" transform="translate(680,310)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Application</text>
+    <text class="sub" x="14" y="45">Built, never started</text>
+  </g>
+  <g class="node same" transform="translate(680,420)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Syncer</text>
+    <text class="sub" x="14" y="45">Orders finalized blocks, backfills gaps</text>
+    <text class="sub" x="14" y="61">Fork of commonware marshal</text>
+  </g>
+  <g class="node differs" transform="translate(1000,420)">
+    <rect width="160" height="70"/>
+    <text class="title" x="12" y="26">Opaque resolver</text>
+    <text class="sub" x="12" y="45">Untrusted RPC sources</text>
+    <text class="sub" x="12" y="61">Null broadcast network</text>
+  </g>
+  <g class="node same" transform="translate(680,530)">
+    <rect width="280" height="70"/>
+    <text class="title" x="14" y="26">Finalizer</text>
+    <text class="sub" x="14" y="45">Executes blocks via Engine API</text>
+    <text class="sub" x="14" y="61">Tracks the validator set</text>
+  </g>
+  <g class="node same" transform="translate(1000,530)">
+    <rect width="160" height="70"/>
+    <text class="title" x="12" y="26">Follower listener</text>
+    <text class="sub" x="12" y="45">Opt-in RPC, serves</text>
+    <text class="sub" x="12" y="61">via the syncer</text>
+  </g>
+
+  <!-- Right column flows -->
+  <path class="flow" d="M960,125 L980,125 L980,435 L962,435"/>
+  <text class="label" x="988" y="294">hint_finalized</text>
+  <path class="flow both" d="M962,470 L998,470"/>
+  <path class="flow" d="M820,490 L820,528"/>
+  <text class="label" x="830" y="514">finalized blocks</text>
+  <path class="flow" d="M680,565 L660,565 L660,125 L678,125"/>
+  <text class="label" transform="translate(652,345) rotate(-90)" text-anchor="middle">Enter / Exit epoch</text>
+  <path class="flow" d="M1020,530 L964,492"/>
+
+  <!-- ===== Between nodes: follower fetches from the validator's listener ===== -->
+  <path class="rpc" d="M1160,455 L1185,455 L1185,640 L500,640 L500,603"/>
+  <text class="label rpc-label" x="842" y="630" text-anchor="middle">getResolverValue, getLatestHeight (JSON-RPC)</text>
+
+  <!-- ===== Legend ===== -->
+  <g transform="translate(100,690)">
+    <rect x="0" y="0" width="28" height="18" rx="4" fill="#f3f4f6" stroke="#6b7280" stroke-width="1.5"/>
+    <text class="legend" x="36" y="14">Same in both modes</text>
+    <rect x="190" y="0" width="28" height="18" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+    <text class="legend" x="226" y="14">Differs between modes</text>
+    <rect x="400" y="0" width="28" height="18" rx="4" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text class="legend" x="436" y="14">Not running</text>
+    <path class="flow" d="M560,9 L600,9"/>
+    <text class="legend" x="608" y="14">In-process message</text>
+    <path class="rpc" d="M760,9 L800,9"/>
+    <text class="legend" x="808" y="14">JSON-RPC between nodes</text>
+  </g>
+</svg>
