@@ -6,10 +6,12 @@ mod error;
 mod genesis;
 mod server;
 mod types;
+mod withdrawal_address;
 
 pub use genesis::{PathSender, SummitGenesisRpcServer};
 pub use server::{MAX_CONCURRENT_STATE_PROOFS, SummitRpcServer};
 pub use types::*;
+pub use withdrawal_address::{WithdrawalAddress, WithdrawalAddressFile};
 
 pub use api::{
     SummitAdminApiClient, SummitAdminApiServer, SummitApiClient, SummitApiServer,
@@ -129,6 +131,7 @@ pub async fn start_rpc_server(
     body_limits: RpcBodyLimits,
     stop_signal: Signal,
     observer_node_key: Option<String>,
+    withdrawal_address_file: Option<WithdrawalAddressFile>,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let rpc_impl = SummitRpcServer::new(
@@ -139,7 +142,8 @@ pub async fn start_rpc_server(
         observer_node_key,
         #[cfg(feature = "permissioned")]
         paused,
-    );
+    )
+    .with_withdrawal_address_file(withdrawal_address_file);
 
     let mut public_methods = SummitApiServer::into_rpc(rpc_impl.clone());
     public_methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
