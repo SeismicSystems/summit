@@ -33,7 +33,6 @@ pub fn init(level: Level, critical_log_dir: Option<&Path>) -> CriticalLogGuard {
         .with_line_number(true)
         .with_thread_ids(true)
         .with_file(true)
-        .with_span_events(fmt::format::FmtSpan::CLOSE)
         .compact();
 
     // Critical file layer (optional)
