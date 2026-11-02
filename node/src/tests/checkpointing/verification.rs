@@ -110,7 +110,7 @@ fn test_checkpoint_verification_fixed_committee() {
                     node_public_key: format!("0x{node_pub_hex}"),
                     consensus_public_key: format!("0x{consensus_pub_hex}"),
                     ip_address: format!("127.0.0.1:{}", 26600 + i * 10),
-                    withdrawal_credentials: format!("0x{:040x}", 0x1000u64 + i as u64),
+                    withdrawal_address: format!("0x{:040x}", 0x1000u64 + i as u64),
                 }
             })
             .collect();
@@ -484,7 +484,7 @@ fn test_checkpoint_verification_dynamic_committee() {
                     node_public_key: format!("0x{node_pub_hex}"),
                     consensus_public_key: format!("0x{consensus_pub_hex}"),
                     ip_address: format!("127.0.0.1:{}", 26600 + i * 10),
-                    withdrawal_credentials: format!("0x{:040x}", 0x1000u64 + i as u64),
+                    withdrawal_address: format!("0x{:040x}", 0x1000u64 + i as u64),
                 }
             })
             .collect();

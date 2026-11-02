@@ -1343,7 +1343,7 @@ fn get_initial_state(
                 .expect("Public key must be 32 bytes");
             let account = ValidatorAccount {
                 consensus_public_key: validator.consensus_public_key.clone(),
-                withdrawal_credentials: validator.withdrawal_credentials,
+                withdrawal_credentials: validator.withdrawal_address,
                 balance: genesis.validator_minimum_stake,
                 status: ValidatorStatus::Active,
                 joining_epoch: 0,

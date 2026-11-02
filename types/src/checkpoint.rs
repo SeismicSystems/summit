@@ -1567,7 +1567,7 @@ mod tests {
                 node_public_key: format!("0x{}", hex(node_public_key.as_ref())),
                 consensus_public_key: format!("0x{}", hex(consensus_public_key.as_ref())),
                 ip_address: format!("127.0.0.1:{}", 10_000 + i),
-                withdrawal_credentials: withdrawal_credentials.to_string(),
+                withdrawal_address: withdrawal_credentials.to_string(),
             });
 
             let account = ValidatorAccount {

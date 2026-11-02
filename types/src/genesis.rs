@@ -126,8 +126,12 @@ pub struct GenesisValidator {
     /// Network topology, not consensus identity: excluded from `config_digest`.
     #[ssz(skip_serializing)]
     pub ip_address: String,
+    /// 20-byte execution-layer address that receives this validator's
+    /// withdrawals. Older genesis files name this key `withdrawal_credentials`;
+    /// that name is still accepted when parsing.
+    #[serde(alias = "withdrawal_credentials")]
     #[ssz(with = "ssz_string")]
-    pub withdrawal_credentials: String,
+    pub withdrawal_address: String,
 }
 
 impl GenesisValidator {
@@ -146,7 +150,7 @@ pub struct Validator {
     pub node_public_key: PublicKey,
     pub consensus_public_key: bls12381::PublicKey,
     pub ip_address: SocketAddr,
-    pub withdrawal_credentials: Address,
+    pub withdrawal_address: Address,
 }
 
 impl TryFrom<&GenesisValidator> for Validator {
@@ -165,7 +169,7 @@ impl TryFrom<&GenesisValidator> for Validator {
             node_public_key,
             consensus_public_key,
             ip_address: value.ip_address.parse()?,
-            withdrawal_credentials: value.withdrawal_credentials.parse()?,
+            withdrawal_address: value.withdrawal_address.parse()?,
         })
     }
 }
@@ -400,6 +404,33 @@ mod tests {
 
         let keys = genesis.get_validator_keys().unwrap();
         assert_eq!(keys.len(), 4);
+    }
+
+    /// Genesis files written before the rename use `withdrawal_credentials`.
+    /// They must still load, to the same address and the same `config_digest`.
+    #[test]
+    fn accepts_legacy_withdrawal_credentials_key() {
+        let text = std::fs::read_to_string("../example_genesis.toml").unwrap();
+        let legacy_text = text.replace("withdrawal_address =", "withdrawal_credentials =");
+        assert_ne!(text, legacy_text);
+
+        let genesis = Genesis::from_toml_str(&text).unwrap();
+        let legacy = Genesis::from_toml_str(&legacy_text).unwrap();
+
+        let addresses: Vec<Address> = genesis
+            .get_validators()
+            .unwrap()
+            .iter()
+            .map(|v| v.withdrawal_address)
+            .collect();
+        let legacy_addresses: Vec<Address> = legacy
+            .get_validators()
+            .unwrap()
+            .iter()
+            .map(|v| v.withdrawal_address)
+            .collect();
+        assert_eq!(addresses, legacy_addresses);
+        assert_eq!(genesis.config_digest(), legacy.config_digest());
     }
 
     #[test]
@@ -688,10 +719,8 @@ mod tests {
                 Box::new(|g| g.validators[0].node_public_key = format!("0x{}", "44".repeat(32))),
             ),
             (
-                "validator withdrawal credentials",
-                Box::new(|g| {
-                    g.validators[0].withdrawal_credentials = format!("0x{}", "55".repeat(20))
-                }),
+                "validator withdrawal address",
+                Box::new(|g| g.validators[0].withdrawal_address = format!("0x{}", "55".repeat(20))),
             ),
             (
                 "validator set size",
