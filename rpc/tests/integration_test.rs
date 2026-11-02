@@ -811,7 +811,7 @@ async fn test_pause_rejects_stale_timestamp() {
     let url = format!("http://{}", addr);
     let client = HttpClientBuilder::default().build(&url).unwrap();
 
-    let stale_ts = 1; // way outside the 30s window
+    let stale_ts = 1; // way outside the timestamp window
     let sig = format!("0x{}", "ab".repeat(64));
     let err = client.pause(stale_ts, sig).await.unwrap_err();
 
