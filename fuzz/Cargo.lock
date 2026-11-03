@@ -5131,7 +5131,7 @@ dependencies = [
 
 [[package]]
 name = "summit-types"
-version = "0.0.3-alpha"
+version = "0.1.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
