@@ -42,7 +42,7 @@ The account's withdrawal address is fixed by its first deposit, or by genesis fo
 
 ## Binding the Withdrawal Address
 
-By default, `getDepositSignature` signs deposit data for whatever address the request carries. With `summit run --withdrawal-address-path <file>`, the node signs for one address only, fixed by its first request (or by genesis for a founder) and never changed. Requests for any other address are refused with error `4004`. `getWithdrawalAddress` returns the bound address.
+By default, `getDepositSignature` signs deposit data for whatever address the request carries. With `summit run --withdrawal-address-path <file>`, the node signs for one address only, fixed by its first request (or by genesis for a founder) and never changed. Requests for any other address are refused with error `4005`. `getWithdrawalAddress` returns the bound address.
 
 Note that the node binds the address only; the key is kept in custody of the operator. The node signs deposit data with its validator keys, and anyone can submit that data from any wallet.
 
