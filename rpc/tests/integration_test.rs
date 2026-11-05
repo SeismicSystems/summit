@@ -1261,7 +1261,7 @@ fn assert_refused_for_bound(
 ) {
     match result {
         Err(err) => {
-            assert_eq!(err.code(), 4004, "expected a binding refusal, got {err:?}");
+            assert_eq!(err.code(), 4005, "expected a binding refusal, got {err:?}");
             let data = err.data().map(|d| d.get().to_string()).unwrap_or_default();
             assert!(data.contains(bound), "error should name {bound}: {data}");
         }
