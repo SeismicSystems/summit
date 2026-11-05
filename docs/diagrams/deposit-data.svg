@@ -1,0 +1,219 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 738"
+     font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+  <!--
+    Deposit data: the message both keys sign (panel 1) and deposit_data_root
+    (panel 2). Data flows downward. Each node is a <g> translated to its
+    center; edges are orthogonal paths from a child's bottom edge to an entry
+    point on its parent's top edge, left input left of center, right input
+    right of center, so "sha256(· ‖ ·)" reads in the order the arrows arrive.
+    Reference: DepositRequest::as_message and compute_deposit_data_root in
+    types/src/execution_request.rs.
+  -->
+  <style>
+    text { fill: #374151; font-size: 12px; text-anchor: middle; dominant-baseline: middle; }
+    .panel { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; }
+    .panel-title { font-size: 14px; font-weight: 700; fill: #1e40af; text-anchor: start; }
+    .ssz { font-size: 11px; font-weight: 700; fill: #15803d; text-anchor: start; }
+    .not-ssz { font-size: 11px; font-weight: 700; fill: #dc2626; text-anchor: start; }
+    .legend { font-size: 11px; fill: #64748b; text-anchor: start; }
+    .sign-label { font-size: 11px; fill: #b45309; text-anchor: end; }
+
+    .node > rect { fill: #ffffff; stroke: #64748b; stroke-width: 1.5; }
+    .node .name { font-weight: 700; }
+    .node .detail { font-size: 10.5px; fill: #64748b; }
+    /* deposit fields: what goes into the contract call */
+    .node.field > rect { fill: #dbeafe; stroke: #1d4ed8; }
+    .node.field .name { fill: #1e3a8a; }
+    /* per-network input, not a deposit field */
+    .node.input > rect { fill: #f3f4f6; stroke: #6b7280; }
+    /* signatures: produced from the message, then deposit fields themselves */
+    .node.sig > rect { fill: #fef3c7; stroke: #b45309; }
+    .node.sig .name { fill: #78350f; }
+    /* breaks SSZ: a flat hash where SSZ would hash a container */
+    .node.flat > rect { stroke: #dc2626; stroke-dasharray: 5 3; }
+    /* the two roots */
+    .node.out > rect { fill: #dcfce7; stroke: #15803d; stroke-width: 2; }
+    .node.out .name { fill: #14532d; }
+
+    .edge { fill: none; stroke: #64748b; stroke-width: 1.5; marker-end: url(#arrow); }
+    .edge.sign { stroke: #b45309; stroke-width: 2; marker-end: url(#arrow-sign); }
+  </style>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-sign" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+
+  <rect width="940" height="738" fill="#ffffff"/>
+
+  <!-- ================= panel 1: the signed message ================= -->
+  <rect class="panel" x="10" y="8" width="920" height="344" rx="8"/>
+  <text class="panel-title" x="24" y="28">① Signed message: what both keys sign</text>
+  <text class="not-ssz" x="360" y="28">not SSZ: pubkeys_hash (dashed) is a flat sha256 of 80 B</text>
+
+  <text class="legend" x="24" y="294">‖  concatenation</text>
+  <text class="legend" x="24" y="312">0[n]  n zero bytes</text>
+  <text class="legend" x="24" y="330">·  one input arrow, left to right</text>
+
+  <!-- edges -->
+  <path class="edge" d="M82,86 V98 H120 V110"/>      <!-- node_pubkey → pubkeys_hash -->
+  <path class="edge" d="M218,86 V98 H180 V110"/>     <!-- consensus_pubkey → pubkeys_hash -->
+  <path class="edge" d="M544,86 V116"/>              <!-- amount_le → G -->
+  <path class="edge" d="M150,150 V168 H244 V180"/>   <!-- pubkeys_hash → F -->
+  <path class="edge" d="M392,86 V168 H298 V180"/>    <!-- withdrawal_credentials → F -->
+  <path class="edge" d="M271,208 V226 H381 V238"/>   <!-- F → root -->
+  <path class="edge" d="M544,144 V226 H435 V238"/>   <!-- G → root -->
+  <path class="edge" d="M408,278 V290 H715 V302"/>   <!-- root → message -->
+  <path class="edge" d="M827,86 V290 H779 V302"/>    <!-- domain → message -->
+
+  <!-- leaves -->
+  <g class="node field" transform="translate(82,66)">
+    <rect x="-52" y="-20" width="104" height="40" rx="5"/>
+    <text class="name" y="-7">node_pubkey</text>
+    <text class="detail" y="9">32 B · Ed25519</text>
+  </g>
+  <g class="node field" transform="translate(218,66)">
+    <rect x="-70" y="-20" width="140" height="40" rx="5"/>
+    <text class="name" y="-7">consensus_pubkey</text>
+    <text class="detail" y="9">48 B · BLS12-381</text>
+  </g>
+  <g class="node field" transform="translate(392,66)">
+    <rect x="-90" y="-20" width="180" height="40" rx="5"/>
+    <text class="name" y="-7">withdrawal_credentials</text>
+    <text class="detail" y="9">0x01 ‖ 0[11] ‖ address</text>
+  </g>
+  <g class="node field" transform="translate(544,66)">
+    <rect x="-48" y="-20" width="96" height="40" rx="5"/>
+    <text class="name" y="-7">amount_le</text>
+    <text class="detail" y="9">u64 gwei, LE</text>
+  </g>
+  <g class="node input" transform="translate(827,66)">
+    <rect x="-83" y="-20" width="166" height="40" rx="5"/>
+    <text class="name" y="-7">domain</text>
+    <text class="detail" y="9">EL genesis + namespace</text>
+  </g>
+
+  <!-- hashes -->
+  <g class="node flat" transform="translate(150,130)">
+    <rect x="-60" y="-20" width="120" height="40" rx="5"/>
+    <text class="name" y="-7">pubkeys_hash</text>
+    <text y="9">sha256(· ‖ ·)</text>
+  </g>
+  <g class="node" transform="translate(544,130)">
+    <rect x="-68" y="-14" width="136" height="28" rx="5"/>
+    <text>sha256(· ‖ 0[56])</text>
+  </g>
+  <g class="node" transform="translate(271,194)">
+    <rect x="-55" y="-14" width="110" height="28" rx="5"/>
+    <text>sha256(· ‖ ·)</text>
+  </g>
+  <g class="node" transform="translate(408,258)">
+    <rect x="-55" y="-20" width="110" height="40" rx="5"/>
+    <text class="name" y="-7">root</text>
+    <text y="9">sha256(· ‖ ·)</text>
+  </g>
+  <g class="node out" transform="translate(747,322)">
+    <rect x="-65" y="-20" width="130" height="40" rx="5"/>
+    <text class="name" y="-7">message</text>
+    <text y="9">sha256(· ‖ ·)</text>
+  </g>
+
+  <!-- ================= panel 2: deposit_data_root ================= -->
+  <rect class="panel" x="10" y="382" width="920" height="346" rx="8"/>
+  <text class="panel-title" x="24" y="402">② deposit_data_root: what the deposit contract checks</text>
+  <text class="ssz" x="490" y="402">SSZ hash_tree_root</text>
+
+  <!-- edges -->
+  <path class="edge" d="M218,460 V490"/>             <!-- consensus_pubkey → C -->
+  <path class="edge" d="M668,460 V490"/>             <!-- node_signature → D -->
+  <path class="edge" d="M827,460 V484"/>             <!-- consensus_signature → E -->
+  <path class="edge" d="M82,460 V536 H118 V548"/>    <!-- node_pubkey → pubkey_root -->
+  <path class="edge" d="M218,518 V536 H182 V548"/>   <!-- C → pubkey_root -->
+  <path class="edge" d="M668,518 V536 H709 V548"/>   <!-- D → signature_root -->
+  <path class="edge" d="M820,524 V536 H779 V548"/>   <!-- E → signature_root -->
+  <path class="edge" d="M150,588 V606 H244 V618"/>   <!-- pubkey_root → A -->
+  <path class="edge" d="M392,460 V606 H298 V618"/>   <!-- withdrawal_credentials → A -->
+  <path class="edge" d="M544,460 V606 H603 V618"/>   <!-- amount_le → B -->
+  <path class="edge" d="M744,588 V606 H685 V618"/>   <!-- signature_root → B -->
+  <path class="edge" d="M271,646 V664 H417 V676"/>   <!-- A → deposit_data_root -->
+  <path class="edge" d="M644,646 V664 H497 V676"/>   <!-- B → deposit_data_root -->
+
+  <!-- ================= signing: message → signatures ================= -->
+  <path class="edge sign" d="M747,342 V400 H668 V420"/>
+  <path class="edge sign" d="M747,342 V400 H827 V420"/>
+  <text class="sign-label" x="739" y="370">both keys sign 0x00 ‖ message</text>
+
+  <!-- leaves -->
+  <g class="node field" transform="translate(82,440)">
+    <rect x="-52" y="-20" width="104" height="40" rx="5"/>
+    <text class="name" y="-7">node_pubkey</text>
+    <text class="detail" y="9">32 B · Ed25519</text>
+  </g>
+  <g class="node field" transform="translate(218,440)">
+    <rect x="-70" y="-20" width="140" height="40" rx="5"/>
+    <text class="name" y="-7">consensus_pubkey</text>
+    <text class="detail" y="9">48 B · BLS12-381</text>
+  </g>
+  <g class="node field" transform="translate(392,440)">
+    <rect x="-90" y="-20" width="180" height="40" rx="5"/>
+    <text class="name" y="-7">withdrawal_credentials</text>
+    <text class="detail" y="9">0x01 ‖ 0[11] ‖ address</text>
+  </g>
+  <g class="node field" transform="translate(544,440)">
+    <rect x="-48" y="-20" width="96" height="40" rx="5"/>
+    <text class="name" y="-7">amount_le</text>
+    <text class="detail" y="9">u64 gwei, LE</text>
+  </g>
+  <g class="node sig" transform="translate(668,440)">
+    <rect x="-62" y="-20" width="124" height="40" rx="5"/>
+    <text class="name" y="-7">node_signature</text>
+    <text class="detail" y="9">64 B · Ed25519</text>
+  </g>
+  <g class="node sig" transform="translate(827,440)">
+    <rect x="-83" y="-20" width="166" height="40" rx="5"/>
+    <text class="name" y="-7">consensus_signature</text>
+    <text class="detail" y="9">96 B · BLS (G2)</text>
+  </g>
+
+  <!-- hashes -->
+  <g class="node" transform="translate(218,504)">   <!-- C -->
+    <rect x="-68" y="-14" width="136" height="28" rx="5"/>
+    <text>sha256(· ‖ 0[16])</text>
+  </g>
+  <g class="node" transform="translate(668,504)">   <!-- D -->
+    <rect x="-42" y="-14" width="84" height="28" rx="5"/>
+    <text>sha256(·)</text>
+  </g>
+  <g class="node" transform="translate(820,504)">   <!-- E -->
+    <rect x="-100" y="-20" width="200" height="40" rx="5"/>
+    <text y="-7">sha256(sha256(·[..64])</text>
+    <text y="9">‖ sha256(·[64..] ‖ 0[32]))</text>
+  </g>
+  <g class="node" transform="translate(150,568)">
+    <rect x="-65" y="-20" width="130" height="40" rx="5"/>
+    <text class="name" y="-7">pubkey_root</text>
+    <text y="9">sha256(· ‖ ·)</text>
+  </g>
+  <g class="node" transform="translate(744,568)">
+    <rect x="-70" y="-20" width="140" height="40" rx="5"/>
+    <text class="name" y="-7">signature_root</text>
+    <text y="9">sha256(· ‖ ·)</text>
+  </g>
+  <g class="node" transform="translate(271,632)">   <!-- A -->
+    <rect x="-55" y="-14" width="110" height="28" rx="5"/>
+    <text>sha256(· ‖ ·)</text>
+  </g>
+  <g class="node" transform="translate(644,632)">   <!-- B -->
+    <rect x="-83" y="-14" width="166" height="28" rx="5"/>
+    <text>sha256(· ‖ 0[24] ‖ ·)</text>
+  </g>
+  <g class="node out" transform="translate(457,696)">
+    <rect x="-80" y="-20" width="160" height="40" rx="5"/>
+    <text class="name" y="-7">deposit_data_root</text>
+    <text y="9">sha256(· ‖ ·)</text>
+  </g>
+</svg>
