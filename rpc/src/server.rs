@@ -10,6 +10,7 @@ use crate::types::{
     PublicKeysResponse, StateProofResponse, StateProofResult, StateRootResponse,
     ValidatorAccountResponse,
 };
+use crate::withdrawal_address::{WithdrawalAddress, WithdrawalAddressFile};
 use alloy_primitives::{Address, U256, hex::FromHex as _};
 use async_trait::async_trait;
 use commonware_codec::{DecodeExt as _, Encode as _};
@@ -69,6 +70,14 @@ pub struct SummitRpcServer {
     /// Count of in-flight state-proof generations, shared across all cloned
     /// handler instances so the cap is global to the server.
     in_flight_state_proofs: Arc<AtomicUsize>,
+    /// Set by `--withdrawal-address-path`: `getDepositSignature` signs only
+    /// for the address bound here, binding it on first use.
+    ///
+    /// In an `Arc` only because this struct is `Clone` and a clone goes to
+    /// every method set, though just the admin API's uses it. Serving the admin
+    /// API from its own struct, as `SummitDepositRpcServer` does, would let it
+    /// hold the file by value.
+    withdrawal_address_file: Option<Arc<WithdrawalAddressFile>>,
     #[cfg(feature = "permissioned")]
     paused: Arc<AtomicBool>,
     /// Hex of the pause-authorization domain (genesis hash + namespace). Bound
@@ -104,6 +113,7 @@ impl SummitRpcServer {
             deposit_signature_domain: deposit_signature_domain(genesis_hash, namespace),
             observer_node_key,
             in_flight_state_proofs: Arc::new(AtomicUsize::new(0)),
+            withdrawal_address_file: None,
             #[cfg(feature = "permissioned")]
             paused,
             #[cfg(feature = "permissioned")]
@@ -112,6 +122,12 @@ impl SummitRpcServer {
                 namespace,
             )),
         }
+    }
+
+    /// Restricts `getDepositSignature` to the address bound in `file`.
+    pub fn with_withdrawal_address_file(mut self, file: Option<WithdrawalAddressFile>) -> Self {
+        self.withdrawal_address_file = file.map(Arc::new);
+        self
     }
 }
 
@@ -379,17 +395,19 @@ impl SummitApiServer for SummitRpcServer {
     }
 }
 
+fn parse_address(address: String) -> Result<Address, RpcError> {
+    Address::from_hex(address)
+        .map_err(|e| RpcError::InvalidPublicKey(format!("Invalid address: {}", e)))
+}
+
 fn sign_deposit(
     key_store_path: &str,
     deposit_signature_domain: Digest,
     amount: u64,
-    address: String,
+    withdrawal_address: Address,
 ) -> RpcResult<DepositTransactionResponse> {
     let mut withdrawal_credentials = [0u8; 32];
     withdrawal_credentials[0] = 0x01;
-
-    let withdrawal_address = Address::from_hex(address)
-        .map_err(|e| RpcError::InvalidPublicKey(format!("Invalid address: {}", e)))?;
     withdrawal_credentials[12..32].copy_from_slice(withdrawal_address.as_slice());
 
     let key_paths = KeyPaths::new(key_store_path.to_string());
@@ -464,8 +482,17 @@ impl SummitAdminApiServer for SummitDepositRpcServer {
             &self.key_store_path,
             self.deposit_signature_domain,
             amount,
-            address,
+            parse_address(address)?,
         )
+    }
+
+    /// Always null: `deposit-rpc` never binds a withdrawal address. It is the
+    /// pre-TEE signer an operator runs briefly on their own host before
+    /// starting the node, so it signs for any address as before.
+    /// `--withdrawal-address-path` is only on `summit run`, the long-running
+    /// process a TEE node's attestation service forwards deposit requests to.
+    async fn get_withdrawal_address(&self) -> RpcResult<Option<String>> {
+        Ok(None)
     }
 }
 
@@ -483,12 +510,36 @@ impl SummitAdminApiServer for SummitRpcServer {
             return Err(RpcError::DisabledInObserverMode.into());
         }
 
+        let address = match &self.withdrawal_address_file {
+            None => parse_address(address)?,
+            Some(file) => {
+                let requested: WithdrawalAddress = address
+                    .parse()
+                    .map_err(RpcError::InvalidWithdrawalAddress)?;
+                let bound = file
+                    .get_or_bind(requested)
+                    .map_err(|e| RpcError::IoError(format!("{e:#}")))?;
+                if bound != requested {
+                    return Err(RpcError::WithdrawalAddressBound(bound).into());
+                }
+                bound.into()
+            }
+        };
+
         sign_deposit(
             &self.key_store_path,
             self.deposit_signature_domain,
             amount,
             address,
         )
+    }
+
+    async fn get_withdrawal_address(&self) -> RpcResult<Option<String>> {
+        Ok(self
+            .withdrawal_address_file
+            .as_ref()
+            .and_then(|file| file.address())
+            .map(|address| address.to_string()))
     }
 }
 

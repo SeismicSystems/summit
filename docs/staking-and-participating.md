@@ -34,6 +34,22 @@ The changes were made to accommodate every consensus node having 2 keys to parti
 5. Download the latest checkpoint and start the full node with `summit run`.
 6. Keep your node running and it will start participating after the validator warm-up period.
 
+## Topping Up
+
+To add to a validator's stake, request deposit data for the top-up amount from the running node's admin RPC (`getDepositSignature` on `127.0.0.1:--admin-rpc-port`), then send it to the deposit contract as in step 4. Every deposit needs its own signature, since the signed message covers the amount.
+
+The account's withdrawal address is fixed by its first deposit, or by genesis for a founder. A top-up doesn't change it, and the address a top-up carries is otherwise ignored, with one exception: a rejected top-up (for example, one whose BLS key doesn't match the account's) is refunded, less the invalid-deposit tax, to the top-up's own address. So top up with the account's withdrawal address. A node running with `--withdrawal-address-path` signs only for its bound address (see below).
+
+## Binding the Withdrawal Address
+
+By default, `getDepositSignature` signs deposit data for whatever address the request carries. With `summit run --withdrawal-address-path <file>`, the node signs for one address only, fixed by its first request (or by genesis for a founder) and never changed. Requests for any other address are refused with error `4004`. `getWithdrawalAddress` returns the bound address.
+
+Note that the node binds the address only; the key is kept in custody of the operator. The node signs deposit data with its validator keys, and anyone can submit that data from any wallet.
+
+**Why.** The first deposit for a validator fixes its withdrawal address for good. Without the binding, anyone who can reach the admin RPC can get deposit data for their own address and deposit first. The operator's own deposit then lands as a top-up on the attacker's account. That's fine when the operator controls every caller of the admin RPC, as on a host they run themselves. On a TEE node, the host is untrusted and controls the guest's network, and other guest processes share its loopback, so firewalls can't keep everyone else out. The binding makes the node itself refuse. If someone else binds first, the operator's request is refused before they fund anything, and they reset the node with new keys. Losing the race costs a reset, never stake.
+
+To change the bound address, reset the node with new keys. Keep the file outside the consensus DB directory, so a resync keeps it. When enabling the flag on an existing validator, make the first request carry the account's withdrawal address.
+
 ## How Summit Handles Deposits
 
 When the deposit contract is used to stake, the execution layer burns the native token and the balance is accounted for in the consensus layer (Summit). When the deposit contract is used, the event that is emitted is added to the block's `execution_requests` field. While processing blocks, the finalizer watches for these execution requests and updates its own state accordingly. After a warm-up period of 2 epochs, the node will be added to the participating validator set. This is deterministic and all honest nodes will add validators at the same time and reject blocks that do not include the proper additions based on the execution requests from previous blocks.
