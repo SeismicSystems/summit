@@ -18,6 +18,11 @@ path = "src/bin/observer.rs"
 required-features = ["e2e"]
 
 [[bin]]
+name = "follower"
+path = "src/bin/follower.rs"
+required-features = ["e2e"]
+
+[[bin]]
 name = "stake-and-join-with-outdated-checkpoint"
 path = "src/bin/stake_and_join_with_outdated_ckpt.rs"
 required-features = ["e2e"]
@@ -70,6 +75,7 @@ commonware-storage.workspace = true
 commonware-utils.workspace = true
 
 anyhow.workspace = true
+bytes.workspace = true
 eyre = { workspace = true, optional = true }
 rand.workspace = true
 tracing.workspace = true

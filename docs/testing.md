@@ -28,6 +28,7 @@ tests/
 │   ├── deposit_withdrawal_combined.rs # Mixed operations
 │   └── validator_set.rs              # Validator set transitions
 ├── engine.rs                          # Engine lifecycle and configuration
+├── follow.rs                          # Follow mode from remote sources
 ├── observer.rs                        # Observer sync and backfill
 └── syncer.rs                          # Block sync and cache
 ```
@@ -70,6 +71,7 @@ cargo run --features e2e --bin withdraw-and-exit -- --log-dir /tmp/rethlogs
 cargo run --features e2e --bin protocol-params -- --log-dir /tmp/rethlogs
 cargo run --features e2e --bin sync-from-genesis -- --log-dir /tmp/rethlogs
 cargo run --features e2e --bin observer -- --log-dir /tmp/rethlogs
+cargo run --features e2e --bin follower -- --log-dir /tmp/rethlogs
 cargo run --features e2e --bin verify-consensus-state-proof -- --log-dir /tmp/rethlogs
 ```
 
@@ -135,6 +137,14 @@ Tests observer-mode nodes — RPC-only nodes that follow the chain without parti
 - **Nodes**: 4 genesis + 1 observer
 - **Flow**: Starts 4 validators, then starts an observer node using `--observer 0`. The observer derives its p2p identity from validator 1's master node key (slot 0), uses a fresh BLS consensus key that is not in the validator set, and is authorized as a secondary peer by every validator via the genesis `observers_per_validator` field. Runs its own Reth instance and executes finalized blocks via Engine API IPC. Waits for all nodes — including the observer — to reach `--stop-height` (default 100).
 - **Verifies**: The observer reaches the stop height, is not in the active validator set, and its pubkey does not appear in any finalization certificate's signer set (i.e., it never votes).
+
+#### `follower`
+
+Tests follow mode: a node that follows the chain from other nodes' RPC, with no P2P identity, keystore, or Simplex.
+
+- **Nodes**: 4 genesis + 1 follower
+- **Flow**: Starts 4 validators and waits for them to reach `--join-height` (default 60). Every node enables its follower listener (`--follower-rpc-port`) on loopback. The test then starts a follower with `--follow` pointed at every validator's follower listener and an empty `--key-store-path`. The follower fetches finalized blocks through each validator's `getResolverValue` and executes them on its own Reth instance. Waits for all nodes, including the follower, to reach `--stop-height` (default 120).
+- **Verifies**: The follower reaches the stop height from remote sources alone, and its `getPublicKeys` reports that follow mode has no identity. Reports how long the follower took to catch up to the cohort's height at its start.
 
 #### `verify-consensus-state-proof`
 

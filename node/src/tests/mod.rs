@@ -1,6 +1,7 @@
 mod checkpointing;
 mod engine;
 mod execution_requests;
+mod follow;
 mod observer;
 mod recovery;
 mod syncer;

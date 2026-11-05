@@ -25,7 +25,9 @@ pub enum RpcError {
         max: usize,
     },
     Internal(String),
+    ResolverUnavailable,
     DisabledInObserverMode,
+    DisabledInFollowMode,
     #[cfg(feature = "permissioned")]
     InvalidAdminAddress(String),
     #[cfg(feature = "permissioned")]
@@ -91,12 +93,24 @@ impl From<RpcError> for ErrorObjectOwned {
                 )),
             ),
             RpcError::Internal(msg) => ErrorObjectOwned::owned(5000, "Internal error", Some(msg)),
+            RpcError::ResolverUnavailable => ErrorObjectOwned::owned(
+                3008,
+                "Resolver unavailable",
+                Some(
+                    "the listener or the syncer's resolver mailbox is full, or the syncer stopped; retry shortly or use another source",
+                ),
+            ),
             RpcError::DisabledInObserverMode => ErrorObjectOwned::owned(
                 4003,
                 "Method disabled in observer mode",
                 Some(
                     "this node runs with --observer and does not sign with the validator keystore",
                 ),
+            ),
+            RpcError::DisabledInFollowMode => ErrorObjectOwned::owned(
+                4005,
+                "Method disabled in follow mode",
+                Some("this node runs with --follow and has no keystore"),
             ),
             #[cfg(feature = "permissioned")]
             RpcError::InvalidAdminAddress(msg) => {

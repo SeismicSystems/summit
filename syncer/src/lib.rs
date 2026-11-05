@@ -226,6 +226,7 @@ pub mod mocks;
 
 #[cfg(all(test, feature = "test-mocks"))]
 mod tests {
+    mod opaque;
     mod recovery;
 
     use super::{
@@ -746,7 +747,14 @@ mod tests {
             priority_requests: false,
             priority_responses: false,
         };
-        let resolver = resolver::init(context.child("resolver"), resolver_cfg, backfill);
+        let (resolver_rx, handler) = handler::init(
+            context.child("resolver").child("handler"),
+            config.mailbox_size,
+        );
+        let resolver = (
+            resolver_rx,
+            resolver::init(context.child("resolver"), resolver_cfg, backfill, handler),
+        );
 
         // Create a buffered broadcast engine and get its mailbox
         let broadcast_config = buffered::Config {
@@ -934,7 +942,14 @@ mod tests {
             priority_requests: false,
             priority_responses: false,
         };
-        let resolver = resolver::init(context.child("resolver"), resolver_cfg, backfill);
+        let (resolver_rx, handler) = handler::init(
+            context.child("resolver").child("handler"),
+            config.mailbox_size,
+        );
+        let resolver = (
+            resolver_rx,
+            resolver::init(context.child("resolver"), resolver_cfg, backfill, handler),
+        );
 
         let (broadcast_engine, buffer) = buffered::Engine::new(
             context.child("broadcast"),

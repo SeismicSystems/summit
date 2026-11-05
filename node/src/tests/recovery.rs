@@ -201,8 +201,12 @@ async fn replay(context: &deterministic::Context, fixture: &Fixture, through: u6
     let syncer = engine.syncer_mailbox.clone();
     let (_, _, _, broadcast, backfill) = registrations.remove(&public_key).unwrap();
     let resolver_config = engine.backfill_resolver_config();
-    let resolver =
-        summit_syncer::resolver::p2p::init(context.child("backfill"), resolver_config, backfill);
+    let resolver = summit_syncer::resolver::p2p::init(
+        context.child("backfill"),
+        resolver_config,
+        backfill,
+        engine.resolver_handler,
+    );
     engine.buffer.start(broadcast);
     engine.finalizer.start(engine.orchestrator_mailbox);
     let delivered = Arc::new(Mutex::new(Vec::new()));
@@ -214,7 +218,7 @@ async fn replay(context: &deterministic::Context, fixture: &Fixture, through: u6
             held: Vec::new(),
         },
         engine.buffer_mailbox,
-        resolver,
+        (engine.resolver_rx, resolver),
         engine.sync_start,
         engine.checkpoint,
     );

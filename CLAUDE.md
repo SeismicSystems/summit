@@ -161,6 +161,7 @@ cd testnet && ./reset.sh
 | `withdraw-and-exit`                       | `e2e`        | E2E: withdrawal flow test                           |
 | `protocol-params`                         | `e2e`        | E2E: protocol parameter test                        |
 | `sync-from-genesis`                       | `e2e`        | E2E: sync from genesis test                         |
+| `follower`                                | `e2e`        | E2E: follow mode from remote sources                |
 | `execute-blocks`                          | `bench`      | Block execution benchmarking                        |
 
 ## Project Layout
@@ -168,6 +169,7 @@ cd testnet && ./reset.sh
 ```
 node/                  Main binary crate (summit, testnet)
   src/engine.rs          Central coordinator — component lifecycle, message routing
+  src/follow/            Follow mode: remote sources, follow driver, null network
   src/args.rs            CLI argument parsing (clap)
   src/config.rs          Channel sizes, timeouts, default paths
   src/keys.rs            Key management (generate/show)

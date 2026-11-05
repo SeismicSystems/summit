@@ -3,17 +3,20 @@ mod api;
 mod auth;
 mod builder;
 mod error;
+mod follower;
 mod genesis;
 mod server;
 mod types;
 
+pub use follower::FollowerRpcServer;
 pub use genesis::{PathSender, SummitGenesisRpcServer};
 pub use server::{MAX_CONCURRENT_STATE_PROOFS, SummitRpcServer};
 pub use types::*;
 
 pub use api::{
     SummitAdminApiClient, SummitAdminApiServer, SummitApiClient, SummitApiServer,
-    SummitGenesisApiClient, SummitGenesisApiServer, SummitProofApiClient, SummitProofApiServer,
+    SummitFollowerApiClient, SummitFollowerApiServer, SummitGenesisApiClient,
+    SummitGenesisApiServer, SummitProofApiClient, SummitProofApiServer,
 };
 #[cfg(feature = "permissioned")]
 pub use api::{SummitPermissionedApiClient, SummitPermissionedApiServer};
@@ -26,6 +29,8 @@ use std::sync::Arc;
 #[cfg(feature = "permissioned")]
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use summit_syncer::ingress::handler::Handler as ResolverHandler;
+use summit_types::Digest;
 use summit_types::consensus_state_query::ConsensusStateQuery;
 use summit_types::scheme::MultisigScheme;
 use tokio_util::sync::CancellationToken;
@@ -129,6 +134,7 @@ pub async fn start_rpc_server(
     body_limits: RpcBodyLimits,
     stop_signal: Signal,
     observer_node_key: Option<String>,
+    follower: bool,
     #[cfg(feature = "permissioned")] paused: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let rpc_impl = SummitRpcServer::new(
@@ -140,6 +146,11 @@ pub async fn start_rpc_server(
         #[cfg(feature = "permissioned")]
         paused,
     );
+    let rpc_impl = if follower {
+        rpc_impl.as_follower()
+    } else {
+        rpc_impl
+    };
 
     let mut public_methods = SummitApiServer::into_rpc(rpc_impl.clone());
     public_methods.merge(SummitProofApiServer::into_rpc(rpc_impl.clone()))?;
@@ -160,28 +171,117 @@ pub async fn start_rpc_server(
 
     tracing::info!("RPC Server listening on http://{rpc_listen_addr}:{port}");
 
-    // Admin RPC: hosts `SummitAdminApi` (validator-key signing methods).
-    let admin_methods = SummitAdminApiServer::into_rpc(rpc_impl);
+    // Admin RPC: hosts `SummitAdminApi` (validator-key signing methods). A
+    // follower has no validator keys, so it serves none.
+    let admin_handle = if follower {
+        None
+    } else {
+        let admin_methods = SummitAdminApiServer::into_rpc(rpc_impl);
 
-    let admin_server = builder::RpcServerBuilder::new_localhost(admin_port)
-        .with_max_connections(1000)
-        .with_max_request_body_size(body_limits.max_request_body_size)
-        .with_max_response_body_size(body_limits.max_response_body_size)
-        .with_request_timeout(body_limits.request_timeout)
-        .with_batch_limit(body_limits.max_batch_size)
-        .build()
-        .await?;
+        let admin_server = builder::RpcServerBuilder::new_localhost(admin_port)
+            .with_max_connections(1000)
+            .with_max_request_body_size(body_limits.max_request_body_size)
+            .with_max_response_body_size(body_limits.max_response_body_size)
+            .with_request_timeout(body_limits.request_timeout)
+            .with_batch_limit(body_limits.max_batch_size)
+            .build()
+            .await?;
 
-    let admin_handle = admin_server.start(admin_methods);
+        let admin_handle = admin_server.start(admin_methods);
 
-    tracing::info!("Admin RPC Server listening on http://127.0.0.1:{admin_port}");
+        tracing::info!("Admin RPC Server listening on http://127.0.0.1:{admin_port}");
+        Some(admin_handle)
+    };
 
     let sig = stop_signal.await?;
     tracing::info!("RPC server stopped: {sig}");
     public_handle.stop()?;
-    admin_handle.stop()?;
+    if let Some(admin_handle) = admin_handle {
+        admin_handle.stop()?;
+    }
 
     Ok(())
+}
+
+/// Largest request the follower listener accepts. A request carries one
+/// hex-encoded resolver key, well under a kilobyte.
+const FOLLOWER_RPC_MAX_REQUEST_BODY_BYTES: u32 = 16 * 1024;
+
+/// Most concurrent connections the follower listener accepts. Each reply can
+/// carry a whole block.
+const FOLLOWER_RPC_MAX_CONNECTIONS: u32 = 100;
+
+/// Room for the JSON-RPC envelope around a resolver reply's hex bytes.
+const FOLLOWER_RPC_ENVELOPE_BYTES: u64 = 64 * 1024;
+
+/// The response cap for `getResolverValue`, on both the follower listener and
+/// a follower's client.
+///
+/// A resolver value is a p2p message, so genesis `max_message_size_bytes`
+/// bounds it. Over RPC it is hex encoded, doubling it, inside a JSON-RPC
+/// envelope. Sizing from genesis rather than `--rpc-max-response-body-size`
+/// keeps every block a p2p peer could receive within reach of a follower.
+pub fn follower_rpc_max_response_bytes(max_message_size_bytes: u64) -> u32 {
+    max_message_size_bytes
+        .saturating_mul(2)
+        .saturating_add(FOLLOWER_RPC_ENVELOPE_BYTES)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+/// Starts the follower listener, serving the syncer's backfill resolver
+/// (`SummitFollowerApi`) to followers, and stops it on `stop_signal`.
+///
+/// It is opt-in and serves nothing else, so its exposure is set by where it
+/// listens and by the firewall or front in front of that port. Batching is
+/// disabled because every reply can carry a whole block.
+pub async fn start_follower_rpc_server(
+    resolver: ResolverHandler<Digest>,
+    state_query: ConsensusStateQuery<MultisigScheme>,
+    listen_addr: SocketAddr,
+    max_response_body_size: u32,
+    stop_signal: Signal,
+) -> anyhow::Result<()> {
+    let (handle, addr) = start_follower_rpc_server_with_handle(
+        resolver,
+        state_query,
+        listen_addr,
+        max_response_body_size,
+    )
+    .await?;
+
+    tracing::info!("Follower RPC Server listening on http://{addr}");
+
+    let sig = stop_signal.await?;
+    tracing::info!("Follower RPC server stopped: {sig}");
+    handle.stop()?;
+
+    Ok(())
+}
+
+/// Starts the follower listener and returns its handle and bound address.
+/// Passing port `0` asks the OS to allocate a free port.
+pub async fn start_follower_rpc_server_with_handle(
+    resolver: ResolverHandler<Digest>,
+    state_query: ConsensusStateQuery<MultisigScheme>,
+    listen_addr: SocketAddr,
+    max_response_body_size: u32,
+) -> anyhow::Result<(ServerHandle, SocketAddr)> {
+    let methods = FollowerRpcServer::new(resolver, state_query).into_rpc();
+
+    let server =
+        builder::RpcServerBuilder::new_with_listen_addr(listen_addr.ip(), listen_addr.port())
+            .with_max_connections(FOLLOWER_RPC_MAX_CONNECTIONS)
+            .with_max_request_body_size(FOLLOWER_RPC_MAX_REQUEST_BODY_BYTES)
+            .with_max_response_body_size(max_response_body_size)
+            .with_batch_limit(0)
+            .build()
+            .await?;
+
+    let addr = server.local_addr()?;
+    let handle = server.start(methods);
+
+    Ok((handle, addr))
 }
 
 /// Bundle of public + admin RPC handles + bound addresses returned by

@@ -117,6 +117,22 @@ impl<D: Digest> Handler<D> {
     pub const fn new(sender: UnreliableSender<Message<D>>) -> Self {
         Self { sender }
     }
+
+    /// [`Producer::produce`] for callers outside the resolver, such as the
+    /// follower RPC, that need to know whether the syncer took the request.
+    ///
+    /// The receiver resolves to the value a p2p peer would get, or is canceled
+    /// if this node doesn't have it. Returns `None` when the syncer's mailbox
+    /// is full (a full mailbox rejects externally requested work, see
+    /// [`UnreliablePolicy`]) or closed, where `produce` would drop the reply
+    /// silently.
+    pub fn try_produce(&self, key: Key<D>) -> Option<oneshot::Receiver<Bytes>> {
+        let (response, receiver) = oneshot::channel();
+        self.sender
+            .enqueue(Message::Produce { key, response })
+            .accepted()
+            .then_some(receiver)
+    }
 }
 
 /// Creates a resolver receiver and handler pair.
@@ -547,6 +563,33 @@ mod tests {
             assert_eq!(delivery.key, Key::Notarized { round });
             response.send(true).unwrap();
             assert!(delivered.await.unwrap());
+        });
+    }
+
+    #[test]
+    fn try_produce_reports_a_full_mailbox() {
+        let executor = deterministic::Runner::default();
+        executor.start(|context| async move {
+            let (mut receiver, handler) = init::<D>(context, NZUsize!(1));
+
+            let first = handler
+                .try_produce(Key::Finalized { height: 1 })
+                .expect("an empty mailbox accepts the request");
+            assert!(handler.try_produce(Key::Finalized { height: 2 }).is_none());
+
+            let Message::Produce { key, response } = receiver.recv().await.unwrap() else {
+                panic!("first message should be produce");
+            };
+            assert_eq!(key, Key::Finalized { height: 1 });
+            response.send(Bytes::from_static(b"first")).unwrap();
+            assert_eq!(first.await.unwrap(), Bytes::from_static(b"first"));
+
+            // Room again, and a missing value cancels the reply.
+            let missing = handler
+                .try_produce(Key::Finalized { height: 3 })
+                .expect("a drained mailbox accepts the request");
+            drop(receiver.recv().await.unwrap());
+            assert!(missing.await.is_err());
         });
     }
 

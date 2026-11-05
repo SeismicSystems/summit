@@ -1,7 +1,6 @@
 //! P2P resolver initialization and config.
 
-use crate::ingress::handler::{self, Annotation, Key, Receiver as HandlerReceiver};
-use commonware_actor::mailbox;
+use crate::ingress::handler::{Annotation, Handler, Key};
 use commonware_cryptography::{Digest, PublicKey};
 use commonware_p2p::{Blocker, Provider, Receiver as P2pReceiver, Sender};
 use commonware_resolver::p2p;
@@ -43,12 +42,16 @@ pub struct Config<P: PublicKey, C: Provider<PublicKey = P>, B: Blocker<PublicKey
 /// Mailbox for issuing syncer backfill requests.
 pub type Mailbox<D, P> = p2p::Mailbox<Key<D>, P, Annotation>;
 
-/// Initialize a P2P resolver.
+/// Initialize a P2P resolver that serves and delivers through `handler`.
+///
+/// The handler comes from [`crate::ingress::handler::init`], whose receiver
+/// goes to the syncer. Other clones of it can serve the same keys outside p2p.
 pub fn init<E, C, Bl, D, S, R, P>(
     context: E,
     config: Config<P, C, Bl>,
     backfill: (S, R),
-) -> (HandlerReceiver<D>, Mailbox<D, P>)
+    handler: Handler<D>,
+) -> Mailbox<D, P>
 where
     E: BufferPooler + Rng + Spawner + Clock + GClock + Metrics,
     C: Provider<PublicKey = P>,
@@ -58,8 +61,6 @@ where
     R: P2pReceiver<PublicKey = P>,
     P: PublicKey,
 {
-    let (sender, receiver) = mailbox::new_unreliable(context.child("handler"), config.mailbox_size);
-    let handler = handler::Handler::new(sender);
     let (resolver_engine, resolver) = p2p::Engine::new(
         context.child("resolver"),
         p2p::Config {
@@ -76,5 +77,5 @@ where
         },
     );
     resolver_engine.start(backfill);
-    (HandlerReceiver::new(receiver), resolver)
+    resolver
 }

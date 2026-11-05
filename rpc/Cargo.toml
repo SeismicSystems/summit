@@ -9,10 +9,11 @@ path = "src/lib.rs"
 
 [dependencies]
 summit-finalizer.workspace = true
+summit-syncer.workspace = true
 summit-types = { workspace = true }
 anyhow = { workspace = true }
 alloy-primitives.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "sync"] }
 tokio-util.workspace = true
 futures.workspace = true
 async-trait = "0.1"

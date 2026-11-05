@@ -1,6 +1,7 @@
 use crate::config::{
     EngineConfig, FINALIZER_BUFFERED_BLOCKS_WARN_THRESHOLD, FINALIZER_DRAIN_INTERVAL,
 };
+use crate::follow::{self, Driver, FollowSource};
 use commonware_broadcast::buffered;
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::simplex::scheme::Scheme;
@@ -14,7 +15,7 @@ use commonware_runtime::buffer::paged::CacheRef;
 use commonware_runtime::{BufferPooler, Clock, Handle, Metrics, Network, Spawner, Storage};
 use commonware_storage::archive::immutable;
 use commonware_utils::acknowledgement::Exact;
-use commonware_utils::{NZU64, NZUsize};
+use commonware_utils::{NZU64, NZUsize, vec::NonEmptyVec};
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use governor::clock::Clock as GClock;
@@ -200,6 +201,11 @@ pub struct Engine<
         Exact,
     >,
     pub(crate) syncer_mailbox: summit_syncer::Mailbox<MultisigScheme, Block>,
+    /// The syncer's resolver handler: the receiver goes to the syncer, the
+    /// handler to the backfill resolver and, through [`Self::resolver_handler`],
+    /// to the RPC server.
+    pub(crate) resolver_rx: summit_syncer::ingress::handler::Receiver<summit_types::Digest>,
+    pub(crate) resolver_handler: summit_syncer::ingress::handler::Handler<summit_types::Digest>,
     pub(crate) finalizer: Finalizer<E, C, O, S, MinPk>,
     pub finalizer_mailbox: FinalizerMailbox<MultisigScheme, Block>,
     pub finalizer_state_query: ConsensusStateQuery<MultisigScheme>,
@@ -211,6 +217,8 @@ pub struct Engine<
         DynamicEpocher,
     >,
     pub(crate) orchestrator_mailbox: summit_orchestrator::Mailbox,
+    scheme_provider: SummitSchemeProvider,
+    epocher: DynamicEpocher,
     oracle: O,
     node_public_key: PublicKey,
     mailbox_size: NonZeroUsize,
@@ -407,6 +415,10 @@ where
             syncer_config,
         )
         .await;
+        let (resolver_rx, resolver_handler) = summit_syncer::ingress::handler::init(
+            context.child("backfill").child("handler"),
+            cfg.mailbox_size,
+        );
 
         // create orchestrator
         let (orchestrator, orchestrator_mailbox) = summit_orchestrator::Actor::new(
@@ -455,11 +467,15 @@ where
             buffer_mailbox,
             syncer,
             syncer_mailbox,
+            resolver_rx,
+            resolver_handler,
             finalizer,
             finalizer_mailbox,
             finalizer_state_query,
             orchestrator,
             orchestrator_mailbox,
+            scheme_provider,
+            epocher,
             oracle: cfg.oracle,
             node_public_key,
             mailbox_size: cfg.mailbox_size,
@@ -470,6 +486,14 @@ where
             #[cfg(feature = "permissioned")]
             paused,
         }
+    }
+
+    /// A handle that serves resolver keys from this node's syncer, as the
+    /// backfill resolver does for p2p peers. Used by the RPC server.
+    pub fn resolver_handler(
+        &self,
+    ) -> summit_syncer::ingress::handler::Handler<summit_types::Digest> {
+        self.resolver_handler.clone()
     }
 
     /// Configuration for the backfill resolver.
@@ -568,10 +592,11 @@ where
         let buffer_handle = self.buffer.start(broadcast_network);
 
         // Initialize resolver for backfill
-        let (resolver_rx, resolver) = summit_syncer::resolver::p2p::init(
+        let resolver = summit_syncer::resolver::p2p::init(
             self.context.child("backfill"),
             resolver_config,
             backfill_network,
+            self.resolver_handler,
         );
 
         let finalizer_handle = self.finalizer.start(self.orchestrator_mailbox);
@@ -586,7 +611,7 @@ where
         let syncer_handle = self.syncer.start(
             self.finalizer_mailbox,
             self.buffer_mailbox,
-            (resolver_rx, resolver),
+            (self.resolver_rx, resolver),
             self.sync_start,
             self.checkpoint,
         );
@@ -595,22 +620,33 @@ where
             self.orchestrator
                 .start(pending_network, recovered_network, resolver_network);
 
+        Self::supervise(
+            self.cancellation_token,
+            [
+                ("application", app_handle),
+                ("buffer", buffer_handle),
+                ("finalizer", finalizer_handle),
+                ("syncer", syncer_handle),
+                ("orchestrator", orchestrator_handle),
+            ],
+        )
+        .await
+    }
+
+    async fn supervise(
+        cancellation_token: CancellationToken,
+        actors: impl IntoIterator<Item = (&'static str, Handle<()>)>,
+    ) -> anyhow::Result<()> {
         // Supervise actors with first-completion semantics: any actor finishing —
         // cleanly or not — without a coordinated cancellation is a failure. A join
         // that waits for all actors would leave the engine pending on a single
         // clean Ok(()) exit, keeping the node half-alive with a dead service.
-        let mut actors: FuturesUnordered<_> = [
-            ("application", app_handle),
-            ("buffer", buffer_handle),
-            ("finalizer", finalizer_handle),
-            ("syncer", syncer_handle),
-            ("orchestrator", orchestrator_handle),
-        ]
-        .into_iter()
-        .map(|(name, handle)| handle.map(move |result| (name, result)))
-        .collect();
+        let mut actors: FuturesUnordered<_> = actors
+            .into_iter()
+            .map(|(name, handle)| handle.map(move |result| (name, result)))
+            .collect();
 
-        let cancellation_fut = self.cancellation_token.cancelled().fuse();
+        let cancellation_fut = cancellation_token.cancelled().fuse();
         futures::pin_mut!(cancellation_fut);
 
         futures::select_biased! {
@@ -637,7 +673,7 @@ where
                 let (name, result) = completed.expect("actor set is non-empty");
                 // Bring the siblings down too; actual teardown is the process exit
                 // triggered when this error reaches the node supervisor.
-                self.cancellation_token.cancel();
+                cancellation_token.cancel();
                 match result {
                     Err(e) => {
                         error!(?e, actor = name, "engine failed: a tracked actor returned an error");
@@ -652,5 +688,75 @@ where
                 }
             }
         }
+    }
+
+    /// Start in follow mode: follow the chain from `sources`, without P2P or
+    /// Simplex.
+    ///
+    /// The syncer backfills through the opaque resolver, and a follow
+    /// [`Driver`] runs in place of the orchestrator. The application and
+    /// orchestrator never start, and the buffered broadcast engine runs over a
+    /// network that never delivers.
+    pub fn start_follow<F: FollowSource>(
+        self,
+        sources: NonEmptyVec<F>,
+    ) -> Handle<anyhow::Result<()>> {
+        self.context
+            .child("engine_run")
+            .spawn(|_| self.run_follow(sources))
+    }
+
+    async fn run_follow<F: FollowSource>(self, sources: NonEmptyVec<F>) -> anyhow::Result<()> {
+        // Nothing reports to these in follow mode. The application stays
+        // alive, unstarted, until the engine stops: dropping it cancels the
+        // engine's cancellation token.
+        // TODO(#481): build the application only in consensus mode, and move
+        // cancel-on-drop to an engine-level guard.
+        let _application = self.application;
+        drop(self.orchestrator);
+        drop(self.orchestrator_mailbox);
+
+        let buffer_handle = self.buffer.start(follow::null::channel());
+
+        let resolver = summit_syncer::resolver::opaque::init::<_, _, _, PublicKey>(
+            self.context.child("backfill"),
+            summit_syncer::resolver::opaque::Config {
+                sources: sources.clone(),
+                timeout: self.fetch_timeout,
+                fetch_retry_timeout: BACKFILL_FETCH_RETRY_TIMEOUT,
+                mailbox_size: self.mailbox_size,
+            },
+            self.resolver_handler,
+        );
+
+        let (driver, transitions) = Driver::new(
+            self.context.child("follow_driver"),
+            self.scheme_provider,
+            self.syncer_mailbox,
+            self.epocher,
+            sources,
+            follow::DEFAULT_WINDOW,
+        );
+        let finalizer_handle = self.finalizer.start(transitions);
+        // As in `run`, mailboxes move into their last users.
+        let syncer_handle = self.syncer.start(
+            self.finalizer_mailbox,
+            self.buffer_mailbox,
+            (self.resolver_rx, resolver),
+            self.sync_start,
+            self.checkpoint,
+        );
+        let driver_handle = driver.start();
+
+        Self::supervise(
+            self.cancellation_token,
+            [
+                ("buffer", buffer_handle),
+                ("finalizer", finalizer_handle),
+                ("syncer", syncer_handle),
+                ("follow_driver", driver_handle),
+            ],
+        )
+        .await
     }
 }
