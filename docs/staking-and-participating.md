@@ -6,7 +6,7 @@ Summit is a Proof of Stake (PoS) consensus client. In order to participate in th
 
 The staking contract is almost the same as Ethereum's. The source code of the modified version is available [here](https://github.com/SeismicSystems/seismic-contracts/blob/main/src/seismic-std-lib/DepositContract.sol).
 
-The changes were made to accommodate every consensus node having 2 keys to participate instead of 1 like on Ethereum. A node needs a BLS12-381 key that is used for signing consensus messages, as well as an ED25519 key that is used for authenticated networking messages and is much faster to verify. The changes add these keys to the deposit function and the deposit event. Other than that, our validator deposit flow is exactly as it is in Ethereum. For more information on how that works, see the [Beacon Chain deposit process documentation](https://docs.beaconcha.in/faqs/deposit-process).
+The changes were made to accommodate every consensus node having 2 keys to participate instead of 1 like on Ethereum. A node needs a BLS12-381 key that is used for signing consensus messages, as well as an ED25519 key that is used for authenticated networking messages and is much faster to verify. The changes add these keys to the deposit function and the deposit event. Both keys sign the deposit, under a domain tied to the network, so the signed bytes differ from Ethereum's; see [Deposit data](deposits-and-withdrawals.md#deposit-data) for the exact format. Other than that, our validator deposit flow is as it is in Ethereum. For more information on how that works, see the [Beacon Chain deposit process documentation](https://docs.beaconcha.in/faqs/deposit-process).
 
 ## Becoming a Validator
 
