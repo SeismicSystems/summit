@@ -32,8 +32,7 @@
 # Each release ships three assets:
 #
 #   summit_<tag>_linux_amd64.tar.gz        the `summit` binary, built with
-#                                          `--features prom` as the node image
-#                                          builds it
+#                                          `--features prom,permissioned`
 #   summit_<tag>_linux_amd64.sigstore.json its build provenance attestation
 #                                          (Sigstore bundle)
 #   SHA256SUMS                             digests of both
@@ -167,7 +166,7 @@ jobs:
       # fail here, not on an operator's box.
       - name: Build summit
         run: |
-          cargo build --release --locked --bin summit --features prom
+          cargo build --release --locked --bin summit --features prom,permissioned
           bin=target/release/summit
           file "$bin"
           du -h "$bin"

@@ -36,6 +36,9 @@ use summit_types::{Block, BlockAuxData, Digest, EngineClient};
 
 /// How long to wait before retrying check_payload when Reth returns SYNCING during certify.
 const CERTIFY_SYNCING_RETRY: Duration = Duration::from_millis(100);
+/// How often a held certification checks whether consensus has been unpaused.
+#[cfg(feature = "permissioned")]
+const PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 fn proposal_timestamp_wait(
     now_millis: u64,
@@ -273,13 +276,6 @@ impl<
                             payload,
                             mut response,
                         } => {
-                            #[cfg(feature = "permissioned")]
-                            if self.paused.load(Ordering::Relaxed) {
-                                warn!("consensus paused, rejecting certify for round {round}");
-                                let _ = response.send(false);
-                                continue;
-                            }
-
                             debug!("{rand_id} application: Handling message Certify for round {} (epoch {}, view {})",
                                 round, round.epoch(), round.view());
 
@@ -289,11 +285,22 @@ impl<
                                 let mut engine_client = self.engine_client.clone();
                                 let genesis_hash = self.genesis_hash;
                                 let max_message_size_bytes = self.max_message_size_bytes;
+                                #[cfg(feature = "permissioned")]
+                                let paused = self.paused.clone();
                                 move |context| async move {
                                     // Subscribe inside the task; the enqueue is synchronous and
                                     // non-blocking (overflow-buffered syncer mailbox).
                                     let block_request = syncer.subscribe(Some(round), payload);
                                     let work = async {
+                                        #[cfg(feature = "permissioned")]
+                                        if paused.load(Ordering::Relaxed) {
+                                            warn!(?round, "consensus paused, holding certification until unpaused");
+                                        }
+                                        #[cfg(feature = "permissioned")]
+                                        while paused.load(Ordering::Relaxed) {
+                                            context.sleep(PAUSE_POLL_INTERVAL).await;
+                                        }
+
                                         let Ok(block) = block_request.await else {
                                             warn!(?round, "certify: failed to receive block from syncer");
                                             return None;

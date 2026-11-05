@@ -72,6 +72,11 @@ pub trait SummitApi {
     ) -> RpcResult<PendingWithdrawalResponse>;
 }
 
+/// Signed pause-control surface. Every method takes a unix timestamp and a
+/// hex secp256k1 signature over
+/// `summit-pause-v1:{scope}:{action}:{timestamp_secs}` (EIP-191 personal
+/// sign) from a trusted admin or master key; see `auth.rs` for the role
+/// matrix.
 #[cfg(feature = "permissioned")]
 #[rpc(server, client)]
 pub trait SummitPermissionedApi {
@@ -82,7 +87,7 @@ pub trait SummitPermissionedApi {
     async fn unpause(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool>;
 
     #[method(name = "isPaused")]
-    async fn is_paused(&self) -> RpcResult<bool>;
+    async fn is_paused(&self, timestamp_secs: u64, signature: String) -> RpcResult<bool>;
 }
 
 /// Admin-only RPC surface. Must be served on a localhost-bound listener.
