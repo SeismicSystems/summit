@@ -519,10 +519,8 @@ mod genesis_path_tests {
         let founder = expect_key_store(concat!(env!("CARGO_MANIFEST_DIR"), "/../testnet/node0"))
             .node_key
             .public_key();
-        let genesis_address: WithdrawalAddress = genesis.validators[0]
-            .withdrawal_address
-            .parse()
-            .unwrap();
+        let genesis_address: WithdrawalAddress =
+            genesis.validators[0].withdrawal_address.parse().unwrap();
         let path = dir.join("founder");
         let file =
             open_withdrawal_address_file(path.to_str().unwrap(), &genesis, &founder).unwrap();
