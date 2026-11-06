@@ -14,7 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const PAUSE_ADMIN_ADDRESS_HEX: &str = "0x0E4Fbef99Aa77e8CF4aE5bf0804828B8359A88E9";
 pub const PAUSE_MASTER_ADDRESS_HEX: &str = "0xB74469F2c9294895Cb02Af42b5Fbf435B73A1A9A";
 
-pub const TIMESTAMP_WINDOW_SECS: u64 = 30;
+// Allow five minutes for human approval and MPC signing. Requests remain
+// replayable within this window for their signed action and deployment.
+pub const TIMESTAMP_WINDOW_SECS: u64 = 300;
 pub const DOMAIN: &str = "summit-pause-v1";
 
 /// An authorized pause-RPC action. The string form is bound into the signed
@@ -263,6 +265,31 @@ mod tests {
         // ...but deployment B rejects the very same signature.
         let err = verify_action_with(&keys, NOW, &scope_b(), Action::Pause, NOW, &sig).unwrap_err();
         assert!(matches!(err, RpcError::InvalidSignature));
+    }
+
+    #[test]
+    fn timestamp_window_is_five_minutes() {
+        // Off-chain signers (seismic-ops-app) budget human approval and MPC
+        // signing against this value; change them together.
+        assert_eq!(TIMESTAMP_WINDOW_SECS, 300);
+    }
+
+    #[test]
+    fn accepts_timestamps_through_window_boundary() {
+        let (_, master, keys) = keys();
+        let scope = scope_a();
+        for action in [Action::Pause, Action::Unpause, Action::IsPaused] {
+            // 31 s was outside the previous 30 s window.
+            for age in [31, TIMESTAMP_WINDOW_SECS - 1, TIMESTAMP_WINDOW_SECS] {
+                for signed_at in [NOW - age, NOW + age] {
+                    let sig = sign(&scope, action, signed_at, &master);
+                    let role = verify_action_with(&keys, NOW, &scope, action, signed_at, &sig)
+                        .ok()
+                        .expect("timestamps within the window must be accepted");
+                    assert_eq!(role, Role::Master);
+                }
+            }
+        }
     }
 
     #[test]

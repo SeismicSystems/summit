@@ -16,8 +16,8 @@ use commonware_runtime::Supervisor as _;
 use commonware_runtime::{Handle, Runner, Spawner, tokio};
 use summit_rpc::{
     DEFAULT_RPC_BODY_LIMIT_BYTES, DEFAULT_RPC_MAX_BATCH_SIZE, DEFAULT_RPC_REQUEST_TIMEOUT_SECS,
-    PathSender, RpcBodyLimits, start_deposit_rpc_server, start_rpc_server,
-    start_rpc_server_for_genesis,
+    PathSender, RpcBodyLimits, WithdrawalAddress, WithdrawalAddressFile, start_deposit_rpc_server,
+    start_rpc_server, start_rpc_server_for_genesis,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -199,6 +199,17 @@ pub struct RunFlags {
     /// signing methods like `getDepositSignature`).
     #[arg(long, default_value_t = 3031)]
     pub admin_rpc_port: u16,
+
+    /// Path to a write-once file holding the one withdrawal address this node
+    /// signs deposits for. When set, `getDepositSignature` on the admin RPC
+    /// signs only for that address and refuses any other.
+    ///
+    /// The address is bound once: a genesis validator's at startup, from its
+    /// genesis entry; any other node's by its first `getDepositSignature`,
+    /// which must carry an EIP-55 checksummed address. The file's directory
+    /// must exist.
+    #[arg(long, conflicts_with = "observer")]
+    pub withdrawal_address_path: Option<String>,
 
     /// Maximum JSON-RPC request body size, in bytes.
     #[arg(long, default_value_t = DEFAULT_RPC_BODY_LIMIT_BYTES)]
@@ -491,6 +502,53 @@ mod genesis_path_tests {
             classify_genesis_path(path),
             GenesisPathState::Valid(_)
         ));
+    }
+
+    #[test]
+    fn withdrawal_address_file_binds_founder_from_genesis() {
+        let genesis = Genesis::load_from_file(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../example_genesis.toml"
+        ))
+        .unwrap();
+        let dir = std::env::temp_dir().join("summit_withdrawal_address_file");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+
+        // testnet/node0 is the first validator in the example genesis.
+        let founder = expect_key_store(concat!(env!("CARGO_MANIFEST_DIR"), "/../testnet/node0"))
+            .node_key
+            .public_key();
+        let genesis_address: WithdrawalAddress = genesis.validators[0]
+            .withdrawal_credentials
+            .parse()
+            .unwrap();
+        let path = dir.join("founder");
+        let file =
+            open_withdrawal_address_file(path.to_str().unwrap(), &genesis, &founder).unwrap();
+        assert_eq!(file.address(), Some(genesis_address));
+        // Restarting with the same genesis is fine.
+        open_withdrawal_address_file(path.to_str().unwrap(), &genesis, &founder).unwrap();
+
+        // A founder whose file holds another address fails, and the file is
+        // left untouched.
+        let path = dir.join("mismatch");
+        let other = genesis.validators[1].withdrawal_credentials.clone();
+        std::fs::write(&path, format!("{other}\n")).unwrap();
+        assert!(open_withdrawal_address_file(path.to_str().unwrap(), &genesis, &founder).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{other}\n")
+        );
+
+        // A node key outside genesis starts unbound.
+        let joiner = commonware_cryptography::ed25519::PrivateKey::from_seed(1).public_key();
+        let path = dir.join("joiner");
+        let file = open_withdrawal_address_file(path.to_str().unwrap(), &genesis, &joiner).unwrap();
+        assert_eq!(file.address(), None);
+        assert!(!path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1115,6 +1173,16 @@ where
     S: Signer<PublicKey = PublicKey>,
     EC: EngineClient,
 {
+    // Open the withdrawal address file first, so a missing directory or a
+    // malformed file fails startup, and a founder is bound to its genesis
+    // address before the admin RPC serves any request.
+    let withdrawal_address_file = flags.withdrawal_address_path.as_ref().map(|path| {
+        let file = open_withdrawal_address_file(path, genesis, &key_store.node_key.public_key())
+            .unwrap_or_else(|e| panic!("failed to open withdrawal address file: {e:#}"));
+        info!(address = ?file.address(), "withdrawal address binding enabled");
+        file
+    });
+
     // Recover authoritative protocol values before the network allocates fixed
     // peer-derived mailboxes. The finalizer will reopen the same store; never
     // size from stale genesis values on an ordinary restart.
@@ -1287,6 +1355,7 @@ where
             rpc_body_limits,
             stop_signal,
             observer_node_key,
+            withdrawal_address_file,
             #[cfg(feature = "permissioned")]
             paused,
         )
@@ -1296,6 +1365,32 @@ where
         }
     });
     (engine, p2p, rpc_handle)
+}
+
+/// Opens `--withdrawal-address-path`. A founder (a genesis validator with
+/// this node key) is bound to its genesis withdrawal address, and a file
+/// already bound to another address is an error.
+fn open_withdrawal_address_file(
+    path: &str,
+    genesis: &Genesis,
+    node_key: &PublicKey,
+) -> anyhow::Result<WithdrawalAddressFile> {
+    let file = WithdrawalAddressFile::open(get_expanded_path(path)?)?;
+    let Some(founder) = genesis
+        .get_validators()?
+        .into_iter()
+        .find(|validator| &validator.node_public_key == node_key)
+    else {
+        return Ok(file);
+    };
+    let genesis_address = WithdrawalAddress::try_from(founder.withdrawal_credentials)
+        .map_err(|e| anyhow::anyhow!("this node's genesis withdrawal address: {e}"))?;
+    let bound = file.get_or_bind(genesis_address)?;
+    anyhow::ensure!(
+        bound == genesis_address,
+        "{path} binds withdrawal address {bound}, but this node's genesis withdrawal address is {genesis_address}"
+    );
+    Ok(file)
 }
 
 fn get_initial_state(
