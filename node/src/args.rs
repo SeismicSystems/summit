@@ -519,10 +519,8 @@ mod genesis_path_tests {
         let founder = expect_key_store(concat!(env!("CARGO_MANIFEST_DIR"), "/../testnet/node0"))
             .node_key
             .public_key();
-        let genesis_address: WithdrawalAddress = genesis.validators[0]
-            .withdrawal_credentials
-            .parse()
-            .unwrap();
+        let genesis_address: WithdrawalAddress =
+            genesis.validators[0].withdrawal_address.parse().unwrap();
         let path = dir.join("founder");
         let file =
             open_withdrawal_address_file(path.to_str().unwrap(), &genesis, &founder).unwrap();
@@ -533,7 +531,7 @@ mod genesis_path_tests {
         // A founder whose file holds another address fails, and the file is
         // left untouched.
         let path = dir.join("mismatch");
-        let other = genesis.validators[1].withdrawal_credentials.clone();
+        let other = genesis.validators[1].withdrawal_address.clone();
         std::fs::write(&path, format!("{other}\n")).unwrap();
         assert!(open_withdrawal_address_file(path.to_str().unwrap(), &genesis, &founder).is_err());
         assert_eq!(
@@ -1383,7 +1381,7 @@ fn open_withdrawal_address_file(
     else {
         return Ok(file);
     };
-    let genesis_address = WithdrawalAddress::try_from(founder.withdrawal_credentials)
+    let genesis_address = WithdrawalAddress::try_from(founder.withdrawal_address)
         .map_err(|e| anyhow::anyhow!("this node's genesis withdrawal address: {e}"))?;
     let bound = file.get_or_bind(genesis_address)?;
     anyhow::ensure!(
@@ -1438,7 +1436,7 @@ fn get_initial_state(
                 .expect("Public key must be 32 bytes");
             let account = ValidatorAccount {
                 consensus_public_key: validator.consensus_public_key.clone(),
-                withdrawal_credentials: validator.withdrawal_credentials,
+                withdrawal_credentials: validator.withdrawal_address,
                 balance: genesis.validator_minimum_stake,
                 status: ValidatorStatus::Active,
                 joining_epoch: 0,
