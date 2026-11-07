@@ -559,12 +559,16 @@ pub fn verify_checkpoint_chain_with_weak_subjectivity(
         }
     }
 
-    // Reverse check: every active validator in the checkpoint must be in the
-    // accumulated signing set.
+    // Reverse check: every validator the checkpoint puts in the current epoch
+    // committee must be in the accumulated signing set. The forward check above
+    // accepts both signer statuses, and get_current_epoch_validators seeds the
+    // committee from the same predicate, so both have to be bound here too.
     for (key, account) in &checkpoint_state.validator_accounts {
-        if account.status == ValidatorStatus::Active && !accumulated.contains_key(key) {
+        if account.status.is_current_epoch_signer() && !accumulated.contains_key(key) {
             return Err(CheckpointVerificationError::ValidatorSetMismatch(format!(
-                "validator {key:?} is active in checkpoint but not in accumulated signing set"
+                "validator {key:?} has status {:?} in checkpoint but is not in the accumulated \
+                 signing set",
+                account.status
             )));
         }
     }
@@ -2190,6 +2194,113 @@ mod tests {
             ),
             "verifier must reject a checkpoint carrying an extra Joining account not \
              committed by the terminal finalized header, got {result:?}"
+        );
+    }
+
+    // Step 3's reverse membership check exists for the case Step 2 cannot catch: a
+    // checkpoint creator that signs a terminal header over its own tampered state,
+    // so the checkpoint hash binding holds and only the signing-set comparison is
+    // left. `get_current_epoch_validators` seeds the epoch committee from
+    // `is_current_epoch_signer()`, which is Active *or* SubmittedExitRequest, so an
+    // extra account under either status is an extra committee member on the
+    // importing node and both must be bound to the accumulated signing set.
+    #[test]
+    fn test_checkpoint_verifier_rejects_extra_committee_account_under_either_signer_status() {
+        use crate::account::{ValidatorAccount, ValidatorStatus};
+
+        let inject = |status: ValidatorStatus| -> Box<dyn FnOnce(&mut ConsensusState)> {
+            Box::new(move |s: &mut ConsensusState| {
+                s.set_latest_height(5);
+                let rogue = ed25519::PrivateKey::from_seed(77).public_key();
+                let rogue_bytes: [u8; 32] = rogue.as_ref().try_into().unwrap();
+                s.set_account(
+                    rogue_bytes,
+                    ValidatorAccount {
+                        consensus_public_key: bls12381::PrivateKey::from_seed(777).public_key(),
+                        withdrawal_credentials: Address::from([77u8; 20]),
+                        balance: 32_000_000_000,
+                        status,
+                        joining_epoch: 0,
+                        last_deposit_index: 0,
+                    },
+                );
+            })
+        };
+
+        for status in [
+            ValidatorStatus::Active,
+            ValidatorStatus::SubmittedExitRequest,
+        ] {
+            assert!(
+                status.is_current_epoch_signer(),
+                "{status:?} must be a current-epoch signer for this test to mean anything"
+            );
+            let (genesis, checkpoint, header) =
+                build_checkpoint_and_header(inject(status.clone()), 6);
+            let result = super::verify_checkpoint_chain(
+                &genesis,
+                std::slice::from_ref(&header),
+                &checkpoint,
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(super::CheckpointVerificationError::ValidatorSetMismatch(_))
+                ),
+                "verifier must reject a checkpoint carrying an extra {status:?} account that \
+                 never signed any finalized header, got {result:?}"
+            );
+        }
+    }
+
+    // The tightening above only narrows *which* accounts the reverse check
+    // binds; the honest case it must keep accepting is the one the forward check
+    // has always allowed: a validator that signed this epoch's headers and then
+    // submitted an exit request before the epoch boundary. It is still in the
+    // accumulated signing set, so the checkpoint must verify — under
+    // `is_current_epoch_signer()` the account is bound and found, and it is the
+    // direction that would break production if the reverse check ever started
+    // rejecting signers it cannot place.
+    #[test]
+    fn test_checkpoint_verifier_accepts_exiting_account_in_the_accumulated_signing_set() {
+        use crate::account::ValidatorStatus;
+
+        // A genesis validator, so it is in the accumulated signing set that
+        // `build_checkpoint_and_header` seeds the epoch-0 participants from.
+        let exiting_key: [u8; 32] = ed25519::PrivateKey::from_seed(0)
+            .public_key()
+            .as_ref()
+            .try_into()
+            .expect("ed25519 public key should be 32 bytes");
+
+        let (genesis, checkpoint, header) = build_checkpoint_and_header(
+            |s| {
+                s.set_latest_height(5);
+                let mut account = s
+                    .get_account(&exiting_key)
+                    .expect("genesis validator should have an account")
+                    .clone();
+                assert_eq!(
+                    account.status,
+                    ValidatorStatus::Active,
+                    "fixture account must start Active for the flip to mean anything"
+                );
+                account.status = ValidatorStatus::SubmittedExitRequest;
+                assert!(
+                    account.status.is_current_epoch_signer(),
+                    "an exiting validator still signs for the current epoch"
+                );
+                s.set_account(exiting_key, account);
+            },
+            6,
+        );
+
+        let result =
+            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&header), &checkpoint);
+        assert!(
+            result.is_ok(),
+            "a checkpoint whose exiting validator is still in the accumulated signing set must \
+             verify, got {result:?}"
         );
     }
 
